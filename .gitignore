@@ -1,19 +1,16 @@
-# Beats vendor binaries (don’t commit)
-winlogbeat/
-winlogbeat-bin/
-*.zip
-
 # Python
-.venv/
 __pycache__/
 *.pyc
-
-# Secrets
-openai_api_key.txt
+*.pyo
+*.pyd
+.venv/
 .env
+*.log
 
-# OS/IDE
+# OS cruft
 .DS_Store
 Thumbs.db
-.vscode/
-.idea/
+
+# Large/vendor (do not version winlogbeat vendor dir)
+winlogbeat/
+*.zip

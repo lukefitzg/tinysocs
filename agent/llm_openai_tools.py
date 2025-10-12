@@ -8,6 +8,11 @@ from netutil import is_loopback
 
 API_KEY = os.getenv("OPENAI_API_KEY")
 MODEL   = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+DEBUG   = os.getenv("DEBUG_LLM") == "1"
+
+# Compacting knobs
+MAX_FINDINGS_FOR_CLOUD = int(os.getenv("MAX_FINDINGS_FOR_CLOUD", "12"))
+MAX_PROMPT_CHARS       = int(os.getenv("MAX_PROMPT_CHARS", "18000"))  # hard stop << 128k tokens
 
 TOOLS = [
   {
@@ -81,6 +86,38 @@ def _call_local_tool(name: str, args: Dict[str,Any]) -> Dict[str,Any]:
     if name == "stage_action": return stage_action(**args)
     return {"error": f"unknown tool {name}"}
 
+def _compact_findings(findings: List[Dict[str,Any]]) -> List[Dict[str,Any]]:
+    """
+    Make a tiny, schema-friendly summary of findings for cloud models:
+    - keep: rule, summary, count, evidence.{ip,ip_rdns,user,count,host,process}
+    - drop: samples/raw arrays
+    - cap length & entries aggressively
+    """
+    compact: List[Dict[str,Any]] = []
+    for f in (findings or [])[:MAX_FINDINGS_FOR_CLOUD]:
+        row: Dict[str,Any] = {}
+        if f.get("rule"):       row["rule"]    = f["rule"]
+        if f.get("summary"):
+            s = str(f["summary"])
+            row["summary"] = (s[:180] + "…") if len(s) > 180 else s
+        if isinstance(f.get("count"), int):
+            row["count"] = f["count"]
+
+        ev = f.get("evidence") or {}
+        if isinstance(ev, dict):
+            ev_small = {}
+            for k in ("ip","ip_rdns","user","count","host","process"):
+                v = ev.get(k)
+                if v is None: continue
+                if isinstance(v, str) and len(v) > 160:
+                    v = v[:160] + "…"
+                ev_small[k] = v
+            if ev_small:
+                row["evidence"] = ev_small
+
+        compact.append(row)
+    return compact
+
 def _coerce_incident(obj, findings):
     """Normalize a model’s freeform output into our schema + sane defaults."""
     out = {
@@ -99,21 +136,19 @@ def _coerce_incident(obj, findings):
         for f in findings[:10]:
             row = {}
             if isinstance(f.get("evidence"), dict):
-                row.update(f["evidence"])
+                row.update({k:v for k,v in f["evidence"].items()
+                            if k in {"ip","ip_rdns","user","count","host","process"} and v is not None})
             if f.get("rule"):
                 row["rule"] = f["rule"]
-            safe = {k: v for k, v in row.items()
-                    if v is not None and k in {"ip","ip_rdns","user","count","rule","host","process"}}
-            ev.append(safe)
+            ev.append(row)
     else:
         flat = []
         for e in ev[:20]:
-            if not isinstance(e, dict):
-                continue
+            if not isinstance(e, dict): continue
             pruned = {k: v for k, v in e.items()
-                      if k not in {"details","detail","sample","samples","raw","events"}}
-            if isinstance(e.get("details"), list) and len(e["details"]) <= 3:
-                pruned["details"] = e["details"]
+                      if k in {"ip","ip_rdns","user","count","rule","host","process","details"}}
+            if isinstance(pruned.get("details"), list) and len(pruned["details"]) > 3:
+                pruned["details"] = pruned["details"][:3]
             flat.append(pruned)
         ev = flat
 
@@ -131,31 +166,27 @@ def _coerce_incident(obj, findings):
     # ---- Candidate actions ----
     norm_actions = []
     for a in out["candidate_actions"][:10]:
-        if not isinstance(a, dict):
-            continue
+        if not isinstance(a, dict): continue
         action = a.get("action")
         params = a.get("params") or {}
         if action in {"block_ip","disable_user","isolate_host","open_ticket"}:
             if not params:
                 if action == "block_ip":
                     ip = next((e.get("ip") for e in out["evidence"] if e.get("ip")), None)
-                    if ip:
-                        params = {"ip": ip, "reason": "TinySocs suggested"}
+                    if ip: params = {"ip": ip, "reason": "TinySocs suggested"}
                 elif action == "open_ticket":
                     params = {"title": out["tldr"][:120]}
                 elif action == "disable_user":
                     u = next((e.get("user") for e in out["evidence"] if e.get("user")), None)
-                    if u:
-                        params = {"user": u, "reason": "TinySocs suggested"}
+                    if u: params = {"user": u, "reason": "TinySocs suggested"}
                 elif action == "isolate_host":
                     host = next((e.get("host") for e in out["evidence"] if e.get("host")), None)
-                    if host:
-                        params = {"host": host, "reason": "TinySocs suggested"}
+                    if host: params = {"host": host, "reason": "TinySocs suggested"}
             if params:
                 norm_actions.append({"action": action, "params": params})
     out["candidate_actions"] = norm_actions
 
-    # ---- Severity policy tweak: if all IP evidence is loopback, cap High->Medium
+    # ---- Severity: cap High/Critical if all IPs loopback
     any_evidence = out["evidence"]
     if any_evidence and all(is_loopback(e.get("ip","")) for e in any_evidence if "ip" in e):
         if out["severity"] in {"High","Critical"}:
@@ -166,18 +197,24 @@ def _coerce_incident(obj, findings):
 def summarize_findings(findings: List[Dict[str,Any]]) -> Dict[str,Any]:
     """Let the model request local queries, then return one JSON incident."""
     if not API_KEY:
+        reason = "OPENAI_API_KEY missing"
+        if DEBUG: print("[DEBUG][openai tools] precheck failed ->", reason)
         return {
-            "tldr":"OpenAI unavailable: missing API key. Rendering raw findings.",
-            "severity":"Low",
-            "evidence":findings[:10],
-            "hypotheses":["Online summarizer error/unavailable"],
-            "next_steps":["Add OPENAI_API_KEY or use offline mode"],
-            "candidate_actions":[],
-            "generator":"fallback-online",
-            "reason":"OPENAI_API_KEY missing",
+            "tldr": f"OpenAI tools error: {reason}. Rendering raw findings.",
+            "severity": "Low",
+            "evidence": findings[:10],
+            "next_steps": ["Retry later", "Use offline mode"],
+            "candidate_actions": [],
+            "generator": "fallback-online",
+            "reason": reason
         }
 
-    seed = scrub(findings[:25])
+    # scrub + compact BEFORE cloud
+    compact = _compact_findings(scrub(findings))  # scrub PII, then compact
+    # hard cap bytes of the JSON seed
+    seed_json = json.dumps(compact)
+    if len(seed_json) > MAX_PROMPT_CHARS:
+        seed_json = seed_json[:MAX_PROMPT_CHARS] + "…"
 
     schema = {
       "type":"object",
@@ -192,7 +229,7 @@ def summarize_findings(findings: List[Dict[str,Any]]) -> Dict[str,Any]:
       "Do not include large nested arrays or raw event dumps. "
       "Final answer MUST be JSON only."
     )
-    user = f"JSON Schema:\n{json.dumps(schema)}\n\nInitial Findings:\n{json.dumps(seed)}"
+    user = f"JSON Schema:\n{json.dumps(schema)}\n\nInitial Findings (compact):\n{seed_json}"
 
     headers = {"Authorization": f"Bearer {API_KEY}"}
     messages = [
@@ -210,7 +247,20 @@ def summarize_findings(findings: List[Dict[str,Any]]) -> Dict[str,Any]:
           "temperature": 0.0,
         }
         r1 = http.post("https://api.openai.com/v1/chat/completions", json=body1, headers=headers)
+        if r1.status_code >= 400:
+            reason = f"HTTP {r1.status_code}: {r1.text[:400]}"
+            if DEBUG: print("[DEBUG][openai tools] first call failed ->", reason)
+            return {
+                "tldr": f"OpenAI tools error: {reason}. Rendering raw findings.",
+                "severity": "Low",
+                "evidence": findings[:10],
+                "next_steps": ["Retry later", "Use offline mode"],
+                "candidate_actions": [],
+                "generator": "fallback-online",
+                "reason": reason
+            }
         r1.raise_for_status()
+
         msg1 = r1.json()["choices"][0]["message"]
         messages.append(msg1)
 
@@ -226,20 +276,35 @@ def summarize_findings(findings: List[Dict[str,Any]]) -> Dict[str,Any]:
               "response_format": {"type":"json_object"}
             }
             r_final = http.post("https://api.openai.com/v1/chat/completions", json=body_final, headers=headers)
+            if r_final.status_code >= 400:
+                reason = f"HTTP {r_final.status_code}: {r_final.text[:400]}"
+                if DEBUG: print("[DEBUG][openai tools] final call failed ->", reason)
+                return {
+                    "tldr": f"OpenAI tools error: {reason}. Rendering raw findings.",
+                    "severity": "Low",
+                    "evidence": findings[:10],
+                    "next_steps": ["Retry later", "Use offline mode"],
+                    "candidate_actions": [],
+                    "generator": "fallback-online",
+                    "reason": reason
+                }
             r_final.raise_for_status()
+
             final_msg = r_final.json()["choices"][0]["message"]
             final_text = (final_msg.get("content") or "{}").strip() or "{}"
             try:
                 obj = json.loads(final_text)
             except Exception:
+                reason = "non-JSON response (no-tool path)"
+                if DEBUG: print("[DEBUG][openai tools] json parse failed ->", reason, " RAW:", final_text[:400])
                 return {
-                    "tldr":"OpenAI tools returned non-JSON; rendering raw findings.",
+                    "tldr":"OpenAI tools error: non-JSON response. Rendering raw findings.",
                     "severity":"Low",
                     "evidence":findings[:10],
                     "next_steps":["Retry later","Use offline mode"],
                     "candidate_actions":[],
                     "generator":"fallback-online",
-                    "reason":"non-JSON response (no-tool path)"
+                    "reason": reason
                 }
             obj = _coerce_incident(obj, findings)
             obj["generator"] = "openai+tools"
@@ -253,8 +318,18 @@ def summarize_findings(findings: List[Dict[str,Any]]) -> Dict[str,Any]:
                 name = tc["function"]["name"]
                 try:
                     args = json.loads(tc["function"]["arguments"] or "{}")
-                except Exception:
-                    args = {}
+                except Exception as e:
+                    reason = f"tool arg parse error: {e}"
+                    if DEBUG: print("[DEBUG][openai tools] tool arg parse error ->", reason)
+                    return {
+                        "tldr": f"OpenAI tools error: {reason}. Rendering raw findings.",
+                        "severity": "Low",
+                        "evidence": findings[:10],
+                        "next_steps": ["Retry later", "Use offline mode"],
+                        "candidate_actions": [],
+                        "generator": "fallback-online",
+                        "reason": reason
+                    }
                 out  = _call_local_tool(name, args)
                 tool_msgs.append({
                     "role":"tool",
@@ -272,30 +347,48 @@ def summarize_findings(findings: List[Dict[str,Any]]) -> Dict[str,Any]:
               "response_format": {"type":"json_object"}
             }
             r2 = http.post("https://api.openai.com/v1/chat/completions", json=body2, headers=headers)
+            if r2.status_code >= 400:
+                reason = f"HTTP {r2.status_code}: {r2.text[:400]}"
+                if DEBUG: print("[DEBUG][openai tools] final call failed ->", reason)
+                return {
+                    "tldr": f"OpenAI tools error: {reason}. Rendering raw findings.",
+                    "severity": "Low",
+                    "evidence": findings[:10],
+                    "next_steps": ["Retry later", "Use offline mode"],
+                    "candidate_actions": [],
+                    "generator": "fallback-online",
+                    "reason": reason
+                }
             r2.raise_for_status()
+
             msg2 = r2.json()["choices"][0]["message"]
             messages.append(msg2)
 
+            # if it still wants tools (rare), loop once more; else we’re done
             tool_calls = msg2.get("tool_calls") or []
             if not tool_calls:
                 final_text = (msg2.get("content") or "{}").strip() or "{}"
                 try:
                     obj = json.loads(final_text)
                 except Exception:
+                    reason = "non-JSON response (tool path)"
+                    if DEBUG: print("[DEBUG][openai tools] json parse failed ->", reason, " RAW:", final_text[:400])
                     return {
-                        "tldr":"OpenAI tools returned non-JSON; rendering raw findings.",
+                        "tldr":"OpenAI tools error: non-JSON response. Rendering raw findings.",
                         "severity":"Low",
                         "evidence":findings[:10],
                         "next_steps":["Retry later","Use offline mode"],
                         "candidate_actions":[],
                         "generator":"fallback-online",
-                        "reason":"non-JSON response (tool path)"
+                        "reason": reason
                     }
                 obj = _coerce_incident(obj, findings)
                 obj["generator"] = "openai+tools"
                 return obj
 
         # If we exit the loop still asking for tools, fail-soft:
+        reason = "tool-call loop limit"
+        if DEBUG: print("[DEBUG][openai tools] loop limit ->", reason)
         return {
             "tldr":"Model requested excessive tool calls; rendering raw findings.",
             "severity":"Low",
@@ -303,5 +396,5 @@ def summarize_findings(findings: List[Dict[str,Any]]) -> Dict[str,Any]:
             "next_steps":["Retry later","Increase tool round limit","Use offline mode"],
             "candidate_actions":[],
             "generator":"fallback-online",
-            "reason":"tool-call loop limit"
+            "reason": reason
         }

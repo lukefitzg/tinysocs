@@ -1,10 +1,14 @@
 # agent/llm_openai_tools.py
-import os, json, httpx
+import os, json, httpx, sys
 from typing import Any, Dict, List
+from fnmatch import fnmatch
+from datetime import datetime, timezone
+
 from llm_schema import SCHEMA
 from redact import scrub
 from tools import search_kql, aggregate, propose_rule, stage_action
 from netutil import is_loopback
+from adapters.opensearch_client import OSClient  # for optional persistence
 
 API_KEY = os.getenv("OPENAI_API_KEY")
 MODEL   = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
@@ -13,6 +17,43 @@ DEBUG   = os.getenv("DEBUG_LLM") == "1"
 # Compacting knobs
 MAX_FINDINGS_FOR_CLOUD = int(os.getenv("MAX_FINDINGS_FOR_CLOUD", "12"))
 MAX_PROMPT_CHARS       = int(os.getenv("MAX_PROMPT_CHARS", "18000"))  # hard stop << 128k tokens
+
+# ▶ tool index allow-list (model can ONLY query these)
+ALLOW_INDICES   = [s.strip() for s in os.getenv("LLM_TOOL_INDEX_ALLOW", "winlogbeat-*").split(",") if s.strip()]
+DEFAULT_INDEX   = ALLOW_INDICES[0] if ALLOW_INDICES else "winlogbeat-*"
+
+# ▶ persistence toggles
+CASE_INDEX = os.getenv("SIEM_CASE_INDEX", "siem_index")
+PERSIST    = str(os.getenv("SIEM_PERSIST_CASES", "1")).lower() in ("1","true","yes","on")
+
+def _ensure_index(os_client):
+    """Create CASE_INDEX if it doesn't exist (idempotent)."""
+    try:
+        if not os_client.indices.exists(index=CASE_INDEX):
+            os_client.indices.create(
+                index=CASE_INDEX,
+                body={
+                    "settings": {"number_of_shards": 1, "number_of_replicas": 0},
+                    "mappings": {"dynamic": True},
+                },
+            )
+    except Exception as e:
+        if "resource_already_exists_exception" not in str(e):
+            raise
+
+def _persist_incident(incident: dict):
+    """Write incident to OpenSearch (dev-safe defaults)."""
+    if not PERSIST:
+        return
+    try:
+        os_client = OSClient().os
+        _ensure_index(os_client)
+        doc = dict(incident)
+        doc.setdefault("@timestamp", datetime.now(timezone.utc).isoformat())
+        os_client.index(index=CASE_INDEX, body=doc, refresh=True)
+        print(f"[summarizer] incident persisted to {CASE_INDEX}", flush=True)
+    except Exception as e:
+        print(f"[summarizer] persist skipped: {e}", file=sys.stderr, flush=True)
 
 TOOLS = [
   {
@@ -79,20 +120,32 @@ TOOLS = [
   }
 ]
 
+def _index_allowed(idx: str) -> bool:
+    return any(fnmatch(idx or "", pat) for pat in ALLOW_INDICES)
+
+def _sanitize_tool_args(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    # enforce allowed indices for search/aggregate
+    if name in ("search_kql", "aggregate"):
+        idx = args.get("index") or DEFAULT_INDEX
+        if not _index_allowed(idx):
+            if DEBUG:
+                print(f"[DEBUG][tools] index '{idx}' not in allow-list {ALLOW_INDICES}; using '{DEFAULT_INDEX}'", flush=True)
+            args["index"] = DEFAULT_INDEX
+    return args
+
 def _call_local_tool(name: str, args: Dict[str,Any]) -> Dict[str,Any]:
-    if name == "search_kql":   return search_kql(**args)
-    if name == "aggregate":    return aggregate(**args)
-    if name == "propose_rule": return propose_rule(**args)
-    if name == "stage_action": return stage_action(**args)
-    return {"error": f"unknown tool {name}"}
+    args = _sanitize_tool_args(name, dict(args or {}))
+    try:
+        if name == "search_kql":   return search_kql(**args)
+        if name == "aggregate":    return aggregate(**args)
+        if name == "propose_rule": return propose_rule(**args)
+        if name == "stage_action": return stage_action(**args)
+        return {"error": f"unknown tool {name}"}
+    except Exception as e:
+        # Fail-soft so the summarizer never dies on tool errors (e.g., 404 index)
+        return {"error": str(e), "tool": name, "args": args}
 
 def _compact_findings(findings: List[Dict[str,Any]]) -> List[Dict[str,Any]]:
-    """
-    Make a tiny, schema-friendly summary of findings for cloud models:
-    - keep: rule, summary, count, evidence.{ip,ip_rdns,user,count,host,process}
-    - drop: samples/raw arrays
-    - cap length & entries aggressively
-    """
     compact: List[Dict[str,Any]] = []
     for f in (findings or [])[:MAX_FINDINGS_FOR_CLOUD]:
         row: Dict[str,Any] = {}
@@ -119,7 +172,6 @@ def _compact_findings(findings: List[Dict[str,Any]]) -> List[Dict[str,Any]]:
     return compact
 
 def _coerce_incident(obj, findings):
-    """Normalize a model’s freeform output into our schema + sane defaults."""
     out = {
         "tldr": (obj or {}).get("tldr") or "LLM summary unavailable; using raw findings.",
         "severity": ((obj or {}).get("severity") or "Low").title(),
@@ -152,7 +204,6 @@ def _coerce_incident(obj, findings):
             flat.append(pruned)
         ev = flat
 
-    # inject rdns if missing and available in original findings
     for i, row in enumerate(ev):
         if isinstance(row, dict) and "ip" in row and "ip_rdns" not in row:
             match = next((f for f in findings if (f.get("evidence") or {}).get("ip") == row["ip"]), None)
@@ -186,7 +237,7 @@ def _coerce_incident(obj, findings):
                 norm_actions.append({"action": action, "params": params})
     out["candidate_actions"] = norm_actions
 
-    # ---- Severity: cap High/Critical if all IPs loopback
+    # ---- Severity tweak for loopback-only evidence
     any_evidence = out["evidence"]
     if any_evidence and all(is_loopback(e.get("ip","")) for e in any_evidence if "ip" in e):
         if out["severity"] in {"High","Critical"}:
@@ -194,8 +245,48 @@ def _coerce_incident(obj, findings):
 
     return out
 
+def _enforce_consistency(incident: Dict[str, Any], findings: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Ensure TL;DR isn't claiming 'no events' when evidence shows counts.
+    Also guarantees a severity is present.
+    """
+    ev = incident.get("evidence") or []
+    total = 0
+    rules = []
+    for e in ev:
+        if isinstance(e, dict):
+            try:
+                total += int(e.get("count") or 0)
+            except Exception:
+                pass
+            r = e.get("rule")
+            if isinstance(r, str):
+                rules.append(r)
+
+    tldr = (incident.get("tldr") or "").strip()
+    says_none = ("no " in tldr.lower() and "event" in tldr.lower())
+    if total > 0 and says_none:
+        uniq_rules = ", ".join(sorted(set(rules))) if rules else "detections"
+        incident["tldr"] = f"{total} event(s) detected across {uniq_rules}."
+
+    if not incident.get("severity"):
+        incident["severity"] = "Low"
+
+    return incident
+
 def summarize_findings(findings: List[Dict[str,Any]]) -> Dict[str,Any]:
     """Let the model request local queries, then return one JSON incident."""
+    if not findings:
+        return {
+            "tldr": "No findings in the selected window.",
+            "severity": "Low",
+            "evidence": [],
+            "hypotheses": [],
+            "next_steps": [],
+            "candidate_actions": [],
+            "generator": "openai+tools",
+        }
+
     if not API_KEY:
         reason = "OPENAI_API_KEY missing"
         if DEBUG: print("[DEBUG][openai tools] precheck failed ->", reason)
@@ -209,9 +300,7 @@ def summarize_findings(findings: List[Dict[str,Any]]) -> Dict[str,Any]:
             "reason": reason
         }
 
-    # scrub + compact BEFORE cloud
     compact = _compact_findings(scrub(findings))  # scrub PII, then compact
-    # hard cap bytes of the JSON seed
     seed_json = json.dumps(compact)
     if len(seed_json) > MAX_PROMPT_CHARS:
         seed_json = seed_json[:MAX_PROMPT_CHARS] + "…"
@@ -222,8 +311,11 @@ def summarize_findings(findings: List[Dict[str,Any]]) -> Dict[str,Any]:
       "required": ["tldr","severity","evidence","next_steps","candidate_actions"]
     }
 
+    allowed_str = ", ".join(ALLOW_INDICES) if ALLOW_INDICES else "winlogbeat-*"
     system = (
       "You are TinySocs' analyst. You may call tools to run LOCAL queries. "
+      f"When calling tools, the ONLY allowed indices are: {allowed_str}. "
+      "Do not invent index names; if unsure, skip tools and proceed. "
       "After at most 2 tool calls, return ONE JSON object matching the JSON schema. "
       "Evidence must be a flat list of small objects (ip, ip_rdns, user, count, rule). "
       "Do not include large nested arrays or raw event dumps. "
@@ -272,7 +364,6 @@ def summarize_findings(findings: List[Dict[str,Any]]) -> Dict[str,Any]:
               "model": MODEL,
               "messages": messages,
               "temperature": 0.0,
-              "tool_choice": "none",
               "response_format": {"type":"json_object"}
             }
             r_final = http.post("https://api.openai.com/v1/chat/completions", json=body_final, headers=headers)
@@ -307,12 +398,13 @@ def summarize_findings(findings: List[Dict[str,Any]]) -> Dict[str,Any]:
                     "reason": reason
                 }
             obj = _coerce_incident(obj, findings)
+            obj = _enforce_consistency(obj, findings)
             obj["generator"] = "openai+tools"
+            _persist_incident(obj)
             return obj
 
         # -------- tool path: allow up to 2 tool rounds, then force JSON --------
         for _ in range(2):
-            # run all requested tools
             tool_msgs = []
             for tc in tool_calls:
                 name = tc["function"]["name"]
@@ -338,12 +430,10 @@ def summarize_findings(findings: List[Dict[str,Any]]) -> Dict[str,Any]:
                 })
             messages.extend(tool_msgs)
 
-            # ask for final JSON (no more tools)
             body2 = {
               "model": MODEL,
               "messages": messages,
               "temperature": 0.0,
-              "tool_choice": "none",
               "response_format": {"type":"json_object"}
             }
             r2 = http.post("https://api.openai.com/v1/chat/completions", json=body2, headers=headers)
@@ -364,7 +454,6 @@ def summarize_findings(findings: List[Dict[str,Any]]) -> Dict[str,Any]:
             msg2 = r2.json()["choices"][0]["message"]
             messages.append(msg2)
 
-            # if it still wants tools (rare), loop once more; else we’re done
             tool_calls = msg2.get("tool_calls") or []
             if not tool_calls:
                 final_text = (msg2.get("content") or "{}").strip() or "{}"
@@ -383,10 +472,12 @@ def summarize_findings(findings: List[Dict[str,Any]]) -> Dict[str,Any]:
                         "reason": reason
                     }
                 obj = _coerce_incident(obj, findings)
+                obj = _enforce_consistency(obj, findings)
                 obj["generator"] = "openai+tools"
+                _persist_incident(obj)
                 return obj
 
-        # If we exit the loop still asking for tools, fail-soft:
+        # Loop exit still wanting tools -> fail-soft
         reason = "tool-call loop limit"
         if DEBUG: print("[DEBUG][openai tools] loop limit ->", reason)
         return {

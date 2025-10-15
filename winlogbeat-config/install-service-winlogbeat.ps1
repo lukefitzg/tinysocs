@@ -1,80 +1,94 @@
 <#
-.SYNOPSIS
-    Installs Winlogbeat Windows service.
-.DESCRIPTION
-    Installs Winlogbeat Windows service, the data and logs path are
-    set as part of the command for the service.
-
-    For Winlogbeat < 9.1.0 the data path used to be
-    'C:\ProgramData\Winlogbeat' (set from '$env:ProgramData) for >= 9.1.0
-    the new default is 'C:\Program Files\Winlogbeat-Data'
-    (set from '$env:ProgramFiles').
-
-    If the legacy data path exists, then the script will move it to the new place,
-    regardless of Winlogbeat version.
-
-    You can pass ForceLegacyPath to use the legacy data path.
-
-    If the Windows service already exists, it will be stopped and deleted, then
-    the new one will be installed.
+Installs/refreshes the Winlogbeat Windows service.
+- Self-elevates if not admin
+- Stops/deletes existing service if present (ignore if missing)
+- Points service to C:\tinysocs\winlogbeat-bin
 #>
 
-Param (
-  # Force the usage of the legacy ( < 9.1.0) data path.
+param(
   [switch]$ForceLegacyPath
-
 )
 
-# Delete and stop the service if it already exists.
-if (Get-Service winlogbeat -ErrorAction SilentlyContinue) {
-  Stop-Service winlogbeat
-  (Get-Service winlogbeat).WaitForStatus('Stopped')
-  Start-Sleep -s 1
-  sc.exe delete winlogbeat
+$ErrorActionPreference = "Stop"
+
+function Test-IsAdmin {
+  $id = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+  $p  = New-Object System.Security.Principal.WindowsPrincipal($id)
+  return $p.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-# We need to support a new default path for the data folder, ideally
-# automatically detecting if the old one is used and keeping it
+# Self-elevate if needed
+if (-not (Test-IsAdmin)) {
+  Write-Host "Re-launching elevated to install the service..."
+  Start-Process powershell -Verb RunAs -ArgumentList @(
+    "-NoProfile","-ExecutionPolicy","Bypass",
+    "-File", $MyInvocation.MyCommand.Path
+  )
+  exit 0
+}
 
-$WorkDir = Split-Path $MyInvocation.MyCommand.Path
-$BasePath = "$env:ProgramFiles\Winlogbeat-Data"
-$LegacyDataPath = "$env:PROGRAMDATA\Winlogbeat"
+# Paths (bin = this script's folder)
+$WorkDir        = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ExePath        = Join-Path $WorkDir "winlogbeat.exe"
+$CfgPath        = Join-Path $WorkDir "winlogbeat.yml"
 
-# Move the data path from ProgramData to Program Files
-If ($ForceLegacyPath -eq $True) {
-  $BasePath = $LegacyDataPath
-} elseif (Test-Path $LegacyDataPath) {
-    Write-Output "Files found at $LegacyDataPath, moving them to $BasePath"
-  Try {
+if (-not (Test-Path $ExePath)) { throw "Missing $ExePath" }
+if (-not (Test-Path $CfgPath)) { throw "Missing $CfgPath" }
+
+# Data paths (new vs legacy)
+$BasePath       = "$env:ProgramFiles\Winlogbeat-Data"
+$LegacyDataPath = "$env:ProgramData\Winlogbeat"
+if ($ForceLegacyPath) { $BasePath = $LegacyDataPath }
+elseif (Test-Path $LegacyDataPath) {
+  try {
+    Write-Host "Migrating legacy data: $LegacyDataPath -> $BasePath"
     Move-Item $LegacyDataPath $BasePath -ErrorAction Stop
-  } Catch {
-    Write-Output "Could not move $LegacyDataPath to $BasePath"
-    Write-Output "make sure the folder can be moved or set -ForceLegacyPath"
-    Write-Output "to force using $LegacyDataPath as the data path"
-    Throw $_.Exception
+  } catch {
+    Write-Warning "Could not move legacy data; continuing with legacy path"
+    $BasePath = $LegacyDataPath
   }
 }
+$HomePath  = Join-Path $BasePath "Winlogbeat"
+$LogsPath  = Join-Path $HomePath "logs"
+New-Item -ItemType Directory -Force -Path $HomePath,$LogsPath | Out-Null
 
-$HomePath = "$BasePath\Winlogbeat"
-$LogsPath = "$HomePath\logs"
-$KeystorePath = "$WorkDir\data\Winlogbeat.keystore"
+# Stop & delete if exists (ignore errors)
+$svc = Get-Service -Name winlogbeat -ErrorAction SilentlyContinue
+if ($svc) {
+  Write-Host "Stopping existing service..."
+  try {
+    Stop-Service winlogbeat -Force -ErrorAction SilentlyContinue
+    $svc.WaitForStatus('Stopped','00:00:10') | Out-Null
+  } catch { }
+  Start-Sleep -Seconds 1
+  try { sc.exe delete winlogbeat | Out-Null } catch { }
+}
 
-$FullCmd = "`"$WorkDir\winlogbeat.exe`" " +
+# Build service command
+$KeystorePath = Join-Path $WorkDir "data\Winlogbeat.keystore"
+$FullCmd = "`"$ExePath`" " +
            "--environment=windows_service " +
-           "-c `"$WorkDir\winlogbeat.yml`" " +
+           "-c `"$CfgPath`" " +
            "--path.home `"$WorkDir`" " +
            "--path.data `"$HomePath`" " +
            "--path.logs `"$LogsPath`" " +
-           "-E keystore.path=`"$KeyStorePath`" " +
+           "-E keystore.path=`"$KeystorePath`" " +
            "-E logging.files.redirect_stderr=true"
 
-# Create the new service.
-New-Service -name winlogbeat `
-  -displayName Winlogbeat `
-  -binaryPathName $FullCmd
+Write-Host "Creating service..."
+New-Service -Name winlogbeat `
+  -DisplayName "Winlogbeat" `
+  -BinaryPathName $FullCmd `
+  -StartupType Automatic | Out-Null
 
-# Attempt to set the service to delayed start using sc config.
-Try {
-  Start-Process -FilePath sc.exe -ArgumentList 'config winlogbeat start= delayed-auto'
-}
-Catch { Write-Host -f red "An error occurred setting the service to delayed start." }
+# Delayed start (best for boot)
+try { sc.exe config winlogbeat start= delayed-auto | Out-Null } catch {}
+
+Write-Host "Starting service..."
+Start-Service winlogbeat
+(Get-Service winlogbeat).WaitForStatus('Running','00:00:10') | Out-Null
+
+Write-Host "Winlogbeat service is Running."
+Write-Host "Bin: $ExePath"
+Write-Host "Cfg: $CfgPath"
+Write-Host "Data: $HomePath"

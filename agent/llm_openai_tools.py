@@ -8,7 +8,7 @@ from llm_schema import SCHEMA
 from redact import scrub
 from agent.tools import search_kql, aggregate, propose_rule, stage_action
 from netutil import is_loopback
-from adapters.opensearch_client import OSClient  # for optional persistence
+from tinysocs.agent.adapters.opensearch_client import OSClient  # for optional persistence
 
 API_KEY = os.getenv("OPENAI_API_KEY")
 MODEL   = os.getenv("OPENAI_MODEL", "gpt-4o-mini")

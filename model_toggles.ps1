@@ -878,3 +878,24 @@ function Get-WinlogbeatHealth {
     RecentWarnError = $warnErr.message -join "`n"
   }
 }
+
+function Start-TinySocsNodeApi { param([int]$Port=8081)
+  if (-not $env:NODE_ID) { $env:NODE_ID="node-1" }
+  if (-not $env:NODE_SECRET) { $env:NODE_SECRET="dev-secret-change-me" }
+  $env:PORT="$Port"
+  Write-Host "Starting Node API on port $Port (NODE_ID=$env:NODE_ID)..."
+  Start-Process -FilePath "python" -ArgumentList "tinysocs\api\node.py" -NoNewWindow
+}
+
+function Start-TinySocsMaster {
+  param([string]$Nodes="http://localhost:8081,http://localhost:8082",
+        [string]$Rules="auth_failed_burst,ps_script_block",
+        [string]$Window="15m",
+        [string]$Host="")
+  $env:TINYSOCS_NODES=$Nodes
+  $env:MASTER_SHARED_SECRET=$env:NODE_SECRET
+  $args=@("--rules",$Rules,"--window",$Window); if($Host){$args+=@("--host",$Host)}
+  Write-Host "Running master against $Nodes..."
+  python "tinysocs\orchestrator\master.py" @args
+}
+

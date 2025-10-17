@@ -1,6 +1,6 @@
 # agent/tools.py
 from typing import Dict, Any
-from adapters.select import make_client
+from tinysocs.agent.adapters.select import make_client
 from netutil import is_loopback
 import os
 

@@ -6,8 +6,8 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-from adapters.select import make_client
-from enrich import rdns
+from tinysocs.agent.adapters.select import make_client
+from tinysocs.agent.enrich import rdns
 
 client = make_client()
 

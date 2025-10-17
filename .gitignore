@@ -11,6 +11,15 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# Large/vendor (do not version winlogbeat vendor dir)
-winlogbeat/
+# Large/vendor (local-only)
+winlogbeat-bin/
+sysmon-bin/
 *.zip
+
+# Keep all integration code tracked
+!integrations/
+!integrations/**
+
+
+# Vendor binaries (ignored)
+winlogbeat-bin/

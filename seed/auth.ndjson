@@ -1,6 +1,0 @@
-{ "index": { "_index": "logs-auth" } }
-{ "@timestamp": "2025-10-08T20:00:00Z", "event":{"category":"authentication","outcome":"failure"}, "user":{"name":"alice"}, "source":{"ip":"203.0.113.10"} }
-{ "index": { "_index": "logs-auth" } }
-{ "@timestamp": "2025-10-08T20:01:30Z", "event":{"category":"authentication","outcome":"failure"}, "user":{"name":"alice"}, "source":{"ip":"203.0.113.10"} }
-{ "index": { "_index": "logs-auth" } }
-{ "@timestamp": "2025-10-08T20:02:15Z", "event":{"category":"authentication","outcome":"failure"}, "user":{"name":"bob"},   "source":{"ip":"198.51.100.77"} }

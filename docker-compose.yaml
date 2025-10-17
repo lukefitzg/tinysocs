@@ -2,6 +2,7 @@ services:
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.14.3
     container_name: ts-es
+    restart: unless-stopped
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
@@ -18,6 +19,7 @@ services:
   kibana:
     image: docker.elastic.co/kibana/kibana:8.14.3
     container_name: ts-kibana
+    restart: unless-stopped
     environment:
       - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
     ports: ["5601:5601"]
@@ -28,6 +30,7 @@ services:
   opensearch:
     image: opensearchproject/opensearch:2.13.0
     container_name: ts-opensearch
+    restart: unless-stopped
     environment:
       - discovery.type=single-node
       - bootstrap.memory_lock=true
@@ -40,17 +43,18 @@ services:
       - "9201:9200"
     ulimits:
       memlock: { soft: -1, hard: -1 }
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
     healthcheck:
       test: ["CMD-SHELL", "curl -skf -u admin:$${OPENSEARCH_INITIAL_ADMIN_PASSWORD} https://localhost:9200/_cluster/health"]
       interval: 15s
       timeout: 5s
       retries: 60
-    volumes:
-      - opensearch-data:/usr/share/opensearch/data
 
   opensearch-dashboards:
     image: opensearchproject/opensearch-dashboards:2.13.0
     container_name: ts-opensearch-dashboards
+    restart: unless-stopped
     environment:
       - OPENSEARCH_HOSTS=["https://opensearch:9200"]
       - OPENSEARCH_USERNAME=admin
@@ -63,29 +67,28 @@ services:
         condition: service_healthy
 
   logstash:
-    # ⬇️ Build a custom Logstash image that includes the OpenSearch output plugin
     build:
-      context: .
-      dockerfile: logstash.Dockerfile
+      context: ./integrations/winlogbeat/logstash
+      dockerfile: Dockerfile
+    image: tinysocs-logstash
     container_name: ts-logstash
+    restart: unless-stopped
     environment:
       - LS_JAVA_OPTS=-Xms512m -Xmx512m
       - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_INITIAL_ADMIN_PASSWORD}
     ports:
       - "5044:5044"
     volumes:
-      - ./logstash/pipeline:/usr/share/logstash/pipeline:ro
+      - ./integrations/winlogbeat/logstash/pipeline:/usr/share/logstash/pipeline:ro
+      - ./integrations/winlogbeat/logstash/config/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf localhost:9600/_node/pipelines | grep -q running"]
+      test: ["CMD-SHELL", "curl -sf localhost:9600/_node/pipelines | grep -q '\"main\"' && bash -lc 'exec 3<>/dev/tcp/127.0.0.1/5044'"]
       interval: 10s
       timeout: 5s
       retries: 60
     depends_on:
       opensearch:
         condition: service_healthy
-      elasticsearch:
-        condition: service_healthy
-    # ⬇️ So Logstash can also hit host-mapped 9200/9201 if you prefer that in the pipeline
     extra_hosts:
       - "host.docker.internal:host-gateway"
 

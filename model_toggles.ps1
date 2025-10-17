@@ -6,6 +6,11 @@ Dot-source this file in your PowerShell session, e.g.:
 Nothing auto-runs when dot-sourced.
 -------------------------------------------------------------------------------#>
 
+# Where Logstash pipeline template files live (OpenSearch/Elastic/dual variants)
+# We keep everything under integrations\winlogbeat\logstash\pipeline\templates
+$Global:TinySOCS_TemplateRoot = Join-Path $PSScriptRoot 'integrations\winlogbeat\logstash\pipeline\templates'
+
+
 # ========================= LLM (model) toggles =========================
 function Use-OpenAI {
   $env:LLM_MODE = "openai"
@@ -151,6 +156,11 @@ function Switch-LogstashOutput {
     [string]$Target,
     [string]$RepoRoot = "C:\tinysocs\tinysocs"
   )
+
+  if (-not $Global:TinySOCS_TemplateRoot) {
+    $Global:TinySOCS_TemplateRoot = Join-Path $RepoRoot 'integrations\winlogbeat\logstash\pipeline\templates'
+  }
+
   $tplMap = @{
     elastic    = "winlogbeat.elastic.conf"
     opensearch = "winlogbeat.os.conf"
@@ -159,8 +169,8 @@ function Switch-LogstashOutput {
   $tpl = $tplMap[$Target]
   if (-not $tpl) { throw "Unknown target '$Target'." }
 
-  $src = Join-Path $RepoRoot "logstash\pipeline\$tpl"
-  $dst = Join-Path $RepoRoot "logstash\pipeline\winlogbeat.conf"
+  $src = Join-Path $Global:TinySOCS_TemplateRoot $tpl
+  $dst = Join-Path $RepoRoot 'integrations\winlogbeat\logstash\pipeline\winlogbeat.conf'
   if (!(Test-Path $src)) { throw "Missing template: $src" }
 
   Copy-Item $src $dst -Force

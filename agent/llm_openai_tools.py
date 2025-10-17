@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from llm_schema import SCHEMA
 from redact import scrub
-from tools import search_kql, aggregate, propose_rule, stage_action
+from agent.tools import search_kql, aggregate, propose_rule, stage_action
 from netutil import is_loopback
 from adapters.opensearch_client import OSClient  # for optional persistence
 

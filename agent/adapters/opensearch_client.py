@@ -1,4 +1,6 @@
-# agent/adapters/opensearch_client.py
+# tinysocs/agent/adapters/opensearch_client.py
+from __future__ import annotations
+
 import os, ssl, time
 import typing as t
 from urllib.parse import urlparse
@@ -40,10 +42,9 @@ class OpenSearchClient:
         self._cfg = dict(url=url, user=user, pwd=pwd, verify=verify, timeout=timeout)
         self._mk_client()
 
-        # Prove connectivity early (clear error if TLS/settings are off)
+        # Prove connectivity early
         info = self.os.info()
         ver  = info.get("version", {})
-        # Friendlier banner that reflects ES vs OS
         p = urlparse(url)
         base = f"{p.scheme}://{p.hostname or 'localhost'}:{p.port or (443 if (p.scheme or 'https')=='https' else 80)}"
         dist = ver.get("distribution") or "elasticsearch"
@@ -66,15 +67,14 @@ class OpenSearchClient:
             "scheme": p.scheme or "https",
         }
 
-        # Requests-backed connection; close after each request; force TLS 1.2; tiny pool.
         self.os = OpenSearch(
             hosts=[host_cfg],
             http_auth=(user, pwd),
             use_ssl=(p.scheme == "https"),
             verify_certs=verify,
-            ssl_assert_hostname=verify,          # assert only when verifying
+            ssl_assert_hostname=verify,
             ssl_show_warn=False,
-            ssl_version=ssl.PROTOCOL_TLSv1_2,    # important on Windows + self-signed
+            ssl_version=ssl.PROTOCOL_TLSv1_2,
             connection_class=RequestsHttpConnection,
             headers={"connection": "close", "user-agent": "tinysocs/0.1"},
             http_compress=False,
@@ -88,7 +88,7 @@ class OpenSearchClient:
         for attempt in (1, 2):
             try:
                 return fn(*args, **kwargs)
-            except (ReqConnError, ReqReadTimeout, ProtocolError, OSConnError, OSTimeout) as e:
+            except (ReqConnError, ReqReadTimeout, ProtocolError, OSConnError, OSTimeout):
                 if attempt == 2:
                     raise
                 print("[opensearch] transient connection error; recreating client and retrying once…", flush=True)
@@ -97,18 +97,41 @@ class OpenSearchClient:
 
     # ---------- API ----------
 
-    def search_kql(self, index: str, kql: str, size: int = 100) -> t.List[dict]:
+    def search_kql(
+        self,
+        index: str,
+        kql: str,
+        size: int = 100,
+        *,
+        track_total_hits: bool | int = False,
+        source: bool = True,
+    ) -> t.Union[t.List[dict], dict, int]:
         """
-        Route KQL-ish text via query_string; good enough for our simple rules.
+        Route KQL-ish text via query_string.
+
+        When size == 0: returns {"total": <int>} (count-only).
+        Otherwise: returns a list of docs (each doc is the _source dict).
         """
         body = {
             "query": {"query_string": {"query": kql}},
-            "size": size,
-            "_source": True,
-            "sort": [{"@timestamp": {"order": "desc"}}],
+            "size": int(size),
+            "track_total_hits": bool(track_total_hits),
+            "_source": bool(source),
         }
+        # sort only when fetching docs
+        if size and size > 0:
+            body["sort"] = [{"@timestamp": {"order": "desc"}}]
+
         resp = self._with_retry(self.os.search, index=index, body=body)
-        return [h.get("_source", {}) for h in resp.get("hits", {}).get("hits", [])]
+        if not size or size == 0:
+            total = resp.get("hits", {}).get("total", 0)
+            if isinstance(total, dict):
+                total = total.get("value", 0)
+            return {"total": int(total)}
+
+        hits = resp.get("hits", {}).get("hits", [])
+        # return _source dicts for compactness
+        return [h.get("_source", {}) for h in hits]
 
     def aggregate(self, index: str, dsl: dict) -> dict:
         resp = self._with_retry(self.os.search, index=index, body=dsl)

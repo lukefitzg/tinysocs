@@ -41,7 +41,7 @@ class ElasticClient:
     used elsewhere in TinySOCS.
 
     Methods:
-      - search_kql(index, kql, size=100) -> List[dict]
+      - search_kql(index, kql, size=100, *, track_total_hits=False, source=True)
       - aggregate(index, dsl) -> dict
       - index_doc(index, doc) -> dict
     """
@@ -63,7 +63,7 @@ class ElasticClient:
         # HTTP client: disable keep-alive, set explicit timeouts, honor TLS verify
         self.http = httpx.Client(
             verify=self.verify,
-            timeout=httpx.Timeout(connect=5.0, read=self.timeout, write=self.timeout),
+            timeout=httpx.Timeout(timeout, connect=5.0, read=timeout, write=timeout),
             limits=httpx.Limits(max_keepalive_connections=0, max_connections=10),
             headers={"Connection": "close"},
             auth=self.auth,
@@ -72,23 +72,43 @@ class ElasticClient:
     def _index(self, index: str | None) -> str:
         return index or self.default_index
 
-    def search_kql(self, index: str, kql: str, size: int = 100) -> t.List[dict]:
+    def search_kql(
+        self,
+        index: str,
+        kql: str,
+        size: int = 100,
+        *,
+        track_total_hits: bool | int = False,
+        source: bool = True,
+    ) -> t.Union[t.List[dict], dict, int]:
         """
         Route simplified “KQL-like” text through query_string.
         For our rules (field:value AND field2:value) it works on ES & OS.
-        Returns a list of _source dicts (node code tolerates both _source or flat docs).
+
+        When size == 0: returns {"total": <int>} (count-only).
+        Otherwise: returns a list of _source dicts.
         """
-        body = {
+        body: dict = {
             "query": {"query_string": {"query": kql}},
-            "size": size,
-            "_source": True,
-            "sort": [{"@timestamp": {"order": "desc"}}],
+            "size": int(size),
+            "track_total_hits": bool(track_total_hits),
+            "_source": bool(source),
         }
+        if size and size > 0:
+            body["sort"] = [{"@timestamp": {"order": "desc"}}]
+
         url = f"{self.base_url}/{self._index(index)}/_search"
         r = self.http.post(url, json=body)
         r.raise_for_status()
-        hits = r.json().get("hits", {}).get("hits", [])
-        # Return _source dicts to keep payloads light; node code uses d or d["_source"] safely
+        j = r.json()
+
+        if not size or size == 0:
+            total = j.get("hits", {}).get("total", 0)
+            if isinstance(total, dict):
+                total = total.get("value", 0)
+            return {"total": int(total)}
+
+        hits = j.get("hits", {}).get("hits", [])
         return [h.get("_source", {}) for h in hits]
 
     def aggregate(self, index: str, dsl: dict) -> dict:

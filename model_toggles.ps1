@@ -10,7 +10,6 @@ Nothing auto-runs when dot-sourced.
 # We keep everything under integrations\winlogbeat\logstash\pipeline\templates
 $Global:TinySOCS_TemplateRoot = Join-Path $PSScriptRoot 'integrations\winlogbeat\logstash\pipeline\templates'
 
-
 # ========================= LLM (model) toggles =========================
 function Use-OpenAI {
   $env:LLM_MODE = "openai"
@@ -27,6 +26,30 @@ function Use-Ollama {
   $env:OFFLINE_LLM_URL   = $Url
   $env:OFFLINE_LLM_MODEL = $Model
   Write-Host ("[TinySOCS] Using Ollama (local) mode -> {0} ({1})" -f $Url, $Model)
+}
+
+# ========================= Import .env variables =========================
+function Import-DotEnv {
+  param([string]$Path = ".env")
+  if (!(Test-Path $Path)) { return }
+  Get-Content $Path | ForEach-Object {
+    $line = $_.Trim()
+    if ($line -eq "" -or $line.StartsWith("#")) { return }
+
+    # allow KEY="value with = signs" style
+    $eq = $line.IndexOf("=")
+    if ($eq -lt 1) { return }
+    $name  = $line.Substring(0,$eq).Trim()
+    $value = $line.Substring($eq+1).Trim()
+
+    # strip optional surrounding quotes
+    if ($value.StartsWith('"') -and $value.EndsWith('"')) { $value = $value.Substring(1, $value.Length-2) }
+    elseif ($value.StartsWith("'") -and $value.EndsWith("'")) { $value = $value.Substring(1, $value.Length-2) }
+
+    if (-not [string]::IsNullOrWhiteSpace($name)) {
+      Set-Item -Path ("Env:{0}" -f $name) -Value $value
+    }
+  }
 }
 
 # ===================== SIEM target (what detections hit) =====================
@@ -899,3 +922,261 @@ function Start-TinySocsMaster {
   python "tinysocs\orchestrator\master.py" @args
 }
 
+# ===============================
+# Federation helpers (Phase 3)
+# ===============================
+
+# Robust UTC HMAC header generator for quick local tests
+function New-TinySocsAuthHeaders {
+  param([string]$Secret)
+  $ts = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+  $hmac = New-Object System.Security.Cryptography.HMACSHA256
+  $hmac.Key = [Text.Encoding]::UTF8.GetBytes($Secret)
+  $sigBytes = $hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes([string]$ts))
+  $sigHex = -join ($sigBytes | % { $_.ToString("x2") })
+  @{ "X-TinySOCS-Timestamp" = [string]$ts; "X-TinySOCS-Signature" = "sha256=$sigHex" }
+}
+
+function Use-Role {
+  param(
+    [ValidateSet('solo','node','master')] [string]$Role,
+    [string]$Backend = 'opensearch'  # or 'elastic'
+  )
+  $env:ROLE = $Role
+  if ($Backend -eq 'opensearch') {
+    Route-To-OpenSearch    # your existing helper; -Full optional
+  } else {
+    Route-To-Elastic
+  }
+  Ensure-TinySOCS-Agents   # your existing helper
+  Write-Host "ROLE set to $Role (backend: $Backend)"
+}
+
+# Start a Node API on a given port + node_id (reads .env automatically via python-dotenv)
+function Start-TinySocs-Node {
+  param(
+    [int]$Port = 8081,
+    [string]$NodeId = "node-$Port",
+    [string]$Secret = "dev-secret-change-me"
+  )
+  Set-Location $PSScriptRoot  # tinysocs/tinysocs
+
+  # NEW: load .env into the PowerShell session first
+  Import-DotEnv
+
+  $env:ROLE            = "node"
+  $env:NODE_ID         = $NodeId
+  $env:NODE_SECRET     = $Secret
+  $env:PORT            = "$Port"
+
+  # SIEM env (defaults ok if .env is present; override if you need)
+  if (-not $env:SIEM_BACKEND)    { $env:SIEM_BACKEND = "opensearch" }
+  if (-not $env:SIEM_URL)        { $env:SIEM_URL     = "https://localhost:9201" }
+  if (-not $env:SIEM_USER)       { $env:SIEM_USER    = "admin" }
+  if (-not $env:SIEM_PASS)       { $env:SIEM_PASS    = "ChangeMe123!" }
+  if (-not $env:SIEM_SSL_VERIFY) { $env:SIEM_SSL_VERIFY = "false" }
+
+  # Make sure the backend is up (reuse your toggles)
+  Show-TinySOCS-Targets | Out-Null
+
+  Write-Host "[node] starting $NodeId on :$Port"
+  python .\api\node.py
+}
+
+# Start N local nodes on a sequence of ports (8081, 8082, …)
+function Start-TinySocs-MultiNode {
+  param(
+    [int]$Count = 2,
+    [int]$StartPort = 8081,
+    [string]$Secret = "dev-secret-change-me"
+  )
+  for ($i=0; $i -lt $Count; $i++) {
+    $port = $StartPort + $i
+    Start-Process -WindowStyle Minimized powershell -ArgumentList "-NoExit","-Command",
+      "Set-Location `"$PSScriptRoot`"; . .\.venv\Scripts\Activate.ps1; ``
+       . .\model_toggles.ps1; Import-DotEnv; ``
+       `$env:NODE_SECRET='$Secret'; `$env:NODE_ID='node-$port'; `$env:PORT='$port'; ``
+       python .\api\node.py"
+    Start-Sleep -Milliseconds 500
+  }
+  Write-Host "[multinode] launched $Count nodes starting at $StartPort"
+}
+
+# Run the master aggregator once (fan-out + merge + summarize + persist)
+function Run-TinySocs-Master {
+  param(
+    [string]$Nodes = "http://localhost:8081,http://localhost:8082",
+    [string]$Secret = "dev-secret-change-me",
+    [string]$Rules  = "auth_failed_burst,ps_script_block",
+    [string]$Window = "15m"
+  )
+  Set-Location $PSScriptRoot
+
+  # NEW: load .env so shell env has OPENAI_API_KEY etc.
+  Import-DotEnv
+
+  $env:ROLE = "master"
+  $env:TINYSOCS_NODES       = $Nodes
+  $env:MASTER_SHARED_SECRET = $Secret
+  $env:REQUEST_TIMEOUT_SEC  = "20"
+
+  # LLM config (reads .env if present; override if needed)
+  if (-not $env:LLM_MODE)       { $env:LLM_MODE = "openai" }
+  if (-not $env:OPENAI_API_KEY) { Write-Warning "OPENAI_API_KEY not set; summary may fallback" }
+
+  # SIEM to persist unified case (match your solo settings)
+  if (-not $env:SIEM_BACKEND)    { $env:SIEM_BACKEND = "opensearch" }
+  if (-not $env:SIEM_URL)        { $env:SIEM_URL     = "https://localhost:9201" }
+  if (-not $env:SIEM_USER)       { $env:SIEM_USER    = "admin" }
+  if (-not $env:SIEM_PASS)       { $env:SIEM_PASS    = "ChangeMe123!" }
+  if (-not $env:SIEM_SSL_VERIFY) { $env:SIEM_SSL_VERIFY = "false" }
+
+  Write-Host "[master] fan-out to $Nodes; rules=$Rules; window=$Window"
+  python .\orchestrator\master.py --rules $Rules --window $Window
+}
+
+# Keep solo mode for local single-node runs (your existing path)
+function Run-TinySocs-Solo {
+  param([switch]$Noise)
+  Set-Location $PSScriptRoot
+  Use-Role -Role solo -Backend opensearch
+  if ($Noise) { Invoke-TinySOCS-TestNoise -All }
+  python -u -m agent.main
+}
+
+# ===================== NEW: Requirements + Index helpers =====================
+
+function Ensure-PythonRequirements {
+  param([string]$RepoRoot = $PSScriptRoot)
+  Push-Location $RepoRoot
+  try {
+    $req = Join-Path $RepoRoot 'requirements.txt'
+    if (Test-Path $req) {
+      Write-Host "[TinySOCS] Ensuring Python requirements..." -ForegroundColor DarkCyan
+      python -m pip install --upgrade pip | Out-Null
+      python -m pip install -r $req
+    } else {
+      Write-Host "[TinySOCS] requirements.txt not found; skipping pip install." -ForegroundColor DarkYellow
+    }
+  } finally { Pop-Location }
+}
+
+function Ensure-SIEM-Index {
+  param(
+    [string]$Index = "siem_index"
+  )
+  if (-not $env:SIEM_URL) { Write-Warning "[TinySOCS] SIEM_URL not set; skipping index check."; return }
+  if (-not $env:SIEM_USER -or -not $env:SIEM_PASS) { Write-Warning "[TinySOCS] SIEM creds not set; skipping index check."; return }
+
+  $auth = "$($env:SIEM_USER):$($env:SIEM_PASS)"
+  $url  = "$($env:SIEM_URL.TrimEnd('/'))/$Index"
+  $isHttps = $env:SIEM_URL -like "https*"
+  $insecure = $isHttps -and (($env:SIEM_SSL_VERIFY -as [string]).ToLower() -eq "false")
+
+  $curlArgs = @()
+  if ($insecure) { $curlArgs += "-k" }
+  $curlArgs += @("-s","-u", $auth, $url)
+
+  $null = & curl.exe @curlArgs
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "[TinySOCS] Creating SIEM index '$Index'..." -ForegroundColor DarkCyan
+    $curlArgs = @()
+    if ($insecure) { $curlArgs += "-k" }
+    $curlArgs += @("-s","-u", $auth, "-X","PUT", $url)
+    $null = & curl.exe @curlArgs
+  } else {
+    Write-Host "[TinySOCS] SIEM index '$Index' present." -ForegroundColor Green
+  }
+}
+
+# ===================== NEW: Core starter + four primary toggles ===============
+
+function Start-TinySOCS {
+  param(
+    [ValidateSet('opensearch','elastic')] [string]$Backend = 'opensearch',
+    [switch]$Full,                                # dashboards/kibana
+    [ValidateSet('solo','node','master')] [string]$Role = 'solo',
+    [switch]$LocalLLM,                             # use ollama instead of openai
+    [int]$NodePort = 8081,                         # when Role=node
+    [string]$Nodes = "http://localhost:8081,http://localhost:8082",  # when Role=master
+    [string]$Rules = "auth_failed_burst,ps_script_block",
+    [string]$Window = "15m"
+  )
+
+  Set-Location $PSScriptRoot
+
+  # NEW: load .env first so env vars are present in this shell
+  Import-DotEnv
+
+  # LLM default is OpenAI unless LocalLLM is set
+  if ($LocalLLM) { Use-Ollama } else { Use-OpenAI }
+
+  # Start backend stack (lean/full)
+  if ($Backend -eq 'opensearch') { Route-To-OpenSearch -Full:$Full }
+  else { Route-To-Elastic -Full:$Full }
+
+  # Ensure agents/services
+  Ensure-TinySOCS-Agents
+
+  # Make sure Python deps are installed (idempotent)
+  Ensure-PythonRequirements
+
+  # Ensure unified case index exists for persist path
+  Ensure-SIEM-Index -Index "siem_index"
+
+  # Launch requested role
+  switch ($Role) {
+    'solo'   { Write-Host "[TinySOCS] Running SOLO agent loop..." -ForegroundColor Cyan; python -u -m agent.main }
+    'node'   { Start-TinySocs-Node -Port $NodePort }
+    'master' { Run-TinySocs-Master -Nodes $Nodes -Rules $Rules -Window $Window }
+  }
+}
+
+# --- The four basic toggles you asked for ---
+function Start-TinySOCS-OpenSearchLean {
+  param(
+    [ValidateSet('solo','node','master')] [string]$Role = 'solo',
+    [switch]$LocalLLM,
+    [int]$NodePort = 8081,
+    [string]$Nodes = "http://localhost:8081,http://localhost:8082",
+    [string]$Rules = "auth_failed_burst,ps_script_block",
+    [string]$Window = "15m"
+  )
+  Start-TinySOCS -Backend opensearch -Full:$false -Role $Role -LocalLLM:$LocalLLM -NodePort $NodePort -Nodes $Nodes -Rules $Rules -Window $Window
+}
+
+function Start-TinySOCS-OpenSearchFull {
+  param(
+    [ValidateSet('solo','node','master')] [string]$Role = 'solo',
+    [switch]$LocalLLM,
+    [int]$NodePort = 8081,
+    [string]$Nodes = "http://localhost:8081,http://localhost:8082",
+    [string]$Rules = "auth_failed_burst,ps_script_block",
+    [string]$Window = "15m"
+  )
+  Start-TinySOCS -Backend opensearch -Full:$true -Role $Role -LocalLLM:$LocalLLM -NodePort $NodePort -Nodes $Nodes -Rules $Rules -Window $Window
+}
+
+function Start-TinySOCS-ElasticLean {
+  param(
+    [ValidateSet('solo','node','master')] [string]$Role = 'solo',
+    [switch]$LocalLLM,
+    [int]$NodePort = 8081,
+    [string]$Nodes = "http://localhost:8081,http://localhost:8082",
+    [string]$Rules = "auth_failed_burst,ps_script_block",
+    [string]$Window = "15m"
+  )
+  Start-TinySOCS -Backend elastic -Full:$false -Role $Role -LocalLLM:$LocalLLM -NodePort $NodePort -Nodes $Nodes -Rules $Rules -Window $Window
+}
+
+function Start-TinySOCS-ElasticFull {
+  param(
+    [ValidateSet('solo','node','master')] [string]$Role = 'solo',
+    [switch]$LocalLLM,
+    [int]$NodePort = 8081,
+    [string]$Nodes = "http://localhost:8081,http://localhost:8082",
+    [string]$Rules = "auth_failed_burst,ps_script_block",
+    [string]$Window = "15m"
+  )
+  Start-TinySOCS -Backend elastic -Full:$true -Role $Role -LocalLLM:$LocalLLM -NodePort $NodePort -Nodes $Nodes -Rules $Rules -Window $Window
+}

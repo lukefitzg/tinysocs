@@ -30,6 +30,16 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 # ----------------------------------------------------------------
 
+# -- .env support --
+from dotenv import load_dotenv
+_ENV_ROOT = _REPO_ROOT  # repo root (…\tinysocs)
+for candidate in (Path.cwd(), _ENV_ROOT):
+    env_file = candidate / ".env"
+    if env_file.exists():
+        load_dotenv(dotenv_path=env_file, override=False)
+        break
+# ---------------
+
 import hashlib
 import hmac
 import os

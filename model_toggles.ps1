@@ -1,14 +1,12 @@
 <# model_toggles.ps1 -----------------------------------------------------------
-LLM toggles + SIEM target toggles + Logstash routing helpers for TinySOCS.
+LLM toggles + SIEM target toggles + backend helpers for TinySOCS.
 Dot-source this file in your PowerShell session, e.g.:
   PS> Set-Location C:\tinysocs\tinysocs
   PS> . .\model_toggles.ps1
 Nothing auto-runs when dot-sourced.
--------------------------------------------------------------------------------#>
 
-# Where Logstash pipeline template files live (OpenSearch/Elastic/dual variants)
-# We keep everything under integrations\winlogbeat\logstash\pipeline\templates
-$Global:TinySOCS_TemplateRoot = Join-Path $PSScriptRoot 'integrations\winlogbeat\logstash\pipeline\templates'
+Phase 3: Logstash removed. Winlogbeat ships directly to OpenSearch.
+-------------------------------------------------------------------------------#>
 
 # ========================= LLM (model) toggles =========================
 function Use-OpenAI {
@@ -36,13 +34,11 @@ function Import-DotEnv {
     $line = $_.Trim()
     if ($line -eq "" -or $line.StartsWith("#")) { return }
 
-    # allow KEY="value with = signs" style
     $eq = $line.IndexOf("=")
     if ($eq -lt 1) { return }
     $name  = $line.Substring(0,$eq).Trim()
     $value = $line.Substring($eq+1).Trim()
 
-    # strip optional surrounding quotes
     if ($value.StartsWith('"') -and $value.EndsWith('"')) { $value = $value.Substring(1, $value.Length-2) }
     elseif ($value.StartsWith("'") -and $value.EndsWith("'")) { $value = $value.Substring(1, $value.Length-2) }
 
@@ -54,6 +50,7 @@ function Import-DotEnv {
 
 # ===================== SIEM target (what detections hit) =====================
 function Use-ElasticSIEM {
+  # Kept for legacy/testing, but not used in Phase 3 by default
   $env:SIEM_BACKEND = "elasticsearch"
   $env:SIEM_URL     = "http://localhost:9200"
   Remove-Item Env:SIEM_USER, Env:SIEM_PASS, Env:SIEM_SSL_VERIFY -ErrorAction SilentlyContinue
@@ -62,17 +59,17 @@ function Use-ElasticSIEM {
 
 function Use-OpenSearchSIEM {
   param(
-    [string]$Url  = "https://localhost:9201",
+    [string]$Url  = "https://127.0.0.1:9201",
     [string]$User = "admin",
     [string]$Pass = $env:OPENSEARCH_INITIAL_ADMIN_PASSWORD
   )
   if (-not $Pass -or $Pass -eq "") { $Pass = "ChangeMe123!" } # dev default
 
-  $env:SIEM_BACKEND = "opensearch"
-  $env:SIEM_URL     = $Url
-  $env:SIEM_USER    = $User
-  $env:SIEM_PASS    = $Pass
-  $env:SIEM_SSL_VERIFY = "false"   # self-signed demo
+  $env:SIEM_BACKEND   = "opensearch"
+  $env:SIEM_URL       = $Url
+  $env:SIEM_USER      = $User
+  $env:SIEM_PASS      = $Pass
+  $env:SIEM_SSL_VERIFY = "false"   # self-signed in dev
 
   if (-not $env:OPENSEARCH_INITIAL_ADMIN_PASSWORD) {
     $env:OPENSEARCH_INITIAL_ADMIN_PASSWORD = $Pass
@@ -81,7 +78,7 @@ function Use-OpenSearchSIEM {
   Write-Host ("[TinySOCS] Detections will query OpenSearch @ {0} (ssl verify={1})" -f $Url, $env:SIEM_SSL_VERIFY)
 }
 
-# ===================== Utilities (Docker readiness & recovery) =================
+# ===================== Docker readiness & helpers =====================
 function Test-DockerReady {
   try { $null = docker version --format '{{.Server.Version}}' 2>$null; return $LASTEXITCODE -eq 0 }
   catch { return $false }
@@ -158,57 +155,13 @@ function Invoke-ComposeSafe {
   return $out
 }
 
-# ===================== Docker/Compose helpers =====================
-function Invoke-ComposeLogstash {
-  param([string]$RepoRoot = "C:\tinysocs\tinysocs")
-  Push-Location $RepoRoot
-  try {
-    Write-Host "[TinySOCS] Building Logstash image..." -ForegroundColor DarkCyan
-    Invoke-ComposeSafe -Args @("build","logstash") | Out-Null
-
-    Write-Host "[TinySOCS] Starting Logstash service..." -ForegroundColor DarkCyan
-    Invoke-ComposeSafe -Args @("up","-d","--no-deps","logstash") | Out-Null
-    Write-Host "[TinySOCS] Logstash is (re)started." -ForegroundColor Green
-  } finally { Pop-Location }
-}
-
-# ===================== Logstash routing (ingest path) =====================
-function Switch-LogstashOutput {
-  param(
-    [ValidateSet('elastic','opensearch','dual')]
-    [string]$Target,
-    [string]$RepoRoot = "C:\tinysocs\tinysocs"
-  )
-
-  if (-not $Global:TinySOCS_TemplateRoot) {
-    $Global:TinySOCS_TemplateRoot = Join-Path $RepoRoot 'integrations\winlogbeat\logstash\pipeline\templates'
-  }
-
-  $tplMap = @{
-    elastic    = "winlogbeat.elastic.conf"
-    opensearch = "winlogbeat.os.conf"
-    dual       = "winlogbeat.dual.conf"
-  }
-  $tpl = $tplMap[$Target]
-  if (-not $tpl) { throw "Unknown target '$Target'." }
-
-  $src = Join-Path $Global:TinySOCS_TemplateRoot $tpl
-  $dst = Join-Path $RepoRoot 'integrations\winlogbeat\logstash\pipeline\winlogbeat.conf'
-  if (!(Test-Path $src)) { throw "Missing template: $src" }
-
-  Copy-Item $src $dst -Force
-  Write-Host ("[TinySOCS] Logstash routing -> {0} ({1})" -f $Target, $tpl)
-  Invoke-ComposeLogstash -RepoRoot $RepoRoot
-}
-
-# ===================== Start/Stop stacks (lean vs full) =====================
+# ===================== Backend stacks (no Logstash in Phase 3) =====================
 function Start-OpenSearchStack {
   param([switch]$Dashboards)
-  Write-Host "[TinySOCS] Starting OpenSearch (+Logstash)..." -ForegroundColor DarkCyan
+  Write-Host "[TinySOCS] Starting OpenSearch (no Logstash)..." -ForegroundColor DarkCyan
 
   Invoke-ComposeSafe -Args @("up","-d","opensearch") | Out-Null
   if (-not (Wait-ContainerHealthy -Name 'ts-opensearch' -TimeoutSec 240)) { throw "ts-opensearch did not become healthy" }
-  Invoke-ComposeSafe -Args @("up","-d","--no-deps","logstash") | Out-Null
 
   if ($Dashboards) { Invoke-ComposeSafe -Args @("up","-d","opensearch-dashboards") | Out-Null }
   else { Invoke-ComposeSafe -Args @("stop","opensearch-dashboards") | Out-Null }
@@ -222,25 +175,19 @@ function Stop-OpenSearchStack {
   Invoke-ComposeSafe -Args @("stop","opensearch","opensearch-dashboards") | Out-Null
 }
 
+# Legacy Elastic helpers (kept for completeness; not used by default)
 function Start-ElasticStack {
   param([switch]$Kibana)
-  Write-Host "[TinySOCS] Starting Elasticsearch (+Logstash)..." -ForegroundColor DarkCyan
-
+  Write-Host "[TinySOCS] Starting Elasticsearch (no Logstash path here)..." -ForegroundColor DarkCyan
   Invoke-ComposeSafe -Args @("up","-d","elasticsearch") | Out-Null
-  if (-not (Wait-ContainerHealthy -Name 'ts-es' -TimeoutSec 240)) { throw "ts-es did not become healthy" }
-  Invoke-ComposeSafe -Args @("up","-d","--no-deps","logstash") | Out-Null
-
   if ($Kibana) { Invoke-ComposeSafe -Args @("up","-d","kibana") | Out-Null }
-  else { Invoke-ComposeSafe -Args @("stop","kibana") | Out-Null }
-
-  Write-Host "[TinySOCS] Elasticsearch is healthy." -ForegroundColor Green
+  Write-Host "[TinySOCS] Elasticsearch request issued." -ForegroundColor Green
 }
 
 function Stop-ElasticStack {
   Write-Host "[TinySOCS] Stopping Elastic stack..." -ForegroundColor DarkCyan
   if (-not (Ensure-DockerReady)) { Write-Warning "[TinySOCS] Docker offline; skipping."; return }
   $null = Invoke-ComposeSafe -Args @("stop","-t","5","elasticsearch","kibana")
-
   $running = (docker ps --format "{{.Names}}" 2>$null) -join ','
   if ($running -match "ts-es" -or $running -match "ts-kibana") {
     Write-Warning "[TinySOCS] Force-killing lingering Elastic containers"
@@ -250,7 +197,7 @@ function Stop-ElasticStack {
   Write-Host "[TinySOCS] Elastic stack stopped." -ForegroundColor Green
 }
 
-# ===================== Test noise generator =====================
+# ===================== Test noise generators (messages updated) =====================
 function New-EncodedCommand {
   param([Parameter(Mandatory=$true)][string]$Command)
   $bytes = [Text.Encoding]::Unicode.GetBytes($Command)
@@ -329,7 +276,6 @@ function Invoke-TinySOCS-TestNoise {
   Invoke-TinySOCS-TestNoise -All
   Invoke-TinySOCS-TestNoise -ScriptBlock -SuspiciousPS -LOLBins
   Invoke-TinySOCS-TestNoise -SysmonBurst -SysmonCount 15
-  # (careful) Invoke-TinySOCS-TestNoise -IncludeAuthFailed -AuthTargetHost 192.168.1.10 -AuthUserName $env:USERNAME -AuthAttempts 6
 "@ | Write-Host
     return
   }
@@ -344,10 +290,10 @@ function Invoke-TinySOCS-TestNoise {
     Invoke-Noise-AuthFailed4625 -TargetHost $AuthTargetHost -UserName $AuthUserName -Attempts $AuthAttempts
   }
 
-  Write-Host "[TinySOCS] Noise generation complete. Give Logstash a few seconds to ship, then run:  python -u -m agent.main" -ForegroundColor Cyan
+  Write-Host "[TinySOCS] Noise generation complete. Winlogbeat ships directly to OpenSearch." -ForegroundColor Cyan
 }
 
-# ===================== Agent prerequisites (self-elevating + logging) =========
+# ===================== Agent prerequisites (unchanged core) =========
 $Global:TinySOCS_WinlogbeatDir  = "C:\Program Files\Winlogbeat"
 $Global:TinySOCS_WinlogbeatData = "C:\ProgramData\winlogbeat"
 
@@ -420,24 +366,7 @@ finally {
   return $false
 }
 
-function Get-PSBlockLoggingEnabled {
-  try {
-    $v = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging' -Name EnableScriptBlockLogging -ErrorAction Stop).EnableScriptBlockLogging
-    return ($v -eq 1)
-  } catch { return $false }
-}
-
-function Enable-PowerShellScriptBlockLogging {
-  try {
-    New-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging' -Force | Out-Null
-    New-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging' -Name 'EnableScriptBlockLogging' -Value 1 -PropertyType DWord -Force | Out-Null
-    New-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging' -Name 'EnableScriptBlockInvocationLogging' -Value 1 -PropertyType DWord -Force | Out-Null
-    wevtutil sl "Microsoft-Windows-PowerShell/Operational" /e:true | Out-Null
-    Write-Host "[TinySOCS] PowerShell Script Block Logging enabled." -ForegroundColor Green
-  } catch { Write-Warning ("[TinySOCS] Could not enable Script Block Logging: {0}" -f $_.Exception.Message) }
-}
-
-# -------- Helpers: parse service PathName and stop/delete safely ---------------
+# -------- Helpers (unchanged) --------
 function Get-ExePathFromServicePathName {
   param([Parameter(Mandatory=$true)][string]$PathName)
   $s = $PathName.Trim()
@@ -470,13 +399,12 @@ function Stop-And-Delete-ServiceSafely {
   try { sc.exe delete $Name | Out-Null } catch {}
 }
 
-# -------- Winlogbeat singleton helpers -----------------------------------------
+# -------- Winlogbeat singleton helpers (trimmed messages) --------
 function Stop-OtherWinlogbeatInstances {
   param([string]$TargetDir = $Global:TinySOCS_WinlogbeatDir)
 
   $targetNorm = Resolve-NormalPath $TargetDir
 
-  # Kill stray processes from other folders
   try {
     $procs = Get-CimInstance Win32_Process -Filter "Name='winlogbeat.exe'" -ErrorAction SilentlyContinue
     foreach ($p in ($procs | ForEach-Object { [pscustomobject]@{ Id=$_.ProcessId; Path=$_.ExecutablePath } })) {
@@ -488,13 +416,12 @@ function Stop-OtherWinlogbeatInstances {
     }
   } catch { Write-Warning ("[TinySOCS] Process probe failed: {0}" -f $_.Exception.Message) }
 
-  # Remove other winlogbeat-like services (keep canonical 'winlogbeat' for later handling)
   try {
     $svcs = Get-CimInstance Win32_Service -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -match '(?i)winlogbeat' -or ($_.PathName -match 'winlogbeat\.exe') }
 
     foreach ($svc in ($svcs | Sort-Object Name -Unique)) {
-      if ($svc.Name -eq 'winlogbeat') { continue } # canonical handled separately
+      if ($svc.Name -eq 'winlogbeat') { continue }
       $exePath = Get-ExePathFromServicePathName -PathName $svc.PathName
       $svcDir  = Resolve-NormalPath (Split-Path $exePath -Parent)
       if ($svcDir -and $svcDir -ne $targetNorm) {
@@ -504,7 +431,6 @@ function Stop-OtherWinlogbeatInstances {
     }
   } catch { Write-Warning ("[TinySOCS] Service probe failed: {0}" -f $_.Exception.Message) }
 
-  # Remove any scheduled tasks named like winlogbeat
   try {
     $tasks = Get-ScheduledTask -TaskName *winlogbeat* -ErrorAction SilentlyContinue
     foreach ($t in $tasks) {
@@ -514,42 +440,43 @@ function Stop-OtherWinlogbeatInstances {
   } catch {}
 }
 
-# Kill any console-mode winlogbeat from our target dir (even if canonical)
 function Stop-WinlogbeatConsoleFromDir {
-  param([string]$TargetDir = $Global:TinySOCS_WinlogbeatDir)
+  param([string]$TargetDir = $Global:TinySOCS_WinlogbeatDir, [int]$WaitSec = 10)
   $targetNorm = Resolve-NormalPath $TargetDir
   try {
     $procs = Get-CimInstance Win32_Process -Filter "Name='winlogbeat.exe'" -ErrorAction SilentlyContinue
+    $killed = @()
     foreach ($p in $procs) {
       $dir = Resolve-NormalPath (Split-Path $p.ExecutablePath -Parent)
       if ($dir -eq $targetNorm) {
         Write-Warning ("[TinySOCS] Killing lingering console winlogbeat (PID {0}) @ {1}" -f $p.ProcessId, $p.ExecutablePath)
         try { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue } catch { Write-Warning $_.Exception.Message }
+        $killed += $p.ProcessId
       }
+    }
+    if ($killed.Count -gt 0) {
+      $deadline = (Get-Date).AddSeconds($WaitSec)
+      do {
+        Start-Sleep -Milliseconds 300
+        $still = Get-Process -Id $killed -ErrorAction SilentlyContinue
+      } while ($still -and (Get-Date) -lt $deadline)
+      Start-Sleep -Milliseconds 500
     }
   } catch { Write-Warning ("[TinySOCS] Probe/kill console winlogbeat failed: {0}" -f $_.Exception.Message) }
 }
 
-# Remove stale winlogbeat.lock if not actually in use
 function Remove-WinlogbeatStaleLock {
   param([string]$DataPath = $Global:TinySOCS_WinlogbeatData)
   try {
     $lock = Join-Path $DataPath 'winlogbeat.lock'
     if (-not (Test-Path $lock)) { return }
 
-    # If any winlogbeat.exe is still running, don't touch the lock.
-    $running = Get-Process -Name winlogbeat -ErrorAction SilentlyContinue
-    if ($running) {
-      Write-Host "[TinySOCS] Detected running winlogbeat.exe; leaving lock alone." -ForegroundColor DarkYellow
-      return
-    }
-
-    # Try exclusive open; if succeeds, it's stale.
+    # Try exclusive open; if it fails, the lock is genuinely in use.
     $fs = $null
     try {
       $fs = [System.IO.File]::Open($lock, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
     } catch {
-      Write-Host "[TinySOCS] winlogbeat.lock appears to be in use; not deleting." -ForegroundColor DarkYellow
+      Write-Host "[TinySOCS] winlogbeat.lock appears to be in use; leaving it." -ForegroundColor DarkYellow
       return
     } finally {
       if ($fs) { $fs.Close() }
@@ -593,7 +520,8 @@ function Install-Winlogbeat {
   New-Item -ItemType Directory -Path (Join-Path $Global:TinySOCS_WinlogbeatData "logs") -Force | Out-Null
   New-Item -ItemType Directory -Path (Join-Path $InstallDir "data") -Force | Out-Null
 
-  # Minimal config -> Logstash on 5044
+  # Minimal config -> OpenSearch direct (Phase 3 default)
+  $pass = if ($env:OPENSEARCH_INITIAL_ADMIN_PASSWORD) { $env:OPENSEARCH_INITIAL_ADMIN_PASSWORD } else { "ChangeMe123!" }
   $yml = @"
 winlogbeat.event_logs:
   - name: Security
@@ -602,8 +530,14 @@ winlogbeat.event_logs:
   - name: Microsoft-Windows-Sysmon/Operational
   - name: Microsoft-Windows-PowerShell/Operational
 
-output.logstash:
-  hosts: ["localhost:5044"]
+output.elasticsearch:
+  hosts: ["https://127.0.0.1:9201"]
+  username: "admin"
+  password: "$pass"
+  ssl.verification_mode: none
+  allow_older_versions: true
+
+setup.ilm.enabled: false
 "@
   $yml | Set-Content -Path (Join-Path $InstallDir "winlogbeat.yml") -Encoding UTF8
 }
@@ -626,7 +560,6 @@ function Install-Or-Repair-WinlogbeatService {
     }
   }
 
-  # Normalize service binPath to a minimal, robust set of flags
   $binPath = ('"{0}\winlogbeat.exe" --environment=windows_service -c "{0}\winlogbeat.yml" --path.home "{0}" --path.data "{1}" --path.logs "{1}\logs"' -f $InstallDir, $Global:TinySOCS_WinlogbeatData)
 
   if (-not $svcWmi) {
@@ -637,12 +570,10 @@ function Install-Or-Repair-WinlogbeatService {
     try { sc.exe config winlogbeat binPath= $binPath | Out-Null } catch {}
   }
 
-  # Ensure folders (defensive)
   New-Item -ItemType Directory -Path $Global:TinySOCS_WinlogbeatData -Force | Out-Null
   New-Item -ItemType Directory -Path (Join-Path $Global:TinySOCS_WinlogbeatData "logs") -Force | Out-Null
   New-Item -ItemType Directory -Path (Join-Path $InstallDir "data") -Force | Out-Null
 
-  # Validate config (quote -c and set WorkingDirectory)
   $exe = Join-Path $InstallDir "winlogbeat.exe"
   $yml = Join-Path $InstallDir "winlogbeat.yml"
   Write-Host "[TinySOCS] Validating winlogbeat config..." -ForegroundColor DarkCyan
@@ -693,59 +624,75 @@ function Invoke-WinlogbeatDiagnostic {
 function Start-WinlogbeatAndWaitHealthy {
   param(
     [int]$TimeoutSec = 60,
-    [string]$InstallDir = $Global:TinySOCS_WinlogbeatDir
+    [string]$InstallDir = $Global:TinySOCS_WinlogbeatDir,
+    [int]$Attempts = 3
   )
 
-  # Kill any stray console-mode winlogbeat from our dir, then clear stale lock.
-  Stop-WinlogbeatConsoleFromDir -TargetDir $InstallDir
-  Remove-WinlogbeatStaleLock -DataPath $Global:TinySOCS_WinlogbeatData
+  for ($try = 1; $try -le $Attempts; $try++) {
+    if ($try -gt 1) {
+      Write-Warning ("[TinySOCS] winlogbeat start retry {0}/{1} (clearing lock & ensuring no console instance)..." -f $try, $Attempts)
+    }
 
-  $svc = Get-Service -Name winlogbeat -ErrorAction SilentlyContinue
-  if (-not $svc) { throw "winlogbeat service not found after install." }
+    # Ensure no console instance from our dir; then clear lock if stale
+    Stop-WinlogbeatConsoleFromDir -TargetDir $InstallDir
+    Remove-WinlogbeatStaleLock -DataPath $Global:TinySOCS_WinlogbeatData
 
-  if ($svc.Status -ne 'Running') {
-    try { Start-Service winlogbeat -ErrorAction Stop } catch { Write-Warning ("[TinySOCS] Start-Service failed: {0}" -f $_.Exception.Message) }
-  }
+    # Stop service if stuck in 'Starting'/'Stopping'
+    $svc = Get-Service -Name winlogbeat -ErrorAction SilentlyContinue
+    if ($svc -and $svc.Status -in 'StartPending','StopPending') {
+      try { Stop-Service winlogbeat -Force -ErrorAction SilentlyContinue } catch {}
+      Start-Sleep -Milliseconds 800
+    }
 
-  $deadline = (Get-Date).AddSeconds($TimeoutSec)
-  do {
-    Start-Sleep -Milliseconds 800
-    try { $svc = Get-Service -Name winlogbeat -ErrorAction Stop } catch {}
-    if ($svc -and $svc.Status -eq 'Running') { break }
-  } while ((Get-Date) -lt $deadline)
+    # Start (or re-start) the service
+    try { Start-Service winlogbeat -ErrorAction SilentlyContinue } catch {}
 
-  if (-not $svc -or $svc.Status -ne 'Running') {
-    Write-Error ("[TinySOCS] winlogbeat failed to reach Running state within {0}s." -f $TimeoutSec)
+    # Wait for Running
+    $deadline = (Get-Date).AddSeconds([Math]::Ceiling($TimeoutSec / $Attempts))
+    do {
+      Start-Sleep -Milliseconds 700
+      try { $svc = Get-Service -Name winlogbeat -ErrorAction Stop } catch {}
+      if ($svc -and $svc.Status -eq 'Running') { break }
+    } while ((Get-Date) -lt $deadline)
 
-    Write-Host "[TinySOCS] Service configuration:" -ForegroundColor Yellow
-    sc.exe qc winlogbeat | Write-Host
-
-    Write-Host "[TinySOCS] Recent Application/SCM events mentioning winlogbeat:" -ForegroundColor Yellow
-    try {
-      Get-WinEvent -MaxEvents 200 -FilterHashtable @{ LogName='Application' } |
-        Where-Object { $_.ProviderName -in @('winlogbeat','Service Control Manager') -and $_.Message -match 'winlogbeat' } |
-        Select-Object -First 15 |
-        ForEach-Object { $_.TimeCreated.ToString('u') + ' - ' + $_.Message } | Write-Host
-    } catch {}
-
-    Write-Host "[TinySOCS] Running timed diagnostic (capturing ~12s of startup output)..." -ForegroundColor Yellow
-    Invoke-WinlogbeatDiagnostic -InstallDir $InstallDir -Seconds 12
-
-    throw "winlogbeat not healthy"
-  }
-
-  # Optional hint from log
-  $logDir = Join-Path $Global:TinySOCS_WinlogbeatData 'logs'
-  if (Test-Path $logDir) {
-    try {
-      $last = Get-ChildItem $logDir -Filter 'winlogbeat*.log' | Sort-Object LastWriteTime -Desc | Select-Object -First 1
-      if ($last) {
-        $lines = Get-Content $last.FullName -Tail 200 -ErrorAction SilentlyContinue
-        $hint = ($lines | Where-Object { $_ -match '5044|logstash|Connected|connection established' } | Select-Object -Last 1)
-        if ($hint) { Write-Host ("[TinySOCS] Log hint: {0}" -f $hint) -ForegroundColor DarkGray }
+    if ($svc -and $svc.Status -eq 'Running') {
+      # (Optional) quick hint from logs
+      $logDir = Join-Path $Global:TinySOCS_WinlogbeatData 'logs'
+      if (Test-Path $logDir) {
+        try {
+          $last = Get-ChildItem $logDir -Filter 'winlogbeat*.log' | Sort-Object LastWriteTime -Desc | Select-Object -First 1
+          if ($last) {
+            $lines = Get-Content $last.FullName -Tail 200 -ErrorAction SilentlyContinue
+            $hint = ($lines | Where-Object { $_ -match 'Connection .*established|Beat .* start' } | Select-Object -Last 1)
+            if ($hint) { Write-Host ("[TinySOCS] Log hint: {0}" -f $hint) -ForegroundColor DarkGray }
+          }
+        } catch {}
       }
-    } catch {}
+      return  # success
+    }
+
+    # If not running yet: try to stop before next attempt
+    try { Stop-Service winlogbeat -Force -ErrorAction SilentlyContinue } catch {}
+    Start-Sleep -Milliseconds 600
   }
+
+  # Hard failure path: print details + run the timed diagnostic
+  Write-Error ("[TinySOCS] winlogbeat failed to reach Running state after {0} attempt(s)." -f $Attempts)
+
+  Write-Host "[TinySOCS] Service configuration:" -ForegroundColor Yellow
+  sc.exe qc winlogbeat | Write-Host
+
+  Write-Host "[TinySOCS] Recent Application/SCM events mentioning winlogbeat:" -ForegroundColor Yellow
+  try {
+    Get-WinEvent -MaxEvents 200 -FilterHashtable @{ LogName='Application' } |
+      Where-Object { $_.ProviderName -in @('winlogbeat','Service Control Manager') -and $_.Message -match 'winlogbeat' } |
+      Select-Object -First 15 |
+      ForEach-Object { $_.TimeCreated.ToString('u') + ' - ' + $_.Message } | Write-Host
+  } catch {}
+
+  Write-Host "[TinySOCS] Running timed diagnostic (capturing ~15s of startup output)..." -ForegroundColor Yellow
+  Invoke-WinlogbeatDiagnostic -InstallDir $InstallDir -Seconds 15
+  throw "winlogbeat not healthy"
 }
 
 function Get-WinlogbeatStatus {
@@ -759,7 +706,6 @@ function Get-WinlogbeatStatus {
   $ver  = if ($exePath -and (Test-Path $exePath)) { (Get-Item $exePath).VersionInfo.FileVersion } else { $null }
   $logs = Join-Path $Global:TinySOCS_WinlogbeatData 'Logs'
 
-  # Precompute values; don't use 'if' inside hashtable expressions.
   $svcState = $null
   $svcName  = $null
   if ($svc) { $svcState = $svc.Status; $svcName = $svc.Name }
@@ -781,7 +727,6 @@ function Ensure-WinlogbeatSingleton {
     [string]$Version    = "8.14.3"
   )
 
-  # Kill/remove only foreign instances/services (not the canonical 'winlogbeat')
   try { Stop-OtherWinlogbeatInstances -TargetDir $InstallDir } catch { Write-Warning ("[TinySOCS] Stop-OtherWinlogbeatInstances error: {0}" -f $_.Exception.Message) }
 
   if (!(Test-Path (Join-Path $InstallDir "winlogbeat.exe"))) {
@@ -793,8 +738,6 @@ function Ensure-WinlogbeatSingleton {
   }
 
   Install-Or-Repair-WinlogbeatService -InstallDir $InstallDir
-
-  # Return/print status safely
   Get-WinlogbeatStatus | Format-List
 }
 
@@ -809,18 +752,11 @@ function Ensure-TinySOCS-Agents {
   }
   Write-Host ("[TinySOCS] Logging to: {0}" -f $global:TinySOCS_LogPath) -ForegroundColor Yellow
 
-  if (-not (Get-PSBlockLoggingEnabled)) {
-    Enable-PowerShellScriptBlockLogging
-  } else {
-    wevtutil sl "Microsoft-Windows-PowerShell/Operational" /e:true | Out-Null
-    Write-Host "[TinySOCS] Script Block Logging already enabled." -ForegroundColor Green
-  }
-
   $sysmon = Get-Service -Name Sysmon64 -ErrorAction SilentlyContinue
   if ($sysmon) {
     Write-Host ("[TinySOCS] Sysmon present: {0} - {1}" -f $sysmon.Status, $sysmon.Name)
   } else {
-    Write-Warning "[TinySOCS] Sysmon not detected. TinySOCS will still work, but you'll get richer data if you install Sysmon."
+    Write-Warning "[TinySOCS] Sysmon not detected. TinySOCS will still work, but richer detections come with Sysmon."
   }
 
   try {
@@ -834,35 +770,7 @@ function Ensure-TinySOCS-Agents {
   try { Stop-Transcript | Out-Null } catch {}
 }
 
-# ===================== Routes =====================
-function Route-To-OpenSearch {
-  param([switch]$Full)
-  if (-not (Ensure-DockerReady)) { Write-Warning "[TinySOCS] Docker engine not available."; return }
-  Use-OpenSearchSIEM
-  Stop-ElasticStack
-  Start-OpenSearchStack -Dashboards:$Full
-  Switch-LogstashOutput -Target opensearch
-  $env:SIEM_TIMEOUT_SECONDS = "60"
-}
-
-function Route-To-Elastic {
-  param([switch]$Full)
-  if (-not (Ensure-DockerReady)) { Write-Warning "[TinySOCS] Docker engine not available."; return }
-  Use-ElasticSIEM
-  Stop-OpenSearchStack
-  Start-ElasticStack -Kibana:$Full
-  Switch-LogstashOutput -Target elastic
-  Remove-Item Env:SIEM_TIMEOUT_SECONDS -ErrorAction SilentlyContinue
-}
-
-function Route-To-Both {
-  if (-not (Ensure-DockerReady)) { Write-Warning "[TinySOCS] Docker engine not available."; return }
-  Use-OpenSearchSIEM
-  Start-OpenSearchStack
-  Start-ElasticStack
-  Switch-LogstashOutput -Target dual
-}
-
+# ===================== Routes (logstash-free) =====================
 function Show-TinySOCS-Targets {
   Write-Host ("LLM_MODE              = {0}" -f $env:LLM_MODE)
   Write-Host ("SIEM_BACKEND          = {0}" -f $env:SIEM_BACKEND)
@@ -872,36 +780,25 @@ function Show-TinySOCS-Targets {
   if ($env:SIEM_TIMEOUT_SECONDS) { Write-Host ("SIEM_TIMEOUT_SECONDS  = {0}" -f $env:SIEM_TIMEOUT_SECONDS) }
 }
 
-function Tail-WinlogbeatLog {
-  param([int]$Tail = 200)
-  $dir = "C:\ProgramData\winlogbeat\logs"
-  if (!(Test-Path $dir)) { Write-Warning "[TinySOCS] Log dir not found: $dir"; return }
-  $f = Get-ChildItem $dir -File | Sort-Object LastWriteTime -Desc | Select-Object -First 1
-  if (-not $f) { Write-Warning "[TinySOCS] No log files in $dir yet."; return }
-  Write-Host "[TinySOCS] Tailing $($f.FullName)..." -ForegroundColor DarkGray
-  Get-Content $f.FullName -Tail $Tail -Wait
+function Route-To-OpenSearch {
+  param([switch]$Full)
+  if (-not (Ensure-DockerReady)) { Write-Warning "[TinySOCS] Docker engine not available."; return }
+  Use-OpenSearchSIEM
+  Stop-ElasticStack
+  Start-OpenSearchStack -Dashboards:$Full
+  $env:SIEM_TIMEOUT_SECONDS = "60"
 }
 
-function Get-WinlogbeatHealth {
-  $dir = "C:\ProgramData\winlogbeat\logs"
-  $svc = Get-Service winlogbeat -ErrorAction SilentlyContinue
-  $lf  = Get-ChildItem $dir -File | Sort LastWriteTime -Desc | Select -First 1
-  $ev  = if ($lf) {
-           Get-Content $lf.FullName -Tail 400 |
-           ForEach-Object { try { $_ | ConvertFrom-Json } catch {} }
-         }
-  $connected = $ev | Where-Object { $_.message -match 'Connection .*established' } | Select-Object -Last 1
-  $warnErr   = $ev | Where-Object { $_.'log.level' -in @('warn','error') } | Select-Object -Last 5 message
-
-  [pscustomobject]@{
-    ServiceStatus   = $svc.Status
-    StartType       = $svc.StartType
-    LatestLog       = $lf.Name
-    ConnectedToLS   = [bool]$connected
-    RecentWarnError = $warnErr.message -join "`n"
-  }
+function Route-To-Elastic {
+  param([switch]$Full)
+  if (-not (Ensure-DockerReady)) { Write-Warning "[TinySOCS] Docker engine not available."; return }
+  Use-ElasticSIEM
+  Stop-OpenSearchStack
+  Start-ElasticStack -Kibana:$Full
+  Remove-Item Env:SIEM_TIMEOUT_SECONDS -ErrorAction SilentlyContinue
 }
 
+# ===================== Node/Master helpers =====================
 function Start-TinySocsNodeApi { param([int]$Port=8081)
   if (-not $env:NODE_ID) { $env:NODE_ID="node-1" }
   if (-not $env:NODE_SECRET) { $env:NODE_SECRET="dev-secret-change-me" }
@@ -922,11 +819,6 @@ function Start-TinySocsMaster {
   python "tinysocs\orchestrator\master.py" @args
 }
 
-# ===============================
-# Federation helpers (Phase 3)
-# ===============================
-
-# Robust UTC HMAC header generator for quick local tests
 function New-TinySocsAuthHeaders {
   param([string]$Secret)
   $ts = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
@@ -940,28 +832,25 @@ function New-TinySocsAuthHeaders {
 function Use-Role {
   param(
     [ValidateSet('solo','node','master')] [string]$Role,
-    [string]$Backend = 'opensearch'  # or 'elastic'
+    [string]$Backend = 'opensearch'
   )
   $env:ROLE = $Role
   if ($Backend -eq 'opensearch') {
-    Route-To-OpenSearch    # your existing helper; -Full optional
+    Route-To-OpenSearch
   } else {
     Route-To-Elastic
   }
-  Ensure-TinySOCS-Agents   # your existing helper
+  Ensure-TinySOCS-Agents
   Write-Host "ROLE set to $Role (backend: $Backend)"
 }
 
-# Start a Node API on a given port + node_id (reads .env automatically via python-dotenv)
 function Start-TinySocs-Node {
   param(
     [int]$Port = 8081,
     [string]$NodeId = "node-$Port",
     [string]$Secret = "dev-secret-change-me"
   )
-  Set-Location $PSScriptRoot  # tinysocs/tinysocs
-
-  # NEW: load .env into the PowerShell session first
+  Set-Location $PSScriptRoot
   Import-DotEnv
 
   $env:ROLE            = "node"
@@ -969,21 +858,17 @@ function Start-TinySocs-Node {
   $env:NODE_SECRET     = $Secret
   $env:PORT            = "$Port"
 
-  # SIEM env (defaults ok if .env is present; override if you need)
   if (-not $env:SIEM_BACKEND)    { $env:SIEM_BACKEND = "opensearch" }
-  if (-not $env:SIEM_URL)        { $env:SIEM_URL     = "https://localhost:9201" }
+  if (-not $env:SIEM_URL)        { $env:SIEM_URL     = "https://127.0.0.1:9201" }
   if (-not $env:SIEM_USER)       { $env:SIEM_USER    = "admin" }
   if (-not $env:SIEM_PASS)       { $env:SIEM_PASS    = "ChangeMe123!" }
   if (-not $env:SIEM_SSL_VERIFY) { $env:SIEM_SSL_VERIFY = "false" }
 
-  # Make sure the backend is up (reuse your toggles)
   Show-TinySOCS-Targets | Out-Null
-
   Write-Host "[node] starting $NodeId on :$Port"
   python .\api\node.py
 }
 
-# Start N local nodes on a sequence of ports (8081, 8082, …)
 function Start-TinySocs-MultiNode {
   param(
     [int]$Count = 2,
@@ -1002,7 +887,6 @@ function Start-TinySocs-MultiNode {
   Write-Host "[multinode] launched $Count nodes starting at $StartPort"
 }
 
-# Run the master aggregator once (fan-out + merge + summarize + persist)
 function Run-TinySocs-Master {
   param(
     [string]$Nodes = "http://localhost:8081,http://localhost:8082",
@@ -1011,8 +895,6 @@ function Run-TinySocs-Master {
     [string]$Window = "15m"
   )
   Set-Location $PSScriptRoot
-
-  # NEW: load .env so shell env has OPENAI_API_KEY etc.
   Import-DotEnv
 
   $env:ROLE = "master"
@@ -1020,13 +902,11 @@ function Run-TinySocs-Master {
   $env:MASTER_SHARED_SECRET = $Secret
   $env:REQUEST_TIMEOUT_SEC  = "20"
 
-  # LLM config (reads .env if present; override if needed)
   if (-not $env:LLM_MODE)       { $env:LLM_MODE = "openai" }
   if (-not $env:OPENAI_API_KEY) { Write-Warning "OPENAI_API_KEY not set; summary may fallback" }
 
-  # SIEM to persist unified case (match your solo settings)
   if (-not $env:SIEM_BACKEND)    { $env:SIEM_BACKEND = "opensearch" }
-  if (-not $env:SIEM_URL)        { $env:SIEM_URL     = "https://localhost:9201" }
+  if (-not $env:SIEM_URL)        { $env:SIEM_URL     = "https://127.0.0.1:9201" }
   if (-not $env:SIEM_USER)       { $env:SIEM_USER    = "admin" }
   if (-not $env:SIEM_PASS)       { $env:SIEM_PASS    = "ChangeMe123!" }
   if (-not $env:SIEM_SSL_VERIFY) { $env:SIEM_SSL_VERIFY = "false" }
@@ -1035,7 +915,6 @@ function Run-TinySocs-Master {
   python .\orchestrator\master.py --rules $Rules --window $Window
 }
 
-# Keep solo mode for local single-node runs (your existing path)
 function Run-TinySocs-Solo {
   param([switch]$Noise)
   Set-Location $PSScriptRoot
@@ -1044,8 +923,7 @@ function Run-TinySocs-Solo {
   python -u -m agent.main
 }
 
-# ===================== NEW: Requirements + Index helpers =====================
-
+# ===================== Requirements + index helpers =====================
 function Ensure-PythonRequirements {
   param([string]$RepoRoot = $PSScriptRoot)
   Push-Location $RepoRoot
@@ -1089,8 +967,7 @@ function Ensure-SIEM-Index {
   }
 }
 
-# ===================== NEW: Core starter + four primary toggles ===============
-
+# ===================== Core starter + four toggles =====================
 function Start-TinySOCS {
   param(
     [ValidateSet('opensearch','elastic')] [string]$Backend = 'opensearch',
@@ -1104,27 +981,17 @@ function Start-TinySOCS {
   )
 
   Set-Location $PSScriptRoot
-
-  # NEW: load .env first so env vars are present in this shell
   Import-DotEnv
 
-  # LLM default is OpenAI unless LocalLLM is set
   if ($LocalLLM) { Use-Ollama } else { Use-OpenAI }
 
-  # Start backend stack (lean/full)
   if ($Backend -eq 'opensearch') { Route-To-OpenSearch -Full:$Full }
   else { Route-To-Elastic -Full:$Full }
 
-  # Ensure agents/services
   Ensure-TinySOCS-Agents
-
-  # Make sure Python deps are installed (idempotent)
   Ensure-PythonRequirements
-
-  # Ensure unified case index exists for persist path
   Ensure-SIEM-Index -Index "siem_index"
 
-  # Launch requested role
   switch ($Role) {
     'solo'   { Write-Host "[TinySOCS] Running SOLO agent loop..." -ForegroundColor Cyan; python -u -m agent.main }
     'node'   { Start-TinySocs-Node -Port $NodePort }
@@ -1132,7 +999,6 @@ function Start-TinySOCS {
   }
 }
 
-# --- The four basic toggles you asked for ---
 function Start-TinySOCS-OpenSearchLean {
   param(
     [ValidateSet('solo','node','master')] [string]$Role = 'solo',

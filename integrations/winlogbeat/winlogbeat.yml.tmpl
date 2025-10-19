@@ -1,0 +1,30 @@
+﻿# Winlogbeat -> OpenSearch (from .env SIEM_* vars)
+winlogbeat.event_logs:
+  - name: Application
+  - name: System
+  - name: Security
+  - name: Microsoft-Windows-Sysmon/Operational
+    ignore_older: 72h
+    processors:
+      - add_fields:
+          target: ''
+          fields:
+            event.module: sysmon
+            tags: [sysmon]
+
+output.elasticsearch:
+  hosts: ["${SIEM_URL:https://127.0.0.1:9201}"]
+  username: "${SIEM_USER:admin}"
+  password: "${SIEM_PASS:changeme}"
+  ssl.verification_mode: ${WB_SSL_VERIFY:none}
+  bulk_max_size: 512
+  worker: 1
+  allow_older_versions: true
+
+setup.ilm.enabled: false
+
+setup.template.enabled: true
+setup.template.settings:
+  index.number_of_shards: 1
+
+logging.level: info

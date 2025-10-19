@@ -1,14 +1,33 @@
 # agent/llm_openai_tools.py
+from __future__ import annotations
+
 import os, json, httpx, sys
 from typing import Any, Dict, List
 from fnmatch import fnmatch
 from datetime import datetime, timezone
+from pathlib import Path
+
+# --- Make imports work both as `agent.*` (source) and `tinysocs.agent.*` (package)
+HERE = Path(__file__).resolve()
+REPO_ROOT = HERE.parents[1]  # .../tinysocs
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from llm_schema import SCHEMA
 from redact import scrub
 from agent.tools import search_kql, aggregate, propose_rule, stage_action
-from netutil import is_loopback
-from tinysocs.agent.adapters.opensearch_client import OSClient  # for optional persistence
+
+# netutil dual-import
+try:
+    from tinysocs.netutil import is_loopback  # type: ignore
+except ModuleNotFoundError:
+    from netutil import is_loopback  # type: ignore
+
+# OpenSearch client dual-import (optional persistence path)
+try:
+    from tinysocs.agent.adapters.opensearch_client import OSClient  # type: ignore
+except ModuleNotFoundError:
+    from agent.adapters.opensearch_client import OSClient  # type: ignore
 
 API_KEY = os.getenv("OPENAI_API_KEY")
 MODEL   = os.getenv("OPENAI_MODEL", "gpt-4o-mini")

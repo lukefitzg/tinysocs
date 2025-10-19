@@ -1,12 +1,33 @@
 # agent/tools.py
+from __future__ import annotations
+
 from typing import Dict, Any
-from tinysocs.agent.adapters.select import make_client
-from netutil import is_loopback
 import os
+import sys
+from pathlib import Path
+
+# --- Make this file work whether imported as `agent.*` or `tinysocs.agent.*`
+HERE = Path(__file__).resolve()
+REPO_ROOT = HERE.parents[1]  # .../tinysocs
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+# Adapter + net util with robust fallbacks
+try:
+    # when installed/used as a package
+    from tinysocs.agent.adapters.select import make_client  # type: ignore
+except ModuleNotFoundError:
+    # when running from source (python -m agent.main)
+    from agent.adapters.select import make_client  # type: ignore
+
+try:
+    from tinysocs.netutil import is_loopback  # type: ignore
+except ModuleNotFoundError:
+    from netutil import is_loopback  # type: ignore
 
 # --- Optional: import backend-specific exceptions (fallback to base Exception) ---
 try:
-    from opensearchpy.exceptions import (
+    from opensearchpy.exceptions import (  # type: ignore
         NotFoundError as OSNotFoundError,
         ConnectionTimeout as OSConnectionTimeout,
         ConnectionError as OSConnectionError,
@@ -34,13 +55,32 @@ def _backend_name() -> str:
     return (os.getenv("SIEM_BACKEND") or "").lower() or "unknown"
 
 
-def search_kql(index: str, kql: str, size: int = 100) -> Dict[str, Any]:
+def search_kql(
+    index: str,
+    kql: str,
+    size: int = 100,
+    # tolerate extra kwargs some callers pass; adapters may ignore
+    track_total_hits: bool | int | None = None,
+    source: bool | None = None,
+) -> Dict[str, Any]:
     """
     Run a simple KQL-like query. Never raises — returns a structured error on failure.
+    Accepts optional pass-through args (track_total_hits/source) for adapter parity.
     """
     c = _client_or_make()
     try:
-        docs = c.search_kql(index=index, kql=kql, size=size)
+        # Prefer the newer signature if adapter supports it; fall back gracefully.
+        try:
+            docs = c.search_kql(
+                index=index,
+                kql=kql,
+                size=size,
+                track_total_hits=track_total_hits,
+                source=source if source is not None else True,
+            )
+        except TypeError:
+            docs = c.search_kql(index=index, kql=kql, size=size)
+
         return {
             "ok": True,
             "hits": (docs or [])[:size],

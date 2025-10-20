@@ -254,7 +254,7 @@ def main():
             except TypeError:
                 incident = _summarize(findings=findings)  # type: ignore
         else:
-            ev_dicts = [e.dict() for e in merged]
+            ev_dicts = [(e.model_dump() if hasattr(e, "model_dump") else e.dict()) for e in merged]
             payload = _prepare_privacy_payload(ev_dicts, args.window)
 
             called = False

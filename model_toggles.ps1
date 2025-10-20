@@ -967,6 +967,85 @@ function Ensure-SIEM-Index {
   }
 }
 
+# ===================== Winlogbeat template + mapping (default ON) =====================
+function Get-OSCurlArgs {
+  param(
+    [Parameter(Mandatory=$true)][string]$Endpoint,
+    [ValidateSet('GET','PUT','POST')][string]$Method = 'GET',
+    [string]$DataFile,
+    [switch]$Json
+  )
+  $auth = "$($env:SIEM_USER):$($env:SIEM_PASS)"
+  $isHttps = $env:SIEM_URL -like "https*"
+  $insecure = $isHttps -and (($env:SIEM_SSL_VERIFY -as [string]).ToLower() -eq "false")
+
+  $args = @()
+  if ($insecure) { $args += "-k" }
+  $args += @("-s","-u", $auth, "-X", $Method, $Endpoint)
+  if ($Json) { $args += @("-H","Content-Type: application/json") }
+  if ($DataFile) { $args += @("--data-binary", "@$DataFile") }
+  return ,$args
+}
+
+function Install-WB-HighPriorityTemplate {
+  param([string]$RepoRoot = $PSScriptRoot)
+
+  $base   = $env:SIEM_URL.TrimEnd('/')
+  $name   = "winlogbeat-high-priority"
+  $prio   = Join-Path $RepoRoot "integrations\winlogbeat\winlogbeat_template_priority500.json"
+  $std    = Join-Path $RepoRoot "integrations\winlogbeat\winlogbeat_template.json"
+  $altPrio= Join-Path $RepoRoot "winlogbeat_template_priority500.json"
+  $altStd = Join-Path $RepoRoot "winlogbeat_template.json"
+
+  $file = if (Test-Path $prio) { $prio }
+          elseif (Test-Path $std) { $std }
+          elseif (Test-Path $altPrio) { $altPrio }
+          elseif (Test-Path $altStd) { $altStd }
+          else { $null }
+
+  if (-not $file) { Write-Warning "[TinySOCS] No winlogbeat template JSON found; skipping template install."; return }
+
+  $endpoint = "$base/_index_template/$name"
+  $args = Get-OSCurlArgs -Endpoint $endpoint -Method PUT -DataFile $file -Json
+  $out = & curl.exe @args
+  if ($LASTEXITCODE -eq 0) {
+    Write-Host "[TinySOCS] Installed/updated index template '$name' from $(Split-Path $file -Leaf)." -ForegroundColor Green
+  } else {
+    Write-Warning "[TinySOCS] Failed installing index template '$name'."
+    Write-Host $out
+  }
+}
+
+function Patch-WB-KeywordFields {
+  param([string]$RepoRoot = $PSScriptRoot)
+
+  $kw     = Join-Path $RepoRoot "integrations\winlogbeat\winlogbeat_keyword_mapping.json"
+  $altKw  = Join-Path $RepoRoot "winlogbeat_keyword_mapping.json"
+  $file   = if (Test-Path $kw) { $kw } elseif (Test-Path $altKw) { $altKw } else { $null }
+  if (-not $file) { Write-Warning "[TinySOCS] No winlogbeat keyword mapping JSON found; skipping mapping patch."; return }
+
+  $base    = $env:SIEM_URL.TrimEnd('/')
+  $endpoint= "$base/winlogbeat-*/_mapping"
+  $args = Get-OSCurlArgs -Endpoint $endpoint -Method PUT -DataFile $file -Json
+  $out = & curl.exe @args
+  if ($LASTEXITCODE -eq 0) {
+    Write-Host "[TinySOCS] Applied keyword multi-field patch to winlogbeat-* indices." -ForegroundColor Green
+  } else {
+    Write-Warning "[TinySOCS] Failed applying keyword mapping to winlogbeat-*."
+    Write-Host $out
+  }
+}
+
+function Ensure-WB-Setup {
+  param([string]$RepoRoot = $PSScriptRoot)
+  try { Install-WB-HighPriorityTemplate -RepoRoot $RepoRoot } catch {
+    Write-Warning ("[TinySOCS] Winlogbeat template install failed: {0}" -f $_.Exception.Message)
+  }
+  try { Patch-WB-KeywordFields -RepoRoot $RepoRoot } catch {
+    Write-Warning ("[TinySOCS] Winlogbeat mapping patch failed: {0}" -f $_.Exception.Message)
+  }
+}
+
 # ===================== Core starter + four toggles =====================
 function Start-TinySOCS {
   param(
@@ -977,7 +1056,8 @@ function Start-TinySOCS {
     [int]$NodePort = 8081,                         # when Role=node
     [string]$Nodes = "http://localhost:8081,http://localhost:8082",  # when Role=master
     [string]$Rules = "auth_failed_burst,ps_script_block",
-    [string]$Window = "15m"
+    [string]$Window = "15m",
+    [switch]$NoWBSetup                              # opt-out of template/mapping setup
   )
 
   Set-Location $PSScriptRoot
@@ -985,8 +1065,12 @@ function Start-TinySOCS {
 
   if ($LocalLLM) { Use-Ollama } else { Use-OpenAI }
 
-  if ($Backend -eq 'opensearch') { Route-To-OpenSearch -Full:$Full }
-  else { Route-To-Elastic -Full:$Full }
+  if ($Backend -eq 'opensearch') {
+    Route-To-OpenSearch -Full:$Full
+    if (-not $NoWBSetup) { Ensure-WB-Setup -RepoRoot $PSScriptRoot }
+  } else {
+    Route-To-Elastic -Full:$Full
+  }
 
   Ensure-TinySOCS-Agents
   Ensure-PythonRequirements
@@ -1006,9 +1090,10 @@ function Start-TinySOCS-OpenSearchLean {
     [int]$NodePort = 8081,
     [string]$Nodes = "http://localhost:8081,http://localhost:8082",
     [string]$Rules = "auth_failed_burst,ps_script_block",
-    [string]$Window = "15m"
+    [string]$Window = "15m",
+    [switch]$NoWBSetup
   )
-  Start-TinySOCS -Backend opensearch -Full:$false -Role $Role -LocalLLM:$LocalLLM -NodePort $NodePort -Nodes $Nodes -Rules $Rules -Window $Window
+  Start-TinySOCS -Backend opensearch -Full:$false -Role $Role -LocalLLM:$LocalLLM -NodePort $NodePort -Nodes $Nodes -Rules $Rules -Window $Window -NoWBSetup:$NoWBSetup
 }
 
 function Start-TinySOCS-OpenSearchFull {
@@ -1018,9 +1103,10 @@ function Start-TinySOCS-OpenSearchFull {
     [int]$NodePort = 8081,
     [string]$Nodes = "http://localhost:8081,http://localhost:8082",
     [string]$Rules = "auth_failed_burst,ps_script_block",
-    [string]$Window = "15m"
+    [string]$Window = "15m",
+    [switch]$NoWBSetup
   )
-  Start-TinySOCS -Backend opensearch -Full:$true -Role $Role -LocalLLM:$LocalLLM -NodePort $NodePort -Nodes $Nodes -Rules $Rules -Window $Window
+  Start-TinySOCS -Backend opensearch -Full:$true -Role $Role -LocalLLM:$LocalLLM -NodePort $NodePort -Nodes $Nodes -Rules $Rules -Window $Window -NoWBSetup:$NoWBSetup
 }
 
 function Start-TinySOCS-ElasticLean {

@@ -4,6 +4,13 @@ TinySocs Master Aggregator — runs from tinysocs/tinysocs just fine.
 
 - Fans out /agg to nodes, merges DetectionEvidence, calls your existing summarizer.
 - Persistence remains inside your summarizer path (OpenAI/Ollama tools) the same way solo mode does.
+- Privacy toggle integrated via agent.summarizer_adapter:
+    - PRIVACY_MODE=abstract (default) -> send masked, compact payload to summarizer
+    - PRIVACY_MODE=raw               -> legacy behavior (send findings)
+
+Robustness:
+- --deadline <sec>: overall wall-clock budget; stops waiting when exhausted.
+- Per-node errors collected and surfaced in preview (partial success visible).
 """
 
 from __future__ import annotations
@@ -13,9 +20,6 @@ import sys
 from pathlib import Path
 
 # This file lives at: <REPO_ROOT>/tinysocs/orchestrator/master.py
-# Ensure <REPO_ROOT> is on sys.path so `import tinysocs...` resolves,
-# and also ensure <REPO_ROOT>/tinysocs/agent is on sys.path to satisfy
-# any short imports like `from llm_openai_tools import ...` inside your agent code.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PKG_ROOT  = _REPO_ROOT / "tinysocs"
 _AGENT_DIR = _PKG_ROOT / "agent"
@@ -41,12 +45,27 @@ import hmac
 import json
 import os
 import time
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
 from tinysocs.agent.models.evidence import DetectionEvidence
+
+# Privacy adapter (new)
+try:
+    from tinysocs.agent.summarizer_adapter import (
+        prepare_payload as _prepare_privacy_payload,
+        annotate_report_header as _annotate_header,
+        PRIVACY_MODE,
+    )
+except Exception as _e:
+    # Fallback if file not present yet
+    def _prepare_privacy_payload(evidences: List[Dict[str, Any]], window: str) -> Dict[str, Any]:
+        return {"mode": "raw", "window": window, "evidences": evidences}
+    def _annotate_header(md: str, llm_mode: str = "openai") -> str:
+        return md
+    PRIVACY_MODE = os.getenv("PRIVACY_MODE", "raw").strip().lower()
+    print(f"[master] WARN: summarizer_adapter not available: {_e}. Using raw fallback.")
 
 # Resilient summarizer import (support either `summarize` or `summarize_findings`)
 try:
@@ -73,11 +92,17 @@ def _headers() -> Dict[str, str]:
     return {"X-TinySOCS-Timestamp": str(ts), "X-TinySOCS-Signature": _sign(ts)}
 
 
-def fetch_agg(node_url: str, rules: List[str], window: str, host: Optional[str]) -> List[DetectionEvidence]:
+def fetch_agg(node_url: str, rules: List[str], window: str, host: Optional[str], timeout: float) -> List[DetectionEvidence]:
     params = {"rules": ",".join(rules), "window": window}
     if host:
         params["host"] = host
-    r = requests.get(f"{node_url.rstrip('/')}/agg", headers=_headers(), params=params, timeout=REQUEST_TIMEOUT_SEC)
+    r = requests.get(
+        f"{node_url.rstrip('/')}/agg",
+        headers=_headers(),
+        params=params,
+        timeout=timeout,
+        verify=False if os.getenv("TINYSOCS_INSECURE_SKIP_VERIFY","1") == "1" else True,
+    )
     r.raise_for_status()
     return [DetectionEvidence(**e) for e in r.json()]
 
@@ -125,7 +150,7 @@ def merge_evidence(batches: List[List[DetectionEvidence]]) -> List[DetectionEvid
 
 
 def _to_findings(ev_list: List[DetectionEvidence]) -> List[Dict[str, Any]]:
-    """Convert DetectionEvidence → summarizer 'findings' shape."""
+    """Convert DetectionEvidence → summarizer 'findings' shape (legacy/raw path)."""
     findings: List[Dict[str, Any]] = []
     for ev in ev_list:
         f: Dict[str, Any] = {
@@ -139,11 +164,40 @@ def _to_findings(ev_list: List[DetectionEvidence]) -> List[Dict[str, Any]]:
     return findings
 
 
+def _minimal_local_summary(merged: List[DetectionEvidence], window: str) -> Dict[str, Any]:
+    """PII-safe, offline summary used only if PRIVACY_MODE=abstract and summarizer rejects payload."""
+    by_rule: Dict[str, Dict[str, Any]] = {}
+    for e in merged:
+        r = by_rule.setdefault(e.rule, {"total": 0, "hosts": set()})
+        r["total"] += int(e.count or 0)
+        if e.host:
+            r["hosts"].add(e.host)
+    md_lines = [
+        "# TinySocs Incident Report",
+        "**Severity:** Low",
+        f"**TL;DR:** {sum(v['total'] for v in by_rule.values())} event(s) across {len(by_rule)} rule(s) in {window}.",
+        "",
+        "## Evidence (aggregated)",
+    ]
+    for rule, d in sorted(by_rule.items()):
+        hosts = ", ".join(sorted(d["hosts"])) if d["hosts"] else "(various)"
+        md_lines.append(f"- **{rule}**: count={d['total']} hosts={hosts}")
+    md = "\n".join(md_lines)
+    md = _annotate_header(md, llm_mode=os.getenv("LLM_MODE", "openai"))
+    return {"severity": "low", "tldr": f"Aggregated counts over {len(by_rule)} rules.", "markdown": md}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rules", required=True, help="Comma separated rule IDs")
     ap.add_argument("--window", required=True, help="Window, e.g., 15m")
     ap.add_argument("--host", default=None, help="Optional host filter")
+    ap.add_argument(
+        "--deadline",
+        type=float,
+        default=float(os.getenv("MASTER_DEADLINE_SEC", "15")),
+        help="Overall wall-clock deadline in seconds (default from MASTER_DEADLINE_SEC or 15).",
+    )
     args = ap.parse_args()
 
     if not NODES:
@@ -151,37 +205,98 @@ def main():
 
     rules = [r.strip() for r in args.rules.split(",") if r.strip()]
     batches: List[List[DetectionEvidence]] = []
+    errors: List[Dict[str, str]] = []
 
+    t0 = time.time()
     for node in NODES:
+        # Stop if deadline exhausted
+        elapsed = time.time() - t0
+        remaining = max(0.0, args.deadline - elapsed)
+        if remaining <= 0:
+            errors.append({"node": node, "error": "deadline_exhausted"})
+            print(f"[master] DEADLINE: skipping {node} (overall deadline hit)")
+            break
+
+        # Clamp per-node timeout to remaining budget
+        per_node_timeout = min(REQUEST_TIMEOUT_SEC, remaining)
+
         try:
-            evs = fetch_agg(node, rules=rules, window=args.window, host=args.host)
+            evs = fetch_agg(node, rules=rules, window=args.window, host=args.host, timeout=per_node_timeout)
             print(f"[master] {node} -> {len(evs)} evidences")
             batches.append(evs)
         except Exception as e:
-            print(f"[master] WARN: failed to fetch from {node}: {e}")
+            err = f"{type(e).__name__}: {e}"
+            errors.append({"node": node, "error": err})
+            print(f"[master] WARN: failed to fetch from {node}: {err}")
+
+        # If next loop would certainly exceed deadline, bail early
+        if (time.time() - t0) >= args.deadline:
+            print("[master] DEADLINE: stopping fan-out loop")
+            break
 
     merged = merge_evidence(batches)
-    print(f"[master] merged groups: {len(merged)}")
+    print(f"[master] merged groups: {len(merged)} (errors={len(errors)})")
 
-    findings = _to_findings(merged)
-
-    # Call your existing summarizer (OpenAI/Ollama path handles persistence if enabled)
+    # ---------- Privacy-aware summarizer call ----------
     if _summarize is None:
         print("[master] WARN: summarizer not available; printing merged evidence only.")
-        print(json.dumps({"evidence": [e.dict() for e in merged]}, indent=2, ensure_ascii=False))
+        print(json.dumps({"evidence": [e.dict() for e in merged], "errors": errors}, indent=2, ensure_ascii=False))
         return
 
+    incident: Dict[str, Any] | str
+    llm_label = f"{os.getenv('LLM_MODE','openai')}"
+
     try:
-        incident = _summarize(findings)  # supports either summarize(findings) or summarize_findings(findings)
-    except TypeError:
-        # In case some path expects named parameter
-        incident = _summarize(findings=findings)  # type: ignore
+        if PRIVACY_MODE == "raw":
+            findings = _to_findings(merged)
+            try:
+                incident = _summarize(findings)
+            except TypeError:
+                incident = _summarize(findings=findings)  # type: ignore
+        else:
+            ev_dicts = [e.dict() for e in merged]
+            payload = _prepare_privacy_payload(ev_dicts, args.window)
+
+            called = False
+            for attempt in (
+                lambda: _summarize(payload),
+                lambda: _summarize(data=payload),
+                lambda: _summarize(findings=payload),
+            ):
+                try:
+                    incident = attempt()
+                    called = True
+                    break
+                except TypeError:
+                    continue
+
+            if not called:
+                print("[master] WARN: summarizer rejected abstract payload; using local minimal summary.")
+                incident = _minimal_local_summary(merged, args.window)
+
+        # Annotate privacy banner if body present
+        if isinstance(incident, dict):
+            for k in ("markdown", "report", "body"):
+                if k in incident and isinstance(incident[k], str):
+                    incident[k] = _annotate_header(incident[k], llm_mode=llm_label)
+                    break
+        elif isinstance(incident, str):
+            incident = _annotate_header(incident, llm_mode=llm_label)
+
+    except Exception as e:
+        print(f"[master] ERROR: summarizer failed: {e}")
+        incident = _minimal_local_summary(merged, args.window)
+    # ---------------------------------------------------
 
     # Compact preview so you see it worked
+    sev  = incident.get("severity") if isinstance(incident, dict) else None
+    tldr = incident.get("tldr") if isinstance(incident, dict) else None
     preview = {
-        "severity": incident.get("severity") if isinstance(incident, dict) else None,
-        "tldr": incident.get("tldr") if isinstance(incident, dict) else None,
-        "items": len(findings),
+        "severity": sev,
+        "tldr": tldr,
+        "items": len(merged),
+        "privacy_mode": PRIVACY_MODE,
+        "errors": errors,  # surfaced to operator
     }
     print("----- Fleet Incident (preview) -----")
     print(json.dumps(preview, indent=2))

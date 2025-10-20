@@ -1,6 +1,8 @@
 ﻿param(
   [string] $WinlogbeatHome = "C:\Program Files\Winlogbeat",
-  [string] $RepoRoot       = "C:\tinysocs\tinysocs"
+  [string] $RepoRoot       = "C:\tinysocs\tinysocs",
+  [switch] $InstallTemplate,   # install/refresh index template (future indices)
+  [switch] $PatchExisting      # add .keyword subfields on existing winlogbeat-* indices
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -35,6 +37,66 @@ $SIEM_PASS = if ($env:SIEM_PASS) { $env:SIEM_PASS } else { "changeme" }
 # Translate SIEM_SSL_VERIFY -> Winlogbeat 'full'/'none'
 $sslRaw        = if ($env:SIEM_SSL_VERIFY) { "$($env:SIEM_SSL_VERIFY)".ToLower() } else { "false" }
 $WB_SSL_VERIFY = if (@("true","1","full") -contains $sslRaw) { "full" } else { "none" }
+
+# curl.exe -k toggling for OpenSearch calls
+$UseInsecureCurl = ($SIEM_URL -like "https*") -and ($WB_SSL_VERIFY -eq "none")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers to manage SIEM-side artifacts (OpenSearch/Elasticsearch-compatible)
+# ─────────────────────────────────────────────────────────────────────────────
+function Install-WinlogbeatTemplate {
+  param([string]$SiemUrl, [string]$User, [string]$Pass, [string]$RepoRoot, [bool]$InsecureCurl)
+
+  $template = Join-Path $RepoRoot "integrations\winlogbeat\winlogbeat_template_priority500.json"
+  if (!(Test-Path $template)) { throw "Template not found: $template" }
+
+  $args = @()
+  if ($InsecureCurl) { $args += "-k" }
+  $args += @("-u","$User:$Pass","-H","Content-Type: application/json","-X","PUT",
+             "$($SiemUrl.TrimEnd('/'))/_index_template/winlogbeat_keyword_template",
+             "--data-binary","@$template")
+
+  Write-Host "Installing/refreshing index template 'winlogbeat_keyword_template'..."
+  $null = & curl.exe @args
+}
+
+function Patch-WinlogbeatExisting {
+  param([string]$SiemUrl, [string]$User, [string]$Pass, [string]$RepoRoot, [bool]$InsecureCurl)
+
+  $mapping = Join-Path $RepoRoot "integrations\winlogbeat\winlogbeat_keyword_mapping.json"
+  if (!(Test-Path $mapping)) { throw "Mapping patch not found: $mapping" }
+
+  # list indices
+  $listArgs = @()
+  if ($InsecureCurl) { $listArgs += "-k" }
+  $listArgs += @("-s","-u","$User:$Pass","$($SiemUrl.TrimEnd('/'))/_cat/indices/winlogbeat-*?h=index&s=index")
+  $resp = & curl.exe @listArgs
+  if ($LASTEXITCODE -ne 0) { throw "Failed to list winlogbeat-* indices at $SiemUrl" }
+
+  $indices = ($resp -split "`n") | Where-Object { $_ -and ($_ -notmatch '^\s*$') }
+  if (-not $indices -or $indices.Count -eq 0) {
+    Write-Host "No winlogbeat-* indices found; nothing to patch." -ForegroundColor DarkYellow
+    return
+  }
+
+  foreach ($idx in $indices) {
+    Write-Host "Patching $idx..."
+    $patchArgs = @()
+    if ($InsecureCurl) { $patchArgs += "-k" }
+    $patchArgs += @("-u","$User:$Pass","-H","Content-Type: application/json","-X","PUT",
+                    "$($SiemUrl.TrimEnd('/'))/$idx/_mapping",
+                    "--data-binary","@$mapping")
+    & curl.exe @patchArgs | Write-Host
+  }
+
+  # quick sanity check
+  $fcArgs = @()
+  if ($InsecureCurl) { $fcArgs += "-k" }
+  $fcArgs += @("-u","$User:$Pass",
+    "$($SiemUrl.TrimEnd('/'))/winlogbeat-*/_field_caps?fields=host.name.keyword,user.name.keyword,process.name.keyword,winlog.computer_name.keyword")
+  Write-Host "Verifying field caps for *.keyword fields..."
+  & curl.exe @fcArgs | Write-Host
+}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Render template using literal string replacement (NO regex)
@@ -121,7 +183,7 @@ Write-Host $outText
 
 $licenseProbeError =
   ($outText -match 'could not connect to a compatible version of Elasticsearch') -and
-  ($outText -match 'Invalid index name \[_license\]') -and
+  ($outText -match 'Invalid index name $begin:math:display$_license$end:math:display$') -and
   ($outText -match '400 Bad Request')
 
 if (($exit -ne 0) -and (-not $licenseProbeError)) {
@@ -134,7 +196,6 @@ if (($exit -ne 0) -and (-not $licenseProbeError)) {
 try { Start-Service Winlogbeat } catch {}
 Start-Sleep -Seconds 1
 
-# Give it a few seconds to report "Running"
 $waitSw = [Diagnostics.Stopwatch]::StartNew()
 do {
   try {
@@ -146,3 +207,13 @@ do {
 
 (Get-Service Winlogbeat).Status | ForEach-Object { Write-Host "Winlogbeat service status: $_" }
 Write-Host "Deployed to $dest (ssl.verification_mode=$WB_SSL_VERIFY) -> $SIEM_URL"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OPTIONAL: SIEM-side setup
+# ─────────────────────────────────────────────────────────────────────────────
+if ($InstallTemplate) {
+  Install-WinlogbeatTemplate -SiemUrl $SIEM_URL -User $SIEM_USER -Pass $SIEM_PASS -RepoRoot $RepoRoot -InsecureCurl:$UseInsecureCurl
+}
+if ($PatchExisting) {
+  Patch-WinlogbeatExisting  -SiemUrl $SIEM_URL -User $SIEM_USER -Pass $SIEM_PASS -RepoRoot $RepoRoot -InsecureCurl:$UseInsecureCurl
+}

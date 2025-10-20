@@ -5,11 +5,15 @@ TinySocs Node API (FastAPI) — tailored to your current repo.
 Endpoints:
   GET /meta
   GET /agg      (multi-rule aggregates, no exemplars; uses AGGS only)
+  POST /agg     (JSON body; same behavior as GET /agg)
   GET /sample   (single rule with up to k exemplars; fetches small _source)
+  POST /sample  (JSON body; same behavior as GET /sample)
 
 Auth (HMAC v1):
   X-TinySOCS-Timestamp: unix seconds
   X-TinySOCS-Signature: sha256=<HMAC_SHA256(NODE_SECRET, timestamp)>
+  - Allowed skew: ±300s
+  - 5-minute replay cache on the exact timestamp value
 
 Backends:
   - Uses your adapters via `make_client()` and your `agent/detections/rules.yaml`.
@@ -29,12 +33,13 @@ import hashlib
 import hmac
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import FastAPI, Request, HTTPException, Depends, Query
+from fastapi import FastAPI, Request, HTTPException, Depends, Query, Body
 from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
+from pydantic import BaseModel, Field
 import uvicorn
 import yaml
 
@@ -43,7 +48,8 @@ from agent.detections.engine import _rules_path as rules_path_resolver
 from agent.models.evidence import DetectionEvidence, EvidenceExemplar
 
 # ----------- Limits / caps -----------
-ALLOWED_SKEW_SECONDS = 300
+ALLOWED_SKEW_SECONDS = 300             # ±5 minutes
+REPLAY_CACHE_SECONDS = 300             # reject re-use of the same timestamp for 5 minutes
 
 # Hard caps for API behavior
 AGG_TERMS_SIZE   = int(os.getenv("TINYSOCS_AGG_TERMS_SIZE", "50"))   # top-N groups returned
@@ -64,6 +70,13 @@ CAPABILITIES = ["agg", "sample"]
 
 _client = make_client()
 
+# ---------- Simple replay cache (timestamp -> expires_at_epoch) ----------
+_recent_timestamps: Dict[int, int] = {}
+
+def _replay_cache_gc(now: int) -> None:
+    stale = [ts for ts, exp in _recent_timestamps.items() if exp <= now]
+    for ts in stale:
+        _recent_timestamps.pop(ts, None)
 
 # ---------- Auth ----------
 def verify_hmac(request: Request) -> None:
@@ -92,26 +105,21 @@ def verify_hmac(request: Request) -> None:
     if not hmac.compare_digest(expected, sig_hdr):
         raise HTTPException(status_code=401, detail="Bad signature")
 
+    _replay_cache_gc(now)
+    exp = _recent_timestamps.get(ts)
+    if exp and exp > now:
+        raise HTTPException(status_code=401, detail="Replay detected")
+    _recent_timestamps[ts] = now + REPLAY_CACHE_SECONDS
+
 
 # ---------- Rule path + loading (robust) ----------
 def _guess_rules_path() -> Optional[Path]:
-    """
-    Find agent/detections/rules.yaml robustly, avoiding double 'agent/' prefixing.
-    Order:
-      1) TINYSOCS_RULES_PATH env (if set)
-      2) rules_path_resolver('detections/rules.yaml')
-      3) rules_path_resolver('agent/detections/rules.yaml')  # fallback
-      4) Common direct paths under REPO_ROOT
-      5) Targeted search within REPO_ROOT for '/agent/detections/rules.yaml'
-    """
-    # 1) explicit override
     env_path = os.getenv("TINYSOCS_RULES_PATH")
     if env_path:
         p = Path(env_path).expanduser()
         if p.is_file():
             return p
 
-    # 2) resolver without leading 'agent/'
     try:
         p = Path(rules_path_resolver("detections/rules.yaml"))
         if p.is_file():
@@ -119,7 +127,6 @@ def _guess_rules_path() -> Optional[Path]:
     except Exception:
         pass
 
-    # 3) resolver with 'agent/' (older helpers expect this)
     try:
         p = Path(rules_path_resolver("agent/detections/rules.yaml"))
         if p.is_file():
@@ -127,7 +134,6 @@ def _guess_rules_path() -> Optional[Path]:
     except Exception:
         pass
 
-    # 4) direct common locations
     direct_candidates = [
         REPO_ROOT / "agent" / "detections" / "rules.yaml",
         REPO_ROOT / "detections" / "rules.yaml",
@@ -136,9 +142,7 @@ def _guess_rules_path() -> Optional[Path]:
         if p.is_file():
             return p
 
-    # 5) targeted walk (cheap — depth is shallow)
     for p in REPO_ROOT.rglob("rules.yaml"):
-        # Prefer the canonical path containing agent/detections
         lower = str(p.as_posix()).lower()
         if "/agent/detections/" in lower or "\\agent\\detections\\" in str(p):
             return p
@@ -147,10 +151,6 @@ def _guess_rules_path() -> Optional[Path]:
 
 
 def _load_rules() -> List[Dict[str, Any]]:
-    """
-    Try hard to find & load rules; if not found, return [] and let endpoints
-    report 'ruleset_not_loaded' instead of raising 500.
-    """
     path = _guess_rules_path()
     if not path:
         print("[node] WARN: could not locate 'agent/detections/rules.yaml' — set TINYSOCS_RULES_PATH to override.", flush=True)
@@ -171,15 +171,69 @@ def _find_rule(rule_id: str, rules: List[Dict[str, Any]]) -> Optional[Dict[str, 
     return None
 
 
+# ---------- Time window helpers ----------
+def _parse_window(window: str) -> timedelta:
+    """
+    Parse simple windows like '15m', '1h', '24h', '7d'.
+    Also accepts 'now-15m' style and returns 15m.
+    """
+    w = (window or "").strip().lower()
+    if not w:
+        return timedelta(minutes=15)
+    if w.startswith("now-"):
+        w = w[4:]
+    unit = w[-1]
+    try:
+        value = float(w[:-1])
+    except Exception:
+        # fallback: minutes
+        return timedelta(minutes=15)
+    if unit == "s":
+        return timedelta(seconds=value)
+    if unit == "m":
+        return timedelta(minutes=value)
+    if unit == "h":
+        return timedelta(hours=value)
+    if unit == "d":
+        return timedelta(days=value)
+    # default minutes when unknown
+    return timedelta(minutes=value)
+
+
+def _time_bounds_iso(window: str) -> Tuple[str, str]:
+    """Return (gte_iso, lte_iso) in UTC ISO8601 with Z."""
+    now = datetime.now(timezone.utc)
+    delta = _parse_window(window)
+    gte = now - delta
+    # strip microseconds for nicer query_string
+    gte_s = gte.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    lte_s = now.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return gte_s, lte_s
+
+
+def _add_time_to_kql(kql: str, window: str) -> str:
+    """Append an @timestamp range to the Lucene query_string we send to OS/ES."""
+    gte, lte = _time_bounds_iso(window)
+    time_clause = f'@timestamp:[{gte} TO {lte}]'
+    if not kql:
+        return time_clause
+    return f"({kql}) AND {time_clause}"
+
+
+def _range_filter(window: str) -> Dict[str, Any]:
+    gte, lte = _time_bounds_iso(window)
+    return {"range": {"@timestamp": {"gte": gte, "lte": lte}}}
+
+
 # ---------- Count helper (agg-only, adapter-agnostic) ----------
-def _count_for_kql(index: str, kql: str) -> int:
-    """
-    Compute total hits for a query without relying on adapter-specific return shapes.
-    Trick: run the query with size:0 and a 'filter' aggregation over match_all().
-    The filter agg doc_count equals hits.total for the parent query.
-    """
+def _count_for_kql(index: str, kql: str, window: str) -> int:
     dsl: Dict[str, Any] = {
-        "query": {"query_string": {"query": kql}},
+        "query": {
+            "bool": {
+                "must": [{"query_string": {"query": _add_time_to_kql(kql, window)}}],
+                "filter": [],
+            }
+        },
         "size": 0,
         "aggs": {"q": {"filter": {"match_all": {}}}},
         "stored_fields": "_none_",
@@ -193,33 +247,56 @@ def _count_for_kql(index: str, kql: str) -> int:
 
 # --------------------- Aggregation-first execution ---------------------
 def _agg_for_rule(rule: Dict[str, Any], window: str, host: Optional[str]) -> Tuple[int, Dict[str, Any]]:
-    """
-    Execute an aggregate-only view of a rule:
-      - returns (total_count, summary) using 'size:0' + 'filter' agg + terms aggs.
-      - never pulls _source -> safe on small OpenSearch heaps.
-    """
     index = rule.get("index", "winlogbeat-*")
     kql = rule["kql"]
 
+    # Prefer keyword fields for aggregations
+    def _kw(field: str) -> str:
+        f = (field or "").strip()
+        if f.endswith(".keyword") or f.endswith(".raw"):
+            return f
+        return f + ".keyword"
+
+    # host filter (as keyword)
     if host:
-        host_clause = f'(host.name:"{host}" OR winlog.computer_name:"{host}")'
+        host_clause = f'(host.name.keyword:"{host}" OR winlog.computer_name.keyword:"{host}")'
         kql = f"({kql}) AND {host_clause}"
 
-    # Base DSL scaffold (we will add aggs below)
-    base_query = {"query": {"query_string": {"query": kql}}, "size": 0, "stored_fields": "_none_"}
+    # time filter (added into the query_string to keep adapter compatibility)
+    kql = _add_time_to_kql(kql, window)
+
+    # and in DSL too (bool + query_string + filter)
+    base_query = {
+        "query": {
+            "bool": {
+                "must": [{"query_string": {"query": kql}}],
+                "filter": [_range_filter(window)],
+            }
+        },
+        "size": 0,
+        "stored_fields": "_none_",
+    }
 
     summary: Dict[str, Any] = {"index": index}
     group_by = rule.get("group_by")
     threshold = rule.get("threshold")
 
-    # First: get total matches via filter-agg trick
-    total_count = _count_for_kql(index, kql)
+    # Normalize group_by and produce an "effective" keyword version
+    gb_list: Optional[List[str]] = None
+    gb_effective: Optional[List[str]] = None
+    if group_by:
+        if isinstance(group_by, str):
+            gb_list = [group_by]
+        elif isinstance(group_by, list):
+            gb_list = [str(x) for x in group_by]
+        else:
+            gb_list = [str(group_by)]
+        gb_effective = [_kw(f) for f in gb_list]
 
-    # If rule has grouping+threshold, push it into a terms agg
-    if group_by and threshold:
+    total_count = _count_for_kql(index, kql, window)
+
+    if gb_effective and threshold:
         def build_terms(fields: List[str], min_count: int, size: int) -> Dict[str, Any]:
-            if not fields:
-                return {}
             head, *rest = fields
             node = {
                 "terms": {
@@ -233,12 +310,57 @@ def _agg_for_rule(rule: Dict[str, Any], window: str, host: Optional[str]) -> Tup
             return node
 
         dsl = dict(base_query)
-        dsl["aggs"] = {"groups": build_terms(group_by, int(threshold), AGG_TERMS_SIZE)}
+        dsl["aggs"] = {"groups": build_terms(gb_effective, int(threshold), AGG_TERMS_SIZE)}
+
+        # Helper to transform .keyword → .raw (or append .raw) for a retry
+        def _kw_to_raw(node: Dict[str, Any]) -> None:
+            if "terms" in node and "field" in node["terms"]:
+                f = node["terms"]["field"]
+                if isinstance(f, str):
+                    if f.endswith(".keyword"):
+                        node["terms"]["field"] = f[:-8] + ".raw"
+                    elif not f.endswith(".raw"):
+                        node["terms"]["field"] = f + ".raw"
+            if "aggs" in node and isinstance(node["aggs"], dict):
+                for child in node["aggs"].values():
+                    if isinstance(child, dict):
+                        _kw_to_raw(child)
 
         try:
             aggs = _client.aggregate(index=index, dsl=dsl) or {}
         except Exception as e:
-            return total_count, {"index": index, "error": f"agg_failed: {type(e).__name__}: {e}"}
+            msg = str(e)
+            # Retry once with .raw if mapping lacks keyword fields / fielddata disabled
+            if ("text fields are not" in msg.lower()) or ("fielddata=true" in msg.lower()) or ("not optimised" in msg.lower()):
+                dsl_retry = dict(base_query)
+                dsl_retry["aggs"] = {"groups": build_terms(gb_effective, int(threshold), AGG_TERMS_SIZE)}
+                _kw_to_raw(dsl_retry["aggs"]["groups"])
+                try:
+                    aggs = _client.aggregate(index=index, dsl=dsl_retry) or {}
+                    # Also reflect the effective fields we actually used
+                    gb_effective = []
+                    def _collect_fields(node: Dict[str, Any]) -> None:
+                        if "terms" in node and "field" in node["terms"]:
+                            gb_effective.append(node["terms"]["field"])
+                        if "aggs" in node and isinstance(node["aggs"], dict):
+                            for child in node["aggs"].values():
+                                if isinstance(child, dict):
+                                    _collect_fields(child)
+                    _collect_fields(dsl_retry["aggs"]["groups"])
+                except Exception as e2:
+                    return total_count, {
+                        "index": index,
+                        "group_by": gb_list,
+                        "group_by_effective": gb_effective,
+                        "error": f"agg_failed_after_retry: {type(e2).__name__}: {e2}"
+                    }
+            else:
+                return total_count, {
+                    "index": index,
+                    "group_by": gb_list,
+                    "group_by_effective": gb_effective,
+                    "error": f"agg_failed: {type(e).__name__}: {e}"
+                }
 
         groups_over: List[Dict[str, Any]] = []
 
@@ -255,20 +377,20 @@ def _agg_for_rule(rule: Dict[str, Any], window: str, host: Optional[str]) -> Tup
                     flatten_buckets(inner, fields_left[1:], acc + [key])
 
         buckets = (aggs.get("groups", {}) or {}).get("buckets", []) or []
-        flatten_buckets(buckets, group_by, [])
+        flatten_buckets(buckets, gb_effective, [])
         groups_over.sort(key=lambda x: x["count"], reverse=True)
         summary.update({
-            "group_by": group_by,
+            "group_by": gb_list,
+            "group_by_effective": gb_effective,
             "threshold": threshold,
             "groups_over_threshold": groups_over[:AGG_TERMS_SIZE],
             "total_groups": len(groups_over),
         })
     else:
-        # Lightweight sketch using aggs on common fields (no _source):
         dsl2 = dict(base_query)
         dsl2["aggs"] = {
-            "top_users": {"terms": {"field": "user.name", "size": 5}},
-            "top_processes": {"terms": {"field": "process.name", "size": 5}},
+            "top_users": {"terms": {"field": _kw("user.name"), "size": 5}},
+            "top_processes": {"terms": {"field": _kw("process.name"), "size": 5}},
         }
         try:
             a2 = _client.aggregate(index=index, dsl=dsl2) or {}
@@ -277,7 +399,6 @@ def _agg_for_rule(rule: Dict[str, Any], window: str, host: Optional[str]) -> Tup
                 "top_processes": [b["key"] for b in (a2.get("top_processes", {}) or {}).get("buckets", [])],
             })
         except Exception:
-            # ignore if fields unmapped
             pass
 
     return total_count, summary
@@ -307,8 +428,21 @@ def _make_exemplars(docs: List[Dict[str, Any]], k: int, host: Optional[str]) -> 
     return ex
 
 
+# ---------- Pydantic request bodies for POST parity ----------
+class AggRequest(BaseModel):
+    rules: str = Field(..., description="Comma-separated rule IDs")
+    window: str = Field(..., description="Time window, e.g., 15m")
+    host: Optional[str] = Field(None, description="Optional host filter")
+
+class SampleRequest(BaseModel):
+    rule: str
+    window: str
+    host: Optional[str] = None
+    k: int = Field(5, ge=1, le=SAMPLE_MAX_DOCS)
+
+
 # ---------- App ----------
-app = FastAPI(title="TinySocs Node API", version="0.3.2")
+app = FastAPI(title="TinySocs Node API", version="0.4.4")
 
 
 @app.get("/meta")
@@ -324,15 +458,23 @@ async def meta(_: None = Depends(verify_hmac)) -> Dict[str, Any]:
 
 
 @app.get("/agg")
-async def agg(
+async def agg_get(
     _: None = Depends(verify_hmac),
     rules: str = Query(..., description="Comma-separated rule IDs"),
     window: str = Query(..., description="Time window, e.g., 15m"),
     host: Optional[str] = Query(None),
 ) -> List[DetectionEvidence]:
+    return await _agg_impl(rules, window, host)
+
+
+@app.post("/agg")
+async def agg_post(_: None = Depends(verify_hmac), body: AggRequest = Body(...)) -> List[DetectionEvidence]:
+    return await _agg_impl(body.rules, body.window, body.host)
+
+
+async def _agg_impl(rules: str, window: str, host: Optional[str]) -> List[DetectionEvidence]:
     ruleset = _load_rules()
     if not ruleset:
-        # If the ruleset failed to load, report per-rule errors instead of 500
         rule_list = [r.strip() for r in rules.split(",") if r.strip()]
         out: List[DetectionEvidence] = []
         for rid in rule_list:
@@ -351,22 +493,29 @@ async def agg(
         try:
             count, summary = _agg_for_rule(r, window, host)
         except Exception as e:
-            # ultra-defensive – should be caught inside _agg_for_rule, but keep node alive
             count, summary = 0, {"error": f"agg_unhandled: {type(e).__name__}: {e}"}
         ev = DetectionEvidence(rule=rid, window=window, host=host, count=count, summary=summary, exemplars=[]).materialize()
         out.append(ev)
-    # Ensure JSON-safe output (datetimes -> ISO)
     return JSONResponse(content=jsonable_encoder([e.dict() for e in out]))
 
 
 @app.get("/sample")
-async def sample(
+async def sample_get(
     _: None = Depends(verify_hmac),
     rule: str = Query(...),
     window: str = Query(...),
     host: Optional[str] = Query(None),
     k: int = Query(5, ge=1, le=SAMPLE_MAX_DOCS),
 ) -> DetectionEvidence:
+    return await _sample_impl(rule, window, host, k)
+
+
+@app.post("/sample")
+async def sample_post(_: None = Depends(verify_hmac), body: SampleRequest = Body(...)) -> DetectionEvidence:
+    return await _sample_impl(body.rule, body.window, body.host, body.k)
+
+
+async def _sample_impl(rule: str, window: str, host: Optional[str], k: int) -> DetectionEvidence:
     ruleset = _load_rules()
     if not ruleset:
         ev = DetectionEvidence(rule=rule, window=window, host=host, count=0, summary={"error": "ruleset_not_loaded"}, exemplars=[]).materialize()
@@ -379,15 +528,18 @@ async def sample(
 
     index = r.get("index", "winlogbeat-*")
     kql = r["kql"]
+
     if host:
-        host_clause = f'(host.name:"{host}" OR winlog.computer_name:"{host}")'
+        host_clause = f'(host.name.keyword:"{host}" OR winlog.computer_name.keyword:"{host}")'
         kql = f"({kql}) AND {host_clause}"
 
-    # For sampling, fetch small _source sets only; clamp by NODE_MAX_HITS too
+    # Apply time in KQL so adapters that only accept kql still filter correctly
+    kql_with_time = _add_time_to_kql(kql, window)
+
     fetch_n = min(k, SAMPLE_MAX_DOCS, NODE_MAX_HITS)
     try:
-        # Adapters return list of _source dicts here
-        docs = _client.search_kql(index=index, kql=kql, size=fetch_n) or []
+        # Prefer KQL search for exemplars (adapter interface), but with time appended
+        docs = _client.search_kql(index=index, kql=kql_with_time, size=fetch_n) or []
     except Exception as e:
         ev = DetectionEvidence(
             rule=rule, window=window, host=host, count=0,
@@ -396,13 +548,11 @@ async def sample(
         ).materialize()
         return JSONResponse(content=jsonable_encoder(ev.dict()))
 
-    # Get an exact-ish count via the same agg trick (no adapter special cases)
     try:
-        total_count = _count_for_kql(index, kql)
+        total_count = _count_for_kql(index, kql, window)
     except Exception:
         total_count = len(docs)
 
-    # Provide a minimal summary (re-use AGG-based quick sketch)
     try:
         _, summary = _agg_for_rule(r, window, host)
     except Exception as e:

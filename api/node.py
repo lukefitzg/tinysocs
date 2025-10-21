@@ -8,6 +8,8 @@ Endpoints:
   POST /agg     (JSON body; same behavior as GET /agg)
   GET /sample   (single rule with up to k exemplars; fetches small _source)
   POST /sample  (JSON body; same behavior as GET /sample)
+  GET /evidence/head     (tamper-evidence: report current head + chain status)
+  POST /evidence/append  (tamper-evidence: append compact payload anchor)
 
 Auth (HMAC v1):
   X-TinySOCS-Timestamp: unix seconds
@@ -69,6 +71,19 @@ RULESET      = _env("RULESET", "default")
 CAPABILITIES = ["agg", "sample"]
 
 _client = make_client()
+
+# ---------- Optional ledger imports (tamper-evidence) ----------
+LEDGER_AVAILABLE = True
+try:
+    from agent.models.ledger import (
+        append_entry as _ledger_append,
+        _read_head as _ledger_read_head,
+        verify_chain as _ledger_verify_chain,
+    )
+    # Advertise capability when present
+    CAPABILITIES = CAPABILITIES + ["ledger"]
+except Exception:
+    LEDGER_AVAILABLE = False
 
 # ---------- Simple replay cache (timestamp -> expires_at_epoch) ----------
 _recent_timestamps: Dict[int, int] = {}
@@ -220,6 +235,19 @@ def _add_time_to_kql(kql: str, window: str) -> str:
     return f"({kql}) AND {time_clause}"
 
 
+def _add_time_to_kql_kibana(kql: str, window: str) -> str:
+    """
+    Append a KQL-native time clause for adapters that expect Kibana KQL (not Lucene):
+      @timestamp >= now-15m and @timestamp <= now
+    """
+    w = (window or "15m").strip().lower()
+    time_clause = f'@timestamp >= now-{w} and @timestamp <= now'
+    k = (kql or "").strip()
+    if not k:
+        return time_clause
+    return f"({k}) and ({time_clause})"
+
+
 def _range_filter(window: str) -> Dict[str, Any]:
     gte, lte = _time_bounds_iso(window)
     return {"range": {"@timestamp": {"gte": gte, "lte": lte}}}
@@ -227,11 +255,12 @@ def _range_filter(window: str) -> Dict[str, Any]:
 
 # ---------- Count helper (agg-only, adapter-agnostic) ----------
 def _count_for_kql(index: str, kql: str, window: str) -> int:
+    # Use DSL range filter; do NOT inject Lucene time into the query_string.
     dsl: Dict[str, Any] = {
         "query": {
             "bool": {
-                "must": [{"query_string": {"query": _add_time_to_kql(kql, window)}}],
-                "filter": [],
+                "must": [{"query_string": {"query": (kql or "")}}],
+                "filter": [_range_filter(window)],
             }
         },
         "size": 0,
@@ -262,14 +291,12 @@ def _agg_for_rule(rule: Dict[str, Any], window: str, host: Optional[str]) -> Tup
         host_clause = f'(host.name.keyword:"{host}" OR winlog.computer_name.keyword:"{host}")'
         kql = f"({kql}) AND {host_clause}"
 
-    # time filter (added into the query_string to keep adapter compatibility)
-    kql = _add_time_to_kql(kql, window)
+    # NOTE: do not append Lucene time to kql here; rely on DSL range instead.
 
-    # and in DSL too (bool + query_string + filter)
     base_query = {
         "query": {
             "bool": {
-                "must": [{"query_string": {"query": kql}}],
+                "must": [{"query_string": {"query": (kql or "")}}],
                 "filter": [_range_filter(window)],
             }
         },
@@ -440,9 +467,12 @@ class SampleRequest(BaseModel):
     host: Optional[str] = None
     k: int = Field(5, ge=1, le=SAMPLE_MAX_DOCS)
 
+class LedgerAppendRequest(BaseModel):
+    payload: Dict[str, Any]
+
 
 # ---------- App ----------
-app = FastAPI(title="TinySocs Node API", version="0.4.4")
+app = FastAPI(title="TinySocs Node API", version="0.5.1")
 
 
 @app.get("/meta")
@@ -533,12 +563,12 @@ async def _sample_impl(rule: str, window: str, host: Optional[str], k: int) -> D
         host_clause = f'(host.name.keyword:"{host}" OR winlog.computer_name.keyword:"{host}")'
         kql = f"({kql}) AND {host_clause}"
 
-    # Apply time in KQL so adapters that only accept kql still filter correctly
-    kql_with_time = _add_time_to_kql(kql, window)
+    # Apply time with KQL-native date math so adapters that expect KQL return hits
+    kql_with_time = _add_time_to_kql_kibana(kql, window)
 
     fetch_n = min(k, SAMPLE_MAX_DOCS, NODE_MAX_HITS)
     try:
-        # Prefer KQL search for exemplars (adapter interface), but with time appended
+        # Prefer KQL search for exemplars (adapter interface), with KQL-native time
         docs = _client.search_kql(index=index, kql=kql_with_time, size=fetch_n) or []
     except Exception as e:
         ev = DetectionEvidence(
@@ -561,6 +591,28 @@ async def _sample_impl(rule: str, window: str, host: Optional[str], k: int) -> D
     exemplars = _make_exemplars(docs, fetch_n, host)
     ev = DetectionEvidence(rule=rule, window=window, host=host, count=total_count, summary=summary, exemplars=exemplars).materialize()
     return JSONResponse(content=jsonable_encoder(ev.dict()))
+
+# ---------- Tamper-evidence endpoints ----------
+@app.get("/evidence/head")
+async def evidence_head(_: None = Depends(verify_hmac)) -> Dict[str, Any]:
+    if not LEDGER_AVAILABLE:
+        raise HTTPException(status_code=501, detail="Ledger not available on this node")
+    seq, head = _ledger_read_head(NODE_ID)
+    ok, last_seq, last_head = _ledger_verify_chain(NODE_ID)
+    return {
+        "node_id": NODE_ID,
+        "ok": ok,
+        "sequence": (last_seq if ok else seq),
+        "head_sha256": (last_head if ok else head),
+        "capability": "ledger",
+    }
+
+@app.post("/evidence/append")
+async def evidence_append(_: None = Depends(verify_hmac), body: LedgerAppendRequest = Body(...)) -> Dict[str, Any]:
+    if not LEDGER_AVAILABLE:
+        raise HTTPException(status_code=501, detail="Ledger not available on this node")
+    entry = _ledger_append(NODE_ID, body.payload)
+    return {"node_id": NODE_ID, "entry": entry.to_json()}
 
 
 if __name__ == "__main__":

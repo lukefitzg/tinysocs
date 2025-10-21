@@ -1132,3 +1132,20 @@ function Start-TinySOCS-ElasticFull {
   )
   Start-TinySOCS -Backend elastic -Full:$true -Role $Role -LocalLLM:$LocalLLM -NodePort $NodePort -Nodes $Nodes -Rules $Rules -Window $Window
 }
+
+function Install-TinySOCS-MasterTask {
+  param(
+    [string]$TaskName = "TinySOCS-Master-5min",
+    [string]$Nodes    = $env:TINYSOCS_NODES -as [string] ?? "http://localhost:8081",
+    [string]$Rules    = "auth_failed_burst,ps_script_block,suspicious_powershell,lolbin_execs",
+    [string]$Window   = "15m"
+  )
+  $script = Join-Path $PSScriptRoot "tools\install-master-task.ps1"
+  & $script -TaskName $TaskName -Nodes $Nodes -Rules $Rules -Window $Window
+}
+
+function Remove-TinySOCS-MasterTask {
+  param([string]$TaskName = "TinySOCS-Master-5min")
+  $script = Join-Path $PSScriptRoot "tools\remove-master-task.ps1"
+  & $script -TaskName $TaskName
+}

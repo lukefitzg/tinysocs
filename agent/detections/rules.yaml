@@ -37,7 +37,9 @@
   kql: >
     (event.code:4104 OR winlog.event_id:4104)
     AND (winlog.channel:"Microsoft-Windows-PowerShell/Operational" OR channel:"Microsoft-Windows-PowerShell/Operational")
-  group_by: ["host.name","user.name"]
+  # NOTE: Terms aggs drop docs when a grouped field is missing. 4104 often lacks user.name,
+  # so grouping on ["host.name","user.name"] yields zero buckets. Group by host only.
+  group_by: ["host.name"]
   threshold: 3
   severity: medium
   category: powershell
@@ -233,3 +235,65 @@
   threshold: 1
   severity: medium
   category: cloud
+
+  # ===== Lab-only, low-threshold kickers =====
+
+- id: ps_script_block_lab
+  description: PowerShell ScriptBlock (4104) — lab, group by host only
+  index: "winlogbeat-*"
+  kql: >
+    (event.code:4104 OR winlog.event_id:4104)
+  # 4104 often lacks user.name; group by host only so buckets form reliably
+  group_by: ["host.name"]
+  threshold: 1
+  severity: medium
+  category: powershell
+
+- id: proc_creation_powershell_suspicious_lab
+  description: PowerShell suspicious flags (4688 or Sysmon 1) — lab, threshold 1
+  index: "winlogbeat-*"
+  kql: >
+    (event.code:(4688 OR 1) OR winlog.event_id:(4688 OR 1))
+    AND (
+      process.name:(powershell.exe pwsh.exe)
+      OR process.executable:(*\\powershell.exe *\\pwsh.exe)
+      OR winlog.event_data.NewProcessName:(*\\powershell.exe *\\pwsh.exe)
+    )
+    AND (
+      process.command_line:(*-EncodedCommand* OR *-enc* OR *-NoProfile* OR *-nop* OR *-WindowStyle* OR *-w* OR *-Command*)
+      OR winlog.event_data.CommandLine:(*-EncodedCommand* OR *-enc* OR *-NoProfile* OR *-nop* OR *-WindowStyle* OR *-w* OR *-Command*)
+    )
+  group_by: ["host.name","user.name"]
+  threshold: 1
+  severity: high
+  category: powershell
+
+- id: proc_creation_lolbins_lab
+  description: LOLBIN executions (4688 or Sysmon 1) — lab, threshold 1
+  index: "winlogbeat-*"
+  kql: >
+    (event.code:(4688 OR 1) OR winlog.event_id:(4688 OR 1))
+    AND (
+      process.name:(rundll32.exe regsvr32.exe mshta.exe wmic.exe certutil.exe)
+      OR process.executable:(*\\rundll32.exe *\\regsvr32.exe *\\mshta.exe *\\wmic.exe *\\certutil.exe)
+      OR winlog.event_data.NewProcessName:(*\\rundll32.exe *\\regsvr32.exe *\\mshta.exe *\\wmic.exe *\\certutil.exe)
+    )
+  group_by: ["host.name","process.name"]
+  threshold: 1
+  severity: high
+  category: endpoint
+
+- id: lolbin_execs_lab
+  description: Multiple LOLBINs in short window — lab, threshold 2
+  index: "winlogbeat-*"
+  kql: >
+    (event.code:4688 OR winlog.event_id:4688)
+    AND (
+      process.name:("rundll32.exe" "regsvr32.exe" "mshta.exe" "certutil.exe" "powershell.exe" "wmic.exe" "pwsh.exe")
+      OR process.executable:(*\\rundll32.exe *\\regsvr32.exe *\\mshta.exe *\\certutil.exe *\\powershell.exe *\\wmic.exe *\\pwsh.exe)
+      OR winlog.event_data.NewProcessName:(*\\rundll32.exe *\\regsvr32.exe *\\mshta.exe *\\certutil.exe *\\powershell.exe *\\wmic.exe *\\pwsh.exe)
+    )
+  group_by: ["host.name","user.name"]
+  threshold: 2
+  severity: medium
+  category: endpoint

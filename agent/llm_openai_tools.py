@@ -42,8 +42,22 @@ ALLOW_INDICES   = [s.strip() for s in os.getenv("LLM_TOOL_INDEX_ALLOW", "winlogb
 DEFAULT_INDEX   = ALLOW_INDICES[0] if ALLOW_INDICES else "winlogbeat-*"
 
 # ▶ persistence toggles
-CASE_INDEX = os.getenv("SIEM_CASE_INDEX", "siem_index")
+# Prefer explicit case index; otherwise use write index; finally default.
+CASE_INDEX = (
+    os.getenv("SIEM_CASE_INDEX")
+    or os.getenv("SIEM_INDEX_WRITE")
+    or "siem_index"
+)
 PERSIST    = str(os.getenv("SIEM_PERSIST_CASES", "1")).lower() in ("1","true","yes","on")
+
+# High-signal rules that should not end up as "Low" if they fire
+HIGH_SIGNAL_RULES = {
+    "proc_creation_powershell_suspicious",
+    "proc_creation_lolbins",
+    "lolbin_execs",
+    "ps_script_block",
+    "auth_failed_burst",
+}
 
 def _ensure_index(os_client):
     """Create CASE_INDEX if it doesn't exist (idempotent)."""
@@ -266,30 +280,56 @@ def _coerce_incident(obj, findings):
 
 def _enforce_consistency(incident: Dict[str, Any], findings: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Ensure TL;DR isn't claiming 'no events' when evidence shows counts.
-    Also guarantees a severity is present.
+    Final guardrails:
+      - If TL;DR says "no events" but our findings show counts, override TL;DR.
+      - If high-signal rules fired and severity is too low, bump to at least Medium.
+      - Ensure severity is always present.
     """
+    # Derive totals/rules from both incident.evidence and raw findings
     ev = incident.get("evidence") or []
-    total = 0
-    rules = []
+    total_from_ev = 0
+    rules_from_ev: List[str] = []
     for e in ev:
         if isinstance(e, dict):
             try:
-                total += int(e.get("count") or 0)
+                total_from_ev += int(e.get("count") or 0)
             except Exception:
                 pass
             r = e.get("rule")
             if isinstance(r, str):
-                rules.append(r)
+                rules_from_ev.append(r)
+
+    total_from_findings = 0
+    rules_from_findings: List[str] = []
+    for f in findings or []:
+        try:
+            total_from_findings += int((f or {}).get("count") or 0)
+        except Exception:
+            pass
+        r = (f or {}).get("rule")
+        if r:
+            rules_from_findings.append(str(r))
+
+    total = max(total_from_ev, total_from_findings)
+    rules = rules_from_ev or rules_from_findings
 
     tldr = (incident.get("tldr") or "").strip()
-    says_none = ("no " in tldr.lower() and "event" in tldr.lower())
-    if total > 0 and says_none:
-        uniq_rules = ", ".join(sorted(set(rules))) if rules else "detections"
-        incident["tldr"] = f"{total} event(s) detected across {uniq_rules}."
+    tldr_l = tldr.lower()
+    looks_negative = (
+        ("no " in tldr_l or "none " in tldr_l or "not detected" in tldr_l)
+        and any(w in tldr_l for w in ("event","powershell","authentication","suspicious","script block"))
+    )
 
-    if not incident.get("severity"):
-        incident["severity"] = "Low"
+    if total > 0 and (not tldr or looks_negative):
+        uniq_rules = sorted(set(rules))
+        short_rules = ", ".join(uniq_rules) if uniq_rules else "detections"
+        incident["tldr"] = f"Detected {total} event(s) across {len(uniq_rules) or 1} rule(s): {short_rules}."
+
+    # Severity floor if high-signal rules fired
+    sev = (incident.get("severity") or "").strip().title() or "Low"
+    if set(rules).intersection(HIGH_SIGNAL_RULES) and sev in {"", "Low"}:
+        sev = "Medium"
+    incident["severity"] = sev
 
     return incident
 

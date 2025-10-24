@@ -1,4 +1,4 @@
-# tinysocs/orchestrator/master.py
+﻿# tinysocs/orchestrator/master.py
 """
 TinySocs Master Aggregator — runs from tinysocs/tinysocs just fine.
 
@@ -22,14 +22,14 @@ Notifications (Phase 3.6):
 - Optional Slack / Google Chat / Email preview notifications via env flags.
 """
 
-from _future_ import annotations
+from __future__ import annotations
 
 # --- Bootstrapping so running from C:\tinysocs\tinysocs works ---
 import sys
 from pathlib import Path
 
-# This file lives at: <REPO_ROOT>/tinysocS/orchestrator/master.py
-REPO_ROOT = Path(file_).resolve().parents[2]
+# This file lives at: <REPO_ROOT>/tinysocs/orchestrator/master.py
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 _PKG_ROOT  = _REPO_ROOT / "tinysocs"
 _AGENT_DIR = _PKG_ROOT / "agent"
 
@@ -65,20 +65,37 @@ import yaml  # <-- used for actions.yaml
 from tinysocs.agent.models.evidence import DetectionEvidence
 
 # Privacy adapter (new)
+# We want PRIVACY_MODE available regardless of import success.
+PRIVACY_MODE = os.getenv("PRIVACY_MODE", "abstract").strip().lower()
+
 try:
     from tinysocs.agent.summarizer_adapter import (
         prepare_payload as _prepare_privacy_payload,
         annotate_report_header as _annotate_header,
-        PRIVACY_MODE,
+        PRIVACY_MODE as _ADAPTER_PRIVACY_MODE,
     )
+    # If adapter provides a value, prefer it.
+    if _ADAPTER_PRIVACY_MODE:
+        PRIVACY_MODE = (_ADAPTER_PRIVACY_MODE or PRIVACY_MODE).strip().lower()
 except Exception as _e:
     # Fallback if file not present yet
     def _prepare_privacy_payload(evidences: List[Dict[str, Any]], window: str) -> Dict[str, Any]:
         return {"mode": "raw", "window": window, "evidences": evidences}
+
     def _annotate_header(md: str, llm_mode: str = "openai") -> str:
         return md
-    PRIVACY_MODE = os.getenv("PRIVACY_MODE", "raw").strip().lower()
+
     print(f"[master] WARN: summarizer_adapter not available: {_e}. Using raw fallback.")
+    # In fallback we keep PRIVACY_MODE from env (default abstract), but the payload we prepare is raw-ish.
+
+# Define this unconditionally so preview never breaks
+def _display_privacy_mode() -> str:
+    """
+    Normalize PRIVACY_MODE for operator preview. Only 'raw' or 'abstract'.
+    """
+    m = (PRIVACY_MODE or "abstract").strip().split()[0].lower()
+    return "raw" if m == "raw" else "abstract"
+
 
 # Resilient summarizer import (support either summarize or summarize_findings)
 try:
@@ -177,7 +194,7 @@ def merge_evidence(batches: List[List[DetectionEvidence]]) -> List[DetectionEvid
 
 
 def _to_findings(ev_list: List[DetectionEvidence]) -> List[Dict[str, Any]]:
-    """Convert DetectionEvidence → summarizer 'findings' shape (legacy/raw path)."""
+    """Convert DetectionEvidence -> summarizer 'findings' shape (legacy/raw path)."""
     findings: List[Dict[str, Any]] = []
     for ev in ev_list:
         f: Dict[str, Any] = {
@@ -276,7 +293,7 @@ def _render_actions_md(merged: List[DetectionEvidence]) -> str:
             label = str(it.get("label") or "Action")
             cmd   = str(it.get("cmd") or "").strip()
             if cmd:
-                lines.append(f"- [ ] {label}: {cmd}")
+                lines.append(f"- [ ] {label}: `{cmd}`")
             else:
                 lines.append(f"- [ ] {label}")
         lines.append("")  # spacer between rules
@@ -300,12 +317,12 @@ def notify_slack(preview: Dict[str, Any], incident: Optional[Dict[str, Any]]) ->
     sev  = preview.get("severity") or "unknown"
     tldr = preview.get("tldr") or "(no TL;DR)"
     items = preview.get("items", 0)
-    text = f"TinySocs: {sev} · {items} item(s)\n• {tldr}"
+    text = f"TinySocs: {sev} · {items} item(s)\n- {tldr}"
 
     if incident and _privacy_share_body():
         more = incident.get("markdown") or incident.get("report") or incident.get("body")
         if more:
-            text = text + "\n\n" + textwrap.shorten(more, width=3000, placeholder=" …")
+            text = text + "\n\n" + textwrap.shorten(more, width=3000, placeholder=" ...")
     try:
         requests.post(url, json={"text": text}, timeout=4)
     except Exception as e:
@@ -320,12 +337,12 @@ def notify_gchat(preview: Dict[str, Any], incident: Optional[Dict[str, Any]]) ->
     sev  = preview.get("severity") or "unknown"
     tldr = preview.get("tldr") or "(no TL;DR)"
     items = preview.get("items", 0)
-    text = f"TinySocs: {sev} · {items} item(s)\n• {tldr}"
+    text = f"TinySocs: {sev} · {items} item(s)\n- {tldr}"
 
     if incident and _privacy_share_body():
         more = incident.get("markdown") or incident.get("report") or incident.get("body")
         if more:
-            text = text + "\n\n" + textwrap.shorten(more, width=3000, placeholder=" …")
+            text = text + "\n\n" + textwrap.shorten(more, width=3000, placeholder=" ...")
     try:
         requests.post(url, json={"text": text}, timeout=4)
     except Exception as e:
@@ -410,7 +427,7 @@ def main():
             print(f"[master] {node} -> {len(evs)} evidences")
             batches.append(evs)
         except Exception as e:
-            err = f"{type(e)._name_}: {e}"
+            err = f"{type(e).__name__}: {e}"
             errors.append({"node": node, "error": err})
             print(f"[master] WARN: failed to fetch from {node}: {err}")
 
@@ -516,7 +533,7 @@ def main():
         "severity": sev,
         "tldr": tldr,
         "items": len(merged),
-        "privacy_mode": PRIVACY_MODE,
+        "privacy_mode": _display_privacy_mode(),
         "errors": errors,  # surfaced to operator
     }
     print("----- Fleet Incident (preview) -----")
@@ -536,5 +553,5 @@ def main():
     # -------------------------------------------
 
 
-if _name_ == "_main_":
+if __name__ == "__main__":
     main()

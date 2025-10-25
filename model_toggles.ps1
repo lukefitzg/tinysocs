@@ -1,4 +1,4 @@
-<# model_toggles.ps1 -----------------------------------------------------------
+﻿<# model_toggles.ps1 -----------------------------------------------------------
 LLM toggles + SIEM target toggles + backend helpers for TinySOCS.
 Dot-source this file in your PowerShell session, e.g.:
   PS> Set-Location C:\tinysocs\tinysocs
@@ -56,10 +56,10 @@ function Import-DotEnv {
 # ===================== SIEM target (what detections hit) =====================
 function Use-ElasticSIEM {
   # Kept for legacy/testing, but not used in Phase 3 by default
-  $env:SIEM_BACKEND = "elasticsearch"
+$env:SIEM_BACKEND = "opensearch"
   $env:SIEM_URL     = "http://localhost:9200"
   Remove-Item Env:SIEM_USER, Env:SIEM_PASS, Env:SIEM_SSL_VERIFY -ErrorAction SilentlyContinue
-  Write-Host ("[TinySOCS] Detections will query Elasticsearch @ {0}" -f $env:SIEM_URL)
+  Write-Host ("[TinySOCS] Detections will query OpenSearch @ {0}" -f $env:SIEM_URL)
 }
 
 function Use-OpenSearchSIEM {
@@ -183,10 +183,10 @@ function Stop-OpenSearchStack {
 # Legacy Elastic helpers (kept for completeness; not used by default)
 function Start-ElasticStack {
   param([switch]$Kibana)
-  Write-Host "[TinySOCS] Starting Elasticsearch (no Logstash path here)..." -ForegroundColor DarkCyan
+#Write-Host "[TinySOCS] Starting Elasticsearch (no Logstash path here)..." -ForegroundColor DarkCyan
   Invoke-ComposeSafe -Args @("up","-d","elasticsearch") | Out-Null
   if ($Kibana) { Invoke-ComposeSafe -Args @("up","-d","kibana") | Out-Null }
-  Write-Host "[TinySOCS] Elasticsearch request issued." -ForegroundColor Green
+#Write-Host "[TinySOCS] Elasticsearch request issued." -ForegroundColor Green
 }
 
 function Stop-ElasticStack {

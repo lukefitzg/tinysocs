@@ -19,55 +19,50 @@ Auth (HMAC v1):
 
 Backends:
   - Uses your adapters via `make_client()` and your `agent/detections/rules.yaml`.
-  - Aggregation logic uses OpenSearch/ES terms aggregations (no large _source loads).
+  - Aggregation logic uses OpenSearch terms aggregations (no large _source loads).
 """
 
 from __future__ import annotations
-
-from pathlib import Path
-import sys
-
-REPO_ROOT = Path(__file__).resolve().parent.parent  # C:\tinysocs\tinysocs
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
 
 import hashlib
 import hmac
 import os
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import FastAPI, Request, HTTPException, Depends, Query, Body
-from fastapi.responses import JSONResponse
-from fastapi.encoders import jsonable_encoder
-from pydantic import BaseModel, Field
 import uvicorn
 import yaml
+from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
-from agent.adapters.select import make_client
-from agent.detections.engine import _rules_path as rules_path_resolver
-from agent.models.evidence import DetectionEvidence, EvidenceExemplar
+from tinysocs.agent.adapters.select import make_client
+from tinysocs.agent.detections.engine import _rules_path as rules_path_resolver
+from tinysocs.agent.models.evidence import DetectionEvidence, EvidenceExemplar
 
 # ----------- Limits / caps -----------
 ALLOWED_SKEW_SECONDS = 300             # ±5 minutes
 REPLAY_CACHE_SECONDS = 300             # reject re-use of the same timestamp for 5 minutes
 
 # Hard caps for API behavior
-AGG_TERMS_SIZE   = int(os.getenv("TINYSOCS_AGG_TERMS_SIZE", "50"))   # top-N groups returned
-SAMPLE_MAX_DOCS  = int(os.getenv("TINYSOCS_SAMPLE_MAX_DOCS", "20"))  # per /sample cap
-NODE_MAX_HITS    = int(os.getenv("NODE_MAX_HITS", "800"))            # absolute safety clamp for any fetch
+AGG_TERMS_SIZE = int(os.getenv("TINYSOCS_AGG_TERMS_SIZE", "50"))    # top-N groups returned
+SAMPLE_MAX_DOCS = int(os.getenv("TINYSOCS_SAMPLE_MAX_DOCS", "20"))  # per /sample cap
+NODE_MAX_HITS = int(os.getenv("NODE_MAX_HITS", "800"))              # absolute safety clamp for any fetch
 
 # ---------- Env ----------
 def _env(name: str, default: Optional[str] = None) -> Optional[str]:
     v = os.getenv(name)
     return v if v is not None else default
 
-NODE_ID      = _env("NODE_ID", "node-1")
-NODE_SECRET  = _env("NODE_SECRET", "dev-secret-change-me")
+
+NODE_ID = _env("NODE_ID", "node-1")
+NODE_SECRET = _env("NODE_SECRET", "dev-secret-change-me")
 SIEM_BACKEND = (_env("SIEM_BACKEND", "opensearch") or "").lower()
-SIEM_URL     = _env("SIEM_URL", "https://localhost:9201")
-RULESET      = _env("RULESET", "default")
+SIEM_URL = _env("SIEM_URL", "https://localhost:9201")
+RULESET = _env("RULESET", "default")
 CAPABILITIES = ["agg", "sample"]
 
 _client = make_client()
@@ -75,7 +70,7 @@ _client = make_client()
 # ---------- Optional ledger imports (tamper-evidence) ----------
 LEDGER_AVAILABLE = True
 try:
-    from agent.models.ledger import (
+    from tinysocs.agent.models.ledger import (
         append_entry as _ledger_append,
         _read_head as _ledger_read_head,
         verify_chain as _ledger_verify_chain,
@@ -88,10 +83,12 @@ except Exception:
 # ---------- Simple replay cache (timestamp -> expires_at_epoch) ----------
 _recent_timestamps: Dict[int, int] = {}
 
+
 def _replay_cache_gc(now: int) -> None:
     stale = [ts for ts, exp in _recent_timestamps.items() if exp <= now]
     for ts in stale:
         _recent_timestamps.pop(ts, None)
+
 
 # ---------- Auth ----------
 def verify_hmac(request: Request) -> None:
@@ -149,15 +146,16 @@ def _guess_rules_path() -> Optional[Path]:
     except Exception:
         pass
 
+    repo_root = Path(__file__).resolve().parents[1]  # <repo>/tinysocs
     direct_candidates = [
-        REPO_ROOT / "agent" / "detections" / "rules.yaml",
-        REPO_ROOT / "detections" / "rules.yaml",
+        repo_root / "agent" / "detections" / "rules.yaml",
+        repo_root / "detections" / "rules.yaml",
     ]
     for p in direct_candidates:
         if p.is_file():
             return p
 
-    for p in REPO_ROOT.rglob("rules.yaml"):
+    for p in repo_root.rglob("rules.yaml"):
         lower = str(p.as_posix()).lower()
         if "/agent/detections/" in lower or "\\agent\\detections\\" in str(p):
             return p
@@ -168,7 +166,10 @@ def _guess_rules_path() -> Optional[Path]:
 def _load_rules() -> List[Dict[str, Any]]:
     path = _guess_rules_path()
     if not path:
-        print("[node] WARN: could not locate 'agent/detections/rules.yaml' — set TINYSOCS_RULES_PATH to override.", flush=True)
+        print(
+            "[node] WARN: could not locate 'agent/detections/rules.yaml' — set TINYSOCS_RULES_PATH to override.",
+            flush=True,
+        )
         return []
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -227,7 +228,7 @@ def _time_bounds_iso(window: str) -> Tuple[str, str]:
 
 
 def _add_time_to_kql(kql: str, window: str) -> str:
-    """Append an @timestamp range to the Lucene query_string we send to OS/ES."""
+    """Append an @timestamp range to the Lucene query_string we send to OS."""
     gte, lte = _time_bounds_iso(window)
     time_clause = f'@timestamp:[{gte} TO {lte}]'
     if not kql:
@@ -461,11 +462,13 @@ class AggRequest(BaseModel):
     window: str = Field(..., description="Time window, e.g., 15m")
     host: Optional[str] = Field(None, description="Optional host filter")
 
+
 class SampleRequest(BaseModel):
     rule: str
     window: str
     host: Optional[str] = None
     k: int = Field(5, ge=1, le=SAMPLE_MAX_DOCS)
+
 
 class LedgerAppendRequest(BaseModel):
     payload: Dict[str, Any]
@@ -592,6 +595,7 @@ async def _sample_impl(rule: str, window: str, host: Optional[str], k: int) -> D
     ev = DetectionEvidence(rule=rule, window=window, host=host, count=total_count, summary=summary, exemplars=exemplars).materialize()
     return JSONResponse(content=jsonable_encoder(ev.dict()))
 
+
 # ---------- Tamper-evidence endpoints ----------
 @app.get("/evidence/head")
 async def evidence_head(_: None = Depends(verify_hmac)) -> Dict[str, Any]:
@@ -606,6 +610,7 @@ async def evidence_head(_: None = Depends(verify_hmac)) -> Dict[str, Any]:
         "head_sha256": (last_head if ok else head),
         "capability": "ledger",
     }
+
 
 @app.post("/evidence/append")
 async def evidence_append(_: None = Depends(verify_hmac), body: LedgerAppendRequest = Body(...)) -> Dict[str, Any]:

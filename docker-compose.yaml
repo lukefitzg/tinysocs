@@ -1,19 +1,23 @@
+# docker-compose.yaml
 services:
   opensearch:
     image: opensearchproject/opensearch:2.13.0
     container_name: ts-opensearch
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
       - discovery.type=single-node
       - bootstrap.memory_lock=true
-      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_INITIAL_ADMIN_PASSWORD}
-      # Heap tuned to reduce circuit-breaker trips (adjust if your host is tight on RAM)
+      # Align admin password with golden SIEM creds
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${SIEM_PASS}
+      # Heap tuned to reduce circuit-breaker trips (adjust to your host)
       - OPENSEARCH_JAVA_OPTS=-Xms2g -Xmx2g
       - plugins.security.disabled=false
       - plugins.security.ssl.http.enabled=true
       - plugins.security.ssl.transport.enforce_hostname_verification=false
     ports:
-      - "9201:9200"
+      - "9201:9200"   # direct access (dev)
     ulimits:
       memlock:
         soft: -1
@@ -21,7 +25,7 @@ services:
     volumes:
       - opensearch-data:/usr/share/opensearch/data
     healthcheck:
-      test: ["CMD-SHELL", "curl -skf -u admin:${OPENSEARCH_INITIAL_ADMIN_PASSWORD} https://localhost:9200/_cluster/health > /dev/null"]
+      test: ["CMD-SHELL", "curl -skf -u ${SIEM_USER}:${SIEM_PASS} https://localhost:9200/_cluster/health > /dev/null"]
       interval: 15s
       timeout: 5s
       retries: 60
@@ -30,16 +34,83 @@ services:
     image: opensearchproject/opensearch-dashboards:2.13.0
     container_name: ts-opensearch-dashboards
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
       - OPENSEARCH_HOSTS=["https://opensearch:9200"]
-      - OPENSEARCH_USERNAME=admin
-      - OPENSEARCH_PASSWORD=${OPENSEARCH_INITIAL_ADMIN_PASSWORD}
+      - OPENSEARCH_USERNAME=${SIEM_USER}
+      - OPENSEARCH_PASSWORD=${SIEM_PASS}
       - OPENSEARCH_SSL_VERIFICATIONMODE=none
     ports:
-      - "5602:5601"
+      - "5602:5601"   # direct access (dev)
     depends_on:
       opensearch:
         condition: service_healthy
 
+  # ------------------------------------------------------------------
+  # Reverse proxy (Phase 4): TLS term + clean public ports 80/443
+  # Uncomment this block and the depends_on lines when you're ready.
+  #
+  # reverse-proxy:
+  #   image: caddy:2.8.4
+  #   container_name: ts-reverse-proxy
+  #   restart: unless-stopped
+  #   env_file:
+  #     - .env
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   depends_on:
+  #     opensearch:
+  #       condition: service_healthy
+  #     opensearch-dashboards:
+  #       condition: service_started
+  #   volumes:
+  #     # Mount your Caddyfile (example template below)
+  #     - ./reverse-proxy/Caddyfile:/etc/caddy/Caddyfile:ro
+  #     - caddy-data:/data
+  #     - caddy-config:/config
+  #
+  # Caddyfile (save as ./reverse-proxy/Caddyfile):
+  #
+  # {
+  #   email {$EMAIL}
+  # }
+  #
+  # # Route 1: OpenSearch API under /os (option A: single vhost with paths)
+  # {$DOMAIN} {
+  #   @os path /os* /_cat* /_cluster* /_plugins*
+  #   handle @os {
+  #     uri strip_prefix /os
+  #     reverse_proxy opensearch:9200 {
+  #       transport http {
+  #         tls_insecure_skip_verify
+  #       }
+  #       header_up Authorization {>Authorization}
+  #     }
+  #   }
+  #
+  #   # Route 2: Dashboards under /
+  #   reverse_proxy opensearch-dashboards:5601
+  # }
+  #
+  # # Option B: separate vhosts if you want two hostnames
+  # os.{$DOMAIN} {
+  #   reverse_proxy opensearch:9200 {
+  #     transport http {
+  #       tls_insecure_skip_verify
+  #     }
+  #     header_up Authorization {>Authorization}
+  #   }
+  # }
+  #
+  # dash.{$DOMAIN} {
+  #   reverse_proxy opensearch-dashboards:5601
+  # }
+  #
+  # ------------------------------------------------------------------
+
 volumes:
   opensearch-data:
+  # caddy-data:
+  # caddy-config:

@@ -1,7 +1,7 @@
-﻿# agent/llm_ollama.py
+# agent/llm_ollama.py
 import os, json, re, httpx
 from typing import List, Dict, Any
-from tinysocs.agent.llm_schema import SCHEMA
+from llm_schema import SCHEMA
 
 OLLAMA_URL = os.getenv("OFFLINE_LLM_URL", "http://localhost:11434")
 MODEL      = os.getenv("OFFLINE_LLM_MODEL", "qwen2.5:0.5b-instruct")
@@ -100,4 +100,3 @@ def summarize_findings(findings: List[Dict[str,Any]]) -> Dict[str,Any]:
     # Normalize to guarantee useful content
     obj = _normalize(obj, findings)
     return obj
-

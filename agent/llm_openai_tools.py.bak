@@ -1,4 +1,4 @@
-﻿# tinysocs/agent/llm_openai_tools.py
+# tinysocs/agent/llm_openai_tools.py
 from __future__ import annotations
 
 import os

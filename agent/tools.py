@@ -1,45 +1,21 @@
-# agent/tools.py
+# tinysocs/agent/tools.py
 from __future__ import annotations
 
-from typing import Dict, Any
 import os
-import sys
-from pathlib import Path
+from typing import Any, Dict
 
-# --- Make this file work whether imported as `agent.*` or `tinysocs.agent.*`
-HERE = Path(__file__).resolve()
-REPO_ROOT = HERE.parents[1]  # .../tinysocs
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+from tinysocs.agent.adapters.select import make_client
+from tinysocs.netutil import is_loopback
 
-# Adapter + net util with robust fallbacks
-try:
-    # when installed/used as a package
-    from tinysocs.agent.adapters.select import make_client  # type: ignore
-except ModuleNotFoundError:
-    # when running from source (python -m agent.main)
-    from agent.adapters.select import make_client  # type: ignore
-
-try:
-    from tinysocs.netutil import is_loopback  # type: ignore
-except ModuleNotFoundError:
-    from netutil import is_loopback  # type: ignore
-
-# --- Optional: import backend-specific exceptions (fallback to base Exception) ---
+# Try to import OpenSearch-specific exceptions for nicer error typing; fall back to Exception.
 try:
     from opensearchpy.exceptions import (  # type: ignore
         NotFoundError as OSNotFoundError,
         ConnectionTimeout as OSConnectionTimeout,
         ConnectionError as OSConnectionError,
     )
-except Exception:  # opensearch-py may not be installed
-    OSNotFoundError = OSConnectionTimeout = OSConnectionError = Exception
-
-try:
-    # Elasticsearch 8.x
-    from elasticsearch import NotFoundError as ESNotFoundError  # type: ignore
-except Exception:
-    ESNotFoundError = Exception
+except Exception:  # opensearch-py may not be installed in some dev flows
+    OSNotFoundError = OSConnectionTimeout = OSConnectionError = Exception  # type: ignore
 
 _client = None
 
@@ -52,7 +28,8 @@ def _client_or_make():
 
 
 def _backend_name() -> str:
-    return (os.getenv("SIEM_BACKEND") or "").lower() or "unknown"
+    # Kept for telemetry; golden config is OpenSearch, but we surface the env if set.
+    return (os.getenv("SIEM_BACKEND") or "opensearch").lower()
 
 
 def search_kql(
@@ -76,7 +53,7 @@ def search_kql(
                 kql=kql,
                 size=size,
                 track_total_hits=track_total_hits,
-                source=source if source is not None else True,
+                source=True if source is None else bool(source),
             )
         except TypeError:
             docs = c.search_kql(index=index, kql=kql, size=size)
@@ -88,7 +65,7 @@ def search_kql(
             "index": index,
             "backend": _backend_name(),
         }
-    except (OSNotFoundError, ESNotFoundError) as e:
+    except OSNotFoundError as e:
         return {
             "ok": False,
             "error": "index_not_found",
@@ -125,12 +102,12 @@ def aggregate(index: str, dsl: Dict[str, Any]) -> Dict[str, Any]:
         res = c.aggregate(index=index, dsl=dsl) or {}
         return {
             "ok": True,
-            "result": res,            # keep original shape
-            "aggregations": res,      # convenience alias many LLMs expect
+            "result": res,       # keep original shape
+            "aggregations": res, # convenience alias many LLMs expect
             "index": index,
             "backend": _backend_name(),
         }
-    except (OSNotFoundError, ESNotFoundError) as e:
+    except OSNotFoundError as e:
         return {
             "ok": False,
             "error": "index_not_found",

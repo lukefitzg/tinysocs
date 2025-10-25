@@ -1,11 +1,11 @@
-# agent/llm_select.py
+﻿# agent/llm_select.py
 from __future__ import annotations
 import os
 from typing import Any, Dict, List, Optional, Union
 
 # Your existing engines (expect: summarize_findings(findings: List[dict]) -> dict/str)
-from llm_openai_tools import summarize_findings as summarize_openai_tools
-from llm_ollama import summarize_findings as summarize_ollama
+from tinysocs.agent.llm_openai_tools import summarize_findings as summarize_openai_tools
+from tinysocs.agent.llm_ollama import summarize_findings as summarize_ollama
 
 MODE = os.getenv("LLM_MODE", "openai").strip().lower()
 
@@ -123,10 +123,10 @@ def summarize(arg: Union[None, Dict[str, Any], List[Dict[str, Any]]] = None, *,
             # Convert to low-PII findings and feed your existing engines.
             converted = _abstract_to_findings(payload)
             if MODE == "openai":
-                print("[DEBUG] Using OpenAI+tools summarizer (compat, abstract→raw)")
+                print("[DEBUG] Using OpenAI+tools summarizer (compat, abstractâ†’raw)")
                 return summarize_openai_tools(converted)
             else:
-                print("[DEBUG] Using Ollama summarizer (compat, abstract→raw)")
+                print("[DEBUG] Using Ollama summarizer (compat, abstractâ†’raw)")
                 return summarize_ollama(converted)
         else:
             # RAW path unchanged
@@ -138,5 +138,5 @@ def summarize(arg: Union[None, Dict[str, Any], List[Dict[str, Any]]] = None, *,
                 print("[DEBUG] Using Ollama summarizer")
                 return summarize_ollama(raw_findings)
     except Exception as e:
-        # Engine rejected input or failed — return a safe minimal summary
+        # Engine rejected input or failed â€” return a safe minimal summary
         return _minimal_local_summary(payload)

@@ -24,45 +24,48 @@ Notifications (Phase 3.6):
 
 from __future__ import annotations
 
-# --- Bootstrapping so running from C:\tinysocs\tinysocs works ---
-import sys
-from pathlib import Path
-
-# This file lives at: <REPO_ROOT>/tinysocs/orchestrator/master.py
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_PKG_ROOT  = _REPO_ROOT / "tinysocs"
-_AGENT_DIR = _PKG_ROOT / "agent"
-
-for p in (str(_REPO_ROOT), str(_PKG_ROOT), str(_AGENT_DIR)):
-    if p not in sys.path:
-        sys.path.insert(0, p)
-# ----------------------------------------------------------------
-
-# -- .env support --
-from dotenv import load_dotenv
-_ENV_ROOT = _REPO_ROOT
-for candidate in (Path.cwd(), _ENV_ROOT):
-    env_file = candidate / ".env"
-    if env_file.exists():
-        load_dotenv(dotenv_path=env_file, override=False)
-        break
-# ---------------
-
 import argparse
 import hashlib
 import hmac
 import json
 import os
-import time
 import textwrap
+import time
 import smtplib
 from email.message import EmailMessage
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
-import yaml  # <-- used for actions.yaml
+import yaml  # actions.yaml
+import uvicorn
+from pydantic import BaseModel, Field
+from fastapi.encoders import jsonable_encoder
 
-from tinysocs.agent.models.evidence import DetectionEvidence
+# --- path bootstrap so script runs from either C:\tinysocs or C:\tinysocs\tinysocs ---
+import sys
+from pathlib import Path
+
+_HERE = Path(__file__).resolve()
+_PKG_ROOT = _HERE.parents[1]   # .../tinysocs
+_REPO_ROOT = _HERE.parents[2]  # repo root containing /tinysocs
+
+# Let 'import tinysocs.*' work (repo root) and 'import agent.*' work (package dir)
+for p in (str(_REPO_ROOT), str(_PKG_ROOT)):
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
+# Try package-style first, then package-internal
+try:
+    from tinysocs.agent.models.evidence import DetectionEvidence
+except ModuleNotFoundError:
+    from agent.models.evidence import DetectionEvidence  # type: ignore
+
+# ---------------- Path constants (no sys.path surgery) ----------------
+PKG_ROOT = Path(__file__).resolve().parents[1]   # <repo>/tinysocs
+REPO_ROOT = Path(__file__).resolve().parents[2]  # <repo>
+AGENT_DIR = PKG_ROOT / "agent"
+# ---------------------------------------------------------------------
 
 # Privacy adapter (new)
 # We want PRIVACY_MODE available regardless of import success.
@@ -88,15 +91,6 @@ except Exception as _e:
     print(f"[master] WARN: summarizer_adapter not available: {_e}. Using raw fallback.")
     # In fallback we keep PRIVACY_MODE from env (default abstract), but the payload we prepare is raw-ish.
 
-# Define this unconditionally so preview never breaks
-def _display_privacy_mode() -> str:
-    """
-    Normalize PRIVACY_MODE for operator preview. Only 'raw' or 'abstract'.
-    """
-    m = (PRIVACY_MODE or "abstract").strip().split()[0].lower()
-    return "raw" if m == "raw" else "abstract"
-
-
 # Resilient summarizer import (support either summarize or summarize_findings)
 try:
     from tinysocs.agent.llm_select import summarize as _summarize
@@ -110,6 +104,14 @@ except Exception:
 REQUEST_TIMEOUT_SEC = int(os.getenv("REQUEST_TIMEOUT_SEC", "6"))
 NODES = [u.strip() for u in (os.getenv("TINYSOCS_NODES", "")).split(",") if u.strip()]
 SECRET = os.getenv("MASTER_SHARED_SECRET", "dev-secret-change-me")
+
+
+def _display_privacy_mode() -> str:
+    """
+    Normalize PRIVACY_MODE for operator preview. Only 'raw' or 'abstract'.
+    """
+    m = (PRIVACY_MODE or "abstract").strip().split()[0].lower()
+    return "raw" if m == "raw" else "abstract"
 
 
 def _sign(ts: int) -> str:
@@ -145,7 +147,7 @@ def fetch_agg(node_url: str, rules: List[str], window: str, host: Optional[str],
         headers=_headers(),
         params=params,
         timeout=timeout,
-        verify=False if os.getenv("TINYSOCS_INSECURE_SKIP_VERIFY","1") == "1" else True,
+        verify=False if os.getenv("TINYSOCS_INSECURE_SKIP_VERIFY", "1") == "1" else True,
     )
     r.raise_for_status()
     return [DetectionEvidence(**e) for e in r.json()]
@@ -163,7 +165,7 @@ def merge_evidence(batches: List[List[DetectionEvidence]]) -> List[DetectionEvid
                     seen = set()
                     merged = []
                     for item in av + v:
-                        key = json.dumps(item, sort_keys=True, ensure_ascii=False) if isinstance(item, (dict, list)) else item
+                        key = json.dumps(item, sort_keys=True, ensure_ascii=False, default=str) if isinstance(item, (dict, list)) else item
                         if key not in seen:
                             seen.add(key)
                             merged.append(item)
@@ -243,15 +245,15 @@ def _actions_path() -> Optional[Path]:
             return p
     # Typical locations
     candidates = [
-        _AGENT_DIR / "actions.yaml",
-        _PKG_ROOT / "agent" / "actions.yaml",
-        _REPO_ROOT / "tinysocs" / "agent" / "actions.yaml",
+        AGENT_DIR / "actions.yaml",
+        PKG_ROOT / "agent" / "actions.yaml",
+        REPO_ROOT / "tinysocs" / "agent" / "actions.yaml",
     ]
     for c in candidates:
         if c.is_file():
             return c
     # Fallback: search
-    for p in _REPO_ROOT.rglob("actions.yaml"):
+    for p in REPO_ROOT.rglob("actions.yaml"):
         if "agent" in p.as_posix().lower():
             return p
     return None
@@ -291,7 +293,7 @@ def _render_actions_md(merged: List[DetectionEvidence]) -> str:
         lines.append(f"### {ev.rule} (count={int(ev.count or 0)})")
         for it in items:
             label = str(it.get("label") or "Action")
-            cmd   = str(it.get("cmd") or "").strip()
+            cmd = str(it.get("cmd") or "").strip()
             if cmd:
                 lines.append(f"- [ ] {label}: `{cmd}`")
             else:
@@ -314,7 +316,7 @@ def notify_slack(preview: Dict[str, Any], incident: Optional[Dict[str, Any]]) ->
     url = os.getenv("SLACK_WEBHOOK_URL")
     if not url:
         return
-    sev  = preview.get("severity") or "unknown"
+    sev = preview.get("severity") or "unknown"
     tldr = preview.get("tldr") or "(no TL;DR)"
     items = preview.get("items", 0)
     text = f"TinySocs: {sev} · {items} item(s)\n- {tldr}"
@@ -334,7 +336,7 @@ def notify_gchat(preview: Dict[str, Any], incident: Optional[Dict[str, Any]]) ->
     url = os.getenv("GCHAT_WEBHOOK_URL")
     if not url:
         return
-    sev  = preview.get("severity") or "unknown"
+    sev = preview.get("severity") or "unknown"
     tldr = preview.get("tldr") or "(no TL;DR)"
     items = preview.get("items", 0)
     text = f"TinySocs: {sev} · {items} item(s)\n- {tldr}"
@@ -358,13 +360,13 @@ def notify_email(preview: Dict[str, Any], incident: Optional[Dict[str, Any]]) ->
     port = int(os.getenv("SMTP_PORT", "25"))
     use_tls = os.getenv("SMTP_STARTTLS", "0") == "1"
     user = os.getenv("SMTP_USER")
-    pwd  = os.getenv("SMTP_PASS")
+    pwd = os.getenv("SMTP_PASS")
 
-    sev  = preview.get("severity") or "unknown"
+    sev = preview.get("severity") or "unknown"
     tldr = preview.get("tldr") or "(no TL;DR)"
     items = preview.get("items", 0)
     subject = f"[TinySocs] {sev} · {items} items"
-    body = f"{tldr}\n\n{json.dumps(preview, indent=2)}"
+    body = f"{tldr}\n\n{json.dumps(preview, indent=2, default=str)}"
 
     if incident and _privacy_share_body():
         more = incident.get("markdown") or incident.get("report") or incident.get("body")
@@ -444,7 +446,7 @@ def main():
         print("[master] WARN: summarizer not available; printing merged evidence only.")
         # pydantic v1/v2 compat
         ev_dump = [(e.model_dump() if hasattr(e, "model_dump") else e.dict()) for e in merged]
-        print(json.dumps({"evidence": ev_dump, "errors": errors}, indent=2, ensure_ascii=False))
+        print(json.dumps({"evidence": ev_dump, "errors": errors}, indent=2, ensure_ascii=False, default=str))
         return
 
     incident: Dict[str, Any] | str
@@ -527,7 +529,7 @@ def main():
     # -----------------------------------------------------------------
 
     # Compact preview so you see it worked
-    sev  = incident.get("severity") if isinstance(incident, dict) else None
+    sev = incident.get("severity") if isinstance(incident, dict) else None
     tldr = incident.get("tldr") if isinstance(incident, dict) else None
     preview = {
         "severity": sev,
@@ -537,7 +539,7 @@ def main():
         "errors": errors,  # surfaced to operator
     }
     print("----- Fleet Incident (preview) -----")
-    print(json.dumps(preview, indent=2))
+    print(json.dumps(preview, indent=2, default=str))
 
     # ---------- Notifications (opt-in) ----------
     try:

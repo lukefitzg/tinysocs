@@ -1,10 +1,13 @@
-# agent/adapters/select.py
-import os
-from .elastic_client import ElasticClient
+# tinysocs/agent/adapters/select.py
+"""
+Adapter selector for TinySocs — Golden config (OpenSearch-only).
 
-def make_client():
-    backend = os.getenv("SIEM_BACKEND", "elastic").lower()
-    if backend in ("opensearch", "os", "open"):
-        from .opensearch_client import OpenSearchClient
-        return OpenSearchClient()
-    return ElasticClient()
+We hard-select the OpenSearch client to avoid accidental drift or
+undeclared dependencies. If Elasticsearch support returns in future,
+reintroduce it behind a clear feature flag with CI coverage.
+"""
+from tinysocs.agent.adapters.opensearch_client import OpenSearchClient
+
+
+def make_client() -> OpenSearchClient:
+    return OpenSearchClient()

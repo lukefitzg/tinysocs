@@ -1,0 +1,9 @@
+[
+  {
+    "node": "http://localhost:8081",
+    "ok": true,
+    "sequence": 7,
+    "head_sha256": "5ccd007aa222e332a2eb9d4fe16703e6b1d04e881b656e2b9626e12dfd622812",
+    "capability": "ledger"
+  }
+]

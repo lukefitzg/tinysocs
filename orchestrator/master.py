@@ -40,15 +40,24 @@ import requests
 import yaml  # actions.yaml
 import uvicorn
 from pydantic import BaseModel, Field
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.encoders import jsonable_encoder
+from requests.auth import HTTPBasicAuth
+from datetime import datetime, timezone
 
 # --- path bootstrap so script runs from either C:\tinysocs or C:\tinysocs\tinysocs ---
 import sys
-from pathlib import Path
 
 _HERE = Path(__file__).resolve()
 _PKG_ROOT = _HERE.parents[1]   # .../tinysocs
 _REPO_ROOT = _HERE.parents[2]  # repo root containing /tinysocs
+APP = FastAPI(title="TinySOCS Node API - Ledger")
+LEDGER_DIR = Path(os.getenv("TINYSOCS_LEDGER_DIR", "ledger"))
+LEDGER_DIR.mkdir(parents=True, exist_ok=True)
+HEAD_FILE = LEDGER_DIR / "head.json"
+SECRET = os.getenv("MASTER_SHARED_SECRET", "dev-secret-change-me")
+SKEW_SECS = int(os.getenv("TINYSOCS_SKEW_SECS", "300"))
+REPLAY_CACHE = set()
 
 # Let 'import tinysocs.*' work (repo root) and 'import agent.*' work (package dir)
 for p in (str(_REPO_ROOT), str(_PKG_ROOT)):
@@ -128,7 +137,13 @@ def _post_json(url: str, secret: str, obj: Dict[str, Any], timeout: float = 5.0)
     """HMAC-signed POST helper (used for /evidence/append anchors)."""
     ts = int(time.time())
     sig = hmac.new((secret or "").encode("utf-8"), str(ts).encode("utf-8"), hashlib.sha256).hexdigest()
-    headers = {"X-TinySOCS-Timestamp": str(ts), "X-TinySOCS-Signature": f"sha256={sig}"}
+
+    # IMPORTANT: bare hex digest (no "sha256=" prefix) to match node_api.py
+    headers = {
+        "X-TinySOCS-Timestamp": str(ts),
+        "X-TinySOCS-Signature": sig,
+    }
+
     requests.post(
         url,
         headers=headers,
@@ -390,6 +405,163 @@ def notify_email(preview: Dict[str, Any], incident: Optional[Dict[str, Any]]) ->
         print(f"[master] WARN: email notify failed: {e}")
 # ---------------------------------------------------------------
 
+def now_iso():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+def _verify_hmac(req: Request):
+    ts = req.headers.get("X-TinySOCS-Timestamp")
+    sig = req.headers.get("X-TinySOCS-Signature")
+    if not ts or not sig:
+        raise HTTPException(status_code=401, detail="missing hmac headers")
+    try:
+        ts_int = int(ts)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="bad timestamp")
+
+    if abs(int(time.time()) - ts_int) > SKEW_SECS:
+        raise HTTPException(status_code=401, detail="clock_skew")
+
+    calc = hmac.new(SECRET.encode("utf-8"), ts.encode("utf-8"), hashlib.sha256).hexdigest()
+    token = f"{ts}:{sig}"
+    if token in REPLAY_CACHE:
+        raise HTTPException(status_code=401, detail="replay")
+    REPLAY_CACHE.add(token)
+    if calc != sig:
+        raise HTTPException(status_code=401, detail="bad_signature")
+
+def _append_jsonl(entry: dict):
+    fpath = LEDGER_DIR / (datetime.now().strftime("%Y-%m-%d") + ".jsonl")
+    with open(fpath, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, separators=(",", ":")) + "\n")
+
+def _read_head():
+    if not HEAD_FILE.exists():
+        return {"ok": False, "reason": "empty"}
+    with open(HEAD_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def _write_head(head):
+    with open(HEAD_FILE, "w", encoding="utf-8") as f:
+        json.dump(head, f)
+
+@APP.get("/evidence/head")
+async def get_head():
+    head = _read_head()
+    if not head.get("ok"):
+        return {"ok": False, "reason": head.get("reason", "empty")}
+    return head
+
+@APP.post("/evidence/append")
+async def post_append(req: Request):
+    _verify_hmac(req)
+    body = await req.json()
+    # Expected body (compact): {"stable_hash": "sha256...", "rule": "...", "node_id": "...", "sequence": optional}
+    incoming = {
+        "stable_hash": body.get("stable_hash"),
+        "rule": body.get("rule"),
+        "node_id": body.get("node_id", "local"),
+        "timestamp": now_iso(),
+    }
+    prev = _read_head()
+    sequence = (prev.get("sequence") or 0) + 1 if prev.get("ok") else 1
+    entry = {
+        "sequence": sequence,
+        "timestamp": incoming["timestamp"],
+        "rule": incoming["rule"],
+        "stable_hash": incoming["stable_hash"],
+        "prev_hash": prev.get("head_sha256"),
+        "node_id": incoming["node_id"],
+    }
+    # head hash is over canonical entry
+    blob = json.dumps(entry, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    head_sha = hashlib.sha256(blob).hexdigest()
+    entry["head_sha256"] = head_sha
+
+    _append_jsonl(entry)
+    _write_head({"ok": True, "sequence": sequence, "head_sha256": head_sha, "updated_at": now_iso()})
+    return {"ok": True, "sequence": sequence, "head_sha256": head_sha}
+
+# --- Phase 4: Anchor heads to OpenSearch ---
+from requests.auth import HTTPBasicAuth
+from datetime import datetime, timezone
+
+def _es_auth() -> HTTPBasicAuth:
+    return HTTPBasicAuth(os.getenv("SIEM_USER", "admin"), os.getenv("SIEM_PASS", "admin"))
+
+def _es_verify() -> bool:
+    return str(os.getenv("SIEM_SSL_VERIFY", "true")).strip().lower() in ("1","true","yes","on")
+
+def _ensure_anchors_index() -> None:
+    base = os.getenv("SIEM_URL", "https://127.0.0.1:9201").rstrip("/")
+    idx  = "tinysocs_anchors"
+    try:
+        # HEAD index; create if missing
+        r = requests.head(f"{base}/{idx}", auth=_es_auth(), verify=_es_verify(), timeout=6)
+        if r.status_code == 200:
+            return
+        # create with minimal mapping
+        mapping = {
+            "settings": {"index": {"number_of_shards": 1, "number_of_replicas": 0}},
+            "mappings": {
+                "properties": {
+                    "node_url":    {"type": "keyword"},
+                    "node_id":     {"type": "keyword"},
+                    "head_sha256": {"type": "keyword"},
+                    "sequence":    {"type": "long"},
+                    "ok":          {"type": "boolean"},
+                    "capability":  {"type": "keyword"},
+                    "anchored_at": {"type": "date"}
+                }
+            }
+        }
+        cr = requests.put(f"{base}/{idx}", auth=_es_auth(), verify=_es_verify(), json=mapping, timeout=8)
+        cr.raise_for_status()
+    except Exception as e:
+        print(f"[master] WARN: ensure anchors index failed: {e}")
+
+def anchor_all_nodes_after_run(rules: list[str] | str, window: str, items: int, privacy_mode: str) -> None:
+    """Fetch each node's head and index a compact anchor doc into OpenSearch."""
+    _ensure_anchors_index()
+    base = os.getenv("SIEM_URL", "https://127.0.0.1:9201").rstrip("/")
+    idx  = "tinysocs_anchors"
+    ts   = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # Normalize rules to a short string for display
+    if isinstance(rules, str):
+        rules_str = rules
+    else:
+        rules_str = ",".join(rules)
+
+    for node in NODES:
+        try:
+            # read node head
+            r = requests.get(
+                f"{node.rstrip('/')}/evidence/head",
+                headers=_headers(),
+                timeout=10,
+                verify=False if os.getenv("TINYSOCS_INSECURE_SKIP_VERIFY", "1") == "1" else True,
+            )
+            if r.status_code == 501:
+                head = {"ok": False, "sequence": None, "head_sha256": None, "capability": "no-ledger"}
+            else:
+                r.raise_for_status()
+                head = r.json()
+            doc = {
+                "node_url": node,
+                "node_id":  head.get("node_id") or os.getenv("NODE_ID", None),
+                "ok":       bool(head.get("ok")),
+                "sequence": head.get("sequence"),
+                "head_sha256": head.get("head_sha256"),
+                "capability": head.get("capability") or "ledger",
+                "anchored_at": ts,
+                # context (optional)
+                "run": {"rules": rules_str, "window": window, "items": items, "privacy_mode": privacy_mode},
+            }
+            # index anchor
+            ir = requests.post(f"{base}/{idx}/_doc", auth=_es_auth(), verify=_es_verify(), json=doc, timeout=10)
+            ir.raise_for_status()
+        except Exception as e:
+            print(f"[master] WARN: anchoring node {node} failed: {e}")
 
 def main():
     ap = argparse.ArgumentParser()
@@ -554,6 +726,10 @@ def main():
         print(f"[master] WARN: notifications failed: {e}")
     # -------------------------------------------
 
+    try:
+        anchor_all_nodes_after_run(rules=args.rules, window=args.window, items=len(merged), privacy_mode=_display_privacy_mode())
+    except Exception as e:
+        print(f"[master] WARN: failed anchoring to OpenSearch: {e}")
 
 if __name__ == "__main__":
     main()

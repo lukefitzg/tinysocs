@@ -59,7 +59,7 @@ def _env(name: str, default: Optional[str] = None) -> Optional[str]:
 
 
 NODE_ID = _env("NODE_ID", "node-1")
-NODE_SECRET = _env("NODE_SECRET", "dev-secret-change-me")
+NODE_SECRET = _env("NODE_SECRET", os.getenv("MASTER_SHARED_SECRET", "dev-secret-change-me"))
 SIEM_BACKEND = (_env("SIEM_BACKEND", "opensearch") or "").lower()
 SIEM_URL = _env("SIEM_URL", "https://localhost:9201")
 RULESET = _env("RULESET", "default")
@@ -93,10 +93,10 @@ def _replay_cache_gc(now: int) -> None:
 # ---------- Auth ----------
 def verify_hmac(request: Request) -> None:
     ts_hdr = request.headers.get("X-TinySOCS-Timestamp")
-    sig_hdr = request.headers.get("X-TinySOCS-Signature")
+    sig_hdr = request.headers.get("X-TinySOCS-Signature", "")
 
-    if not ts_hdr or not sig_hdr or not sig_hdr.startswith("sha256="):
-        raise HTTPException(status_code=401, detail="Missing or malformed auth headers")
+    if not ts_hdr or not sig_hdr:
+        raise HTTPException(status_code=401, detail="Missing auth headers")
 
     try:
         ts = int(ts_hdr)
@@ -107,14 +107,13 @@ def verify_hmac(request: Request) -> None:
     if abs(now - ts) > ALLOWED_SKEW_SECONDS:
         raise HTTPException(status_code=401, detail="Timestamp skew too large")
 
-    mac = hmac.new(
-        key=(NODE_SECRET or "").encode("utf-8"),
-        msg=str(ts).encode("utf-8"),
-        digestmod=hashlib.sha256,
-    ).hexdigest()
+    calc = hmac.new((NODE_SECRET or "").encode("utf-8"),
+                    str(ts).encode("utf-8"),
+                    hashlib.sha256).hexdigest()
 
-    expected = f"sha256={mac}"
-    if not hmac.compare_digest(expected, sig_hdr):
+    # accept both formats
+    provided = sig_hdr.split("=", 1)[1] if sig_hdr.startswith("sha256=") else sig_hdr
+    if not hmac.compare_digest(calc, provided):
         raise HTTPException(status_code=401, detail="Bad signature")
 
     _replay_cache_gc(now)

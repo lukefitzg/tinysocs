@@ -22,6 +22,12 @@ Backends:
   - Aggregation logic uses OpenSearch terms aggregations (no large _source loads).
 """
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv(override=False)   # picks up .env if present; shell vars still win
+except Exception:
+    pass
+
 from __future__ import annotations
 
 import hashlib
@@ -617,6 +623,12 @@ async def evidence_append(_: None = Depends(verify_hmac), body: LedgerAppendRequ
         raise HTTPException(status_code=501, detail="Ledger not available on this node")
     entry = _ledger_append(NODE_ID, body.payload)
     return {"node_id": NODE_ID, "entry": entry.to_json()}
+
+def cli():
+    import os, uvicorn
+    port = int(os.getenv("PORT", os.getenv("NODE_PORT", "8081")))
+    workers = int(os.getenv("TINYSOCS_NODE_WORKERS", "2"))
+    uvicorn.run(app, host="0.0.0.0", port=port, reload=False, workers=workers)
 
 
 if __name__ == "__main__":

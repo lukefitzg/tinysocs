@@ -1494,6 +1494,7 @@ function Ensure-WB-Setup {
 }
 
 # ===================== Core starter + four toggles =====================
+# Start-TinySOCS (patched)
 function Start-TinySOCS {
   param(
     [ValidateSet('opensearch','elastic')] [string]$Backend = 'opensearch',
@@ -1510,6 +1511,17 @@ function Start-TinySOCS {
   Set-Location $PSScriptRoot
   Import-DotEnv
 
+  # ---- Phase-4 "works every time" defaults (only if not already set) ----
+  if (-not $env:REQUEST_TIMEOUT_SEC)   { $env:REQUEST_TIMEOUT_SEC   = "30" }
+  if (-not $env:MASTER_DEADLINE_SEC)   { $env:MASTER_DEADLINE_SEC   = "120" }
+  if (-not $env:SIEM_TIMEOUT_SECONDS)  { $env:SIEM_TIMEOUT_SECONDS  = "30" }
+  if (-not $env:TINYSOCS_INSECURE_SKIP_VERIFY) { $env:TINYSOCS_INSECURE_SKIP_VERIFY = "1" }
+  if (-not $env:NOTIFY_EMAIL)          { $env:NOTIFY_EMAIL          = "0" }  # avoid SMTP noise by default
+  if (-not $env:TINYSOCS_NODE_WORKERS) { $env:TINYSOCS_NODE_WORKERS = "2" }
+  if (-not $env:TINYSOCS_NODES)        { $env:TINYSOCS_NODES        = $Nodes }
+  if (-not $env:MASTER_SHARED_SECRET)  { $env:MASTER_SHARED_SECRET  = "dev-secret-change-me" }
+  if (-not $env:NODE_SECRET)           { $env:NODE_SECRET           = $env:MASTER_SHARED_SECRET } # align node/master
+
   if ($LocalLLM) { Use-Ollama } else { Use-OpenAI }
 
   if ($Backend -eq 'opensearch') {
@@ -1522,6 +1534,7 @@ function Start-TinySOCS {
   Ensure-TinySOCS-Agents
   Ensure-PythonRequirements
   Ensure-SIEM-Index -Index "siem_index"
+
   # Auto-install daily master + ledger-health tasks (only when Role=master)
   if ($TinySOCS_Schedule_AutoInstall -and $Role -eq 'master') {
     Ensure-TinySOCS-ScheduledTasks `
@@ -1535,22 +1548,9 @@ function Start-TinySOCS {
 
   switch ($Role) {
     'solo'   { Write-Host "[TinySOCS] Running SOLO agent loop..." -ForegroundColor Cyan; python -u -m agent.main }
-    'node'   { Start-TinySocs-Node -Port $NodePort }
+    'node'   { Start-TinySocs-Node -Port $NodePort } # Node picks up TINYSOCS_NODE_WORKERS from env if supported
     'master' { Run-TinySocs-Master -Nodes $Nodes -Rules $Rules -Window $Window }
   }
-}
-
-function Start-TinySOCS-OpenSearchLean {
-  param(
-    [ValidateSet('solo','node','master')] [string]$Role = 'solo',
-    [switch]$LocalLLM,
-    [int]$NodePort = 8081,
-    [string]$Nodes = "http://localhost:8081,http://localhost:8082",
-    [string]$Rules = "auth_failed_burst,ps_script_block",
-    [string]$Window = "15m",
-    [switch]$NoWBSetup
-  )
-  Start-TinySOCS -Backend opensearch -Full:$false -Role $Role -LocalLLM:$LocalLLM -NodePort $NodePort -Nodes $Nodes -Rules $Rules -Window $Window -NoWBSetup:$NoWBSetup
 }
 
 function Start-TinySOCS-OpenSearchFull {
@@ -1766,4 +1766,188 @@ param(
 }
 "@
   [IO.File]::WriteAllText($tmp2, $selfArgs, [Text.Encoding]::UTF8)
+}
+
+function Initialize-TinySocsAnchorsIndex {
+  param(
+    [string]$SiemUrl = $env:SIEM_URL,
+    [string]$User    = $env:SIEM_USER,
+    [string]$Pass    = $env:SIEM_PASS
+  )
+  if (-not $SiemUrl) { throw "SIEM_URL env var required." }
+
+  # TLS + self-signed (local lab)
+  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+  [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+
+  $pair  = '{0}:{1}' -f $User, $Pass
+  $basic = 'Basic ' + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($pair))
+
+  # 1) Template (idempotent) — prevents bad auto-creation
+  $tpl = @{
+    index_patterns = @("tinysocs_anchors*")
+    template = @{
+      settings = @{ number_of_shards = 1 }
+      mappings = @{
+        dynamic = "false"
+        properties = @{
+          node_url    = @{ type = 'keyword' }
+          node        = @{ type = 'keyword' }
+          node_id     = @{ type = 'keyword' }
+          sequence    = @{ type = 'integer' }
+          head_sha256 = @{ type = 'keyword' }
+          anchored_at = @{ type = 'date'; format = 'strict_date_optional_time||epoch_millis' }
+        }
+      }
+    }
+    priority = 500
+  } | ConvertTo-Json -Depth 20 -Compress
+  Invoke-RestMethod -Method Put -Uri "$SiemUrl/_index_template/tinysocs_anchors_template" `
+    -Headers @{Authorization=$basic} -Body $tpl -ContentType 'application/json' | Out-Null
+
+  # 2) Ensure alias exists and is writeable
+  $aliasExists = $false
+  try {
+    $null = Invoke-RestMethod -Method Get -Uri "$SiemUrl/_alias/tinysocs_anchors" -Headers @{Authorization=$basic}
+    $aliasExists = $true
+  } catch {}
+
+  if (-not $aliasExists) {
+    # Pick latest tinysocs_anchors_vN if present, else create v1
+    $indices = $null
+    try {
+      $indices = Invoke-RestMethod -Method Get -Uri "$SiemUrl/_cat/indices/tinysocs_anchors_v*?format=json" -Headers @{Authorization=$basic}
+    } catch {}
+
+    if ($indices) {
+      $max = ($indices.index | ForEach-Object { if ($_ -match 'tinysocs_anchors_v(\d+)'){ [int]$Matches[1] } } | Measure-Object -Maximum).Maximum
+      $target = "tinysocs_anchors_v$max"
+    } else {
+      $target = "tinysocs_anchors_v1"
+      $mapping = @{
+        settings = @{ number_of_shards = 1 }
+        mappings = @{
+          properties = @{
+            node_url    = @{ type = 'keyword' }
+            node        = @{ type = 'keyword' }
+            node_id     = @{ type = 'keyword' }
+            sequence    = @{ type = 'integer' }
+            head_sha256 = @{ type = 'keyword' }
+            anchored_at = @{ type = 'date'; format = 'strict_date_optional_time||epoch_millis' }
+          }
+        }
+      } | ConvertTo-Json -Depth 20 -Compress
+      Invoke-RestMethod -Method Put -Uri "$SiemUrl/$target" -Headers @{Authorization=$basic} `
+        -Body $mapping -ContentType 'application/json' | Out-Null
+    }
+
+    $aliasAdd = '{"actions":[{"add":{"index":"' + $target + '","alias":"tinysocs_anchors","is_write_index":true}}]}'
+    Invoke-RestMethod -Method Post -Uri "$SiemUrl/_aliases" -Headers @{Authorization=$basic} `
+      -Body $aliasAdd -ContentType 'application/json' | Out-Null
+  }
+
+  # 3) Sanity: anchored_at is truly a date
+  $fc = Invoke-RestMethod -Method Post -Uri "$SiemUrl/tinysocs_anchors/_field_caps?fields=anchored_at" `
+        -Headers @{Authorization=$basic}
+  $isDate = $false
+  try { $isDate = $fc.fields.anchored_at.date.type -eq 'date' } catch {}
+  if (-not $isDate) { throw "anchored_at is not 'date'. Check template/alias." }
+}
+
+function Ensure-TinySocsLedgerHealthScript {
+  param([int]$AnchorRetentionDays = 30, [int]$LocalLedgerDays = 14)
+
+  $root = (Resolve-Path "$PSScriptRoot").Path
+  $p    = Join-Path $root 'scripts\Ledger_Health.ps1'
+  if (-not (Test-Path (Split-Path $p))) { New-Item -ItemType Directory -Path (Split-Path $p) -Force | Out-Null }
+
+  if (-not (Test-Path $p)) {
+    $content = @"
+# TinySOCS Ledger Health & Retention (idempotent)
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+[Net.ServicePointManager]::ServerCertificateValidationCallback = { \$true }
+\$pair  = '{0}:{1}' -f \$env:SIEM_USER, \$env:SIEM_PASS
+\$basic = 'Basic ' + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(\$pair))
+
+# prune anchors older than $AnchorRetentionDays days
+\$body = '{{"query":{{"range":{{"anchored_at":{{"lt":"now-$AnchorRetentionDays`d/d"}}}}}}}}'
+Invoke-RestMethod -Method Post -Uri "\$env:SIEM_URL/tinysocs_anchors/_delete_by_query?conflicts=proceed" `
+  -Headers @{Authorization=\$basic} -Body \$body -ContentType 'application/json' | Out-Null
+
+# prune local ledger *.jsonl older than $LocalLedgerDays days
+if (-not \$env:TINYSOCS_LEDGER_DIR -or -not (Test-Path \$env:TINYSOCS_LEDGER_DIR)) {
+  \$env:TINYSOCS_LEDGER_DIR = "C:\tinysocs\ledger"
+}
+Get-ChildItem "\$env:TINYSOCS_LEDGER_DIR\*.jsonl" -ErrorAction SilentlyContinue |
+  Where-Object { \$_.LastWriteTime -lt (Get-Date).AddDays(-$LocalLedgerDays) } |
+  Remove-Item -Force -ErrorAction SilentlyContinue
+"@
+    [System.IO.File]::WriteAllText($p, $content, [System.Text.UTF8Encoding]::new($false))
+  }
+  return $p
+}
+
+function Register-TinySocsLedgerHealthTask {
+  $script = Ensure-TinySocsLedgerHealthScript
+  $exists = Get-ScheduledTask -TaskName 'TinySOCS_Ledger_Health' -ErrorAction SilentlyContinue
+  if (-not $exists) {
+    $action  = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$script`""
+    $trigger = New-ScheduledTaskTrigger -Daily -At 03:35
+    $task    = New-ScheduledTask -Action $action -Trigger $trigger -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries)
+    Register-ScheduledTask -TaskName 'TinySOCS_Ledger_Health' -InputObject $task -Force | Out-Null
+  }
+}
+
+function Start-TinySOCS-OpenSearchLean {
+  param(
+    [ValidateSet('solo','node','master')] [string]$Role = 'solo',
+    [switch]$LocalLLM,
+    [int]$NodePort = 8081,
+    [string]$Nodes = "http://localhost:8081,http://localhost:8082",
+    [string]$Rules = "auth_failed_burst,ps_script_block",
+    [string]$Window = "15m",
+    [switch]$NoWBSetup
+  )
+
+  # --- sensible env defaults (idempotent) ---
+  if (-not $env:TINYSOCS_LEDGER_DIR) { $env:TINYSOCS_LEDGER_DIR = "C:\tinysocs\ledger" }
+  if (-not (Test-Path $env:TINYSOCS_LEDGER_DIR)) { New-Item -ItemType Directory -Force -Path $env:TINYSOCS_LEDGER_DIR | Out-Null }
+
+  if (-not $env:TINYSOCS_INSECURE_SKIP_VERIFY) { $env:TINYSOCS_INSECURE_SKIP_VERIFY = "1" }  # local/self-signed
+  if (-not $env:REQUEST_TIMEOUT_SEC)   { $env:REQUEST_TIMEOUT_SEC   = "30" }
+  if (-not $env:MASTER_DEADLINE_SEC)   { $env:MASTER_DEADLINE_SEC   = "120" }
+  if (-not $env:SIEM_TIMEOUT_SECONDS)  { $env:SIEM_TIMEOUT_SECONDS  = "30" }
+  if (-not $env:TINYSOCS_NODE_WORKERS) { $env:TINYSOCS_NODE_WORKERS = "2" }
+
+  # Persist ledger dir machine-wide for future sessions (best-effort; requires admin for /M)
+  try {
+    $mach = [Environment]::GetEnvironmentVariable("TINYSOCS_LEDGER_DIR","Machine")
+    if (-not $mach -or $mach -ne $env:TINYSOCS_LEDGER_DIR) {
+      # use cmd /c so quoting is handled reliably
+      $cmd = 'setx TINYSOCS_LEDGER_DIR "{0}" /M' -f $env:TINYSOCS_LEDGER_DIR
+      Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $cmd -WindowStyle Hidden -Wait | Out-Null
+    }
+  } catch {
+    Write-Verbose "[TinySOCS] setx (machine) skipped: $($_.Exception.Message)"
+  }
+
+  # WinPS 5.1 TLS defaults (no-op on PS7+)
+  if ($PSVersionTable.PSVersion.Major -le 5) {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+  }
+
+  # --- harden anchors index/alias so retention always works ---
+  if (Get-Command Initialize-TinySocsAnchorsIndex -ErrorAction SilentlyContinue) {
+    try { Initialize-TinySocsAnchorsIndex } catch { Write-Warning "[TinySOCS] Anchors init failed: $($_.Exception.Message)" }
+  }
+
+  # --- ensure Ledger_Health daily task exists (anchors + local JSONL retention) ---
+  if (Get-Command Register-TinySocsLedgerHealthTask -ErrorAction SilentlyContinue) {
+    try { Register-TinySocsLedgerHealthTask } catch { Write-Warning "[TinySOCS] Ledger_Health task ensure failed: $($_.Exception.Message)" }
+  }
+
+  # --- hand off to the main launcher ---
+  Start-TinySOCS -Backend opensearch -Full:$false -Role $Role -LocalLLM:$LocalLLM `
+    -NodePort $NodePort -Nodes $Nodes -Rules $Rules -Window $Window -NoWBSetup:$NoWBSetup
 }

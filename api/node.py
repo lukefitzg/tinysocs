@@ -22,13 +22,13 @@ Backends:
   - Aggregation logic uses OpenSearch terms aggregations (no large _source loads).
 """
 
+from __future__ import annotations
+
 try:
     from dotenv import load_dotenv
     load_dotenv(override=False)   # picks up .env if present; shell vars still win
 except Exception:
     pass
-
-from __future__ import annotations
 
 import hashlib
 import hmac

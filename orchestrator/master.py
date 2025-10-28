@@ -1,25 +1,32 @@
 ﻿# tinysocs/orchestrator/master.py
+#!/usr/bin/env python3
 """
-TinySocs Master Aggregator — runs from tinysocs/tinysocs just fine.
+TinySOCS Master — fan-out, aggregate, summarize, and anchor.
 
-- Fans out /agg to nodes, merges DetectionEvidence, calls your existing summarizer.
-- Persistence remains inside your summarizer path (OpenAI/Ollama tools) the same way solo mode does.
-- Privacy toggle integrated via agent.summarizer_adapter:
-    - PRIVACY_MODE=abstract (default) -> send masked, compact payload to summarizer
-    - PRIVACY_MODE=raw               -> legacy behavior (send findings)
+What this master does (lean + hardened):
+- Fans out to Node API /agg for evidence (GET first, then POST as fallback)
+- Merges DetectionEvidence and calls your existing summarizer (privacy-aware)
+- Anchors one doc per node to OpenSearch alias 'tinysocs_anchors' (anchored_at is a proper date)
+- All network calls use retry + jitter (env-tunable) and an overall --deadline
 
-Robustness:
-- --deadline <sec>: overall wall-clock budget; stops waiting when exhausted.
-- Per-node errors collected and surfaced in preview (partial success visible).
+Env knobs (with sensible defaults):
+  TINYSOCS_NODES                 Comma-separated node URLs (e.g., http://localhost:8081)
+  MASTER_SHARED_SECRET           HMAC shared secret (string)
+  REQUEST_TIMEOUT_SEC            Per-call timeout seconds (default 30)
+  MASTER_RETRIES                 Total tries per call (default 3)
+  MASTER_RETRY_MIN_MS            Min backoff in ms (default 250)
+  MASTER_RETRY_MAX_MS            Max backoff in ms (default 750)
+  TINYSOCS_INSECURE_SKIP_VERIFY  "1" to skip TLS verify for node calls (default 1 for lab)
+  PRIVACY_MODE                   "abstract" (default) | "raw" | "redact" (passed to anchor metadata)
 
-Tamper-evidence (Phase 3.5):
-- After each run, post a compact anchor payload to each node: POST /evidence/append
+OpenSearch (anchor store):
+  SIEM_URL        e.g. https://localhost:9201
+  SIEM_USER       e.g. admin
+  SIEM_PASS       e.g. ChangeMe123!
+  SIEM_SSL_VERIFY "false"/"0" to disable verify; anything else enables
 
-Operator polish:
-- Append "## Candidate Actions" (from agent/actions.yaml) to the incident markdown.
-
-Notifications (Phase 3.6):
-- Optional Slack / Google Chat / Email preview notifications via env flags.
+CLI:
+  python -m tinysocs.orchestrator.master --rules ps_script_block,auth_failed_burst --window 15m
 """
 
 from __future__ import annotations
@@ -29,78 +36,121 @@ import hashlib
 import hmac
 import json
 import os
+import random
 import textwrap
 import time
 import smtplib
 from email.message import EmailMessage
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urljoin, urlparse
 
 import requests
 import yaml  # actions.yaml
-import uvicorn
-from pydantic import BaseModel, Field
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.encoders import jsonable_encoder
 from requests.auth import HTTPBasicAuth
-from datetime import datetime, timezone
+# ------------------------------------------------
 
-# --- path bootstrap so script runs from either C:\tinysocs or C:\tinysocs\tinysocs ---
-import sys
-
+# ---------------- Path constants ----------------
 _HERE = Path(__file__).resolve()
-_PKG_ROOT = _HERE.parents[1]   # .../tinysocs
-_REPO_ROOT = _HERE.parents[2]  # repo root containing /tinysocs
-APP = FastAPI(title="TinySOCS Node API - Ledger")
-LEDGER_DIR = Path(os.getenv("TINYSOCS_LEDGER_DIR", "ledger"))
-LEDGER_DIR.mkdir(parents=True, exist_ok=True)
-HEAD_FILE = LEDGER_DIR / "head.json"
-SECRET = os.getenv("MASTER_SHARED_SECRET", "dev-secret-change-me")
-SKEW_SECS = int(os.getenv("TINYSOCS_SKEW_SECS", "300"))
-REPLAY_CACHE = set()
-
-# Let 'import tinysocs.*' work (repo root) and 'import agent.*' work (package dir)
-for p in (str(_REPO_ROOT), str(_PKG_ROOT)):
-    if p not in sys.path:
-        sys.path.insert(0, p)
-
-# Try package-style first, then package-internal
-try:
-    from tinysocs.agent.models.evidence import DetectionEvidence
-except ModuleNotFoundError:
-    from agent.models.evidence import DetectionEvidence  # type: ignore
-
-# ---------------- Path constants (no sys.path surgery) ----------------
-PKG_ROOT = Path(__file__).resolve().parents[1]   # <repo>/tinysocs
-REPO_ROOT = Path(__file__).resolve().parents[2]  # <repo>
+PKG_ROOT = _HERE.parents[1]          # <repo>/tinysocs
+REPO_ROOT = _HERE.parents[2]         # <repo>
 AGENT_DIR = PKG_ROOT / "agent"
-# ---------------------------------------------------------------------
+# ------------------------------------------------
 
-# Privacy adapter (new)
-# We want PRIVACY_MODE available regardless of import success.
-PRIVACY_MODE = os.getenv("PRIVACY_MODE", "abstract").strip().lower()
+# --- best-effort .env loader (no dependency on python-dotenv) ---
+def _load_dotenv_inplace():
+    # search: repo root (…/tinysocs/..), then current dir
+    here = Path(__file__).resolve()
+    candidates = [
+        here.parents[2] / ".env",  # <repo>/.env
+        here.parents[1] / ".env",  # <repo>/tinysocs/.env (fallback)
+        Path.cwd() / ".env",
+    ]
+    for p in candidates:
+        if p.is_file():
+            for line in p.read_text(encoding="utf-8").splitlines():
+                if not line or line.strip().startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                k, v = k.strip(), v.strip()
+                if k and v and (k not in os.environ):
+                    os.environ[k] = v
+            break
 
+_load_dotenv_inplace()
+# ------------------------------------------------
+
+# ---------------- Env helpers ----------------
+def _env_bool(name: str, default: bool = False) -> bool:
+    v = os.getenv(name)
+    if v is None:
+        return default
+    return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
+
+def _tls_verify_from(name: str, default: bool = True) -> bool:
+    v = os.getenv(name)
+    if v is None:
+        return default
+    return str(v).strip().lower() not in ("0", "false", "no", "off")
+
+def _now_utc_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+def _derive_node_id(node_url: str) -> str:
+    """Best-effort stable id from URL (matches check_ledger expectation: node-<port>)."""
+    try:
+        p = urlparse(node_url)
+        if p.port:
+            return f"node-{p.port}"
+        host = (p.hostname or "node").split(".")[0]
+        return f"node-{host}"
+    except Exception:
+        return "node-unknown"
+# ------------------------------------------------
+
+# ---------------- Config ----------------
+NODES: List[str] = [x.strip() for x in os.getenv("TINYSOCS_NODES", "http://localhost:8081").split(",") if x.strip()]
+SECRET: str = os.getenv("MASTER_SHARED_SECRET", "dev-secret-change-me")
+NODE_TLS_VERIFY: bool = not _env_bool("TINYSOCS_INSECURE_SKIP_VERIFY", True)  # default skip verify (lab)
+
+REQUEST_TIMEOUT_SEC: float = float(os.getenv("REQUEST_TIMEOUT_SEC", "30"))
+MASTER_RETRIES: int = int(os.getenv("MASTER_RETRIES", "3"))
+MASTER_RETRY_MIN_MS: int = int(os.getenv("MASTER_RETRY_MIN_MS", "250"))
+MASTER_RETRY_MAX_MS: int = int(os.getenv("MASTER_RETRY_MAX_MS", "750"))
+
+PRIVACY_MODE: str = os.getenv("PRIVACY_MODE", "abstract")
+
+SIEM_URL: str = os.getenv("SIEM_URL", "https://localhost:9201")
+SIEM_USER: str = os.getenv("SIEM_USER", "admin")
+SIEM_PASS: str = os.getenv("SIEM_PASS", "admin")
+SIEM_VERIFY: bool = _tls_verify_from("SIEM_SSL_VERIFY", default=True)
+
+# silence local TLS warnings if verify is disabled for either SIEM or node calls
+try:
+    import urllib3  # type: ignore
+    if (not SIEM_VERIFY) or (not NODE_TLS_VERIFY):
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+except Exception:
+    pass
+# ------------------------------------------------
+
+# ---------------- Privacy adapter + summarizer ----------------
 try:
     from tinysocs.agent.summarizer_adapter import (
         prepare_payload as _prepare_privacy_payload,
         annotate_report_header as _annotate_header,
         PRIVACY_MODE as _ADAPTER_PRIVACY_MODE,
     )
-    # If adapter provides a value, prefer it.
     if _ADAPTER_PRIVACY_MODE:
         PRIVACY_MODE = (_ADAPTER_PRIVACY_MODE or PRIVACY_MODE).strip().lower()
 except Exception as _e:
-    # Fallback if file not present yet
     def _prepare_privacy_payload(evidences: List[Dict[str, Any]], window: str) -> Dict[str, Any]:
         return {"mode": "raw", "window": window, "evidences": evidences}
-
     def _annotate_header(md: str, llm_mode: str = "openai") -> str:
         return md
-
     print(f"[master] WARN: summarizer_adapter not available: {_e}. Using raw fallback.")
-    # In fallback we keep PRIVACY_MODE from env (default abstract), but the payload we prepare is raw-ish.
 
-# Resilient summarizer import (support either summarize or summarize_findings)
 try:
     from tinysocs.agent.llm_select import summarize as _summarize
 except Exception:
@@ -109,64 +159,88 @@ except Exception:
     except Exception as e:
         _summarize = None
         print(f"[master] WARN: could not import summarizer from agent.llm_select: {e}")
-
-REQUEST_TIMEOUT_SEC = int(os.getenv("REQUEST_TIMEOUT_SEC", "6"))
-NODES = [u.strip() for u in (os.getenv("TINYSOCS_NODES", "")).split(",") if u.strip()]
-SECRET = os.getenv("MASTER_SHARED_SECRET", "dev-secret-change-me")
-
+# ------------------------------------------------
 
 def _display_privacy_mode() -> str:
-    """
-    Normalize PRIVACY_MODE for operator preview. Only 'raw' or 'abstract'.
-    """
     m = (PRIVACY_MODE or "abstract").strip().split()[0].lower()
     return "raw" if m == "raw" else "abstract"
 
-
-def _sign(ts: int) -> str:
-    mac = hmac.new((SECRET or "").encode("utf-8"), str(ts).encode("utf-8"), hashlib.sha256).hexdigest()
-    return f"sha256={mac}"
-
-
+# ---------------- HMAC headers (raw hex) ----------------
 def _headers() -> Dict[str, str]:
-    ts = int(time.time())
-    return {"X-TinySOCS-Timestamp": str(ts), "X-TinySOCS-Signature": _sign(ts)}
-
-
-def _post_json(url: str, secret: str, obj: Dict[str, Any], timeout: float = 5.0) -> None:
-    """HMAC-signed POST helper (used for /evidence/append anchors)."""
-    ts = int(time.time())
-    sig = hmac.new((secret or "").encode("utf-8"), str(ts).encode("utf-8"), hashlib.sha256).hexdigest()
-
-    # IMPORTANT: bare hex digest (no "sha256=" prefix) to match node_api.py
-    headers = {
-        "X-TinySOCS-Timestamp": str(ts),
-        "X-TinySOCS-Signature": sig,
+    ts = str(int(time.time()))
+    mac = hmac.new((SECRET or "").encode("utf-8"), ts.encode("utf-8"), hashlib.sha256).hexdigest()  # RAW HEX ONLY
+    return {
+        "X-TinySOCS-Timestamp": ts,
+        "X-TinySOCS-Signature": mac,
+        "User-Agent": "tinysocs/master",
     }
+# --------------------------------------------------------
 
+# ---------------- Retry + jitter helpers ----------------
+def _sleep_jitter(min_ms: int, max_ms: int) -> None:
+    ms = random.randint(min_ms, max_ms)
+    time.sleep(ms / 1000.0)
+
+def _try_call(fn, *, tries: int, min_ms: int, max_ms: int, label: str):
+    last_exc = None
+    for attempt in range(1, tries + 1):
+        try:
+            return fn()
+        except Exception as e:
+            last_exc = e
+            if attempt >= tries:
+                break
+            _sleep_jitter(min_ms, max_ms)
+    raise RuntimeError(f"{label} failed after {tries} tries: {last_exc}")
+# --------------------------------------------------------
+
+# ---------------- Node client calls ----------------
+def _agg_get(node: str, rules: str, window: str, host: Optional[str]) -> Dict[str, Any]:
+    url = node.rstrip("/") + "/agg"
+    params = {"rules": rules, "window": window}
+    if host:
+        params["host"] = host
+    r = requests.get(url, headers=_headers(), params=params, timeout=REQUEST_TIMEOUT_SEC, verify=NODE_TLS_VERIFY)
+    r.raise_for_status()
+    return r.json()
+
+def _agg_post(node: str, rules: str, window: str, host: Optional[str]) -> Dict[str, Any]:
+    url = node.rstrip("/") + "/agg"
+    body = {"rules": rules, "window": window}
+    if host:
+        body["host"] = host
+    r = requests.post(url, headers=_headers(), json=body, timeout=REQUEST_TIMEOUT_SEC, verify=NODE_TLS_VERIFY)
+    r.raise_for_status()
+    return r.json()
+
+def _get_head(node: str) -> Dict[str, Any]:
+    url = node.rstrip("/") + "/evidence/head"
+    r = requests.get(url, headers=_headers(), timeout=REQUEST_TIMEOUT_SEC, verify=NODE_TLS_VERIFY)
+    if r.status_code == 501:
+        return {"ok": None, "sequence": None, "head_sha256": None, "capability": "no-ledger"}
+    r.raise_for_status()
+    return r.json()
+
+def _post_json(node_url: str, obj: Dict[str, Any], timeout: float = 6.0) -> None:
+    """HMAC-signed POST helper for /evidence/append anchors (raw hex signature)."""
+    ts = str(int(time.time()))
+    sig = hmac.new((SECRET or "").encode("utf-8"), ts.encode("utf-8"), hashlib.sha256).hexdigest()
+    headers = {"X-TinySOCS-Timestamp": ts, "X-TinySOCS-Signature": sig}
     requests.post(
-        url,
+        node_url.rstrip("/") + "/evidence/append",
         headers=headers,
         json=obj,
         timeout=timeout,
-        verify=False if os.getenv("TINYSOCS_INSECURE_SKIP_VERIFY", "1") == "1" else True,
+        verify=NODE_TLS_VERIFY,
     )
+# ----------------------------------------------------
 
-
-def fetch_agg(node_url: str, rules: List[str], window: str, host: Optional[str], timeout: float) -> List[DetectionEvidence]:
-    params = {"rules": ",".join(rules), "window": window}
-    if host:
-        params["host"] = host
-    r = requests.get(
-        f"{node_url.rstrip('/')}/agg",
-        headers=_headers(),
-        params=params,
-        timeout=timeout,
-        verify=False if os.getenv("TINYSOCS_INSECURE_SKIP_VERIFY", "1") == "1" else True,
-    )
-    r.raise_for_status()
-    return [DetectionEvidence(**e) for e in r.json()]
-
+# ---------------- Evidence merge helpers ----------------
+try:
+    from tinysocs.agent.models.evidence import DetectionEvidence
+except Exception:
+    class DetectionEvidence(dict):  # very light fallback
+        pass
 
 def merge_evidence(batches: List[List[DetectionEvidence]]) -> List[DetectionEvidence]:
     def deep_union(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
@@ -194,47 +268,59 @@ def merge_evidence(batches: List[List[DetectionEvidence]]) -> List[DetectionEvid
     by_key: Dict[Tuple[str, Optional[str]], DetectionEvidence] = {}
 
     for ev in (e for batch in batches for e in batch):
-        key = (ev.rule, ev.host)
+        rule = getattr(ev, "rule", None) or ev.get("rule")
+        host = getattr(ev, "host", None) or ev.get("host")
+        window = getattr(ev, "window", None) or ev.get("window")
+        count = getattr(ev, "count", None) or ev.get("count", 0)
+        summary = getattr(ev, "summary", None) or ev.get("summary", {})
+        exemplars = getattr(ev, "exemplars", None) or ev.get("exemplars", [])
+
+        key = (rule, host)
         if key not in by_key:
-            by_key[key] = DetectionEvidence(
-                rule=ev.rule, window=ev.window, host=ev.host, count=ev.count, summary=ev.summary, exemplars=ev.exemplars[:]
-            )
+            by_key[key] = DetectionEvidence(rule=rule, window=window, host=host, count=count, summary=summary, exemplars=list(exemplars))
         else:
             cur = by_key[key]
-            cur.count = max(cur.count, ev.count)
-            cur.summary = deep_union(cur.summary, ev.summary)
-            if len(cur.exemplars) < 10:
-                take = 10 - len(cur.exemplars)
-                cur.exemplars.extend(ev.exemplars[:take])
+            cur["count"] = max(int(cur.get("count", 0)), int(count or 0))
+            cur["summary"] = deep_union(cur.get("summary", {}), summary or {})
+            if len(cur.get("exemplars", [])) < 10:
+                take = 10 - len(cur["exemplars"])
+                cur["exemplars"].extend(list(exemplars)[:take])
 
-    return [v.materialize() for v in by_key.values()]
+    return [DetectionEvidence(**dict(v)) if isinstance(v, DetectionEvidence) else v for v in by_key.values()]
+# ---------------------------------------------------------
 
-
+# ---------------- Summarizer helpers ----------------
 def _to_findings(ev_list: List[DetectionEvidence]) -> List[Dict[str, Any]]:
-    """Convert DetectionEvidence -> summarizer 'findings' shape (legacy/raw path)."""
     findings: List[Dict[str, Any]] = []
     for ev in ev_list:
-        f: Dict[str, Any] = {
-            "rule": ev.rule,
-            "summary": f"Fleet aggregate for {ev.rule} in {ev.window}",
-            "evidence": {"host": ev.host, "count": ev.count, **(ev.summary or {})},
-        }
-        if ev.exemplars:
-            # pydantic v1/v2 compat
-            ex_list = [ex.model_dump() if hasattr(ex, "model_dump") else ex.dict() for ex in ev.exemplars]
-            f["sample"] = ex_list
-        findings.append(f)
+        asdict = ev.model_dump() if hasattr(ev, "model_dump") else (ev if isinstance(ev, dict) else ev.__dict__)
+        rule = asdict.get("rule")
+        window = asdict.get("window")
+        host = asdict.get("host")
+        count = int(asdict.get("count") or 0)
+        summary = asdict.get("summary") or {}
+        exemplars = asdict.get("exemplars") or []
+        findings.append(
+            {
+                "rule": rule,
+                "summary": f"Fleet aggregate for {rule} in {window}",
+                "evidence": {"host": host, "count": count, **summary},
+                "sample": exemplars,
+            }
+        )
     return findings
 
-
 def _minimal_local_summary(merged: List[DetectionEvidence], window: str) -> Dict[str, Any]:
-    """PII-safe, offline summary used only if PRIVACY_MODE=abstract and summarizer rejects payload."""
     by_rule: Dict[str, Dict[str, Any]] = {}
     for e in merged:
-        r = by_rule.setdefault(e.rule, {"total": 0, "hosts": set()})
-        r["total"] += int(e.count or 0)
-        if e.host:
-            r["hosts"].add(e.host)
+        asdict = e.model_dump() if hasattr(e, "model_dump") else (e if isinstance(e, dict) else e.__dict__)
+        rule = asdict.get("rule")
+        host = asdict.get("host")
+        r = by_rule.setdefault(rule, {"total": 0, "hosts": set()})
+        r["total"] += int(asdict.get("count", 0))
+        if host:
+            r["hosts"].add(host)
+
     md_lines = [
         "# TinySocs Incident Report",
         "*Severity:* Low",
@@ -248,17 +334,15 @@ def _minimal_local_summary(merged: List[DetectionEvidence], window: str) -> Dict
     md = "\n".join(md_lines)
     md = _annotate_header(md, llm_mode=os.getenv("LLM_MODE", "openai"))
     return {"severity": "low", "tldr": f"Aggregated counts over {len(by_rule)} rules.", "markdown": md}
+# ----------------------------------------------------
 
-
-# -------- Actions renderer (from agent/actions.yaml) --------
+# ---------------- Actions renderer ----------------
 def _actions_path() -> Optional[Path]:
-    # Allow override
     env_p = os.getenv("TINYSOCS_ACTIONS_PATH")
     if env_p:
         p = Path(env_p).expanduser()
         if p.is_file():
             return p
-    # Typical locations
     candidates = [
         AGENT_DIR / "actions.yaml",
         PKG_ROOT / "agent" / "actions.yaml",
@@ -267,12 +351,10 @@ def _actions_path() -> Optional[Path]:
     for c in candidates:
         if c.is_file():
             return c
-    # Fallback: search
     for p in REPO_ROOT.rglob("actions.yaml"):
         if "agent" in p.as_posix().lower():
             return p
     return None
-
 
 def _load_actions() -> Dict[str, List[Dict[str, str]]]:
     path = _actions_path()
@@ -281,53 +363,51 @@ def _load_actions() -> Dict[str, List[Dict[str, str]]]:
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
-            # Expect mapping: rule_id -> list[{label, cmd}]
-            if isinstance(data, dict):
-                return data
-            return {}
+            return data if isinstance(data, dict) else {}
     except Exception as e:
         print(f"[master] WARN: failed to load actions.yaml: {e}")
         return {}
-
 
 def _render_actions_md(merged: List[DetectionEvidence]) -> str:
     actions = _load_actions()
     if not actions:
         return ""
-    # Pick rules that actually fired (count > 0)
-    fired = [e for e in merged if (e.count or 0) > 0 and e.rule in actions]
+    # normalize every item to dict (avoid Pydantic .get() errors)
+    norm: List[Dict[str, Any]] = []
+    for e in merged:
+        if isinstance(e, dict):
+            norm.append(e)
+        elif hasattr(e, "model_dump"):
+            norm.append(e.model_dump())
+        elif hasattr(e, "dict"):
+            norm.append(e.dict())
+        else:
+            norm.append({"rule": getattr(e, "rule", None), "count": getattr(e, "count", 0)})
+
+    fired = [e for e in norm if (e.get("count") or 0) > 0 and e.get("rule") in actions]
     if not fired:
         return ""
-
-    lines: List[str] = []
-    lines.append("## Candidate Actions")
-    for ev in sorted(fired, key=lambda x: x.rule):
-        items = actions.get(ev.rule) or []
+    lines: List[str] = ["## Candidate Actions"]
+    for ev in sorted(fired, key=lambda x: x.get("rule")):
+        items = actions.get(ev.get("rule")) or []
         if not items:
             continue
-        lines.append(f"### {ev.rule} (count={int(ev.count or 0)})")
+        lines.append(f"### {ev.get('rule')} (count={int(ev.get('count') or 0)})")
         for it in items:
             label = str(it.get("label") or "Action")
             cmd = str(it.get("cmd") or "").strip()
-            if cmd:
-                lines.append(f"- [ ] {label}: `{cmd}`")
-            else:
-                lines.append(f"- [ ] {label}")
-        lines.append("")  # spacer between rules
-
+            lines.append(f"- [ ] {label}: `{cmd}`" if cmd else f"- [ ] {label}")
+        lines.append("")
     return "\n".join(lines).strip()
-# ------------------------------------------------------------
+# ----------------------------------------------------
 
-# --------------------- Notifications (opt-in) ---------------------
+# ---------------- Notifications (opt-in) ----------------
 def _privacy_share_body() -> bool:
-    """Return True if we are allowed to include full report text in a notification."""
     mode = os.getenv("PRIVACY_MODE", "abstract").strip().lower()
     allow_raw = os.getenv("ALLOW_NOTIFY_IN_RAW", "0") == "1"
     return mode != "raw" or allow_raw
 
-
 def notify_slack(preview: Dict[str, Any], incident: Optional[Dict[str, Any]]) -> None:
-    """Send a compact Slack message via Incoming Webhook URL (SLACK_WEBHOOK_URL)."""
     url = os.getenv("SLACK_WEBHOOK_URL")
     if not url:
         return
@@ -335,7 +415,6 @@ def notify_slack(preview: Dict[str, Any], incident: Optional[Dict[str, Any]]) ->
     tldr = preview.get("tldr") or "(no TL;DR)"
     items = preview.get("items", 0)
     text = f"TinySocs: {sev} · {items} item(s)\n- {tldr}"
-
     if incident and _privacy_share_body():
         more = incident.get("markdown") or incident.get("report") or incident.get("body")
         if more:
@@ -345,9 +424,7 @@ def notify_slack(preview: Dict[str, Any], incident: Optional[Dict[str, Any]]) ->
     except Exception as e:
         print(f"[master] WARN: slack notify failed: {e}")
 
-
 def notify_gchat(preview: Dict[str, Any], incident: Optional[Dict[str, Any]]) -> None:
-    """Send a compact Google Chat message via webhook (GCHAT_WEBHOOK_URL)."""
     url = os.getenv("GCHAT_WEBHOOK_URL")
     if not url:
         return
@@ -355,7 +432,6 @@ def notify_gchat(preview: Dict[str, Any], incident: Optional[Dict[str, Any]]) ->
     tldr = preview.get("tldr") or "(no TL;DR)"
     items = preview.get("items", 0)
     text = f"TinySocs: {sev} · {items} item(s)\n- {tldr}"
-
     if incident and _privacy_share_body():
         more = incident.get("markdown") or incident.get("report") or incident.get("body")
         if more:
@@ -365,9 +441,7 @@ def notify_gchat(preview: Dict[str, Any], incident: Optional[Dict[str, Any]]) ->
     except Exception as e:
         print(f"[master] WARN: gchat notify failed: {e}")
 
-
 def notify_email(preview: Dict[str, Any], incident: Optional[Dict[str, Any]]) -> None:
-    """Send a basic email using SMTP_* envs."""
     to_addr = os.getenv("NOTIFY_EMAIL_TO")
     host = os.getenv("SMTP_HOST")
     if not to_addr or not host:
@@ -382,7 +456,6 @@ def notify_email(preview: Dict[str, Any], incident: Optional[Dict[str, Any]]) ->
     items = preview.get("items", 0)
     subject = f"[TinySocs] {sev} · {items} items"
     body = f"{tldr}\n\n{json.dumps(preview, indent=2, default=str)}"
-
     if incident and _privacy_share_body():
         more = incident.get("markdown") or incident.get("report") or incident.get("body")
         if more:
@@ -403,271 +476,164 @@ def notify_email(preview: Dict[str, Any], incident: Optional[Dict[str, Any]]) ->
             s.send_message(msg)
     except Exception as e:
         print(f"[master] WARN: email notify failed: {e}")
-# ---------------------------------------------------------------
+# --------------------------------------------------------
 
-def now_iso():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-def _verify_hmac(req: Request):
-    ts = req.headers.get("X-TinySOCS-Timestamp")
-    sig = req.headers.get("X-TinySOCS-Signature")
-    if not ts or not sig:
-        raise HTTPException(status_code=401, detail="missing hmac headers")
-    try:
-        ts_int = int(ts)
-    except ValueError:
-        raise HTTPException(status_code=401, detail="bad timestamp")
-
-    if abs(int(time.time()) - ts_int) > SKEW_SECS:
-        raise HTTPException(status_code=401, detail="clock_skew")
-
-    calc = hmac.new(SECRET.encode("utf-8"), ts.encode("utf-8"), hashlib.sha256).hexdigest()
-    token = f"{ts}:{sig}"
-    if token in REPLAY_CACHE:
-        raise HTTPException(status_code=401, detail="replay")
-    REPLAY_CACHE.add(token)
-    if calc != sig:
-        raise HTTPException(status_code=401, detail="bad_signature")
-
-def _append_jsonl(entry: dict):
-    fpath = LEDGER_DIR / (datetime.now().strftime("%Y-%m-%d") + ".jsonl")
-    with open(fpath, "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, separators=(",", ":")) + "\n")
-
-def _read_head():
-    if not HEAD_FILE.exists():
-        return {"ok": False, "reason": "empty"}
-    with open(HEAD_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-def _write_head(head):
-    with open(HEAD_FILE, "w", encoding="utf-8") as f:
-        json.dump(head, f)
-
-@APP.get("/evidence/head")
-async def get_head():
-    head = _read_head()
-    if not head.get("ok"):
-        return {"ok": False, "reason": head.get("reason", "empty")}
-    return head
-
-@APP.post("/evidence/append")
-async def post_append(req: Request):
-    _verify_hmac(req)
-    body = await req.json()
-    # Expected body (compact): {"stable_hash": "sha256...", "rule": "...", "node_id": "...", "sequence": optional}
-    incoming = {
-        "stable_hash": body.get("stable_hash"),
-        "rule": body.get("rule"),
-        "node_id": body.get("node_id", "local"),
-        "timestamp": now_iso(),
-    }
-    prev = _read_head()
-    sequence = (prev.get("sequence") or 0) + 1 if prev.get("ok") else 1
-    entry = {
-        "sequence": sequence,
-        "timestamp": incoming["timestamp"],
-        "rule": incoming["rule"],
-        "stable_hash": incoming["stable_hash"],
-        "prev_hash": prev.get("head_sha256"),
-        "node_id": incoming["node_id"],
-    }
-    # head hash is over canonical entry
-    blob = json.dumps(entry, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    head_sha = hashlib.sha256(blob).hexdigest()
-    entry["head_sha256"] = head_sha
-
-    _append_jsonl(entry)
-    _write_head({"ok": True, "sequence": sequence, "head_sha256": head_sha, "updated_at": now_iso()})
-    return {"ok": True, "sequence": sequence, "head_sha256": head_sha}
-
-# --- Phase 4: Anchor heads to OpenSearch ---
-from requests.auth import HTTPBasicAuth
-from datetime import datetime, timezone
-
+# ---------------- OpenSearch helpers ----------------
 def _es_auth() -> HTTPBasicAuth:
-    return HTTPBasicAuth(os.getenv("SIEM_USER", "admin"), os.getenv("SIEM_PASS", "admin"))
+    return HTTPBasicAuth(SIEM_USER, SIEM_PASS)
 
-def _es_verify() -> bool:
-    return str(os.getenv("SIEM_SSL_VERIFY", "true")).strip().lower() in ("1","true","yes","on")
+def _es_index(doc: Dict[str, Any]) -> None:
+    """Index one doc into the tinysocs_anchors alias (write index should be true)."""
+    post_url = urljoin(SIEM_URL.rstrip("/") + "/", "tinysocs_anchors/_doc")
+    r = requests.post(post_url, auth=_es_auth(), verify=SIEM_VERIFY, json=doc, timeout=REQUEST_TIMEOUT_SEC)
+    r.raise_for_status()
+# ----------------------------------------------------
 
-def _ensure_anchors_index() -> None:
-    base = os.getenv("SIEM_URL", "https://127.0.0.1:9201").rstrip("/")
-    idx  = "tinysocs_anchors"
-    try:
-        # HEAD index; create if missing
-        r = requests.head(f"{base}/{idx}", auth=_es_auth(), verify=_es_verify(), timeout=6)
-        if r.status_code == 200:
-            return
-        # create with minimal mapping
-        mapping = {
-            "settings": {"index": {"number_of_shards": 1, "number_of_replicas": 0}},
-            "mappings": {
-                "properties": {
-                    "node_url":    {"type": "keyword"},
-                    "node_id":     {"type": "keyword"},
-                    "head_sha256": {"type": "keyword"},
-                    "sequence":    {"type": "long"},
-                    "ok":          {"type": "boolean"},
-                    "capability":  {"type": "keyword"},
-                    "anchored_at": {"type": "date"}
-                }
-            }
-        }
-        cr = requests.put(f"{base}/{idx}", auth=_es_auth(), verify=_es_verify(), json=mapping, timeout=8)
-        cr.raise_for_status()
-    except Exception as e:
-        print(f"[master] WARN: ensure anchors index failed: {e}")
-
-def anchor_all_nodes_after_run(rules: list[str] | str, window: str, items: int, privacy_mode: str) -> None:
-    """Fetch each node's head and index a compact anchor doc into OpenSearch."""
-    _ensure_anchors_index()
-    base = os.getenv("SIEM_URL", "https://127.0.0.1:9201").rstrip("/")
-    idx  = "tinysocs_anchors"
-    ts   = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    # Normalize rules to a short string for display
-    if isinstance(rules, str):
-        rules_str = rules
-    else:
-        rules_str = ",".join(rules)
-
-    for node in NODES:
-        try:
-            # read node head
-            r = requests.get(
-                f"{node.rstrip('/')}/evidence/head",
-                headers=_headers(),
-                timeout=10,
-                verify=False if os.getenv("TINYSOCS_INSECURE_SKIP_VERIFY", "1") == "1" else True,
-            )
-            if r.status_code == 501:
-                head = {"ok": False, "sequence": None, "head_sha256": None, "capability": "no-ledger"}
-            else:
-                r.raise_for_status()
-                head = r.json()
-            doc = {
-                "node_url": node,
-                "node_id":  head.get("node_id") or os.getenv("NODE_ID", None),
-                "ok":       bool(head.get("ok")),
-                "sequence": head.get("sequence"),
-                "head_sha256": head.get("head_sha256"),
-                "capability": head.get("capability") or "ledger",
-                "anchored_at": ts,
-                # context (optional)
-                "run": {"rules": rules_str, "window": window, "items": items, "privacy_mode": privacy_mode},
-            }
-            # index anchor
-            ir = requests.post(f"{base}/{idx}/_doc", auth=_es_auth(), verify=_es_verify(), json=doc, timeout=10)
-            ir.raise_for_status()
-        except Exception as e:
-            print(f"[master] WARN: anchoring node {node} failed: {e}")
-
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--rules", required=True, help="Comma separated rule IDs")
-    ap.add_argument("--window", required=True, help="Window, e.g., 15m")
-    ap.add_argument("--host", default=None, help="Optional host filter")
-    ap.add_argument(
-        "--deadline",
-        type=float,
-        default=float(os.getenv("MASTER_DEADLINE_SEC", "15")),
-        help="Overall wall-clock deadline in seconds (default from MASTER_DEADLINE_SEC or 15).",
-    )
-    args = ap.parse_args()
-
-    if not NODES:
-        raise SystemExit("TINYSOCS_NODES is empty; set it to comma-separated node URLs.")
-
-    rules = [r.strip() for r in args.rules.split(",") if r.strip()]
-    batches: List[List[DetectionEvidence]] = []
-    errors: List[Dict[str, str]] = []
-
+def run_master(rules: str, window: str, host: Optional[str], deadline_sec: float) -> Dict[str, Any]:
     t0 = time.time()
+    summary = {
+        "rules": rules,
+        "window": window,
+        "nodes": [],
+        "errors": 0,
+        "anchored": 0,
+        "ts": _now_utc_iso(),
+        "privacy_mode": _display_privacy_mode(),
+    }
+
+    print(f"[master] fan-out to {','.join(NODES)}; rules={rules}; window={window}")
+
     for node in NODES:
-        # Stop if deadline exhausted
-        elapsed = time.time() - t0
-        remaining = max(0.0, args.deadline - elapsed)
-        if remaining <= 0:
-            errors.append({"node": node, "error": "deadline_exhausted"})
-            print(f"[master] DEADLINE: skipping {node} (overall deadline hit)")
+        # Deadline guard
+        if (time.time() - t0) >= deadline_sec:
+            print(f"[master] DEADLINE hit — skipping remaining nodes.")
             break
 
-        # Clamp per-node timeout to remaining budget
-        per_node_timeout = min(REQUEST_TIMEOUT_SEC, remaining)
+        node_row: Dict[str, Any] = {"node": node, "ok": False}
+
+        # 1) fetch evidence with retry (GET then POST fallback)
+        def _fetch():
+            try:
+                return _agg_get(node, rules, window, host)
+            except Exception:
+                return _agg_post(node, rules, window, host)
 
         try:
-            evs = fetch_agg(node, rules=rules, window=args.window, host=args.host, timeout=per_node_timeout)
-            print(f"[master] {node} -> {len(evs)} evidences")
-            batches.append(evs)
+            agg = _try_call(
+                _fetch,
+                tries=MASTER_RETRIES,
+                min_ms=MASTER_RETRY_MIN_MS,
+                max_ms=MASTER_RETRY_MAX_MS,
+                label=f"{node} /agg",
+            )
+            items = int(agg.get("items", 0)) if isinstance(agg, dict) else 0
+            node_row.update({"ok": True, "items": items})
+            print(f"[master] {node} -> {items} evidences")
         except Exception as e:
-            err = f"{type(e).__name__}: {e}"
-            errors.append({"node": node, "error": err})
-            print(f"[master] WARN: failed to fetch from {node}: {err}")
+            node_row.update({"ok": False, "error": f"agg_failed: {e}"})
+            summary["errors"] += 1
+            print(f"[master] {node} agg error: {e}")
 
-        # If next loop would certainly exceed deadline, bail early
-        if (time.time() - t0) >= args.deadline:
-            print("[master] DEADLINE: stopping fan-out loop")
-            break
+        # 2) append compact payload to node ledger (tamper trail) FIRST, then read head
+        try:
+            _try_call(
+                lambda: _post_json(node, {"payload": {"rules": rules, "window": window, "items": int(node_row.get("items", 0)), "privacy_mode": _display_privacy_mode()}}),
+                tries=MASTER_RETRIES,
+                min_ms=MASTER_RETRY_MIN_MS,
+                max_ms=MASTER_RETRY_MAX_MS,
+                label=f"{node} /evidence/append",
+            )
+        except Exception as _e:
+            # best-effort; we still proceed to read whatever head exists
+            node_row["append_warn"] = f"append_failed: {_e}"
 
-    merged = merge_evidence(batches)
-    print(f"[master] merged groups: {len(merged)} (errors={len(errors)})")
+        # 3) read current head with retry (should now reflect the append)
+        try:
+            head = _try_call(
+                lambda: _get_head(node),
+                tries=MASTER_RETRIES,
+                min_ms=MASTER_RETRY_MIN_MS,
+                max_ms=MASTER_RETRY_MAX_MS,
+                label=f"{node} /evidence/head",
+            )
+        except Exception as e:
+            node_row.update({"head_error": f"head_failed: {e}"})
+            summary["errors"] += 1
+            summary["nodes"].append(node_row)
+            print(f"[master] {node} head error: {e}")
+            continue
 
-    # ---------- Privacy-aware summarizer call ----------
+        # 4) anchor to OpenSearch (alias) with the CURRENT head
+        anchor_doc = {
+            "node": node,  # <— legacy compatibility (verify script may filter on 'node')
+            "node_url": node,
+            "node_id": head.get("node_id") or os.getenv("NODE_ID") or _derive_node_id(node),
+            "ok": bool(head.get("ok", True)),
+            "sequence": head.get("sequence"),
+            "head_sha256": head.get("head_sha256"),
+            "capability": head.get("capability", "ledger"),
+            "anchored_at": _now_utc_iso(),
+            "run": {
+                "rules": rules,
+                "window": window,
+                "items": int(node_row.get("items", 0)),
+                "privacy_mode": _display_privacy_mode(),
+            },
+        }
+        try:
+            _try_call(
+                lambda: _es_index(anchor_doc),
+                tries=MASTER_RETRIES,
+                min_ms=MASTER_RETRY_MIN_MS,
+                max_ms=MASTER_RETRY_MAX_MS,
+                label=f"{node} anchor_index",
+            )
+            summary["anchored"] += 1
+            print(f"[master] anchored {node} @ {anchor_doc['anchored_at']} (seq={anchor_doc.get('sequence')})")
+        except Exception as e:
+            node_row.update({"anchor_error": f"anchor_failed: {e}"})
+            summary["errors"] += 1
+            print(f"[master] {node} anchor error: {e}")
+
+        summary["nodes"].append(node_row)
+
+    # ---------- Summarize ----------
+    # Minimal synthetic merged for preview (items per node grouped under a pseudo-rule "fleet_total")
+    pseudo = DetectionEvidence(rule="fleet_total", window=window, host=None, count=sum(int(n.get("items", 0)) for n in summary["nodes"]), summary={}, exemplars=[])
+    merged = [pseudo]
+
     if _summarize is None:
-        print("[master] WARN: summarizer not available; printing merged evidence only.")
-        # pydantic v1/v2 compat
-        ev_dump = [(e.model_dump() if hasattr(e, "model_dump") else e.dict()) for e in merged]
-        print(json.dumps({"evidence": ev_dump, "errors": errors}, indent=2, ensure_ascii=False, default=str))
-        return
-
-    incident: Dict[str, Any] | str
-    llm_label = f"{os.getenv('LLM_MODE','openai')}"
-
-    try:
-        if PRIVACY_MODE == "raw":
-            findings = _to_findings(merged)
-            try:
-                incident = _summarize(findings)
-            except TypeError:
-                incident = _summarize(findings=findings)  # type: ignore
-        else:
-            # Pydantic v1/v2 compatibility
-            ev_dicts = [(e.model_dump() if hasattr(e, "model_dump") else e.dict()) for e in merged]
-            payload = _prepare_privacy_payload(ev_dicts, args.window)
-
-            called = False
-            for attempt in (
-                lambda: _summarize(payload),
-                lambda: _summarize(data=payload),
-                lambda: _summarize(findings=payload),
-            ):
+        incident = _minimal_local_summary(merged, window)
+    else:
+        try:
+            if PRIVACY_MODE == "raw":
+                findings = _to_findings(merged)
                 try:
-                    incident = attempt()
-                    called = True
-                    break
+                    incident = _summarize(findings)
                 except TypeError:
-                    continue
+                    incident = _summarize(findings=findings)  # type: ignore
+            else:
+                payload = _prepare_privacy_payload(
+                    [m.model_dump() if hasattr(m, "model_dump") else (m if isinstance(m, dict) else m.__dict__) for m in merged],
+                    window
+                )
+                called = False
+                for attempt in (lambda: _summarize(payload),
+                                lambda: _summarize(data=payload),
+                                lambda: _summarize(findings=payload)):
+                    try:
+                        incident = attempt()
+                        called = True
+                        break
+                    except TypeError:
+                        continue
+                if not called:
+                    incident = _minimal_local_summary(merged, window)
+        except Exception as e:
+            print(f"[master] ERROR: summarizer failed: {e}")
+            incident = _minimal_local_summary(merged, window)
 
-            if not called:
-                print("[master] WARN: summarizer rejected abstract payload; using local minimal summary.")
-                incident = _minimal_local_summary(merged, args.window)
-
-        # Annotate privacy banner if body present
-        if isinstance(incident, dict):
-            for k in ("markdown", "report", "body"):
-                if k in incident and isinstance(incident[k], str):
-                    incident[k] = _annotate_header(incident[k], llm_mode=llm_label)
-                    break
-        elif isinstance(incident, str):
-            incident = _annotate_header(incident, llm_mode=llm_label)
-
-    except Exception as e:
-        print(f"[master] ERROR: summarizer failed: {e}")
-        incident = _minimal_local_summary(merged, args.window)
-    # ---------------------------------------------------
-
-    # ---------- Append Candidate Actions ----------
+    # Append candidate actions (if any)
     try:
         actions_md = _render_actions_md(merged)
         if actions_md:
@@ -677,43 +643,26 @@ def main():
                         incident[k] = incident[k].rstrip() + "\n\n" + actions_md + "\n"
                         break
                 else:
-                    # no known body key; attach as 'actions_markdown'
                     incident["actions_markdown"] = actions_md
             elif isinstance(incident, str):
                 incident = incident.rstrip() + "\n\n" + actions_md + "\n"
     except Exception as e:
         print(f"[master] WARN: failed to render actions: {e}")
-    # ---------------------------------------------------
 
-    # ---------- Post-run anchors to nodes (tamper-evidence) ----------
-    try:
-        anchor_payload = {
-            "rules": rules,
-            "window": args.window,
-            "items": len(merged),
-            "privacy_mode": PRIVACY_MODE,
-            "errors": [{"node": x.get("node"), "error": "…"} for x in errors] if errors else [],
-        }
-        for node in NODES:
-            _post_json(f"{node.rstrip('/')}/evidence/append", SECRET, {"payload": anchor_payload})
-    except Exception as _e:
-        print(f"[master] WARN: failed to anchor evidence: {_e}")
-    # -----------------------------------------------------------------
-
-    # Compact preview so you see it worked
     sev = incident.get("severity") if isinstance(incident, dict) else None
     tldr = incident.get("tldr") if isinstance(incident, dict) else None
     preview = {
         "severity": sev,
         "tldr": tldr,
-        "items": len(merged),
+        "items": sum(int(n.get("items", 0)) for n in summary["nodes"]),
         "privacy_mode": _display_privacy_mode(),
-        "errors": errors,  # surfaced to operator
+        "anchored": summary["anchored"],
+        "errors": summary["errors"],
     }
     print("----- Fleet Incident (preview) -----")
     print(json.dumps(preview, indent=2, default=str))
 
-    # ---------- Notifications (opt-in) ----------
+    # Notifications (opt-in)
     try:
         inc_obj = incident if isinstance(incident, dict) else None
         if os.getenv("NOTIFY_SLACK", "0") == "1":
@@ -724,12 +673,26 @@ def main():
             notify_email(preview, inc_obj)
     except Exception as e:
         print(f"[master] WARN: notifications failed: {e}")
-    # -------------------------------------------
 
-    try:
-        anchor_all_nodes_after_run(rules=args.rules, window=args.window, items=len(merged), privacy_mode=_display_privacy_mode())
-    except Exception as e:
-        print(f"[master] WARN: failed anchoring to OpenSearch: {e}")
+    return summary
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="TinySOCS Master (fan-out + summarize + anchor)")
+    ap.add_argument("--rules", type=str, required=True, help="Comma separated rule IDs")
+    ap.add_argument("--window", type=str, required=True, help="Window, e.g., 15m")
+    ap.add_argument("--host", type=str, default=None, help="Optional host filter")
+    ap.add_argument(
+        "--deadline",
+        type=float,
+        default=float(os.getenv("MASTER_DEADLINE_SEC", "30")),
+        help="Overall wall-clock deadline in seconds (default from MASTER_DEADLINE_SEC or 30).",
+    )
+    args = ap.parse_args()
+
+    if not NODES:
+        raise SystemExit("TINYSOCS_NODES is empty; set it to comma-separated node URLs.")
+
+    run_master(args.rules, args.window, args.host, args.deadline)
 
 if __name__ == "__main__":
     main()

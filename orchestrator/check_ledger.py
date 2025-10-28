@@ -28,12 +28,11 @@ import os
 import time
 import hmac
 import hashlib
-from typing import Dict, Any, List, Optional
-from urllib.parse import urljoin
-
+from pathlib import Path
+from typing import Dict, Any, List, Optional, Set
+from urllib.parse import urlparse
 import requests
 from requests.auth import HTTPBasicAuth
-
 
 # ---------------- Env helpers ----------------
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -42,7 +41,6 @@ def _env_bool(name: str, default: bool = False) -> bool:
         return default
     return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
 
-
 def _tls_verify_from(name: str, default: bool = True) -> bool:
     # For SIEM_SSL_VERIFY: accept "0/false/no/off" as disable
     v = os.getenv(name)
@@ -50,12 +48,48 @@ def _tls_verify_from(name: str, default: bool = True) -> bool:
         return default
     return str(v).strip().lower() not in ("0", "false", "no", "off")
 
+# --- best-effort .env loader (no dependency on python-dotenv) ---
+def _load_dotenv_inplace():
+    # search: repo root (…/tinysocs/..), then current dir
+    here = Path(__file__).resolve()
+    candidates = [
+        here.parents[2] / ".env",  # <repo>/.env
+        here.parents[1] / ".env",  # <repo>/tinysocs/.env (fallback)
+        Path.cwd() / ".env",
+    ]
+    for p in candidates:
+        if p.is_file():
+            for line in p.read_text(encoding="utf-8").splitlines():
+                if not line or line.strip().startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                k, v = k.strip(), v.strip()
+                if k and v and (k not in os.environ):
+                    os.environ[k] = v
+            break
+
+_load_dotenv_inplace()
+
+# Optional: silence InsecureRequestWarning if verify is disabled
+try:
+    import urllib3  # type: ignore
+    if (not _tls_verify_from("SIEM_SSL_VERIFY", True)) or _env_bool("TINYSOCS_INSECURE_SKIP_VERIFY", True):
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+except Exception:
+    pass
 
 # ---------------- Config ----------------
 NODES: List[str] = [x.strip() for x in (os.getenv("TINYSOCS_NODES", "")).split(",") if x.strip()]
 SECRET: str = os.getenv("MASTER_SHARED_SECRET", "dev-secret-change-me")
 NODE_TLS_VERIFY: bool = not _env_bool("TINYSOCS_INSECURE_SKIP_VERIFY", True)  # default skip verify (local lab)
 
+SIEM_URL: str = os.getenv("SIEM_URL", "https://localhost:9201")
+SIEM_USER: str = os.getenv("SIEM_USER", "admin")
+SIEM_PASS: str = os.getenv("SIEM_PASS", "admin")
+SIEM_VERIFY: bool = _tls_verify_from("SIEM_SSL_VERIFY", True)
+SIEM_TIMEOUT: float = float(os.getenv("SIEM_TIMEOUT_SECONDS", "30"))
+
+REQUEST_TIMEOUT: float = float(os.getenv("REQUEST_TIMEOUT_SEC", "30"))
 
 # ---------------- HMAC headers (raw hex; no "sha256=" prefix) ----------------
 def _headers() -> Dict[str, str]:
@@ -68,12 +102,30 @@ def _headers() -> Dict[str, str]:
         "User-Agent": "tinysocs/ledger-check",
     }
 
+# ---------------- Node helpers ----------------
+def _derive_node_id(node_url: str) -> str:
+    """Canonical node_id: 'node-<port>' if present, else 'node-<host>' (host only)."""
+    p = urlparse(node_url)
+    if p.port:
+        return f"node-{p.port}"
+    host = (p.hostname or "node").split(".")[0]
+    return f"node-{host}"
+
+def _alt_node_urls(node_url: str) -> Set[str]:
+    """Return a set of equivalent URLs to match anchors (localhost ↔ 127.0.0.1)."""
+    p = urlparse(node_url)
+    variants = set([node_url.rstrip("/")])
+    if p.hostname in ("localhost", "127.0.0.1"):
+        swap = "127.0.0.1" if p.hostname == "localhost" else "localhost"
+        swapped = f"{p.scheme}://{swap}:{p.port}" if p.port else f"{p.scheme}://{swap}"
+        variants.add(swapped.rstrip("/"))
+    return variants
 
 # ---------------- Node head fetch ----------------
 def _get_head(node_url: str) -> Dict[str, Any]:
     url = node_url.rstrip("/") + "/evidence/head"
     try:
-        r = requests.get(url, headers=_headers(), timeout=8, verify=NODE_TLS_VERIFY)
+        r = requests.get(url, headers=_headers(), timeout=REQUEST_TIMEOUT, verify=NODE_TLS_VERIFY)
         if r.status_code == 501:
             return {"ok": None, "sequence": None, "head_sha256": None, "capability": "no-ledger", "node_id": None}
         r.raise_for_status()
@@ -83,47 +135,40 @@ def _get_head(node_url: str) -> Dict[str, Any]:
             "sequence": data.get("sequence"),
             "head_sha256": data.get("head_sha256"),
             "capability": data.get("capability", "ledger"),
-            "node_id": data.get("node_id") or os.getenv("NODE_ID", "node-1"),
+            "node_id": data.get("node_id") or _derive_node_id(node_url),
         }
     except Exception as e:
         return {"ok": False, "sequence": None, "head_sha256": None, "capability": f"error: {e}", "node_id": None}
 
-
 # ---------------- Anchor query (OpenSearch) ----------------
 def _es_auth() -> HTTPBasicAuth:
-    return HTTPBasicAuth(os.getenv("SIEM_USER", "admin"), os.getenv("SIEM_PASS", "admin"))
+    return HTTPBasicAuth(SIEM_USER, SIEM_PASS)
 
-
-def _es_verify() -> bool:
-    return _tls_verify_from("SIEM_SSL_VERIFY", default=True)
-
-
-def _search_latest_anchor(siem_url: str, node_url: str, node_id: str) -> Optional[Dict[str, Any]]:
+def _search_latest_anchor(node_url: str, node_id: str) -> Optional[Dict[str, Any]]:
     """
     Return the most recent anchor doc for this node from 'tinysocs_anchors'.
-    Tries node_url, node, or node_id (any one matching).
+    Tries node_url (with localhost/127.0.0.1 variants) OR node_id.
+    NOTE: We query the exact field names as indexed by master.py:
+          node_url (keyword), node_id (keyword), anchored_at (date), head_sha256 (keyword)
     """
-    search_url = urljoin(siem_url.rstrip('/') + '/', "tinysocs_anchors/_search")
-    should = [
-        {"term": {"node_url.keyword": node_url}},
-        {"term": {"node.keyword": node_url}},
-        {"term": {"node_id.keyword": node_id}},
-    ]
+    search_url = SIEM_URL.rstrip('/') + '/tinysocs_anchors/_search'
+    should = []
+    for u in _alt_node_urls(node_url):
+        # Mapping is 'keyword' already; do NOT use '.keyword' subfield
+        should.append({"term": {"node_url": {"value": u}}})
+    should.append({"term": {"node_id": {"value": node_id}}})
+
     q = {
         "size": 1,
         "sort": [{"anchored_at": {"order": "desc"}}],
         "query": {"bool": {"should": should, "minimum_should_match": 1}},
     }
-    try:
-        r = requests.post(search_url, auth=_es_auth(), verify=_es_verify(), json=q, timeout=12)
-        r.raise_for_status()
-        hits = r.json().get("hits", {}).get("hits", [])
-        if not hits:
-            return None
-        return hits[0]["_source"]
-    except Exception as e:
-        return {"error": str(e)}
-
+    r = requests.post(search_url, auth=_es_auth(), verify=SIEM_VERIFY, json=q, timeout=SIEM_TIMEOUT)
+    r.raise_for_status()
+    hits = r.json().get("hits", {}).get("hits", [])
+    if not hits:
+        return None
+    return hits[0].get("_source") or {}
 
 # ---------------- Main ----------------
 def main() -> None:
@@ -145,18 +190,15 @@ def main() -> None:
         for node in NODES:
             head = _get_head(node)
             rows.append({"node": node, **head})
-        print(json.dumps(rows, indent=2))
+        print(json.dumps(rows, indent=2, default=str))
         return
 
     # Verify path: (1) local chain health; (2) compare current head vs latest anchor (if local is healthy)
-    siem_url = os.getenv("SIEM_URL", "https://localhost:9201")
-
-    # Import here to avoid importing ledger when not needed
-    from tinysocs.agent.models import ledger as _ledger
+    from tinysocs.agent.models import ledger as _ledger  # imported only in verify mode
 
     for node in NODES:
         head = _get_head(node)
-        node_id = head.get("node_id") or os.getenv("NODE_ID", "node-1")
+        node_id = head.get("node_id") or _derive_node_id(node)
 
         if head.get("ok") is False:
             rows.append({
@@ -187,8 +229,19 @@ def main() -> None:
             continue  # Don't compare to anchor if the local chain is already invalid
 
         # (2) Local chain is healthy → compare current head to the latest anchor
-        anchor = _search_latest_anchor(siem_url, node, node_id)
-        if anchor is None:
+        try:
+            anchor = _search_latest_anchor(node, node_id)
+        except Exception as e:
+            rows.append({
+                "node": node,
+                "node_id": node_id,
+                "ok": False,
+                "reason": f"anchor_query_failed: {e}",
+                "ledger_path": ledger_path,
+            })
+            continue
+
+        if not anchor:
             rows.append({
                 "node": node,
                 "node_id": node_id,
@@ -196,15 +249,6 @@ def main() -> None:
                 "reason": "no_anchor",
                 "sequence": head.get("sequence"),
                 "current_head": head.get("head_sha256"),
-                "ledger_path": ledger_path,
-            })
-            continue
-        if isinstance(anchor, dict) and anchor.get("error"):
-            rows.append({
-                "node": node,
-                "node_id": node_id,
-                "ok": False,
-                "reason": f"anchor_query_failed: {anchor['error']}",
                 "ledger_path": ledger_path,
             })
             continue
@@ -225,7 +269,7 @@ def main() -> None:
             "ledger_path": ledger_path,
         })
 
-    print(json.dumps(rows, indent=2))
+    print(json.dumps(rows, indent=2, default=str))
 
 
 if __name__ == "__main__":

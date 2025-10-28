@@ -5,13 +5,27 @@ Dot-source this file in your PowerShell session, e.g.:
   PS> . .\model_toggles.ps1
 Nothing auto-runs when dot-sourced.
 
-Phase 3: Logstash removed. Winlogbeat ships directly to OpenSearch.
+Winlogbeat ships directly to OpenSearch.
 -------------------------------------------------------------------------------#>
 # ---- TinySOCS OpenSearch Beats toggle ---------------------------------
 # Ways to turn this on:
 #   - call Install-Winlogbeat -OpenSearchFork
 #   - or set $env:TINYSOCS_USE_OPENSEARCH_BEATS="1"
 $Global:TinySOCS_DefaultUseOpenSearchBeats = $true
+
+# ---- TinySOCS .Dot Env ---------------------------------
+function Use-TinySocsDotEnv {
+  param([string]$Path = (Join-Path $PSScriptRoot ".env"))
+  if (-not (Test-Path $Path)) { return }
+  Get-Content $Path | Where-Object { $_ -match '^\s*[^#\s]+' } | ForEach-Object {
+    $k,$v = $_ -split '=',2
+    if ($k -and $v) {
+      $k = $k.Trim()
+      $v = $v.Trim()
+      [Environment]::SetEnvironmentVariable($k, $v, "Process")
+    }
+  }
+}
 
 # ========================= LLM (model) toggles =========================
 function Use-OpenAI {
@@ -1908,7 +1922,7 @@ function Start-TinySOCS-OpenSearchLean {
     [string]$Window = "15m",
     [switch]$NoWBSetup
   )
-
+  Use-TinySocsDotEnv  # ensure SIEM_URL, TINYSOCS_NODES, OPENAI_API_KEY, etc.
   # --- sensible env defaults (idempotent) ---
   if (-not $env:TINYSOCS_LEDGER_DIR) { $env:TINYSOCS_LEDGER_DIR = "C:\tinysocs\ledger" }
   if (-not (Test-Path $env:TINYSOCS_LEDGER_DIR)) { New-Item -ItemType Directory -Force -Path $env:TINYSOCS_LEDGER_DIR | Out-Null }

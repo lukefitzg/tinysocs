@@ -1,0 +1,189 @@
+# tinysocs/api/bot.py
+"""
+TinySocs Bot Bridge (FastAPI)
+
+Purpose:
+  - Accept chat/webhook intents and stage operator actions.
+  - Append a compact bot_action record to the node ledger via /evidence/append.
+
+Security:
+  - HMAC headers (raw-hex) with BOT_SHARED_SECRET.
+  - ±300s clock skew, 5-minute replay cache on timestamp.
+
+Env:
+  BOT_SHARED_SECRET            HMAC secret for inbound bot calls (required)
+  MASTER_SHARED_SECRET         Reused when calling node /evidence/append (fallback for NODE_SECRET)
+  TINYSOCS_NODES               Comma list; first is used to append ledger (default http://localhost:8081)
+  TINYSOCS_INSECURE_SKIP_VERIFY  "1" to skip TLS verify to node (default 1)
+  TINYSOCS_QUEUE_PATH          Path to actions queue JSONL (default: <repo>/tinysocs/actions_queue.jsonl)
+
+Run:
+  python -m tinysocs.api.bot  (uvicorn)
+"""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import ipaddress
+import json
+import os
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+import requests
+import uvicorn
+from fastapi import Body, Depends, FastAPI, HTTPException, Request
+from pydantic import BaseModel, Field
+
+# ---------- Env / defaults ----------
+def _env(name: str, default: Optional[str] = None) -> Optional[str]:
+    v = os.getenv(name)
+    return v if v is not None else default
+
+BOT_SECRET = _env("BOT_SHARED_SECRET", "")
+NODE_SECRET = _env("NODE_SECRET", _env("MASTER_SHARED_SECRET", "dev-secret-change-me"))
+NODES = [x.strip() for x in _env("TINYSOCS_NODES", "http://localhost:8081").split(",") if x.strip()]
+NODE_URL = NODES[0] if NODES else "http://localhost:8081"
+NODE_TLS_VERIFY = not str(_env("TINYSOCS_INSECURE_SKIP_VERIFY", "1")).lower() in ("1","true","yes","on")
+QUEUE_PATH = Path(_env("TINYSOCS_QUEUE_PATH", str(Path(__file__).resolve().parents[1] / "actions_queue.jsonl")))
+
+ALLOWED_SKEW_SECONDS = 300
+REPLAY_CACHE_SECONDS = 300
+_recent_ts: Dict[int, int] = {}
+
+# ---------- HMAC auth (inbound) ----------
+def _gc(now: int) -> None:
+    stale = [t for t, exp in _recent_ts.items() if exp <= now]
+    for t in stale:
+        _recent_ts.pop(t, None)
+
+def verify_hmac(request: Request) -> None:
+    if not BOT_SECRET:
+        raise HTTPException(status_code=500, detail="BOT_SHARED_SECRET not set")
+    ts_hdr = request.headers.get("X-TinySOCS-Timestamp")
+    sig_hdr = request.headers.get("X-TinySOCS-Signature", "")
+    if not ts_hdr or not sig_hdr:
+        raise HTTPException(status_code=401, detail="Missing auth headers")
+    try:
+        ts = int(ts_hdr)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid timestamp")
+    now = int(time.time())
+    if abs(now - ts) > ALLOWED_SKEW_SECONDS:
+        raise HTTPException(status_code=401, detail="Timestamp skew too large")
+    calc = hmac.new((BOT_SECRET or "").encode("utf-8"), str(ts).encode("utf-8"), hashlib.sha256).hexdigest()
+    provided = sig_hdr.split("=", 1)[1] if sig_hdr.startswith("sha256=") else sig_hdr
+    if not hmac.compare_digest(calc, provided):
+        raise HTTPException(status_code=401, detail="Bad signature")
+    _gc(now)
+    exp = _recent_ts.get(ts)
+    if exp and exp > now:
+        raise HTTPException(status_code=401, detail="Replay detected")
+    _recent_ts[ts] = now + REPLAY_CACHE_SECONDS
+
+# ---------- Queue helpers ----------
+def _queue_append(obj: Dict[str, Any]) -> None:
+    QUEUE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(QUEUE_PATH, "a", encoding="utf-8") as f:
+        f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+def _post_ledger(payload: Dict[str, Any]) -> Optional[str]:
+    ts = str(int(time.time()))
+    sig = hmac.new((NODE_SECRET or "").encode("utf-8"), ts.encode("utf-8"), hashlib.sha256).hexdigest()
+    headers = {"X-TinySOCS-Timestamp": ts, "X-TinySOCS-Signature": sig}
+    try:
+        r = requests.post(f"{NODE_URL.rstrip('/')}/evidence/append",
+                          headers=headers, json={"payload": payload},
+                          timeout=6, verify=NODE_TLS_VERIFY)
+        r.raise_for_status()
+        return "ok"
+    except Exception as e:
+        return f"ledger_append_failed: {type(e).__name__}: {e}"
+
+# ---------- Models ----------
+class AckBody(BaseModel):
+    incident_id: str = Field(..., description="Incident identifier (opaque)")
+    tldr: Optional[str] = Field(None, description="Short description/summary")
+    who: Optional[str] = Field(None, description="Human display name (optional)")
+
+ALLOWED_ACTIONS = {"block_ip", "disable_user", "isolate_host", "open_ticket"}
+
+class ExecBody(BaseModel):
+    action: str = Field(..., description=f"One of: {', '.join(sorted(ALLOWED_ACTIONS))}")
+    params: Dict[str, Any] = Field(default_factory=dict)
+    who: Optional[str] = Field(None, description="Human display name (optional)")
+
+# ---------- Guards ----------
+def _guard_params(action: str, params: Dict[str, Any]) -> None:
+    if action == "block_ip":
+        ip = str(params.get("ip", "")).strip()
+        if not ip:
+            raise HTTPException(status_code=400, detail="block_ip requires 'ip'")
+        try:
+            ip_obj = ipaddress.ip_address(ip)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid IP")
+        if ip_obj.is_loopback:
+            raise HTTPException(status_code=400, detail="loopback IP not allowed")
+        # allow RFC1918; this is staging-only
+    elif action == "disable_user":
+        user = str(params.get("user", "")).strip()
+        if not user:
+            raise HTTPException(status_code=400, detail="disable_user requires 'user'")
+    elif action == "isolate_host":
+        host = str(params.get("host", "")).strip()
+        if not host:
+            raise HTTPException(status_code=400, detail="isolate_host requires 'host'")
+    elif action == "open_ticket":
+        title = str(params.get("title", "")).strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="open_ticket requires 'title'")
+    else:
+        raise HTTPException(status_code=400, detail="unsupported action")
+
+# ---------- App ----------
+app = FastAPI(title="TinySocs Bot Bridge", version="0.1.0")
+
+@app.post("/bot/ack", dependencies=[Depends(verify_hmac)])
+def bot_ack(body: AckBody = Body(...)) -> Dict[str, Any]:
+    entry = {
+        "kind": "bot_action",
+        "action": "ack_incident",
+        "params": {"incident_id": body.incident_id, "tldr": body.tldr},
+        "who": body.who,
+        "ts": _now(),
+    }
+    _queue_append(entry)
+    ledger_res = _post_ledger(entry)
+    return {"queued": True, "ledger": ledger_res, "node": NODE_URL, "path": str(QUEUE_PATH)}
+
+@app.post("/bot/exec", dependencies=[Depends(verify_hmac)])
+def bot_exec(body: ExecBody = Body(...)) -> Dict[str, Any]:
+    if body.action not in ALLOWED_ACTIONS:
+        raise HTTPException(status_code=400, detail=f"action not allowed: {body.action}")
+    _guard_params(body.action, body.params)
+    entry = {
+        "kind": "bot_action",
+        "action": body.action,
+        "params": body.params,
+        "who": body.who,
+        "ts": _now(),
+        "dry_run": True,  # stage only; no live changes
+    }
+    _queue_append(entry)
+    ledger_res = _post_ledger(entry)
+    return {"queued": True, "ledger": ledger_res, "node": NODE_URL, "path": str(QUEUE_PATH)}
+
+def cli():
+    port = int(os.getenv("BOT_PORT", "8090"))
+    workers = int(os.getenv("TINYSOCS_BOT_WORKERS", "1"))
+    uvicorn.run(app, host="0.0.0.0", port=port, reload=False, workers=workers)
+
+if __name__ == "__main__":
+    cli()

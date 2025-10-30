@@ -58,13 +58,28 @@ AGG_TERMS_SIZE = int(os.getenv("TINYSOCS_AGG_TERMS_SIZE", "50"))    # top-N grou
 SAMPLE_MAX_DOCS = int(os.getenv("TINYSOCS_SAMPLE_MAX_DOCS", "20"))  # per /sample cap
 NODE_MAX_HITS = int(os.getenv("NODE_MAX_HITS", "800"))              # absolute safety clamp for any fetch
 
-# ---------- Env ----------
+# ---------- Env helpers ----------
 def _env(name: str, default: Optional[str] = None) -> Optional[str]:
     v = os.getenv(name)
     return v if v is not None else default
 
+def _determine_port() -> int:
+    """Resolve the intended port from env (PORT or NODE_PORT), default 8081."""
+    p = os.getenv("PORT", os.getenv("NODE_PORT", "8081"))
+    try:
+        return int(str(p).strip())
+    except Exception:
+        return 8081
 
-NODE_ID = _env("NODE_ID", "node-1")
+# Resolve port first so NODE_ID can be derived from it if not explicitly set.
+PORT = _determine_port()
+
+# Auto-derive NODE_ID from port when not provided (e.g., node-8081).
+# Note: when launching with `python -m uvicorn ... --port 8082`, uvicorn does not
+# export PORT/NODE_PORT by default. For auto-derivation to match the CLI port,
+# set PORT or NODE_PORT in the environment or use `python -m tinysocs.api.node`.
+NODE_ID = os.getenv("NODE_ID") or f"node-{PORT}"
+
 NODE_SECRET = _env("NODE_SECRET", os.getenv("MASTER_SHARED_SECRET", "dev-secret-change-me"))
 SIEM_BACKEND = (_env("SIEM_BACKEND", "opensearch") or "").lower()
 SIEM_URL = _env("SIEM_URL", "https://localhost:9201")
@@ -89,12 +104,10 @@ except Exception:
 # ---------- Simple replay cache (timestamp -> expires_at_epoch) ----------
 _recent_timestamps: Dict[int, int] = {}
 
-
 def _replay_cache_gc(now: int) -> None:
     stale = [ts for ts, exp in _recent_timestamps.items() if exp <= now]
     for ts in stale:
         _recent_timestamps.pop(ts, None)
-
 
 # ---------- Auth ----------
 def verify_hmac(request: Request) -> None:
@@ -127,7 +140,6 @@ def verify_hmac(request: Request) -> None:
     if exp and exp > now:
         raise HTTPException(status_code=401, detail="Replay detected")
     _recent_timestamps[ts] = now + REPLAY_CACHE_SECONDS
-
 
 # ---------- Rule path + loading (robust) ----------
 def _guess_rules_path() -> Optional[Path]:
@@ -167,7 +179,6 @@ def _guess_rules_path() -> Optional[Path]:
 
     return None
 
-
 def _load_rules() -> List[Dict[str, Any]]:
     path = _guess_rules_path()
     if not path:
@@ -184,13 +195,11 @@ def _load_rules() -> List[Dict[str, Any]]:
         print(f"[node] ERROR: failed loading rules from {path}: {type(e).__name__}: {e}", flush=True)
         return []
 
-
 def _find_rule(rule_id: str, rules: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     for r in rules:
         if r.get("id") == rule_id:
             return r
     return None
-
 
 # ---------- Time window helpers ----------
 def _parse_window(window: str) -> timedelta:
@@ -220,7 +229,6 @@ def _parse_window(window: str) -> timedelta:
     # default minutes when unknown
     return timedelta(minutes=value)
 
-
 def _time_bounds_iso(window: str) -> Tuple[str, str]:
     """Return (gte_iso, lte_iso) in UTC ISO8601 with Z."""
     now = datetime.now(timezone.utc)
@@ -231,7 +239,6 @@ def _time_bounds_iso(window: str) -> Tuple[str, str]:
     lte_s = now.replace(microsecond=0).isoformat().replace("+00:00", "Z")
     return gte_s, lte_s
 
-
 def _add_time_to_kql(kql: str, window: str) -> str:
     """Append an @timestamp range to the Lucene query_string we send to OS."""
     gte, lte = _time_bounds_iso(window)
@@ -239,7 +246,6 @@ def _add_time_to_kql(kql: str, window: str) -> str:
     if not kql:
         return time_clause
     return f"({kql}) AND {time_clause}"
-
 
 def _add_time_to_kql_kibana(kql: str, window: str) -> str:
     """
@@ -253,11 +259,9 @@ def _add_time_to_kql_kibana(kql: str, window: str) -> str:
         return time_clause
     return f"({k}) and ({time_clause})"
 
-
 def _range_filter(window: str) -> Dict[str, Any]:
     gte, lte = _time_bounds_iso(window)
     return {"range": {"@timestamp": {"gte": gte, "lte": lte}}}
-
 
 # ---------- Count helper (agg-only, adapter-agnostic) ----------
 def _count_for_kql(index: str, kql: str, window: str) -> int:
@@ -278,7 +282,6 @@ def _count_for_kql(index: str, kql: str, window: str) -> int:
         return int(aggs.get("q", {}).get("doc_count", 0))
     except Exception:
         return 0
-
 
 # --------------------- Aggregation-first execution ---------------------
 def _agg_for_rule(rule: Dict[str, Any], window: str, host: Optional[str]) -> Tuple[int, Dict[str, Any]]:
@@ -436,7 +439,6 @@ def _agg_for_rule(rule: Dict[str, Any], window: str, host: Optional[str]) -> Tup
 
     return total_count, summary
 
-
 def _make_exemplars(docs: List[Dict[str, Any]], k: int, host: Optional[str]) -> List[EvidenceExemplar]:
     ex: List[EvidenceExemplar] = []
     now = datetime.now(timezone.utc)
@@ -460,13 +462,11 @@ def _make_exemplars(docs: List[Dict[str, Any]], k: int, host: Optional[str]) -> 
         ))
     return ex
 
-
 # ---------- Pydantic request bodies for POST parity ----------
 class AggRequest(BaseModel):
     rules: str = Field(..., description="Comma-separated rule IDs")
     window: str = Field(..., description="Time window, e.g., 15m")
     host: Optional[str] = Field(None, description="Optional host filter")
-
 
 class SampleRequest(BaseModel):
     rule: str
@@ -474,14 +474,11 @@ class SampleRequest(BaseModel):
     host: Optional[str] = None
     k: int = Field(5, ge=1, le=SAMPLE_MAX_DOCS)
 
-
 class LedgerAppendRequest(BaseModel):
     payload: Dict[str, Any]
 
-
 # ---------- App ----------
-app = FastAPI(title="TinySocs Node API", version="0.5.1")
-
+app = FastAPI(title="TinySocs Node API", version="0.5.2")
 
 @app.get("/meta")
 async def meta(_: None = Depends(verify_hmac)) -> Dict[str, Any]:
@@ -494,7 +491,6 @@ async def meta(_: None = Depends(verify_hmac)) -> Dict[str, Any]:
         "time_utc": datetime.now(timezone.utc).isoformat(),
     }
 
-
 @app.get("/agg")
 async def agg_get(
     _: None = Depends(verify_hmac),
@@ -504,11 +500,9 @@ async def agg_get(
 ) -> List[DetectionEvidence]:
     return await _agg_impl(rules, window, host)
 
-
 @app.post("/agg")
 async def agg_post(_: None = Depends(verify_hmac), body: AggRequest = Body(...)) -> List[DetectionEvidence]:
     return await _agg_impl(body.rules, body.window, body.host)
-
 
 async def _agg_impl(rules: str, window: str, host: Optional[str]) -> List[DetectionEvidence]:
     ruleset = _load_rules()
@@ -536,7 +530,6 @@ async def _agg_impl(rules: str, window: str, host: Optional[str]) -> List[Detect
         out.append(ev)
     return JSONResponse(content=jsonable_encoder([e.dict() for e in out]))
 
-
 @app.get("/sample")
 async def sample_get(
     _: None = Depends(verify_hmac),
@@ -547,11 +540,9 @@ async def sample_get(
 ) -> DetectionEvidence:
     return await _sample_impl(rule, window, host, k)
 
-
 @app.post("/sample")
 async def sample_post(_: None = Depends(verify_hmac), body: SampleRequest = Body(...)) -> DetectionEvidence:
     return await _sample_impl(body.rule, body.window, body.host, body.k)
-
 
 async def _sample_impl(rule: str, window: str, host: Optional[str], k: int) -> DetectionEvidence:
     ruleset = _load_rules()
@@ -600,7 +591,6 @@ async def _sample_impl(rule: str, window: str, host: Optional[str], k: int) -> D
     ev = DetectionEvidence(rule=rule, window=window, host=host, count=total_count, summary=summary, exemplars=exemplars).materialize()
     return JSONResponse(content=jsonable_encoder(ev.dict()))
 
-
 # ---------- Tamper-evidence endpoints ----------
 @app.get("/evidence/head")
 async def evidence_head(_: None = Depends(verify_hmac)) -> Dict[str, Any]:
@@ -616,7 +606,6 @@ async def evidence_head(_: None = Depends(verify_hmac)) -> Dict[str, Any]:
         "capability": "ledger",
     }
 
-
 @app.post("/evidence/append")
 async def evidence_append(_: None = Depends(verify_hmac), body: LedgerAppendRequest = Body(...)) -> Dict[str, Any]:
     if not LEDGER_AVAILABLE:
@@ -625,12 +614,9 @@ async def evidence_append(_: None = Depends(verify_hmac), body: LedgerAppendRequ
     return {"node_id": NODE_ID, "entry": entry.to_json()}
 
 def cli():
-    import os, uvicorn
-    port = int(os.getenv("PORT", os.getenv("NODE_PORT", "8081")))
     workers = int(os.getenv("TINYSOCS_NODE_WORKERS", "2"))
-    uvicorn.run(app, host="0.0.0.0", port=port, reload=False, workers=workers)
-
+    uvicorn.run(app, host="0.0.0.0", port=PORT, reload=False, workers=workers)
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", "8081"))
-    uvicorn.run(app, host="0.0.0.0", port=port, reload=False)
+    workers = int(os.getenv("TINYSOCS_NODE_WORKERS", "2"))
+    uvicorn.run(app, host="0.0.0.0", port=PORT, reload=False, workers=workers)

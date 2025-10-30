@@ -22,6 +22,8 @@ Env knobs (with sensible defaults):
   TINYSOCS_INSECURE_SKIP_VERIFY  "1" to skip TLS verify for node calls (default 1 for lab)
   PRIVACY_MODE                   "abstract" (default) | "raw" | "redact" (passed to anchor metadata)
   ENSURE_ANCHORS                 "1" (default) to pre-flight create alias/mapping if missing
+  FANOUT_WAIT_ALL                "1" to wait for all nodes (until deadline) instead of returning after first result
+  HIDE_ZERO_RULES                "1" (default) to suppress zero-count rules in TL;DR headline
 
 OpenSearch (anchor store):
   SIEM_URL        e.g. https://localhost:9201
@@ -76,13 +78,11 @@ def _parse_dotenv_content(s: str) -> None:
             os.environ[k] = v
 
 def _read_text_permissive(p: Path) -> str:
-    # Try a few common encodings explicitly; then ignore undecodable bytes
     for enc in ("utf-8", "utf-8-sig", "cp1252", "latin-1"):
         try:
             return p.read_text(encoding=enc)
         except UnicodeDecodeError:
             continue
-    # final fallback
     return p.read_bytes().decode("utf-8", errors="ignore")
 
 def _load_dotenv_inplace():
@@ -121,7 +121,6 @@ def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 def _derive_node_id(node_url: str) -> str:
-    """Best-effort stable id from URL (matches check_ledger expectation: node-<port>)."""
     try:
         p = urlparse(node_url)
         if p.port:
@@ -143,6 +142,8 @@ MASTER_RETRY_MIN_MS: int = int(os.getenv("MASTER_RETRY_MIN_MS", "250"))
 MASTER_RETRY_MAX_MS: int = int(os.getenv("MASTER_RETRY_MAX_MS", "750"))
 
 PRIVACY_MODE: str = os.getenv("PRIVACY_MODE", "abstract")
+FANOUT_WAIT_ALL: bool = _env_bool("FANOUT_WAIT_ALL", False)
+HIDE_ZERO_RULES: bool = _env_bool("HIDE_ZERO_RULES", True)
 
 SIEM_URL: str = os.getenv("SIEM_URL", "https://localhost:9201")
 SIEM_USER: str = os.getenv("SIEM_USER", "admin")
@@ -155,7 +156,7 @@ try:
 except Exception:
     _ensure_anchors_main = None  # type: ignore
 
-# silence local TLS warnings if verify is disabled for either SIEM or node calls
+# silence local TLS warnings if verify is disabled
 try:
     import urllib3  # type: ignore
     if (not SIEM_VERIFY) or (not NODE_TLS_VERIFY):
@@ -197,7 +198,7 @@ def _display_privacy_mode() -> str:
 # ---------------- HMAC headers (raw hex) ----------------
 def _headers() -> Dict[str, str]:
     ts = str(int(time.time()))
-    mac = hmac.new((SECRET or "").encode("utf-8"), ts.encode("utf-8"), hashlib.sha256).hexdigest()  # RAW HEX ONLY
+    mac = hmac.new((SECRET or "").encode("utf-8"), ts.encode("utf-8"), hashlib.sha256).hexdigest()
     return {
         "X-TinySOCS-Timestamp": ts,
         "X-TinySOCS-Signature": mac,
@@ -255,7 +256,6 @@ def _get_head(node: str) -> Dict[str, Any]:
     return r.json()
 
 def _post_json(node_url: str, obj: Dict[str, Any], timeout: float = 6.0) -> None:
-    """HMAC-signed POST helper for /evidence/append anchors (raw hex signature)."""
     ts = str(int(time.time()))
     sig = hmac.new((SECRET or "").encode("utf-8"), ts.encode("utf-8"), hashlib.sha256).hexdigest()
     headers = {"X-TinySOCS-Timestamp": ts, "X-TinySOCS-Signature": sig}
@@ -270,7 +270,6 @@ def _post_json(node_url: str, obj: Dict[str, Any], timeout: float = 6.0) -> None
 
 # ---------------- Async fan-out helpers (Phase 5) ----------------
 async def _fetch_node_agg_async(client: httpx.AsyncClient, node_url: str, rules: str, window: str, host: Optional[str], per_timeout: float) -> Dict[str, Any]:
-    """GET first, POST fallback, with async retry+jitter and per-request timeout; returns {node, ok, data|error}."""
     last_exc: Optional[Exception] = None
     params = {"rules": rules, "window": window}
     if host:
@@ -295,42 +294,45 @@ async def _fetch_node_agg_async(client: httpx.AsyncClient, node_url: str, rules:
 
 async def _fanout_agg_async(nodes: List[str], rules: str, window: str, host: Optional[str], deadline_sec: float) -> List[Dict[str, Any]]:
     """
-    Fire all node requests concurrently but return as soon as we have the first finished results.
-    Any still-pending tasks are cancelled and marked with 'deadline' so the healthy nodes cannot be starved.
+    Fire all node requests concurrently.
+    If FANOUT_WAIT_ALL=1: wait for all nodes to return or the deadline to hit.
+    Else: return as soon as the first node finishes, marking others 'deadline' to avoid starving healthy nodes.
     """
     start = time.monotonic()
     results: List[Dict[str, Any]] = []
     async with httpx.AsyncClient(verify=NODE_TLS_VERIFY, follow_redirects=True) as client:
-        tasks = {}
-        # kick off tasks with a per-request timeout bounded by remaining budget
+        tasks: Dict[asyncio.Task, str] = {}
         for n in nodes:
             remaining = max(0.2, deadline_sec - (time.monotonic() - start))
             per_timeout = min(REQUEST_TIMEOUT_SEC, remaining)
             t = asyncio.create_task(_fetch_node_agg_async(client, n, rules, window, host, per_timeout))
             tasks[t] = n
 
-        # wait for at least one to complete, then cancel stragglers so we can proceed to anchor
         while tasks:
             remaining = max(0.0, deadline_sec - (time.monotonic() - start))
             if remaining <= 0:
                 break
             done, pending = await asyncio.wait(tasks.keys(), timeout=remaining, return_when=asyncio.FIRST_COMPLETED)
             for d in done:
-                # surface result (healthy or failed) for the node that finished
                 try:
                     results.append(d.result())
                 except Exception as e:
                     results.append({"node": tasks[d], "ok": False, "error": f"task_error: {e}"})
                 del tasks[d]
-            # after we have at least one result, stop waiting on the rest (avoid starving the good nodes)
-            if results and tasks:
-                for p in tasks:
-                    p.cancel()
+            # Only short-circuit if we are not in WAIT_ALL mode
+            if (not FANOUT_WAIT_ALL) and results and tasks:
                 for p, n in list(tasks.items()):
+                    p.cancel()
                     results.append({"node": n, "ok": False, "error": "deadline"})
                 tasks.clear()
 
-    # process successes first (so anchors happen even if some nodes failed)
+        # If deadline hit while tasks remain, cancel and mark as deadline
+        if tasks:
+            for p, n in list(tasks.items()):
+                p.cancel()
+                results.append({"node": n, "ok": False, "error": "deadline"})
+            tasks.clear()
+
     results_ok  = [r for r in results if r.get("ok")]
     results_bad = [r for r in results if not r.get("ok")]
     return results_ok + results_bad
@@ -340,54 +342,84 @@ async def _fanout_agg_async(nodes: List[str], rules: str, window: str, host: Opt
 try:
     from tinysocs.agent.models.evidence import DetectionEvidence
 except Exception:
-    class DetectionEvidence(dict):  # very light fallback
+    class DetectionEvidence(dict):
         pass
 
 def merge_evidence(batches: List[List[DetectionEvidence]]) -> List[DetectionEvidence]:
     def deep_union(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
         out: Dict[str, Any] = dict(a)
-        for k, v in b.items():
+        for k, v in (b or {}).items():
             if k not in out:
                 out[k] = v
             else:
                 av = out[k]
                 if isinstance(av, list) and isinstance(v, list):
                     seen = set()
-                    merged = []
+                    merged_list = []
                     for item in av + v:
                         key = json.dumps(item, sort_keys=True, ensure_ascii=False, default=str) if isinstance(item, (dict, list)) else item
                         if key not in seen:
                             seen.add(key)
-                            merged.append(item)
-                    out[k] = merged
+                            merged_list.append(item)
+                    out[k] = merged_list
                 elif isinstance(av, dict) and isinstance(v, dict):
                     out[k] = deep_union(av, v)
                 else:
                     out[k] = v
         return out
 
-    by_key: Dict[Tuple[str, Optional[str]], DetectionEvidence] = {}
+    def as_dict(ev: Any) -> Dict[str, Any]:
+        if isinstance(ev, dict):
+            return ev
+        if hasattr(ev, "model_dump"):
+            return ev.model_dump()
+        if hasattr(ev, "dict"):
+            try:
+                return ev.dict()  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        try:
+            return dict(ev)
+        except Exception:
+            return {
+                "rule": getattr(ev, "rule", None),
+                "window": getattr(ev, "window", None),
+                "host": getattr(ev, "host", None),
+                "count": getattr(ev, "count", 0),
+                "summary": getattr(ev, "summary", {}) or {},
+                "exemplars": getattr(ev, "exemplars", []) or [],
+            }
+
+    by_key: Dict[Tuple[Optional[str], Optional[str]], Dict[str, Any]] = {}
 
     for ev in (e for batch in batches for e in batch):
-        rule = getattr(ev, "rule", None) or ev.get("rule")
-        host = getattr(ev, "host", None) or ev.get("host")
-        window = getattr(ev, "window", None) or ev.get("window")
-        count = getattr(ev, "count", None) or ev.get("count", 0)
-        summary = getattr(ev, "summary", None) or ev.get("summary", {})
-        exemplars = getattr(ev, "exemplars", None) or ev.get("exemplars", [])
+        d = as_dict(ev)
+        rule = d.get("rule")
+        host = d.get("host")
+        window = d.get("window")
+        count = int(d.get("count") or 0)
+        summary = d.get("summary") or {}
+        exemplars = list(d.get("exemplars") or [])
 
         key = (rule, host)
         if key not in by_key:
-            by_key[key] = DetectionEvidence(rule=rule, window=window, host=host, count=count, summary=summary, exemplars=list(exemplars))
+            by_key[key] = {
+                "rule": rule,
+                "window": window,
+                "host": host,
+                "count": count,
+                "summary": summary,
+                "exemplars": exemplars[:10],
+            }
         else:
             cur = by_key[key]
-            cur["count"] = max(int(cur.get("count", 0)), int(count or 0))
-            cur["summary"] = deep_union(cur.get("summary", {}), summary or {})
-            if len(cur.get("exemplars", [])) < 10:
+            cur["count"] = max(int(cur.get("count", 0)), count)
+            cur["summary"] = deep_union(cur.get("summary", {}), summary)
+            if len(cur.get("exemplars", [])) < 10 and exemplars:
                 take = 10 - len(cur["exemplars"])
-                cur["exemplars"].extend(list(exemplars)[:take])
+                cur["exemplars"].extend(exemplars[:take])
 
-    return [DetectionEvidence(**dict(v)) if isinstance(v, DetectionEvidence) else v for v in by_key.values()]
+    return list(by_key.values())
 # ---------------------------------------------------------
 
 # ---------------- Summarizer helpers ----------------
@@ -473,7 +505,6 @@ def _render_actions_md(merged: List[DetectionEvidence]) -> str:
     actions = _load_actions()
     if not actions:
         return ""
-    # normalize every item to dict (avoid Pydantic .get() errors)
     norm: List[Dict[str, Any]] = []
     for e in merged:
         if isinstance(e, dict):
@@ -508,18 +539,158 @@ def _privacy_share_body() -> bool:
     allow_raw = os.getenv("ALLOW_NOTIFY_IN_RAW", "0") == "1"
     return mode != "raw" or allow_raw
 
+def _pack_preview_extras(merged: List[DetectionEvidence], *, max_rules: int = 5, top_hosts: int = 3) -> Dict[str, Any]:
+    def _asdict(e: Any) -> Dict[str, Any]:
+        if isinstance(e, dict):
+            return e
+        if hasattr(e, "model_dump"):
+            return e.model_dump()
+        return e.__dict__
+
+    def _extract_hosts(summary: Dict[str, Any]) -> List[Tuple[str, int]]:
+        if not isinstance(summary, dict):
+            return []
+        candidates = (
+            summary.get("groups_over_threshold")
+            or summary.get("groups")
+            or summary.get("buckets")
+        )
+        if isinstance(candidates, dict) and "buckets" in candidates:
+            candidates = candidates.get("buckets")
+
+        out: List[Tuple[str, int]] = []
+        if isinstance(candidates, list):
+            for g in candidates:
+                if not isinstance(g, dict):
+                    continue
+                host = (
+                    g.get("key")
+                    or g.get("key_as_string")
+                    or g.get("host.name")
+                    or g.get("host")
+                    or (g.get("term") if isinstance(g.get("term"), str) else None)
+                )
+                if isinstance(host, dict):
+                    host = host.get("host.name") or host.get("key") or host.get("name")
+                cnt = (g.get("count") or g.get("doc_count") or g.get("value") or 0)
+                try:
+                    cnt = int(cnt)
+                except Exception:
+                    cnt = 0
+                if host and cnt > 0:
+                    out.append((str(host), cnt))
+        out.sort(key=lambda x: x[1], reverse=True)
+        return out[:top_hosts]
+
+    rule_totals: Dict[str, int] = {}
+    hosts_by_rule: Dict[str, List[Tuple[str, int]]] = {}
+
+    for ev in merged:
+        d = _asdict(ev)
+        rule = d.get("rule") or "unknown"
+        if rule == "fleet_total":
+            continue
+        count = int((d.get("count") or 0))
+        rule_totals[rule] = rule_totals.get(rule, 0) + count
+        if "summary" in d:
+            hosts = _extract_hosts(d["summary"])
+            if hosts:
+                hosts_by_rule[rule] = hosts
+
+    rule_counts = sorted(rule_totals.items(), key=lambda x: x[1], reverse=True)
+    if HIDE_ZERO_RULES:
+        rule_counts = [(r, c) for (r, c) in rule_counts if c > 0]
+    rule_counts = rule_counts[:max_rules]
+
+    return {"rule_counts": rule_counts, "top_hosts": hosts_by_rule}
+
+    def _extract_hosts(summary: Dict[str, Any]) -> List[Tuple[str, int]]:
+        if not isinstance(summary, dict):
+            return []
+        candidates = (
+            summary.get("groups_over_threshold")
+            or summary.get("groups")
+            or summary.get("buckets")
+        )
+        if isinstance(candidates, dict) and "buckets" in candidates:
+            candidates = candidates.get("buckets")
+
+        out: List[Tuple[str, int]] = []
+        if isinstance(candidates, list):
+            for g in candidates:
+                if not isinstance(g, dict):
+                    continue
+                host = (
+                    g.get("key")
+                    or g.get("key_as_string")
+                    or g.get("host.name")
+                    or g.get("host")
+                    or (g.get("term") if isinstance(g.get("term"), str) else None)
+                )
+                if isinstance(host, dict):
+                    host = host.get("host.name") or host.get("key") or host.get("name")
+                cnt = (g.get("count") or g.get("doc_count") or g.get("value") or 0)
+                try:
+                    cnt = int(cnt)
+                except Exception:
+                    cnt = 0
+                if host and cnt > 0:
+                    out.append((str(host), cnt))
+        out.sort(key=lambda x: x[1], reverse=True)
+        return out[:top_hosts]
+
+    rule_totals: Dict[str, int] = {}
+    hosts_by_rule: Dict[str, List[Tuple[str, int]]] = {}
+
+    for ev in merged:
+        d = _asdict(ev)
+        rule = d.get("rule") or "unknown"
+        if rule == "fleet_total":
+            continue
+        count = int((d.get("count") or 0))
+        rule_totals[rule] = rule_totals.get(rule, 0) + count
+        if "summary" in d:
+            hosts = _extract_hosts(d["summary"])
+            if hosts:
+                hosts_by_rule[rule] = hosts
+
+    rule_counts = sorted(rule_totals.items(), key=lambda x: x[1], reverse=True)[:max_rules]
+    return {"rule_counts": rule_counts, "top_hosts": hosts_by_rule}
+
 def notify_slack(preview: Dict[str, Any], incident: Optional[Dict[str, Any]]) -> None:
     url = os.getenv("SLACK_WEBHOOK_URL")
     if not url:
         return
-    sev = preview.get("severity") or "unknown"
-    tldr = preview.get("tldr") or "(no TL;DR)"
-    items = preview.get("items", 0)
-    text = f"TinySocs: {sev} · {items} item(s)\n- {tldr}"
+
+    sev   = (preview.get("severity") or "unknown")
+    items = int(preview.get("items") or 0)
+    tldr  = preview.get("tldr") or "(no TL;DR)"
+
+    rule_counts: List[Tuple[str, int]] = preview.get("rule_counts") or []
+    top_hosts: Dict[str, List[Tuple[str, int]]] = preview.get("top_hosts") or {}
+
+    lines = [
+        f"TinySocs: {sev} · {items} item(s)",
+        f"- {tldr}",
+    ]
+
+    if rule_counts:
+        rules_line = ", ".join(f"{r} ({c})" for r, c in rule_counts)
+        lines.append(f"- Rules: {rules_line}")
+
+    for r, _ in rule_counts[:3]:
+        hosts = top_hosts.get(r) or []
+        if hosts:
+            host_line = ", ".join(f"{h} ({c})" for h, c in hosts)
+            lines.append(f"• {r} → {host_line}")
+
+    text = "\n".join(lines)
+
     if incident and _privacy_share_body():
         more = incident.get("markdown") or incident.get("report") or incident.get("body")
         if more:
             text = text + "\n\n" + textwrap.shorten(more, width=3000, placeholder=" ...")
+
     try:
         requests.post(url, json={"text": text}, timeout=4)
     except Exception as e:
@@ -584,7 +755,6 @@ def _es_auth() -> HTTPBasicAuth:
     return HTTPBasicAuth(SIEM_USER, SIEM_PASS)
 
 def _es_index(doc: Dict[str, Any]) -> None:
-    """Index one doc into the tinysocs_anchors alias (write index should be true)."""
     post_url = urljoin(SIEM_URL.rstrip("/") + "/", "tinysocs_anchors/_doc")
     r = requests.post(post_url, auth=_es_auth(), verify=SIEM_VERIFY, json=doc, timeout=REQUEST_TIMEOUT_SEC)
     r.raise_for_status()
@@ -605,11 +775,9 @@ def run_master(rules: str, window: str, host: Optional[str], deadline_sec: float
 
     print(f"[master] fan-out to {','.join(NODES)}; rules={rules}; window={window}")
 
-    # ---------- Phase 5: Concurrent /agg fan-out ----------
     try:
         results = asyncio.run(_fanout_agg_async(NODES, rules, window, host, deadline_sec))
     except Exception as e:
-        # If asyncio fails catastrophically, fall back to sequential
         print(f"[master] WARN: async fan-out failed, falling back to sequential: {e}")
         results = []
         for node in NODES:
@@ -622,14 +790,13 @@ def run_master(rules: str, window: str, host: Optional[str], deadline_sec: float
             except Exception as e2:
                 results.append({"node": node, "ok": False, "error": f"agg_failed: {e2}"})
 
-    # Sort results to keep deterministic processing order by node URL,
-    # then process successes first so failures cannot starve healthy nodes under a tight deadline.
     results = sorted(results, key=lambda r: r.get("node") or "")
     results_ok  = [r for r in results if r.get("ok")]
     results_bad = [r for r in results if not r.get("ok")]
     results = results_ok + results_bad
 
-    # ---------- Process each node result (append → head → anchor) ----------
+    all_rule_rows: List[DetectionEvidence] = []
+
     for res in results:
         if time.time() >= deadline_at:
             print(f"[master] DEADLINE hit — skipping remaining nodes.")
@@ -639,39 +806,74 @@ def run_master(rules: str, window: str, host: Optional[str], deadline_sec: float
         node_row: Dict[str, Any] = {"node": node, "ok": False}
 
         if res.get("ok"):
-            agg = res.get("data") or {}
-            items = int(agg.get("items", 0)) if isinstance(agg, dict) else 0
-            node_row.update({"ok": True, "items": items})
-            print(f"[master] {node} -> {items} evidences")
+            agg = res.get("data")
+            items: int = 0
+            rule_count: int = 0
+
+            if isinstance(agg, list):
+                norm: List[Dict[str, Any]] = []
+                for e in agg:
+                    if hasattr(e, "model_dump"):
+                        norm.append(e.model_dump())
+                    elif isinstance(e, dict):
+                        norm.append(e)
+                    else:
+                        try:
+                            norm.append(dict(e))
+                        except Exception:
+                            continue
+                rule_count = len(norm)
+                items = sum(int((d.get("count") or 0)) for d in norm)
+                for d in norm:
+                    all_rule_rows.append(
+                        DetectionEvidence(
+                            rule=d.get("rule"),
+                            window=d.get("window") or window,
+                            host=d.get("host"),
+                            count=int(d.get("count") or 0),
+                            summary=d.get("summary") or {},
+                            exemplars=d.get("exemplars") or [],
+                        )
+                    )
+            elif isinstance(agg, dict):
+                items = int((agg.get("items") if agg.get("items") is not None else agg.get("count", 0)) or 0)
+                rule_count = 1 if agg else 0
+                if "rule" in agg:
+                    all_rule_rows.append(
+                        DetectionEvidence(
+                            rule=agg.get("rule"),
+                            window=agg.get("window") or window,
+                            host=agg.get("host"),
+                            count=int(agg.get("count") or 0),
+                            summary=agg.get("summary") or {},
+                            exemplars=agg.get("exemplars") or [],
+                        )
+                    )
+            else:
+                items = 0
+                rule_count = 0
+
+            node_row.update({"ok": True, "items": items, "rules": rule_count})
+            print(f"[master] {node} -> {items} item(s) across {rule_count} rule(s)")
         else:
             node_row.update({"ok": False, "error": res.get("error") or "agg_failed"})
             summary["errors"] += 1
             print(f"[master] {node} agg error: {node_row['error']}")
             summary["nodes"].append(node_row)
-            # IMPORTANT: skip append/head/anchor for failed /agg nodes
             continue
 
-        # 1) append compact payload to node ledger (tamper trail) FIRST
         try:
             _try_call(
                 lambda: _post_json(node, {"payload": {"rules": rules, "window": window, "items": int(node_row.get("items", 0)), "privacy_mode": _display_privacy_mode()}}),
-                tries=MASTER_RETRIES,
-                min_ms=MASTER_RETRY_MIN_MS,
-                max_ms=MASTER_RETRY_MAX_MS,
-                label=f"{node} /evidence/append",
+                tries=MASTER_RETRIES, min_ms=MASTER_RETRY_MIN_MS, max_ms=MASTER_RETRY_MAX_MS, label=f"{node} /evidence/append",
             )
         except Exception as _e:
-            # best-effort; proceed to read head anyway
             node_row["append_warn"] = f"append_failed: {_e}"
 
-        # 2) read current head with retry (should now reflect the append)
         try:
             head = _try_call(
                 lambda: _get_head(node),
-                tries=MASTER_RETRIES,
-                min_ms=MASTER_RETRY_MIN_MS,
-                max_ms=MASTER_RETRY_MAX_MS,
-                label=f"{node} /evidence/head",
+                tries=MASTER_RETRIES, min_ms=MASTER_RETRY_MIN_MS, max_ms=MASTER_RETRY_MAX_MS, label=f"{node} /evidence/head",
             )
         except Exception as e:
             node_row.update({"head_error": f"head_failed: {e}"})
@@ -680,9 +882,8 @@ def run_master(rules: str, window: str, host: Optional[str], deadline_sec: float
             print(f"[master] {node} head error: {e}")
             continue
 
-        # 3) anchor to OpenSearch (alias) with the CURRENT head
         anchor_doc = {
-            "node": node,  # legacy compatibility (verify script may filter on 'node')
+            "node": node,
             "node_url": node,
             "node_id": head.get("node_id") or os.getenv("NODE_ID") or _derive_node_id(node),
             "ok": bool(head.get("ok", True)),
@@ -698,15 +899,11 @@ def run_master(rules: str, window: str, host: Optional[str], deadline_sec: float
             },
         }
         try:
-            _try_call(
-                lambda: _es_index(anchor_doc),
-                tries=MASTER_RETRIES,
-                min_ms=MASTER_RETRY_MIN_MS,
-                max_ms=MASTER_RETRY_MAX_MS,
-                label=f"{node} anchor_index",
-            )
+            _try_call(lambda: _es_index(anchor_doc),
+                      tries=MASTER_RETRIES, min_ms=MASTER_RETRY_MIN_MS, max_ms=MASTER_RETRY_MAX_MS,
+                      label=f"{node} anchor_index")
             summary["anchored"] += 1
-            print(f"[master] anchored {node} @ {anchor_doc['anchored_at']} (seq={anchor_doc.get('sequence')})")
+            print(f"[master] anchored {node} @ {anchor_doc['anchored_at']} (seq={anchor_doc['sequence']})")
         except Exception as e:
             node_row.update({"anchor_error": f"anchor_failed: {e}"})
             summary["errors"] += 1
@@ -714,10 +911,29 @@ def run_master(rules: str, window: str, host: Optional[str], deadline_sec: float
 
         summary["nodes"].append(node_row)
 
-    # ---------- Summarize ----------
-    # Minimal synthetic merged for preview (items per node grouped under a pseudo-rule "fleet_total")
-    pseudo = DetectionEvidence(rule="fleet_total", window=window, host=None, count=sum(int(n.get("items", 0)) for n in summary["nodes"]), summary={}, exemplars=[])
-    merged = [pseudo]
+    if all_rule_rows:
+        merged = merge_evidence([all_rule_rows])
+        total_items = sum(int((e.get("count") if isinstance(e, dict) else getattr(e, "count", 0)) or 0)
+                          for e in merged)
+        # Take top-3 by count, then optionally hide zeros in the headline
+        top_rules_all = sorted(
+            (((e.get("rule") if isinstance(e, dict) else getattr(e, "rule", None)),
+               int((e.get("count") if isinstance(e, dict) else getattr(e, "count", 0)) or 0)) for e in merged),
+            key=lambda x: x[1], reverse=True
+        )[:3]
+        top_rules = [(r, c) for (r, c) in top_rules_all if r and ((not HIDE_ZERO_RULES) or c > 0)]
+        nonzero_rule_count = len(top_rules)
+        preview_tldr = None
+        if top_rules:
+            pretty = ", ".join(f"{r} ({c})" for r, c in top_rules)
+            preview_tldr = f"Detected {total_items} event(s) across {nonzero_rule_count} rule(s): {pretty}"
+    else:
+        pseudo = DetectionEvidence(rule="fleet_total", window=window, host=None,
+                                   count=sum(int(n.get("items", 0)) for n in summary["nodes"]),
+                                   summary={}, exemplars=[])
+        merged = [pseudo]
+        total_items = int(pseudo.get("count") if isinstance(pseudo, dict) else getattr(pseudo, "count", 0))
+        preview_tldr = f"Detected {total_items} event(s) across 1 rule(s): fleet_total."
 
     if _summarize is None:
         incident = _minimal_local_summary(merged, window)
@@ -750,36 +966,25 @@ def run_master(rules: str, window: str, host: Optional[str], deadline_sec: float
             print(f"[master] ERROR: summarizer failed: {e}")
             incident = _minimal_local_summary(merged, window)
 
-    # Append candidate actions (if any)
-    try:
-        actions_md = _render_actions_md(merged)
-        if actions_md:
-            if isinstance(incident, dict):
-                for k in ("markdown", "report", "body"):
-                    if k in incident and isinstance(incident[k], str):
-                        incident[k] = incident[k].rstrip() + "\n\n" + actions_md + "\n"
-                        break
-                else:
-                    incident["actions_markdown"] = actions_md
-            elif isinstance(incident, str):
-                incident = incident.rstrip() + "\n\n" + actions_md + "\n"
-    except Exception as e:
-        print(f"[master] WARN: failed to render actions: {e}")
-
     sev = incident.get("severity") if isinstance(incident, dict) else None
     tldr = incident.get("tldr") if isinstance(incident, dict) else None
+    if preview_tldr and 'total_items' in locals() and total_items > 0:
+        tldr = preview_tldr
+
+    extras = _pack_preview_extras(merged, max_rules=5, top_hosts=3)
+
     preview = {
         "severity": sev,
-        "tldr": tldr,
-        "items": sum(int(n.get("items", 0)) for n in summary["nodes"]),
+        "tldr": tldr or f"{total_items} item(s) total.",
+        "items": total_items,
         "privacy_mode": _display_privacy_mode(),
         "anchored": summary["anchored"],
         "errors": summary["errors"],
+        **extras,
     }
     print("----- Fleet Incident (preview) -----")
     print(json.dumps(preview, indent=2, default=str))
 
-    # Notifications (opt-in)
     try:
         inc_obj = incident if isinstance(incident, dict) else None
         if os.getenv("NOTIFY_SLACK", "0") == "1":
@@ -809,7 +1014,6 @@ def main() -> None:
     if not NODES:
         raise SystemExit("TINYSOCS_NODES is empty; set it to comma-separated node URLs.")
 
-    # Optional: pre-flight ensure the anchors alias/mapping
     if os.getenv("ENSURE_ANCHORS", "1").strip().lower() not in ("0", "false", "no", "off"):
         try:
             if _ensure_anchors_main:

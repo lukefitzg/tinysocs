@@ -5,10 +5,12 @@
 # - For process names, check name/executable/NewProcessName.
 # - For cmdline, check both process.command_line and winlog.event_data.CommandLine.
 # - group_by fields are normalized to keyword by the API.
+# - time_field is explicit for all rules.
 
 - id: auth_failed_burst
   description: Multiple failed Windows logons (4625) from same IP/user in 2 hours
   index: "winlogbeat-*"
+  time_field: "@timestamp"
   kql: >
     (event.code:4625 OR winlog.event_id:4625)
     AND NOT source.ip:(127.0.0.1 OR "::1")
@@ -23,6 +25,7 @@
 - id: sysmon_proc_creation
   description: Sysmon process creation events (ID 1)
   index: "winlogbeat-*"
+  time_field: "@timestamp"
   kql: >
     (event.code:1 OR winlog.event_id:1)
     AND (provider.name:"Microsoft-Windows-Sysmon" OR winlog.provider_name:"Microsoft-Windows-Sysmon")
@@ -34,11 +37,11 @@
 - id: ps_script_block
   description: PowerShell ScriptBlock logging (ID 4104)
   index: "winlogbeat-*"
+  time_field: "@timestamp"
   kql: >
     (event.code:4104 OR winlog.event_id:4104)
     AND (winlog.channel:"Microsoft-Windows-PowerShell/Operational" OR channel:"Microsoft-Windows-PowerShell/Operational")
-  # NOTE: Terms aggs drop docs when a grouped field is missing. 4104 often lacks user.name,
-  # so grouping on ["host.name","user.name"] yields zero buckets. Group by host only.
+  # 4104 often lacks user.name; grouping on user.name can zero out buckets → group by host only.
   group_by: ["host.name"]
   threshold: 3
   severity: medium
@@ -47,6 +50,7 @@
 - id: proc_creation_powershell_suspicious
   description: PowerShell with suspicious flags (4688 / Sysmon ID 1)
   index: "winlogbeat-*"
+  time_field: "@timestamp"
   kql: >
     (event.code:(4688 OR 1) OR winlog.event_id:(4688 OR 1))
     AND (
@@ -66,6 +70,7 @@
 - id: proc_creation_lolbins
   description: Possible LOLBIN execution (4688 / Sysmon 1) — rundll32, regsvr32, mshta, wmic, certutil
   index: "winlogbeat-*"
+  time_field: "@timestamp"
   kql: >
     (event.code:(4688 OR 1) OR winlog.event_id:(4688 OR 1))
     AND (
@@ -81,6 +86,7 @@
 - id: suspicious_powershell
   description: Suspicious PowerShell flags (NoProfile, EncodedCommand, Hidden, Bypass)
   index: "winlogbeat-*"
+  time_field: "@timestamp"
   kql: >
     (event.code:4688 OR winlog.event_id:4688)
     AND (
@@ -100,6 +106,7 @@
 - id: lolbin_execs
   description: Multiple LOLBIN executions in short window
   index: "winlogbeat-*"
+  time_field: "@timestamp"
   kql: >
     (event.code:4688 OR winlog.event_id:4688)
     AND (
@@ -117,6 +124,7 @@
 - id: local_admin_create
   description: Local admin account created (4720)
   index: "winlogbeat-*"
+  time_field: "@timestamp"
   kql: '(event.code:4720 OR winlog.event_id:4720)'
   group_by: ["host.name","user.name"]
   threshold: 1
@@ -126,6 +134,7 @@
 - id: scheduled_task_creation
   description: Scheduled task created (4698)
   index: "winlogbeat-*"
+  time_field: "@timestamp"
   kql: '(event.code:4698 OR winlog.event_id:4698)'
   group_by: ["host.name","user.name"]
   threshold: 1
@@ -135,6 +144,7 @@
 - id: wmi_process_creation
   description: WMI-spawned process (4688 parent is WmiPrvSE or process is wmic.exe)
   index: "winlogbeat-*"
+  time_field: "@timestamp"
   kql: >
     (event.code:4688 OR winlog.event_id:4688) AND (
       process.parent.name:"wmiprvse.exe"
@@ -150,6 +160,7 @@
 - id: suspicious_svchost
   description: svchost.exe spawning scripting/LOL processes
   index: "winlogbeat-*"
+  time_field: "@timestamp"
   kql: >
     (event.code:4688 OR winlog.event_id:4688)
     AND (
@@ -167,6 +178,7 @@
 - id: powershell_web_dl
   description: PowerShell web download usage (Invoke-WebRequest/DownloadString)
   index: "winlogbeat-*"
+  time_field: "@timestamp"
   kql: >
     (event.code:(4104 OR 4688) OR winlog.event_id:(4104 OR 4688)) AND (
       message:(*Invoke-WebRequest* OR *iwr* OR *DownloadString*)
@@ -181,6 +193,7 @@
 - id: ps_transcription_off
   description: PowerShell transcription disabled
   index: "winlogbeat-*"
+  time_field: "@timestamp"
   kql: >
     (event.code:4104 OR winlog.event_id:4104)
     AND message:"Transcription disabled"
@@ -192,6 +205,7 @@
 - id: scriptblock_base64
   description: Large base64 chunk observed in ScriptBlock
   index: "winlogbeat-*"
+  time_field: "@timestamp"
   kql: >
     (event.code:4104 OR winlog.event_id:4104)
     AND message:/[A-Za-z0-9+/]{200,}={0,2}/
@@ -203,6 +217,7 @@
 - id: vpn_geo_impossible
   description: Logins from far-apart locations in short time (post-process correlation may apply)
   index: "vpn-*"
+  time_field: "@timestamp"
   kql: 'event:login AND outcome:success'
   group_by: ["user.name"]
   threshold: 2
@@ -212,6 +227,7 @@
 - id: firewall_deny_burst
   description: Burst of firewall denies to same destination
   index: "firewall-*"
+  time_field: "@timestamp"
   kql: 'action:blocked'
   group_by: ["destination.ip"]
   threshold: 5
@@ -221,6 +237,7 @@
 - id: m365_mfa_fatigue
   description: Multiple MFA denials for the same user (Microsoft 365)
   index: "o365-*"
+  time_field: "@timestamp"
   kql: 'Operation:"UserLoginFailed" AND ResultStatus:"MFA Denied"'
   group_by: ["UserId"]
   threshold: 3
@@ -230,20 +247,22 @@
 - id: m365_mail_forward_rule
   description: Mailbox forwarding rule created
   index: "o365-*"
+  time_field: "@timestamp"
   kql: 'Operation:"New-InboxRule" AND Parameters:"ForwardTo"'
   group_by: ["UserId"]
   threshold: 1
   severity: medium
   category: cloud
 
-  # ===== Lab-only, low-threshold kickers =====
+# ===== Lab-only, low-threshold kickers =====
 
 - id: ps_script_block_lab
   description: PowerShell ScriptBlock (4104) — lab, group by host only
   index: "winlogbeat-*"
+  time_field: "@timestamp"
   kql: >
     (event.code:4104 OR winlog.event_id:4104)
-  # 4104 often lacks user.name; group by host only so buckets form reliably
+    AND (winlog.channel:"Microsoft-Windows-PowerShell/Operational" OR channel:"Microsoft-Windows-PowerShell/Operational")
   group_by: ["host.name"]
   threshold: 1
   severity: medium
@@ -252,6 +271,7 @@
 - id: proc_creation_powershell_suspicious_lab
   description: PowerShell suspicious flags (4688 or Sysmon 1) — lab, threshold 1
   index: "winlogbeat-*"
+  time_field: "@timestamp"
   kql: >
     (event.code:(4688 OR 1) OR winlog.event_id:(4688 OR 1))
     AND (
@@ -271,6 +291,7 @@
 - id: proc_creation_lolbins_lab
   description: LOLBIN executions (4688 or Sysmon 1) — lab, threshold 1
   index: "winlogbeat-*"
+  time_field: "@timestamp"
   kql: >
     (event.code:(4688 OR 1) OR winlog.event_id:(4688 OR 1))
     AND (
@@ -286,6 +307,7 @@
 - id: lolbin_execs_lab
   description: Multiple LOLBINs in short window — lab, threshold 2
   index: "winlogbeat-*"
+  time_field: "@timestamp"
   kql: >
     (event.code:4688 OR winlog.event_id:4688)
     AND (

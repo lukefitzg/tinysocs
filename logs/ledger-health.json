@@ -1,9 +1,11 @@
-[
-  {
-    "node": "http://localhost:8081",
-    "ok": true,
-    "sequence": 18,
-    "head_sha256": "f791574fcd68d534df9d2a982c551e7800e7a695f74063b1a62518cea85afd02",
-    "capability": "ledger"
-  }
-]
+Traceback (most recent call last):
+  File "C:\tinysocs\tinysocs\orchestrator\check_ledger.py", line 71, in <module>
+    _load_dotenv_inplace()
+  File "C:\tinysocs\tinysocs\orchestrator\check_ledger.py", line 62, in _load_dotenv_inplace
+    for line in p.read_text(encoding="utf-8").splitlines():
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.11_3.11.2544.0_x64__qbz5n2kfra8p0\Lib\pathlib.py", line 1059, in read_text
+    return f.read()
+           ^^^^^^^^
+  File "<frozen codecs>", line 322, in decode
+UnicodeDecodeError: 'utf-8' codec can't decode byte 0x96 in position 55: invalid start byte

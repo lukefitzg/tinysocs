@@ -48,9 +48,30 @@ def _tls_verify_from(name: str, default: bool = True) -> bool:
         return default
     return str(v).strip().lower() not in ("0", "false", "no", "off")
 
-# --- best-effort .env loader (no dependency on python-dotenv) ---
+# --- best-effort .env loader (tolerant encodings) ---
+def _parse_dotenv_content(s: str) -> None:
+    for raw in s.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")  # only the first '=' splits key/value
+        k, v = (k or "").strip(), (v or "").strip()
+        # strip simple quotes users often paste in
+        if v.startswith(("'", '"')) and v.endswith(("'", '"')) and len(v) >= 2:
+            v = v[1:-1]
+        if k and (k not in os.environ):
+            os.environ[k] = v
+
+def _read_text_permissive(p: Path) -> str:
+    for enc in ("utf-8", "utf-8-sig", "cp1252", "latin-1"):
+        try:
+            return p.read_text(encoding=enc)
+        except UnicodeDecodeError:
+            continue
+    # final fallback: ignore undecodable bytes
+    return p.read_bytes().decode("utf-8", errors="ignore")
+
 def _load_dotenv_inplace():
-    # search: repo root (…/tinysocs/..), then current dir
     here = Path(__file__).resolve()
     candidates = [
         here.parents[2] / ".env",  # <repo>/.env
@@ -59,13 +80,11 @@ def _load_dotenv_inplace():
     ]
     for p in candidates:
         if p.is_file():
-            for line in p.read_text(encoding="utf-8").splitlines():
-                if not line or line.strip().startswith("#") or "=" not in line:
-                    continue
-                k, v = line.split("=", 1)
-                k, v = k.strip(), v.strip()
-                if k and v and (k not in os.environ):
-                    os.environ[k] = v
+            try:
+                content = _read_text_permissive(p)
+                _parse_dotenv_content(content)
+            except Exception as e:
+                print(f"[ledger-check] WARN: failed to load {p}: {e}")
             break
 
 _load_dotenv_inplace()
@@ -95,7 +114,6 @@ REQUEST_TIMEOUT: float = float(os.getenv("REQUEST_TIMEOUT_SEC", "30"))
 def _headers() -> Dict[str, str]:
     ts = str(int(time.time()))
     mac = hmac.new((SECRET or "").encode("utf-8"), ts.encode("utf-8"), hashlib.sha256).hexdigest()
-    # Node API compares raw hex digest; do NOT prefix with "sha256="
     return {
         "X-TinySOCS-Timestamp": ts,
         "X-TinySOCS-Signature": mac,
@@ -148,13 +166,10 @@ def _search_latest_anchor(node_url: str, node_id: str) -> Optional[Dict[str, Any
     """
     Return the most recent anchor doc for this node from 'tinysocs_anchors'.
     Tries node_url (with localhost/127.0.0.1 variants) OR node_id.
-    NOTE: We query the exact field names as indexed by master.py:
-          node_url (keyword), node_id (keyword), anchored_at (date), head_sha256 (keyword)
     """
     search_url = SIEM_URL.rstrip('/') + '/tinysocs_anchors/_search'
     should = []
     for u in _alt_node_urls(node_url):
-        # Mapping is 'keyword' already; do NOT use '.keyword' subfield
         should.append({"term": {"node_url": {"value": u}}})
     should.append({"term": {"node_id": {"value": node_id}}})
 

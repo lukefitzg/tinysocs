@@ -8,6 +8,8 @@ What this master does (lean + hardened):
 - Merges DetectionEvidence and calls your existing summarizer (privacy-aware)
 - Anchors one doc per node to OpenSearch alias 'tinysocs_anchors' (anchored_at is a proper date)
 - All network calls use retry + jitter (env-tunable) and an overall --deadline
+- NEW in Phase 5: concurrent fan-out so one slow/bad node never blocks others
+- NEW in Phase 5: optional pre-flight ensure of the anchors alias/mapping
 
 Env knobs (with sensible defaults):
   TINYSOCS_NODES                 Comma-separated node URLs (e.g., http://localhost:8081)
@@ -16,8 +18,10 @@ Env knobs (with sensible defaults):
   MASTER_RETRIES                 Total tries per call (default 3)
   MASTER_RETRY_MIN_MS            Min backoff in ms (default 250)
   MASTER_RETRY_MAX_MS            Max backoff in ms (default 750)
+  MASTER_DEADLINE_SEC            Overall deadline seconds (default 30 if not provided via --deadline)
   TINYSOCS_INSECURE_SKIP_VERIFY  "1" to skip TLS verify for node calls (default 1 for lab)
   PRIVACY_MODE                   "abstract" (default) | "raw" | "redact" (passed to anchor metadata)
+  ENSURE_ANCHORS                 "1" (default) to pre-flight create alias/mapping if missing
 
 OpenSearch (anchor store):
   SIEM_URL        e.g. https://localhost:9201
@@ -32,6 +36,7 @@ CLI:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import hmac
 import json
@@ -46,6 +51,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse
 
+import httpx
 import requests
 import yaml  # actions.yaml
 from requests.auth import HTTPBasicAuth
@@ -58,24 +64,41 @@ REPO_ROOT = _HERE.parents[2]         # <repo>
 AGENT_DIR = PKG_ROOT / "agent"
 # ------------------------------------------------
 
-# --- best-effort .env loader (no dependency on python-dotenv) ---
+# --- best-effort .env loader (tolerant encodings) ---
+def _parse_dotenv_content(s: str) -> None:
+    for raw in s.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")  # only first '='
+        k, v = k.strip(), v.strip().strip('"').strip("'")
+        if k and (k not in os.environ):
+            os.environ[k] = v
+
+def _read_text_permissive(p: Path) -> str:
+    # Try a few common encodings explicitly; then ignore undecodable bytes
+    for enc in ("utf-8", "utf-8-sig", "cp1252", "latin-1"):
+        try:
+            return p.read_text(encoding=enc)
+        except UnicodeDecodeError:
+            continue
+    # final fallback
+    return p.read_bytes().decode("utf-8", errors="ignore")
+
 def _load_dotenv_inplace():
-    # search: repo root (…/tinysocs/..), then current dir
     here = Path(__file__).resolve()
     candidates = [
         here.parents[2] / ".env",  # <repo>/.env
-        here.parents[1] / ".env",  # <repo>/tinysocs/.env (fallback)
+        here.parents[1] / ".env",  # <repo>/tinysocs/.env
         Path.cwd() / ".env",
     ]
     for p in candidates:
         if p.is_file():
-            for line in p.read_text(encoding="utf-8").splitlines():
-                if not line or line.strip().startswith("#") or "=" not in line:
-                    continue
-                k, v = line.split("=", 1)
-                k, v = k.strip(), v.strip()
-                if k and v and (k not in os.environ):
-                    os.environ[k] = v
+            try:
+                content = _read_text_permissive(p)
+                _parse_dotenv_content(content)
+            except Exception as e:
+                print(f"[master] WARN: failed to load {p.name}: {e}")
             break
 
 _load_dotenv_inplace()
@@ -125,6 +148,12 @@ SIEM_URL: str = os.getenv("SIEM_URL", "https://localhost:9201")
 SIEM_USER: str = os.getenv("SIEM_USER", "admin")
 SIEM_PASS: str = os.getenv("SIEM_PASS", "admin")
 SIEM_VERIFY: bool = _tls_verify_from("SIEM_SSL_VERIFY", default=True)
+
+# Optional ensure-anchors pre-flight (import lazily)
+try:
+    from .ensure_anchors import main as _ensure_anchors_main  # type: ignore
+except Exception:
+    _ensure_anchors_main = None  # type: ignore
 
 # silence local TLS warnings if verify is disabled for either SIEM or node calls
 try:
@@ -181,6 +210,10 @@ def _sleep_jitter(min_ms: int, max_ms: int) -> None:
     ms = random.randint(min_ms, max_ms)
     time.sleep(ms / 1000.0)
 
+async def _async_sleep_jitter(min_ms: int, max_ms: int) -> None:
+    ms = random.randint(min_ms, max_ms)
+    await asyncio.sleep(ms / 1000.0)
+
 def _try_call(fn, *, tries: int, min_ms: int, max_ms: int, label: str):
     last_exc = None
     for attempt in range(1, tries + 1):
@@ -194,7 +227,7 @@ def _try_call(fn, *, tries: int, min_ms: int, max_ms: int, label: str):
     raise RuntimeError(f"{label} failed after {tries} tries: {last_exc}")
 # --------------------------------------------------------
 
-# ---------------- Node client calls ----------------
+# ---------------- Node client calls (sync) ----------------
 def _agg_get(node: str, rules: str, window: str, host: Optional[str]) -> Dict[str, Any]:
     url = node.rstrip("/") + "/agg"
     params = {"rules": rules, "window": window}
@@ -233,6 +266,74 @@ def _post_json(node_url: str, obj: Dict[str, Any], timeout: float = 6.0) -> None
         timeout=timeout,
         verify=NODE_TLS_VERIFY,
     )
+# ----------------------------------------------------
+
+# ---------------- Async fan-out helpers (Phase 5) ----------------
+async def _fetch_node_agg_async(client: httpx.AsyncClient, node_url: str, rules: str, window: str, host: Optional[str], per_timeout: float) -> Dict[str, Any]:
+    """GET first, POST fallback, with async retry+jitter and per-request timeout; returns {node, ok, data|error}."""
+    last_exc: Optional[Exception] = None
+    params = {"rules": rules, "window": window}
+    if host:
+        params["host"] = host
+    for attempt in range(1, MASTER_RETRIES + 1):
+        try:
+            r = await client.get(f"{node_url.rstrip('/')}/agg", headers=_headers(), params=params, timeout=per_timeout)
+            r.raise_for_status()
+            return {"node": node_url, "ok": True, "data": r.json()}
+        except Exception as e1:
+            last_exc = e1
+            try:
+                r = await client.post(f"{node_url.rstrip('/')}/agg", headers=_headers(), json=params, timeout=per_timeout)
+                r.raise_for_status()
+                return {"node": node_url, "ok": True, "data": r.json()}
+            except Exception as e2:
+                last_exc = e2
+                if attempt >= MASTER_RETRIES:
+                    break
+                await _async_sleep_jitter(MASTER_RETRY_MIN_MS, MASTER_RETRY_MAX_MS)
+    return {"node": node_url, "ok": False, "error": f"{type(last_exc).__name__}: {last_exc}" if last_exc else "unknown"}
+
+async def _fanout_agg_async(nodes: List[str], rules: str, window: str, host: Optional[str], deadline_sec: float) -> List[Dict[str, Any]]:
+    """
+    Fire all node requests concurrently but return as soon as we have the first finished results.
+    Any still-pending tasks are cancelled and marked with 'deadline' so the healthy nodes cannot be starved.
+    """
+    start = time.monotonic()
+    results: List[Dict[str, Any]] = []
+    async with httpx.AsyncClient(verify=NODE_TLS_VERIFY, follow_redirects=True) as client:
+        tasks = {}
+        # kick off tasks with a per-request timeout bounded by remaining budget
+        for n in nodes:
+            remaining = max(0.2, deadline_sec - (time.monotonic() - start))
+            per_timeout = min(REQUEST_TIMEOUT_SEC, remaining)
+            t = asyncio.create_task(_fetch_node_agg_async(client, n, rules, window, host, per_timeout))
+            tasks[t] = n
+
+        # wait for at least one to complete, then cancel stragglers so we can proceed to anchor
+        while tasks:
+            remaining = max(0.0, deadline_sec - (time.monotonic() - start))
+            if remaining <= 0:
+                break
+            done, pending = await asyncio.wait(tasks.keys(), timeout=remaining, return_when=asyncio.FIRST_COMPLETED)
+            for d in done:
+                # surface result (healthy or failed) for the node that finished
+                try:
+                    results.append(d.result())
+                except Exception as e:
+                    results.append({"node": tasks[d], "ok": False, "error": f"task_error: {e}"})
+                del tasks[d]
+            # after we have at least one result, stop waiting on the rest (avoid starving the good nodes)
+            if results and tasks:
+                for p in tasks:
+                    p.cancel()
+                for p, n in list(tasks.items()):
+                    results.append({"node": n, "ok": False, "error": "deadline"})
+                tasks.clear()
+
+    # process successes first (so anchors happen even if some nodes failed)
+    results_ok  = [r for r in results if r.get("ok")]
+    results_bad = [r for r in results if not r.get("ok")]
+    return results_ok + results_bad
 # ----------------------------------------------------
 
 # ---------------- Evidence merge helpers ----------------
@@ -491,6 +592,7 @@ def _es_index(doc: Dict[str, Any]) -> None:
 
 def run_master(rules: str, window: str, host: Optional[str], deadline_sec: float) -> Dict[str, Any]:
     t0 = time.time()
+    deadline_at = t0 + max(0.1, deadline_sec)
     summary = {
         "rules": rules,
         "window": window,
@@ -503,38 +605,53 @@ def run_master(rules: str, window: str, host: Optional[str], deadline_sec: float
 
     print(f"[master] fan-out to {','.join(NODES)}; rules={rules}; window={window}")
 
-    for node in NODES:
-        # Deadline guard
-        if (time.time() - t0) >= deadline_sec:
+    # ---------- Phase 5: Concurrent /agg fan-out ----------
+    try:
+        results = asyncio.run(_fanout_agg_async(NODES, rules, window, host, deadline_sec))
+    except Exception as e:
+        # If asyncio fails catastrophically, fall back to sequential
+        print(f"[master] WARN: async fan-out failed, falling back to sequential: {e}")
+        results = []
+        for node in NODES:
+            try:
+                data = _try_call(
+                    lambda: (_agg_get(node, rules, window, host)),
+                    tries=MASTER_RETRIES, min_ms=MASTER_RETRY_MIN_MS, max_ms=MASTER_RETRY_MAX_MS, label=f"{node} /agg"
+                )
+                results.append({"node": node, "ok": True, "data": data})
+            except Exception as e2:
+                results.append({"node": node, "ok": False, "error": f"agg_failed: {e2}"})
+
+    # Sort results to keep deterministic processing order by node URL,
+    # then process successes first so failures cannot starve healthy nodes under a tight deadline.
+    results = sorted(results, key=lambda r: r.get("node") or "")
+    results_ok  = [r for r in results if r.get("ok")]
+    results_bad = [r for r in results if not r.get("ok")]
+    results = results_ok + results_bad
+
+    # ---------- Process each node result (append → head → anchor) ----------
+    for res in results:
+        if time.time() >= deadline_at:
             print(f"[master] DEADLINE hit — skipping remaining nodes.")
             break
 
+        node = res.get("node")
         node_row: Dict[str, Any] = {"node": node, "ok": False}
 
-        # 1) fetch evidence with retry (GET then POST fallback)
-        def _fetch():
-            try:
-                return _agg_get(node, rules, window, host)
-            except Exception:
-                return _agg_post(node, rules, window, host)
-
-        try:
-            agg = _try_call(
-                _fetch,
-                tries=MASTER_RETRIES,
-                min_ms=MASTER_RETRY_MIN_MS,
-                max_ms=MASTER_RETRY_MAX_MS,
-                label=f"{node} /agg",
-            )
+        if res.get("ok"):
+            agg = res.get("data") or {}
             items = int(agg.get("items", 0)) if isinstance(agg, dict) else 0
             node_row.update({"ok": True, "items": items})
             print(f"[master] {node} -> {items} evidences")
-        except Exception as e:
-            node_row.update({"ok": False, "error": f"agg_failed: {e}"})
+        else:
+            node_row.update({"ok": False, "error": res.get("error") or "agg_failed"})
             summary["errors"] += 1
-            print(f"[master] {node} agg error: {e}")
+            print(f"[master] {node} agg error: {node_row['error']}")
+            summary["nodes"].append(node_row)
+            # IMPORTANT: skip append/head/anchor for failed /agg nodes
+            continue
 
-        # 2) append compact payload to node ledger (tamper trail) FIRST, then read head
+        # 1) append compact payload to node ledger (tamper trail) FIRST
         try:
             _try_call(
                 lambda: _post_json(node, {"payload": {"rules": rules, "window": window, "items": int(node_row.get("items", 0)), "privacy_mode": _display_privacy_mode()}}),
@@ -544,10 +661,10 @@ def run_master(rules: str, window: str, host: Optional[str], deadline_sec: float
                 label=f"{node} /evidence/append",
             )
         except Exception as _e:
-            # best-effort; we still proceed to read whatever head exists
+            # best-effort; proceed to read head anyway
             node_row["append_warn"] = f"append_failed: {_e}"
 
-        # 3) read current head with retry (should now reflect the append)
+        # 2) read current head with retry (should now reflect the append)
         try:
             head = _try_call(
                 lambda: _get_head(node),
@@ -563,9 +680,9 @@ def run_master(rules: str, window: str, host: Optional[str], deadline_sec: float
             print(f"[master] {node} head error: {e}")
             continue
 
-        # 4) anchor to OpenSearch (alias) with the CURRENT head
+        # 3) anchor to OpenSearch (alias) with the CURRENT head
         anchor_doc = {
-            "node": node,  # <— legacy compatibility (verify script may filter on 'node')
+            "node": node,  # legacy compatibility (verify script may filter on 'node')
             "node_url": node,
             "node_id": head.get("node_id") or os.getenv("NODE_ID") or _derive_node_id(node),
             "ok": bool(head.get("ok", True)),
@@ -691,6 +808,14 @@ def main() -> None:
 
     if not NODES:
         raise SystemExit("TINYSOCS_NODES is empty; set it to comma-separated node URLs.")
+
+    # Optional: pre-flight ensure the anchors alias/mapping
+    if os.getenv("ENSURE_ANCHORS", "1").strip().lower() not in ("0", "false", "no", "off"):
+        try:
+            if _ensure_anchors_main:
+                _ensure_anchors_main()
+        except Exception as e:
+            print(f"[master] WARN: ensure_anchors failed: {e}")
 
     run_master(args.rules, args.window, args.host, args.deadline)
 

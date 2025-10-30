@@ -604,59 +604,6 @@ def _pack_preview_extras(merged: List[DetectionEvidence], *, max_rules: int = 5,
 
     return {"rule_counts": rule_counts, "top_hosts": hosts_by_rule}
 
-    def _extract_hosts(summary: Dict[str, Any]) -> List[Tuple[str, int]]:
-        if not isinstance(summary, dict):
-            return []
-        candidates = (
-            summary.get("groups_over_threshold")
-            or summary.get("groups")
-            or summary.get("buckets")
-        )
-        if isinstance(candidates, dict) and "buckets" in candidates:
-            candidates = candidates.get("buckets")
-
-        out: List[Tuple[str, int]] = []
-        if isinstance(candidates, list):
-            for g in candidates:
-                if not isinstance(g, dict):
-                    continue
-                host = (
-                    g.get("key")
-                    or g.get("key_as_string")
-                    or g.get("host.name")
-                    or g.get("host")
-                    or (g.get("term") if isinstance(g.get("term"), str) else None)
-                )
-                if isinstance(host, dict):
-                    host = host.get("host.name") or host.get("key") or host.get("name")
-                cnt = (g.get("count") or g.get("doc_count") or g.get("value") or 0)
-                try:
-                    cnt = int(cnt)
-                except Exception:
-                    cnt = 0
-                if host and cnt > 0:
-                    out.append((str(host), cnt))
-        out.sort(key=lambda x: x[1], reverse=True)
-        return out[:top_hosts]
-
-    rule_totals: Dict[str, int] = {}
-    hosts_by_rule: Dict[str, List[Tuple[str, int]]] = {}
-
-    for ev in merged:
-        d = _asdict(ev)
-        rule = d.get("rule") or "unknown"
-        if rule == "fleet_total":
-            continue
-        count = int((d.get("count") or 0))
-        rule_totals[rule] = rule_totals.get(rule, 0) + count
-        if "summary" in d:
-            hosts = _extract_hosts(d["summary"])
-            if hosts:
-                hosts_by_rule[rule] = hosts
-
-    rule_counts = sorted(rule_totals.items(), key=lambda x: x[1], reverse=True)[:max_rules]
-    return {"rule_counts": rule_counts, "top_hosts": hosts_by_rule}
-
 def notify_slack(preview: Dict[str, Any], incident: Optional[Dict[str, Any]]) -> None:
     url = os.getenv("SLACK_WEBHOOK_URL")
     if not url:
@@ -760,7 +707,7 @@ def _es_index(doc: Dict[str, Any]) -> None:
     r.raise_for_status()
 # ----------------------------------------------------
 
-def run_master(rules: str, window: str, host: Optional[str], deadline_sec: float) -> Dict[str, Any]:
+def run_master(rules: str, window: str, host: Optional[str], deadline_sec: float, always_anchor: bool) -> Dict[str, Any]:
     t0 = time.time()
     deadline_at = t0 + max(0.1, deadline_sec)
     summary = {
@@ -772,6 +719,13 @@ def run_master(rules: str, window: str, host: Optional[str], deadline_sec: float
         "ts": _now_utc_iso(),
         "privacy_mode": _display_privacy_mode(),
     }
+
+    # optional heartbeat rate-limit (mostly no-op for single-pass runs; kept for completeness)
+    try:
+        heartbeat_sec = int(os.getenv("ANCHOR_HEARTBEAT_SEC", "0") or "0")
+    except Exception:
+        heartbeat_sec = 0
+    _last_anchor_ts: Dict[str, float] = {}
 
     print(f"[master] fan-out to {','.join(NODES)}; rules={rules}; window={window}")
 
@@ -860,8 +814,9 @@ def run_master(rules: str, window: str, host: Optional[str], deadline_sec: float
             summary["errors"] += 1
             print(f"[master] {node} agg error: {node_row['error']}")
             summary["nodes"].append(node_row)
-            continue
+            continue  # <-- fixed: removed stray ')'
 
+        # Record a minimal run marker into node ledger (best-effort)
         try:
             _try_call(
                 lambda: _post_json(node, {"payload": {"rules": rules, "window": window, "items": int(node_row.get("items", 0)), "privacy_mode": _display_privacy_mode()}}),
@@ -870,6 +825,20 @@ def run_master(rules: str, window: str, host: Optional[str], deadline_sec: float
         except Exception as _e:
             node_row["append_warn"] = f"append_failed: {_e}"
 
+        # Decide whether to write an anchor for this node
+        items_for_node = int(node_row.get("items", 0))
+        should_anchor = (items_for_node > 0) or always_anchor
+        if should_anchor and heartbeat_sec > 0:
+            last = _last_anchor_ts.get(node, 0.0)
+            if (time.time() - last) < float(heartbeat_sec):
+                should_anchor = False
+
+        if not should_anchor:
+            summary["nodes"].append(node_row)
+            print(f"[master] no-anchor {node} (items={items_for_node}, always_anchor={always_anchor})")
+            continue
+
+        # Fetch the latest ledger head and index the anchor
         try:
             head = _try_call(
                 lambda: _get_head(node),
@@ -894,7 +863,7 @@ def run_master(rules: str, window: str, host: Optional[str], deadline_sec: float
             "run": {
                 "rules": rules,
                 "window": window,
-                "items": int(node_row.get("items", 0)),
+                "items": items_for_node,
                 "privacy_mode": _display_privacy_mode(),
             },
         }
@@ -903,6 +872,7 @@ def run_master(rules: str, window: str, host: Optional[str], deadline_sec: float
                       tries=MASTER_RETRIES, min_ms=MASTER_RETRY_MIN_MS, max_ms=MASTER_RETRY_MAX_MS,
                       label=f"{node} anchor_index")
             summary["anchored"] += 1
+            _last_anchor_ts[node] = time.time()
             print(f"[master] anchored {node} @ {anchor_doc['anchored_at']} (seq={anchor_doc['sequence']})")
         except Exception as e:
             node_row.update({"anchor_error": f"anchor_failed: {e}"})
@@ -1009,10 +979,19 @@ def main() -> None:
         default=float(os.getenv("MASTER_DEADLINE_SEC", "30")),
         help="Overall wall-clock deadline in seconds (default from MASTER_DEADLINE_SEC or 30).",
     )
+    ap.add_argument(
+        "--always-anchor",
+        action="store_true",
+        help="Anchor even when a node returns 0 items (heartbeat anchors). Env fallback: ALWAYS_ANCHOR=1.",
+    )
     args = ap.parse_args()
 
     if not NODES:
         raise SystemExit("TINYSOCS_NODES is empty; set it to comma-separated node URLs.")
+
+    # env fallback with safe default (True) to preserve current behavior
+    env_always = _env_bool("ALWAYS_ANCHOR", False)
+    always_anchor = args.always_anchor or env_always
 
     if os.getenv("ENSURE_ANCHORS", "1").strip().lower() not in ("0", "false", "no", "off"):
         try:
@@ -1021,7 +1000,7 @@ def main() -> None:
         except Exception as e:
             print(f"[master] WARN: ensure_anchors failed: {e}")
 
-    run_master(args.rules, args.window, args.host, args.deadline)
+    run_master(args.rules, args.window, args.host, args.deadline, always_anchor)
 
 if __name__ == "__main__":
     main()

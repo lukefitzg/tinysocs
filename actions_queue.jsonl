@@ -1,0 +1,5 @@
+{"kind": "bot_action", "action": "ack_incident", "params": {"incident_id": "demo-123", "tldr": "Ack from chat"}, "who": "Luke", "ts": "2025-10-30T23:04:37.315687Z"}
+{"kind": "bot_action", "action": "ack_incident", "params": {"incident_id": "demo-123", "tldr": "Ack from chat"}, "who": "Luke", "ts": "2025-10-30T23:10:51.038254Z"}
+{"kind": "bot_action", "action": "disable_user", "params": {"user": "alice"}, "who": "Luke", "ts": "2025-10-30T23:10:53.805547Z", "dry_run": true}
+{"kind": "bot_action", "action": "ack_incident", "params": {"incident_id": "demo-123", "tldr": "Ack from chat"}, "who": "Luke", "ts": "2025-10-30T23:15:06.510516Z"}
+{"kind": "bot_action", "action": "disable_user", "params": {"user": "alice"}, "who": "Luke", "ts": "2025-10-30T23:16:36.377428Z", "dry_run": true}

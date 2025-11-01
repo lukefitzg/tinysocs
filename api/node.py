@@ -112,34 +112,50 @@ def _replay_cache_gc(now: int) -> None:
 # ---------- Auth ----------
 def verify_hmac(request: Request) -> None:
     ts_hdr = request.headers.get("X-TinySOCS-Timestamp")
+    nonce  = request.headers.get("X-TinySOCS-Nonce")  # optional
     sig_hdr = request.headers.get("X-TinySOCS-Signature", "")
 
     if not ts_hdr or not sig_hdr:
-        raise HTTPException(status_code=401, detail="Missing auth headers")
+        raise HTTPException(status_code=400, detail="Missing auth headers")
 
+    # timestamp parse + simple skew check
     try:
         ts = int(ts_hdr)
-    except ValueError:
-        raise HTTPException(status_code=401, detail="Invalid timestamp")
-
+    except Exception:
+        raise HTTPException(status_code=400, detail="Bad timestamp")
     now = int(time.time())
-    if abs(now - ts) > ALLOWED_SKEW_SECONDS:
-        raise HTTPException(status_code=401, detail="Timestamp skew too large")
+    max_skew = int(os.getenv("ALLOWED_SKEW_SEC", "300") or "300")
+    if abs(now - ts) > max_skew:
+        raise HTTPException(status_code=401, detail="Clock skew")
 
-    calc = hmac.new((NODE_SECRET or "").encode("utf-8"),
-                    str(ts).encode("utf-8"),
-                    hashlib.sha256).hexdigest()
-
-    # accept both formats
+    # Accept multiple schemes:
+    #   1) "ts|nonce" (preferred)
+    #   2) "ts.nonce" (older draft)
+    #   3) "ts"       (legacy; no nonce)
     provided = sig_hdr.split("=", 1)[1] if sig_hdr.startswith("sha256=") else sig_hdr
-    if not hmac.compare_digest(calc, provided):
+    secret   = (NODE_SECRET or "").encode("utf-8")
+
+    candidates: List[str] = []
+    if nonce:
+        candidates.append(f"{ts}|{nonce}")
+        candidates.append(f"{ts}.{nonce}")
+    candidates.append(str(ts))
+
+    ok = False
+    for msg in candidates:
+        calc = hmac.new(secret, msg.encode("utf-8"), hashlib.sha256).hexdigest()
+        if hmac.compare_digest(calc, provided):
+            ok = True
+            break
+    if not ok:
         raise HTTPException(status_code=401, detail="Bad signature")
 
+    # Replay protection: key by "ts:nonce" when nonce exists; otherwise "ts"
     _replay_cache_gc(now)
-    exp = _recent_timestamps.get(ts)
-    if exp and exp > now:
+    key = f"{ts}:{nonce}" if nonce else str(ts)
+    if _recent_timestamps.get(key, 0) > now:
         raise HTTPException(status_code=401, detail="Replay detected")
-    _recent_timestamps[ts] = now + REPLAY_CACHE_SECONDS
+    _recent_timestamps[key] = now + REPLAY_CACHE_SECONDS
 
 # ---------- Rule path + loading (robust) ----------
 def _guess_rules_path() -> Optional[Path]:
@@ -613,10 +629,24 @@ async def evidence_append(_: None = Depends(verify_hmac), body: LedgerAppendRequ
     entry = _ledger_append(NODE_ID, body.payload)
     return {"node_id": NODE_ID, "entry": entry.to_json()}
 
-def cli():
-    workers = int(os.getenv("TINYSOCS_NODE_WORKERS", "2"))
-    uvicorn.run(app, host="0.0.0.0", port=PORT, reload=False, workers=workers)
+# Use an import string so uvicorn can safely spawn workers/reload
+APP_IMPORT = "tinysocs.api.node:app"
+
+def cli() -> None:
+    # Defaults are conservative for Windows; bump via env when you want
+    workers = int(os.getenv("TINYSOCS_NODE_WORKERS", os.getenv("UVICORN_WORKERS", "1")))
+    reload  = str(os.getenv("UVICORN_RELOAD", "0")).strip().lower() in ("1", "true", "yes", "y")
+    loglvl  = os.getenv("UVICORN_LOG_LEVEL", "info")
+
+    # IMPORTANT: using APP_IMPORT (string), not the app object
+    uvicorn.run(
+        APP_IMPORT,
+        host="0.0.0.0",
+        port=PORT,            # derived earlier from PORT/NODE_PORT (default 8081)
+        reload=reload,
+        workers=workers,
+        log_level=loglvl,
+    )
 
 if __name__ == "__main__":
-    workers = int(os.getenv("TINYSOCS_NODE_WORKERS", "2"))
-    uvicorn.run(app, host="0.0.0.0", port=PORT, reload=False, workers=workers)
+    cli()

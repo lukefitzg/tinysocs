@@ -47,6 +47,7 @@ import random
 import textwrap
 import time
 import smtplib
+import secrets
 from email.message import EmailMessage
 from datetime import datetime, timezone
 from pathlib import Path
@@ -195,16 +196,46 @@ def _display_privacy_mode() -> str:
     m = (PRIVACY_MODE or "abstract").strip().split()[0].lower()
     return "raw" if m == "raw" else "abstract"
 
-# ---------------- HMAC headers (raw hex) ----------------
+# ---------------- HMAC headers (raw hex or "sha256=<hex>") ----------------
 def _headers() -> Dict[str, str]:
+    """
+    Generate TinySOCS HMAC headers.
+
+    Default style is 'pipe' => HMAC(secret, f"{ts}|{nonce}").
+    Override with:  TINYSOCS_HMAC_STYLE = pipe | dot | ts
+    Add prefix with: TINYSOCS_SIG_PREFIX = 1  (renders "sha256=<hex>")
+    """
     ts = str(int(time.time()))
-    mac = hmac.new((SECRET or "").encode("utf-8"), ts.encode("utf-8"), hashlib.sha256).hexdigest()
-    return {
+    nonce = secrets.token_hex(8)  # 16 hex chars
+    style = (os.getenv("TINYSOCS_HMAC_STYLE", "pipe") or "pipe").strip().lower()
+
+    if style == "dot":
+        msg = f"{ts}.{nonce}"
+        include_nonce = True
+    elif style == "ts":
+        msg = ts
+        include_nonce = False
+    else:  # 'pipe' (default)
+        msg = f"{ts}|{nonce}"
+        include_nonce = True
+
+    mac_hex = hmac.new(
+        (SECRET or "").encode("utf-8"),
+        msg.encode("utf-8"),
+        hashlib.sha256
+    ).hexdigest()
+
+    use_prefix = str(os.getenv("TINYSOCS_SIG_PREFIX", "0")).strip().lower() in ("1", "true", "yes", "on", "sha256")
+    sig_value = f"sha256={mac_hex}" if use_prefix else mac_hex
+
+    headers = {
         "X-TinySOCS-Timestamp": ts,
-        "X-TinySOCS-Signature": mac,
+        "X-TinySOCS-Signature": sig_value,
         "User-Agent": "tinysocs/master",
     }
-# --------------------------------------------------------
+    if include_nonce:
+        headers["X-TinySOCS-Nonce"] = nonce
+    return headers
 
 # ---------------- Retry + jitter helpers ----------------
 def _sleep_jitter(min_ms: int, max_ms: int) -> None:
@@ -255,13 +286,14 @@ def _get_head(node: str) -> Dict[str, Any]:
     r.raise_for_status()
     return r.json()
 
+# ---------------- Node client calls (sync) ----------------
 def _post_json(node_url: str, obj: Dict[str, Any], timeout: float = 6.0) -> None:
-    ts = str(int(time.time()))
-    sig = hmac.new((SECRET or "").encode("utf-8"), ts.encode("utf-8"), hashlib.sha256).hexdigest()
-    headers = {"X-TinySOCS-Timestamp": ts, "X-TinySOCS-Signature": sig}
+    """
+    Best-effort POST (uses same HMAC headers as /agg).
+    """
     requests.post(
         node_url.rstrip("/") + "/evidence/append",
-        headers=headers,
+        headers=_headers(),
         json=obj,
         timeout=timeout,
         verify=NODE_TLS_VERIFY,
@@ -752,10 +784,6 @@ def run_master(rules: str, window: str, host: Optional[str], deadline_sec: float
     all_rule_rows: List[DetectionEvidence] = []
 
     for res in results:
-        if time.time() >= deadline_at:
-            print(f"[master] DEADLINE hit — skipping remaining nodes.")
-            break
-
         node = res.get("node")
         node_row: Dict[str, Any] = {"node": node, "ok": False}
 

@@ -1,4 +1,212 @@
-﻿  $null = Invoke-ComposeSafe -Args @("stop","-t","5","elasticsearch","kibana")
+﻿<# model_toggles.ps1 -----------------------------------------------------------
+LLM toggles + SIEM target toggles + backend helpers for TinySOCS.
+Dot-source this file in your PowerShell session, e.g.:
+  PS> Set-Location C:\tinysocs\tinysocs
+  PS> . .\model_toggles.ps1
+Nothing auto-runs when dot-sourced.
+
+Winlogbeat ships directly to OpenSearch.
+-------------------------------------------------------------------------------#>
+# ---- TinySOCS OpenSearch Beats toggle ---------------------------------
+# Ways to turn this on:
+#   - call Install-Winlogbeat -OpenSearchFork
+#   - or set $env:TINYSOCS_USE_OPENSEARCH_BEATS="1"
+$Global:TinySOCS_DefaultUseOpenSearchBeats = $true
+
+# ---- TinySOCS .Dot Env ---------------------------------
+function Use-TinySocsDotEnv {
+  param([string]$Path = (Join-Path $PSScriptRoot ".env"))
+  if (-not (Test-Path $Path)) { return }
+  Get-Content $Path | Where-Object { $_ -match '^\s*[^#\s]+' } | ForEach-Object {
+    $k,$v = $_ -split '=',2
+    if ($k -and $v) {
+      $k = $k.Trim()
+      $v = $v.Trim()
+      [Environment]::SetEnvironmentVariable($k, $v, "Process")
+    }
+  }
+}
+
+# ========================= LLM (model) toggles =========================
+function Use-OpenAI {
+  $env:LLM_MODE = "openai"
+  Remove-Item Env:OFFLINE_LLM_URL, Env:OFFLINE_LLM_MODEL -ErrorAction SilentlyContinue
+  Write-Host "[TinySOCS] Using OpenAI (cloud) mode."
+}
+
+function Use-Ollama {
+  param(
+    [string]$Url   = "http://localhost:11434",
+    [string]$Model = "qwen2.5:0.5b-instruct"
+  )
+  $env:LLM_MODE          = "ollama"
+  $env:OFFLINE_LLM_URL   = $Url
+  $env:OFFLINE_LLM_MODEL = $Model
+  Write-Host ("[TinySOCS] Using Ollama (local) mode -> {0} ({1})" -f $Url, $Model)
+}
+
+# ========================= Import .env variables =========================
+function Import-DotEnv {
+  param([string]$Path = ".env")
+  if (!(Test-Path $Path)) { return }
+  Get-Content $Path | ForEach-Object {
+    $line = $_.Trim()
+    if ($line -eq "" -or $line.StartsWith("#")) { return }
+
+    $eq = $line.IndexOf("=")
+    if ($eq -lt 1) { return }
+    $name  = $line.Substring(0,$eq).Trim()
+    $value = $line.Substring($eq+1).Trim()
+
+    if ($value.StartsWith('"') -and $value.EndsWith('"')) { $value = $value.Substring(1, $value.Length-2) }
+    elseif ($value.StartsWith("'") -and $value.EndsWith("'")) { $value = $value.Substring(1, $value.Length-2) }
+
+    if (-not [string]::IsNullOrWhiteSpace($name)) {
+      Set-Item -Path ("Env:{0}" -f $name) -Value $value
+    }
+  }
+}
+
+# ===================== SIEM target (what detections hit) =====================
+function Use-ElasticSIEM {
+  # Kept for legacy/testing, but not used in Phase 3 by default
+$env:SIEM_BACKEND = "opensearch"
+  $env:SIEM_URL     = "http://localhost:9200"
+  Remove-Item Env:SIEM_USER, Env:SIEM_PASS, Env:SIEM_SSL_VERIFY -ErrorAction SilentlyContinue
+  Write-Host ("[TinySOCS] Detections will query OpenSearch @ {0}" -f $env:SIEM_URL)
+}
+
+function Use-OpenSearchSIEM {
+  param(
+    [string]$Url  = "https://127.0.0.1:9201",
+    [string]$User = "admin",
+    [string]$Pass = $env:OPENSEARCH_INITIAL_ADMIN_PASSWORD
+  )
+  if (-not $Pass -or $Pass -eq "") { $Pass = "ChangeMe123!" } # dev default
+
+  $env:SIEM_BACKEND   = "opensearch"
+  $env:SIEM_URL       = $Url
+  $env:SIEM_USER      = $User
+  $env:SIEM_PASS      = $Pass
+  $env:SIEM_SSL_VERIFY = "false"   # self-signed in dev
+
+  if (-not $env:OPENSEARCH_INITIAL_ADMIN_PASSWORD) {
+    $env:OPENSEARCH_INITIAL_ADMIN_PASSWORD = $Pass
+  }
+
+  Write-Host ("[TinySOCS] Detections will query OpenSearch @ {0} (ssl verify={1})" -f $Url, $env:SIEM_SSL_VERIFY)
+}
+
+# ===================== Docker readiness & helpers =====================
+function Test-DockerReady {
+  try { $null = docker version --format '{{.Server.Version}}' 2>$null; return $LASTEXITCODE -eq 0 }
+  catch { return $false }
+}
+
+function Start-DockerDesktop {
+  try { & "$env:ProgramFiles\Docker\Docker\Docker Desktop.exe" | Out-Null } catch {}
+  $max = [DateTime]::UtcNow.AddMinutes(3)
+  while (-not (Test-Path \\.\pipe\docker_engine) -and -not (Test-Path \\.\pipe\dockerDesktopLinuxEngine)) {
+    if ([DateTime]::UtcNow -gt $max) { return $false }
+    Start-Sleep 2
+  }
+  return $true
+}
+
+function Restart-DockerDesktop {
+  Write-Host "[TinySOCS] Restarting Docker Desktop backend..." -ForegroundColor Yellow
+  try { wsl --shutdown | Out-Null } catch {}
+  try { Stop-Service com.docker.service -Force -ErrorAction SilentlyContinue } catch {}
+  Start-Sleep 2
+  try { Start-Service com.docker.service -ErrorAction SilentlyContinue } catch {}
+  if (-not (Start-DockerDesktop)) {
+    Write-Warning "[TinySOCS] Docker Desktop start timed out."
+    return $false
+  }
+  return (Test-DockerReady)
+}
+
+function Ensure-DockerReady {
+  if (Test-DockerReady) { return $true }
+  Write-Warning "[TinySOCS] Docker engine not available. Attempting to start Docker Desktop..."
+  if (-not (Start-DockerDesktop)) {
+    Write-Warning "[TinySOCS] Initial start failed, trying full restart..."
+    if (-not (Restart-DockerDesktop)) { return $false }
+  }
+  return (Test-DockerReady)
+}
+
+function Wait-ContainerHealthy {
+  param(
+    [Parameter(Mandatory=$true)][string]$Name,
+    [int]$TimeoutSec = 180
+  )
+  $sw = [Diagnostics.Stopwatch]::StartNew()
+  while ($sw.Elapsed.TotalSeconds -lt $TimeoutSec) {
+    $status = (docker inspect --format '{{.State.Health.Status}}' $Name 2>$null)
+    if ($status -eq 'healthy') { return $true }
+    if (-not $status) { Start-Sleep 2; continue }
+    Start-Sleep 2
+  }
+  return $false
+}
+
+function Invoke-ComposeSafe {
+  param(
+    [Parameter(Mandatory=$true)][string[]]$Args,
+    [int]$Retries = 1
+  )
+  if (-not (Ensure-DockerReady)) { throw "[TinySOCS] Docker engine not available." }
+
+  $out = & docker compose @Args 2>&1
+  $txt = ($out | Out-String)
+  $bad = ($LASTEXITCODE -ne 0) -or ($txt -match "dockerDesktopLinuxEngine") -or ($txt -match "500 Internal Server Error")
+
+  if ($bad) {
+    if ($Retries -gt 0) {
+      Write-Warning "[TinySOCS] docker compose failed; restarting Docker and retrying once..."
+      if (-not (Restart-DockerDesktop)) { throw "[TinySOCS] Docker restart failed." }
+      return Invoke-ComposeSafe -Args $Args -Retries ($Retries - 1)
+    }
+    Write-Host $txt
+    throw "[TinySOCS] docker compose failed"
+  }
+  return $out
+}
+
+# ===================== Backend stacks (no Logstash in Phase 3) =====================
+function Start-OpenSearchStack {
+  param([switch]$Dashboards)
+  Write-Host "[TinySOCS] Starting OpenSearch (no Logstash)..." -ForegroundColor DarkCyan
+
+  Invoke-ComposeSafe -Args @("up","-d","opensearch") | Out-Null
+  if (-not (Wait-ContainerHealthy -Name 'ts-opensearch' -TimeoutSec 240)) { throw "ts-opensearch did not become healthy" }
+
+  if ($Dashboards) { Invoke-ComposeSafe -Args @("up","-d","opensearch-dashboards") | Out-Null }
+  else { Invoke-ComposeSafe -Args @("stop","opensearch-dashboards") | Out-Null }
+
+  Write-Host "[TinySOCS] OpenSearch is healthy." -ForegroundColor Green
+}
+
+function Stop-OpenSearchStack {
+  Write-Host "[TinySOCS] Stopping OpenSearch stack..." -ForegroundColor DarkCyan
+  if (-not (Ensure-DockerReady)) { Write-Warning "[TinySOCS] Docker offline; skipping."; return }
+  Invoke-ComposeSafe -Args @("stop","opensearch","opensearch-dashboards") | Out-Null
+}
+
+# Legacy Elastic helpers (kept for completeness; not used by default)
+function Start-ElasticStack {
+  param([switch]$Kibana)
+#Write-Host "[TinySOCS] Starting Elasticsearch (no Logstash path here)..." -ForegroundColor DarkCyan
+  Invoke-ComposeSafe -Args @("up","-d","elasticsearch") | Out-Null
+  if ($Kibana) { Invoke-ComposeSafe -Args @("up","-d","kibana") | Out-Null }
+#Write-Host "[TinySOCS] Elasticsearch request issued." -ForegroundColor Green
+}
+
+function Stop-ElasticStack {
+  Write-Host "[TinySOCS] Stopping Elastic stack..." -ForegroundColor DarkCyan
+  if (-not (Ensure-DockerReady)) { Write-Warning "[TinySOCS] Docker offline; skipping."; return }
+  $null = Invoke-ComposeSafe -Args @("stop","-t","5","elasticsearch","kibana")
   $running = (docker ps --format "{{.Names}}" 2>$null) -join ','
   if ($running -match "ts-es" -or $running -match "ts-kibana") {
     Write-Warning "[TinySOCS] Force-killing lingering Elastic containers"
@@ -997,7 +1205,591 @@ function Route-To-OpenSearch {
   $env:SIEM_TIMEOUT_SECONDS = "60"
 }
 
-### DEPRECATED (Phase-5): Route-To-Elastic
+function Route-To-Elastic {
+  param([switch]$Full)
+  if (-not (Ensure-DockerReady)) { Write-Warning "[TinySOCS] Docker engine not available."; return }
+  Use-ElasticSIEM
+  Stop-OpenSearchStack
+  Start-ElasticStack -Kibana:$Full
+  Remove-Item Env:SIEM_TIMEOUT_SECONDS -ErrorAction SilentlyContinue
+}
+
+# ===================== Node/Master helpers =====================
+function Start-TinySocsNodeApi { param([int]$Port=8081)
+  if (-not $env:NODE_ID) { $env:NODE_ID="node-1" }
+  if (-not $env:NODE_SECRET) { $env:NODE_SECRET="dev-secret-change-me" }
+  $env:PORT="$Port"
+  Write-Host "Starting Node API on port $Port (NODE_ID=$env:NODE_ID)..."
+  Start-Process -FilePath "python" -ArgumentList "tinysocs\api\node.py" -NoNewWindow
+}
+
+function Start-TinySocsMaster {
+  param([string]$Nodes="http://localhost:8081,http://localhost:8082",
+        [string]$Rules="auth_failed_burst,ps_script_block",
+        [string]$Window="15m",
+        [string]$Host="")
+  $env:TINYSOCS_NODES=$Nodes
+  $env:MASTER_SHARED_SECRET=$env:NODE_SECRET
+  $args=@("--rules",$Rules,"--window",$Window); if($Host){$args+=@("--host",$Host)}
+  Write-Host "Running master against $Nodes..."
+  python "tinysocs\orchestrator\master.py" @args
+}
+
+function New-TinySocsAuthHeaders {
+  param([string]$Secret)
+  $ts = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+  $hmac = New-Object System.Security.Cryptography.HMACSHA256
+  $hmac.Key = [Text.Encoding]::UTF8.GetBytes($Secret)
+  $sigBytes = $hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes([string]$ts))
+  $sigHex = -join ($sigBytes | % { $_.ToString("x2") })
+  @{ "X-TinySOCS-Timestamp" = [string]$ts; "X-TinySOCS-Signature" = "sha256=$sigHex" }
+}
+
+function Use-Role {
+  param(
+    [ValidateSet('solo','node','master')] [string]$Role,
+    [string]$Backend = 'opensearch'
+  )
+  $env:ROLE = $Role
+  if ($Backend -eq 'opensearch') {
+    Route-To-OpenSearch
+  } else {
+    Route-To-Elastic
+  }
+  Ensure-TinySOCS-Agents
+  Write-Host "ROLE set to $Role (backend: $Backend)"
+}
+
+function Start-TinySocs-Node {
+  param(
+    [int]$Port = 8081,
+    [string]$NodeId = "node-$Port",
+    [string]$Secret = "dev-secret-change-me"
+  )
+  Set-Location $PSScriptRoot
+  Import-DotEnv
+
+  $env:ROLE            = "node"
+  $env:NODE_ID         = $NodeId
+  $env:NODE_SECRET     = $Secret
+  $env:PORT            = "$Port"
+
+  if (-not $env:SIEM_BACKEND)    { $env:SIEM_BACKEND = "opensearch" }
+  if (-not $env:SIEM_URL)        { $env:SIEM_URL     = "https://127.0.0.1:9201" }
+  if (-not $env:SIEM_USER)       { $env:SIEM_USER    = "admin" }
+  if (-not $env:SIEM_PASS)       { $env:SIEM_PASS    = "ChangeMe123!" }
+  if (-not $env:SIEM_SSL_VERIFY) { $env:SIEM_SSL_VERIFY = "false" }
+
+  Show-TinySOCS-Targets | Out-Null
+  Write-Host "[node] starting $NodeId on :$Port"
+  python .\api\node.py
+}
+
+function Start-TinySocs-MultiNode {
+  param(
+    [int]$Count = 2,
+    [int]$StartPort = 8081,
+    [string]$Secret = "dev-secret-change-me"
+  )
+  for ($i=0; $i -lt $Count; $i++) {
+    $port = $StartPort + $i
+    Start-Process -WindowStyle Minimized powershell -ArgumentList "-NoExit","-Command",
+      "Set-Location `"$PSScriptRoot`"; . .\.venv\Scripts\Activate.ps1; ``
+       . .\model_toggles.ps1; Import-DotEnv; ``
+       `$env:NODE_SECRET='$Secret'; `$env:NODE_ID='node-$port'; `$env:PORT='$port'; ``
+       python .\api\node.py"
+    Start-Sleep -Milliseconds 500
+  }
+  Write-Host "[multinode] launched $Count nodes starting at $StartPort"
+}
+
+function Run-TinySocs-Master {
+  param(
+    [string]$Nodes = "http://localhost:8081,http://localhost:8082",
+    [string]$Secret = "dev-secret-change-me",
+    [string]$Rules  = "auth_failed_burst,ps_script_block",
+    [string]$Window = "15m"
+  )
+  Set-Location $PSScriptRoot
+  Import-DotEnv
+
+  $env:ROLE = "master"
+  $env:TINYSOCS_NODES       = $Nodes
+  $env:MASTER_SHARED_SECRET = $Secret
+  $env:REQUEST_TIMEOUT_SEC  = "20"
+
+  if (-not $env:LLM_MODE)       { $env:LLM_MODE = "openai" }
+  if (-not $env:OPENAI_API_KEY) { Write-Warning "OPENAI_API_KEY not set; summary may fallback" }
+
+  if (-not $env:SIEM_BACKEND)    { $env:SIEM_BACKEND = "opensearch" }
+  if (-not $env:SIEM_URL)        { $env:SIEM_URL     = "https://127.0.0.1:9201" }
+  if (-not $env:SIEM_USER)       { $env:SIEM_USER    = "admin" }
+  if (-not $env:SIEM_PASS)       { $env:SIEM_PASS    = "ChangeMe123!" }
+  if (-not $env:SIEM_SSL_VERIFY) { $env:SIEM_SSL_VERIFY = "false" }
+
+  Write-Host "[master] fan-out to $Nodes; rules=$Rules; window=$Window"
+  python .\orchestrator\master.py --rules $Rules --window $Window
+}
+
+function Run-TinySocs-Solo {
+  param([switch]$Noise)
+  Set-Location $PSScriptRoot
+  Use-Role -Role solo -Backend opensearch
+  if ($Noise) { Invoke-TinySOCS-TestNoise -All }
+  python -u -m agent.main
+}
+
+# ===================== Scheduled task install (master) =====================
+# Toggle + defaults
+$TinySOCS_Schedule_AutoInstall      = $true     # set $false to skip auto-install
+$TinySOCS_Schedule_DailyTime        = "03:30"   # local time for master run
+$TinySOCS_Schedule_LedgerHealthTime = "03:35"   # local time for ledger health check
+
+function Ensure-TinySOCS-ScheduledTasks {
+  param(
+    [Parameter(Mandatory=$true)][string]$RepoRoot,
+    [Parameter(Mandatory=$true)][string]$Nodes,
+    [Parameter(Mandatory=$true)][string]$Rules,
+    [Parameter(Mandatory=$true)][string]$Window,
+    [Parameter(Mandatory=$true)][string]$TimeDaily,
+    [Parameter(Mandatory=$true)][string]$LedgerHealthTime
+  )
+  $script = Join-Path $RepoRoot "orchestrator\install_daily_anchor_task.ps1"
+  if (-not (Test-Path $script)) {
+    Write-Warning "[TinySOCS] install_daily_anchor_task.ps1 not found at $script"
+    return
+  }
+  try {
+    & $script `
+      -RepoRoot         $RepoRoot `
+      -Nodes            $Nodes `
+      -Rules            $Rules `
+      -Window           $Window `
+      -TimeDaily        $TimeDaily `
+      -LedgerHealthTime $LedgerHealthTime
+  } catch {
+    Write-Warning "[TinySOCS] Failed to install scheduled tasks: $($_.Exception.Message)"
+  }
+}
+
+function Remove-TinySOCS-ScheduledTasks {
+  schtasks /Delete /TN "TinySOCS_Master_Daily"   /F *> $null 2>&1
+  schtasks /Delete /TN "TinySOCS_Ledger_Health"  /F *> $null 2>&1
+  Write-Host "[TinySOCS] Removed scheduled tasks (if present)."
+}
+
+# ===================== Requirements + index helpers =====================
+function Ensure-PythonRequirements {
+  param([string]$RepoRoot = $PSScriptRoot)
+  Push-Location $RepoRoot
+  try {
+    $req = Join-Path $RepoRoot 'requirements.txt'
+    if (Test-Path $req) {
+      Write-Host "[TinySOCS] Ensuring Python requirements..." -ForegroundColor DarkCyan
+      python -m pip install --upgrade pip | Out-Null
+      python -m pip install -r $req
+    } else {
+      Write-Host "[TinySOCS] requirements.txt not found; skipping pip install." -ForegroundColor DarkYellow
+    }
+  } finally { Pop-Location }
+}
+
+function Ensure-SIEM-Index {
+  param(
+    [string]$Index = "siem_index"
+  )
+  if (-not $env:SIEM_URL) { Write-Warning "[TinySOCS] SIEM_URL not set; skipping index check."; return }
+  if (-not $env:SIEM_USER -or -not $env:SIEM_PASS) { Write-Warning "[TinySOCS] SIEM creds not set; skipping index check."; return }
+
+  $auth = "$($env:SIEM_USER):$($env:SIEM_PASS)"
+  $url  = "$($env:SIEM_URL.TrimEnd('/'))/$Index"
+  $isHttps = $env:SIEM_URL -like "https*"
+  $insecure = $isHttps -and (($env:SIEM_SSL_VERIFY -as [string]).ToLower() -eq "false")
+
+  $curlArgs = @()
+  if ($insecure) { $curlArgs += "-k" }
+  $curlArgs += @("-s","-u", $auth, $url)
+
+  $null = & curl.exe @curlArgs
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "[TinySOCS] Creating SIEM index '$Index'..." -ForegroundColor DarkCyan
+    $curlArgs = @()
+    if ($insecure) { $curlArgs += "-k" }
+    $curlArgs += @("-s","-u", $auth, "-X","PUT", $url)
+    $null = & curl.exe @curlArgs
+  } else {
+    Write-Host "[TinySOCS] SIEM index '$Index' present." -ForegroundColor Green
+  }
+}
+
+# ===================== Winlogbeat template + mapping (default ON) =====================
+function Get-OSCurlArgs {
+  param(
+    [Parameter(Mandatory=$true)][string]$Endpoint,
+    [ValidateSet('GET','PUT','POST')][string]$Method = 'GET',
+    [string]$DataFile,
+    [switch]$Json
+  )
+  $auth = "$($env:SIEM_USER):$($env:SIEM_PASS)"
+  $isHttps  = $env:SIEM_URL -like "https*"
+  $insecure = $isHttps -and (($env:SIEM_SSL_VERIFY -as [string]).ToLower() -eq "false")
+
+  $curlArgs = @()
+  if ($insecure) { $curlArgs += "-k" }
+  $curlArgs += @("-s","-u",$auth,"-X",$Method)
+  if ($Json)     { $curlArgs += @("-H","Content-Type: application/json") }
+
+  # Put URL near the end — curl.exe is happier when it’s after most flags
+  $curlArgs += @($Endpoint)
+
+  # Optional data payload if provided here (you can still pass --data-binary yourself)
+  if ($DataFile) { $curlArgs += @("--data-binary","@$DataFile") }
+
+  return ,$curlArgs
+}
+
+function Install-WB-HighPriorityTemplate {
+  param([string]$RepoRoot = $PSScriptRoot)
+
+  $base   = $env:SIEM_URL.TrimEnd('/')
+  $name   = "winlogbeat-high-priority"
+  $prio   = Join-Path $RepoRoot "integrations\winlogbeat\winlogbeat_template_priority500.json"
+  $std    = Join-Path $RepoRoot "integrations\winlogbeat\winlogbeat_template.json"
+  $altPrio= Join-Path $RepoRoot "winlogbeat_template_priority500.json"
+  $altStd = Join-Path $RepoRoot "winlogbeat_template.json"
+
+  $file = if (Test-Path $prio) { $prio }
+          elseif (Test-Path $std) { $std }
+          elseif (Test-Path $altPrio) { $altPrio }
+          elseif (Test-Path $altStd) { $altStd }
+          else { $null }
+
+  if (-not $file) { Write-Warning "[TinySOCS] No winlogbeat template JSON found; skipping template install."; return }
+
+  $endpoint = "$base/_index_template/$name"
+  $args = Get-OSCurlArgs -Endpoint $endpoint -Method PUT -DataFile $file -Json
+  $out = & curl.exe @args
+  if ($LASTEXITCODE -eq 0) {
+    Write-Host "[TinySOCS] Installed/updated index template '$name' from $(Split-Path $file -Leaf)." -ForegroundColor Green
+  } else {
+    Write-Warning "[TinySOCS] Failed installing index template '$name'."
+    Write-Host $out
+  }
+}
+
+function Patch-WB-KeywordFields {
+  param([string]$RepoRoot = $PSScriptRoot)
+
+  $kw     = Join-Path $RepoRoot "integrations\winlogbeat\winlogbeat_keyword_mapping.json"
+  $altKw  = Join-Path $RepoRoot "winlogbeat_keyword_mapping.json"
+  $file   = if (Test-Path $kw) { $kw } elseif (Test-Path $altKw) { $altKw } else { $null }
+  if (-not $file) { Write-Warning "[TinySOCS] No winlogbeat keyword mapping JSON found; skipping mapping patch."; return }
+
+  $base    = $env:SIEM_URL.TrimEnd('/')
+  $endpoint= "$base/winlogbeat-*/_mapping"
+  $args = Get-OSCurlArgs -Endpoint $endpoint -Method PUT -DataFile $file -Json
+  $out = & curl.exe @args
+  if ($LASTEXITCODE -eq 0) {
+    Write-Host "[TinySOCS] Applied keyword multi-field patch to winlogbeat-* indices." -ForegroundColor Green
+  } else {
+    Write-Warning "[TinySOCS] Failed applying keyword mapping to winlogbeat-*."
+    Write-Host $out
+  }
+}
+
+function Ensure-WB-Setup {
+  param([string]$RepoRoot = $PSScriptRoot)
+  try { Install-WB-HighPriorityTemplate -RepoRoot $RepoRoot } catch {
+    Write-Warning ("[TinySOCS] Winlogbeat template install failed: {0}" -f $_.Exception.Message)
+  }
+  try { Patch-WB-KeywordFields -RepoRoot $RepoRoot } catch {
+    Write-Warning ("[TinySOCS] Winlogbeat mapping patch failed: {0}" -f $_.Exception.Message)
+  }
+}
+
+# ===================== Core starter + four toggles =====================
+# Start-TinySOCS (patched)
+function Start-TinySOCS {
+  param(
+    [ValidateSet('opensearch','elastic')] [string]$Backend = 'opensearch',
+    [switch]$Full,                                # dashboards/kibana
+    [ValidateSet('solo','node','master')] [string]$Role = 'solo',
+    [switch]$LocalLLM,                             # use ollama instead of openai
+    [int]$NodePort = 8081,                         # when Role=node
+    [string]$Nodes = "http://localhost:8081,http://localhost:8082",  # when Role=master
+    [string]$Rules = "auth_failed_burst,ps_script_block",
+    [string]$Window = "15m",
+    [switch]$NoWBSetup                              # opt-out of template/mapping setup
+  )
+
+  Set-Location $PSScriptRoot
+  Import-DotEnv
+
+  # ---- Phase-4 "works every time" defaults (only if not already set) ----
+  if (-not $env:REQUEST_TIMEOUT_SEC)   { $env:REQUEST_TIMEOUT_SEC   = "30" }
+  if (-not $env:MASTER_DEADLINE_SEC)   { $env:MASTER_DEADLINE_SEC   = "120" }
+  if (-not $env:SIEM_TIMEOUT_SECONDS)  { $env:SIEM_TIMEOUT_SECONDS  = "30" }
+  if (-not $env:TINYSOCS_INSECURE_SKIP_VERIFY) { $env:TINYSOCS_INSECURE_SKIP_VERIFY = "1" }
+  if (-not $env:NOTIFY_EMAIL)          { $env:NOTIFY_EMAIL          = "0" }  # avoid SMTP noise by default
+  if (-not $env:TINYSOCS_NODE_WORKERS) { $env:TINYSOCS_NODE_WORKERS = "2" }
+  if (-not $env:TINYSOCS_NODES)        { $env:TINYSOCS_NODES        = $Nodes }
+  if (-not $env:MASTER_SHARED_SECRET)  { $env:MASTER_SHARED_SECRET  = "dev-secret-change-me" }
+  if (-not $env:NODE_SECRET)           { $env:NODE_SECRET           = $env:MASTER_SHARED_SECRET } # align node/master
+
+  if ($LocalLLM) { Use-Ollama } else { Use-OpenAI }
+
+  if ($Backend -eq 'opensearch') {
+    Route-To-OpenSearch -Full:$Full
+    if (-not $NoWBSetup) { Ensure-WB-Setup -RepoRoot $PSScriptRoot }
+  } else {
+    Route-To-Elastic -Full:$Full
+  }
+
+  Ensure-TinySOCS-Agents
+  Ensure-PythonRequirements
+  Ensure-SIEM-Index -Index "siem_index"
+
+  # Auto-install daily master + ledger-health tasks (only when Role=master)
+  if ($TinySOCS_Schedule_AutoInstall -and $Role -eq 'master') {
+    Ensure-TinySOCS-ScheduledTasks `
+      -RepoRoot         $PSScriptRoot `
+      -Nodes            $Nodes `
+      -Rules            $Rules `
+      -Window           $Window `
+      -TimeDaily        $TinySOCS_Schedule_DailyTime `
+      -LedgerHealthTime $TinySOCS_Schedule_LedgerHealthTime
+  }
+
+  switch ($Role) {
+    'solo'   { Write-Host "[TinySOCS] Running SOLO agent loop..." -ForegroundColor Cyan; python -u -m agent.main }
+    'node'   { Start-TinySocs-Node -Port $NodePort } # Node picks up TINYSOCS_NODE_WORKERS from env if supported
+    'master' { Run-TinySocs-Master -Nodes $Nodes -Rules $Rules -Window $Window }
+  }
+}
+
+function Start-TinySOCS-OpenSearchFull {
+  param(
+    [ValidateSet('solo','node','master')] [string]$Role = 'solo',
+    [switch]$LocalLLM,
+    [int]$NodePort = 8081,
+    [string]$Nodes = "http://localhost:8081,http://localhost:8082",
+    [string]$Rules = "auth_failed_burst,ps_script_block",
+    [string]$Window = "15m",
+    [switch]$NoWBSetup
+  )
+  Start-TinySOCS -Backend opensearch -Full:$true -Role $Role -LocalLLM:$LocalLLM -NodePort $NodePort -Nodes $Nodes -Rules $Rules -Window $Window -NoWBSetup:$NoWBSetup
+}
+
+function Start-TinySOCS-ElasticLean {
+  param(
+    [ValidateSet('solo','node','master')] [string]$Role = 'solo',
+    [switch]$LocalLLM,
+    [int]$NodePort = 8081,
+    [string]$Nodes = "http://localhost:8081,http://localhost:8082",
+    [string]$Rules = "auth_failed_burst,ps_script_block",
+    [string]$Window = "15m"
+  )
+  Start-TinySOCS -Backend elastic -Full:$false -Role $Role -LocalLLM:$LocalLLM -NodePort $NodePort -Nodes $Nodes -Rules $Rules -Window $Window
+}
+
+function Start-TinySOCS-ElasticFull {
+  param(
+    [ValidateSet('solo','node','master')] [string]$Role = 'solo',
+    [switch]$LocalLLM,
+    [int]$NodePort = 8081,
+    [string]$Nodes = "http://localhost:8081,http://localhost:8082",
+    [string]$Rules = "auth_failed_burst,ps_script_block",
+    [string]$Window = "15m"
+  )
+  Start-TinySOCS -Backend elastic -Full:$true -Role $Role -LocalLLM:$LocalLLM -NodePort $NodePort -Nodes $Nodes -Rules $Rules -Window $Window
+}
+
+function Install-TinySOCS-MasterTask {
+  param(
+    [string]$TaskName = "TinySOCS-Master-5min",
+    [string]$Nodes    = "http://localhost:8081",
+    [string]$Rules    = "auth_failed_burst,ps_script_block,suspicious_powershell,lolbin_execs",
+    [string]$Window   = "15m"
+  )
+
+  # Prefer env var if present (PowerShell 5.1-safe “coalesce”)
+  if ($env:TINYSOCS_NODES -and $env:TINYSOCS_NODES.Trim()) {
+    $Nodes = $env:TINYSOCS_NODES
+  }
+
+  $script = Join-Path $PSScriptRoot "tools\install-master-task.ps1"
+  & $script -TaskName $TaskName -Nodes $Nodes -Rules $Rules -Window $Window
+}
+
+function Remove-TinySOCS-MasterTask {
+  param([string]$TaskName = "TinySOCS-Master-5min")
+  $script = Join-Path $PSScriptRoot "tools\remove-master-task.ps1"
+  & $script -TaskName $TaskName
+}
+
+function Sync-TinySocsWinlogbeatConfig {
+<#
+.SYNOPSIS
+  Make the repo the source of truth for Winlogbeat. Self-elevates, pushes the repo template
+  to Program Files, sets machine env vars, validates config, restarts service, and tails logs.
+
+.PARAMETER TemplatePath
+  Path to the repo-managed template (yml.tmpl) you want to deploy.
+
+.PARAMETER DestPath
+  Live config path used by the Winlogbeat service.
+
+.PARAMETER SIEM_URL
+  OpenSearch/Elastic endpoint (e.g., https://127.0.0.1:9201).
+
+.PARAMETER SIEM_USER
+  Username for output.elasticsearch.
+
+.PARAMETER SIEM_PASS
+  Password for output.elasticsearch.
+
+.PARAMETER WB_SSL_VERIFY
+  ssl.verification_mode (none|certificate|full). Default: none.
+
+.PARAMETER NoTail
+  Do not tail Winlogbeat log after restart (non-blocking).
+
+.EXAMPLE
+  Sync-TinySocsWinlogbeatConfig `
+    -TemplatePath "C:\tinysocs\tinysocs\integrations\winlogbeat\winlogbeat.yml.tmpl" `
+    -SIEM_URL "https://127.0.0.1:9201" -SIEM_USER "admin" -SIEM_PASS "changeme" -WB_SSL_VERIFY "none"
+#>
+  [CmdletBinding()]
+  param(
+    [string]$TemplatePath = "C:\tinysocs\tinysocs\integrations\winlogbeat\winlogbeat.yml.tmpl",
+    [string]$DestPath     = "C:\Program Files\Winlogbeat\winlogbeat.yml",
+    [string]$SIEM_URL     = "https://127.0.0.1:9201",
+    [string]$SIEM_USER    = "admin",
+    [string]$SIEM_PASS    = "changeme",
+    [ValidateSet('none','certificate','full')]
+    [string]$WB_SSL_VERIFY = "none",
+    [switch]$NoTail
+  )
+
+  function Write-Step([string]$msg){ Write-Host $msg -ForegroundColor Cyan }
+  function Write-Err ([string]$msg){ Write-Host $msg -ForegroundColor Red }
+
+  # --- Admin check / self-elevate ---
+  $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()
+             ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+  if (-not $isAdmin) {
+    Write-Step "[0/6] Elevating to Administrator…"
+    $tmp = Join-Path $env:TEMP ("sync-winlogbeat-{0}.ps1" -f ([guid]::NewGuid()))
+    $payload = @"
+param(
+  [string]\$TemplatePath,
+  [string]\$DestPath,
+  [string]\$SIEM_URL,
+  [string]\$SIEM_USER,
+  [string]\$SIEM_PASS,
+  [string]\$WB_SSL_VERIFY,
+  [switch]\$NoTail
+)
+`$ErrorActionPreference = 'Stop'
+function Write-Step([string]\$m){ Write-Host \$m -ForegroundColor Cyan }
+function Write-Err ([string]\$m){ Write-Host \$m -ForegroundColor Red }
+
+if (-not (Test-Path \$TemplatePath)) { throw "Template not found: \$TemplatePath" }
+
+Write-Step "[1/6] Setting machine environment vars for Winlogbeat…"
+[Environment]::SetEnvironmentVariable("SIEM_URL",      \$SIEM_URL,      "Machine")
+[Environment]::SetEnvironmentVariable("SIEM_USER",     \$SIEM_USER,     "Machine")
+[Environment]::SetEnvironmentVariable("SIEM_PASS",     \$SIEM_PASS,     "Machine")
+[Environment]::SetEnvironmentVariable("WB_SSL_VERIFY", \$WB_SSL_VERIFY, "Machine")
+
+Write-Step "[2/6] Copying template to Program Files…"
+Copy-Item -Path \$TemplatePath -Destination \$DestPath -Force
+
+Write-Step "[3/6] Creating Winlogbeat logs directory if needed…"
+\$logs = "C:\ProgramData\winlogbeat\Logs"
+New-Item -ItemType Directory -Path \$logs -Force | Out-Null
+
+Write-Step "[4/6] Validating config…"
+\$exe = "C:\Program Files\Winlogbeat\winlogbeat.exe"
+if (-not (Test-Path \$exe)) { throw "winlogbeat.exe not found at \$exe" }
+& \$exe test config -c \$DestPath | Write-Host
+
+Write-Step "[5/6] Restarting Winlogbeat service…"
+# be tolerant if running/non-running
+if (Get-Service winlogbeat -ErrorAction SilentlyContinue) {
+  try {
+    Restart-Service winlogbeat -ErrorAction Stop
+  } catch {
+    # try a classic stop/start to recover from "cannot stop" states
+    try { Stop-Service winlogbeat -Force -ErrorAction SilentlyContinue } catch {}
+    Start-Sleep -Seconds 1
+    Start-Service winlogbeat
+  }
+} else {
+  Write-Err "Service 'winlogbeat' not found. Please install Winlogbeat service first."
+  exit 1
+}
+
+Write-Step "[6/6] Post-restart checks…"
+Start-Sleep -Seconds 2
+# Confirm it can at least connect to output by peeking recent log lines
+if (-not \$NoTail) {
+  Write-Step "Tailing Winlogbeat log (Ctrl+C to stop)…"
+  Get-Content "C:\ProgramData\winlogbeat\Logs\winlogbeat" -Tail 200 -Wait
+} else {
+  Get-Content "C:\ProgramData\winlogbeat\Logs\winlogbeat" -Tail 50
+}
+"@
+
+    # write elevated payload and invoke
+    [IO.File]::WriteAllText($tmp, $payload, [Text.Encoding]::UTF8)
+    $args = @(
+      "-NoProfile","-ExecutionPolicy","Bypass",
+      "-File", "`"$tmp`"",
+      "-TemplatePath", "`"$TemplatePath`"",
+      "-DestPath",     "`"$DestPath`"",
+      "-SIEM_URL",     "`"$SIEM_URL`"",
+      "-SIEM_USER",    "`"$SIEM_USER`"",
+      "-SIEM_PASS",    "`"$SIEM_PASS`"",
+      "-WB_SSL_VERIFY","`"$WB_SSL_VERIFY`""
+    )
+    if ($NoTail) { $args += "-NoTail" }
+
+    Start-Process -Verb RunAs -FilePath "powershell.exe" -ArgumentList $args | Out-Null
+    return
+  }
+
+  # If we got here, we’re already elevated (rare, but useful if you dot-sourced as admin)
+  Write-Step "[elevated] Running sync inline…"
+  # Reuse the same elevated inner logic by invoking ourselves unelevated path: write a temp and execute
+  $tmp2 = Join-Path $env:TEMP ("sync-winlogbeat-inline-{0}.ps1" -f ([guid]::NewGuid()))
+  $selfArgs = @"
+`$PSDefaultParameterValues.Clear()
+& {
+param(
+  [string]\$TemplatePath,
+  [string]\$DestPath,
+  [string]\$SIEM_URL,
+  [string]\$SIEM_USER,
+  [string]\$SIEM_PASS,
+  [string]\$WB_SSL_VERIFY,
+  [switch]\$NoTail
+)
+# paste of the elevated block again would be redundant; call the same logic by re-invoking the function non-elevation path.
+}
+"@
+  [IO.File]::WriteAllText($tmp2, $selfArgs, [Text.Encoding]::UTF8)
+}
+
+function Initialize-TinySocsAnchorsIndex {
+  param(
+    [string]$SiemUrl = $env:SIEM_URL,
+    [string]$User    = $env:SIEM_USER,
+    [string]$Pass    = $env:SIEM_PASS
+  )
+  if (-not $SiemUrl) { throw "SIEM_URL env var required." }
+
   # TLS + self-signed (local lab)
   [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
   [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
@@ -1120,9 +1912,19 @@ function Register-TinySocsLedgerHealthTask {
   }
 }
 
-### DEPRECATED (Phase-5): Start-TinySOCS
-#>
-
+function Start-TinySOCS-OpenSearchLean {
+  param(
+    [ValidateSet('solo','node','master')] [string]$Role = 'solo',
+    [switch]$LocalLLM,
+    [int]$NodePort = 8081,
+    [string]$Nodes = "http://localhost:8081,http://localhost:8082",
+    [string]$Rules = "auth_failed_burst,ps_script_block",
+    [string]$Window = "15m",
+    [switch]$NoWBSetup
+  )
+  Use-TinySocsDotEnv  # ensure SIEM_URL, TINYSOCS_NODES, OPENAI_API_KEY, etc.
+  # --- sensible env defaults (idempotent) ---
+  if (-not $env:TINYSOCS_LEDGER_DIR) { $env:TINYSOCS_LEDGER_DIR = "C:\tinysocs\ledger" }
   if (-not (Test-Path $env:TINYSOCS_LEDGER_DIR)) { New-Item -ItemType Directory -Force -Path $env:TINYSOCS_LEDGER_DIR | Out-Null }
 
   if (-not $env:TINYSOCS_INSECURE_SKIP_VERIFY) { $env:TINYSOCS_INSECURE_SKIP_VERIFY = "1" }  # local/self-signed
@@ -1163,5 +1965,3 @@ function Register-TinySocsLedgerHealthTask {
   Start-TinySOCS -Backend opensearch -Full:$false -Role $Role -LocalLLM:$LocalLLM `
     -NodePort $NodePort -Nodes $Nodes -Rules $Rules -Window $Window -NoWBSetup:$NoWBSetup
 }
-
-

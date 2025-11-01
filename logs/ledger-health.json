@@ -1,10 +1,10 @@
 [
   {
     "node": "http://localhost:8081",
-    "ok": true,
-    "sequence": 15,
-    "head_sha256": "845da1e4a09d73e050ad7e499a0e8be4a81a43b1b259273f4c235af261ec7cf4",
-    "capability": "ledger",
-    "node_id": "node-8082"
+    "ok": false,
+    "sequence": null,
+    "head_sha256": null,
+    "capability": "error: 401 Client Error: Unauthorized for url: http://localhost:8081/evidence/head",
+    "node_id": null
   }
 ]

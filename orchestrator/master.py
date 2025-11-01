@@ -67,6 +67,15 @@ REPO_ROOT = _HERE.parents[2]         # <repo>
 AGENT_DIR = PKG_ROOT / "agent"
 # ------------------------------------------------
 
+# --- Evidence class shim (import or fallback) ---
+try:
+    from tinysocs.agent.models.evidence import DetectionEvidence  # type: ignore
+except Exception:
+    class DetectionEvidence(dict):  # type: ignore
+        __slots__ = ()
+        def model_dump(self):
+            return dict(self)
+
 # --- best-effort .env loader (tolerant encodings) ---
 def _parse_dotenv_content(s: str) -> None:
     for raw in s.splitlines():
@@ -327,11 +336,14 @@ async def _fetch_node_agg_async(client: httpx.AsyncClient, node_url: str, rules:
 async def _fanout_agg_async(nodes: List[str], rules: str, window: str, host: Optional[str], deadline_sec: float) -> List[Dict[str, Any]]:
     """
     Fire all node requests concurrently.
+
     If FANOUT_WAIT_ALL=1: wait for all nodes to return or the deadline to hit.
-    Else: return as soon as the first node finishes, marking others 'deadline' to avoid starving healthy nodes.
+    If FANOUT_WAIT_ALL=0: short-circuit only after the FIRST SUCCESS arrives;
+                          errors alone won't cancel the remaining tasks.
     """
     start = time.monotonic()
     results: List[Dict[str, Any]] = []
+
     async with httpx.AsyncClient(verify=NODE_TLS_VERIFY, follow_redirects=True) as client:
         tasks: Dict[asyncio.Task, str] = {}
         for n in nodes:
@@ -344,21 +356,31 @@ async def _fanout_agg_async(nodes: List[str], rules: str, window: str, host: Opt
             remaining = max(0.0, deadline_sec - (time.monotonic() - start))
             if remaining <= 0:
                 break
-            done, pending = await asyncio.wait(tasks.keys(), timeout=remaining, return_when=asyncio.FIRST_COMPLETED)
+
+            done, pending = await asyncio.wait(
+                tasks.keys(),
+                timeout=remaining,
+                return_when=asyncio.FIRST_COMPLETED
+            )
+
             for d in done:
+                node_name = tasks.get(d, "unknown")
                 try:
                     results.append(d.result())
                 except Exception as e:
-                    results.append({"node": tasks[d], "ok": False, "error": f"task_error: {e}"})
-                del tasks[d]
-            # Only short-circuit if we are not in WAIT_ALL mode
-            if (not FANOUT_WAIT_ALL) and results and tasks:
-                for p, n in list(tasks.items()):
-                    p.cancel()
-                    results.append({"node": n, "ok": False, "error": "deadline"})
-                tasks.clear()
+                    results.append({"node": node_name, "ok": False, "error": f"task_error: {e}"})
+                finally:
+                    tasks.pop(d, None)
 
-        # If deadline hit while tasks remain, cancel and mark as deadline
+            # Short-circuit only if NOT waiting for all AND at least one success has arrived
+            if not FANOUT_WAIT_ALL and tasks:
+                if any((isinstance(r, dict) and r.get("ok") is True) for r in results):
+                    for p, n in list(tasks.items()):
+                        p.cancel()
+                        results.append({"node": n, "ok": False, "error": "deadline"})
+                    tasks.clear()
+
+        # Deadline elapsed or loop ended with pending tasks — cancel & mark as deadline
         if tasks:
             for p, n in list(tasks.items()):
                 p.cancel()
@@ -368,14 +390,6 @@ async def _fanout_agg_async(nodes: List[str], rules: str, window: str, host: Opt
     results_ok  = [r for r in results if r.get("ok")]
     results_bad = [r for r in results if not r.get("ok")]
     return results_ok + results_bad
-# ----------------------------------------------------
-
-# ---------------- Evidence merge helpers ----------------
-try:
-    from tinysocs.agent.models.evidence import DetectionEvidence
-except Exception:
-    class DetectionEvidence(dict):
-        pass
 
 def merge_evidence(batches: List[List[DetectionEvidence]]) -> List[DetectionEvidence]:
     def deep_union(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:

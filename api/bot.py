@@ -20,8 +20,8 @@ Env:
   NODE_SECRET                    Optional override for the secret used to call /evidence/append
   TINYSOCS_NODES                 Comma list; first is used to append ledger (default http://localhost:8081)
   TINYSOCS_INSECURE_SKIP_VERIFY  "1" to skip TLS verify to node (default 1)
-  TINYSOCS_QUEUE_PATH            Path to actions queue JSONL
-  ACTIONS_QUEUE_PATH             (fallback) legacy env name for queue path
+  TINYSOCS_QUEUE_PATH            Path to actions queue JSONL (fallback if local actions_queue module not present)
+  ACTIONS_QUEUE_PATH             Legacy/fallback env name for queue path
   TINYSOCS_SKEW_SECS             Override inbound skew seconds (default 300)
   BOT_PORT                       Uvicorn port (default 8090)
   TINYSOCS_BOT_WORKERS           Uvicorn workers (default 1)
@@ -95,9 +95,9 @@ NODES = [x.strip() for x in (_env("TINYSOCS_NODES", "http://localhost:8081") or 
 NODE_URL = NODES[0] if NODES else "http://localhost:8081"
 NODE_TLS_VERIFY = not str(_env("TINYSOCS_INSECURE_SKIP_VERIFY", "1")).lower() in ("1", "true", "yes", "on")
 
-# Queue path: prefer TINYSOCS_QUEUE_PATH, fallback to ACTIONS_QUEUE_PATH, else default under package dir
+# Queue path (fallback if we can't import a project-level actions_queue module)
 _queue_path_env = _env("TINYSOCS_QUEUE_PATH") or _env("ACTIONS_QUEUE_PATH")
-QUEUE_PATH = Path(_queue_path_env or str(Path(__file__).resolve().parents[1] / "actions_queue.jsonl"))
+FALLBACK_QUEUE_PATH = Path(_queue_path_env or str(Path(__file__).resolve().parents[1] / "actions_queue.jsonl"))
 
 ALLOWED_SKEW_SECONDS = int(_env("TINYSOCS_SKEW_SECS", "300") or "300")
 REPLAY_CACHE_SECONDS = 300
@@ -107,6 +107,24 @@ HMAC_STYLE = (_env("TINYSOCS_HMAC_STYLE", "pipe") or "pipe").strip().lower()
 
 # Replay cache keyed by the exact signed message (ts / ts|nonce / ts.nonce)
 _recent_ts: Dict[str, int] = {}  # replay_key -> expiry epoch
+
+# ---------- Try to use the project's existing actions_queue.py ---------------
+_aq = None
+_aq_queue_path: Optional[str] = None
+try:
+    # Preferred: package style
+    from tinysocs.agent import actions_queue as _aq  # type: ignore
+except Exception:
+    try:
+        # Fallback: top-level module (repo root)
+        import actions_queue as _aq  # type: ignore
+    except Exception:
+        _aq = None
+
+if _aq is not None:
+    # Surface queue path if the module defines it
+    _aq_queue_path = getattr(_aq, "QUEUE_PATH", None)
+# ---------------------------------------------------------------------------
 
 # ---------- HMAC auth (inbound) ----------
 def _gc(now: int) -> None:
@@ -155,10 +173,29 @@ def verify_hmac(request: Request) -> None:
     _recent_ts[msg] = now + REPLAY_CACHE_SECONDS
 
 # ---------- Queue + ledger helpers ----------
-def _queue_append(obj: Dict[str, Any]) -> None:
-    QUEUE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(QUEUE_PATH, "a", encoding="utf-8") as f:
+def _fallback_queue_append(obj: Dict[str, Any]) -> Path:
+    FALLBACK_QUEUE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(FALLBACK_QUEUE_PATH, "a", encoding="utf-8") as f:
         f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    return FALLBACK_QUEUE_PATH
+
+def _stage_entry(entry: Dict[str, Any]) -> Path:
+    """
+    Prefer the project's actions_queue.stage_actions if present.
+    Otherwise, write to our fallback JSONL path.
+    """
+    if _aq is not None and hasattr(_aq, "stage_actions"):
+        try:
+            _aq.stage_actions([entry])  # your existing interface
+            # Derive a visible path if the module exposes one
+            qp = getattr(_aq, "QUEUE_PATH", None)
+            return Path(qp) if qp else (Path.cwd() / "actions_queue.jsonl")
+        except Exception as e:
+            # If the project module fails, fall back to local writer
+            print(f"[bot] WARN: actions_queue.stage_actions failed: {e} — using fallback queue")
+            return _fallback_queue_append(entry)
+    else:
+        return _fallback_queue_append(entry)
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -185,10 +222,10 @@ def _ledger_attempts(entry: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
     headers = _node_hmac_headers()
 
     shapes: List[Tuple[str, Any]] = [
-        ("payload", {"payload": entry}),   # common FastAPI pattern in this repo
-        ("entry",   {"entry": entry}),     # alternative wrapper used in some modules
-        ("raw",     entry),                # raw document
-        ("evidence",{"evidence": entry}),  # belt-and-suspenders try
+        ("payload", {"payload": entry}),
+        ("entry",   {"entry": entry}),
+        ("raw",     entry),
+        ("evidence",{"evidence": entry}),
     ]
 
     results: List[Dict[str, Any]] = []
@@ -217,7 +254,6 @@ def _post_ledger(entry: Dict[str, Any]) -> str:
     ok, details = _ledger_attempts(entry)
     if ok:
         return "ok"
-    # Compact human-readable failure
     attempts = details.get("attempts", [])
     if attempts:
         last = attempts[-1]
@@ -236,6 +272,7 @@ class ExecBody(BaseModel):
     action: str = Field(..., description=f"One of: {', '.join(sorted(ALLOWED_ACTIONS))}")
     params: Dict[str, Any] = Field(default_factory=dict)
     who: Optional[str] = Field(None, description="Human display name (optional)")
+    dry_run: Optional[bool] = True  # allow caller to specify, default True
 
 # ---------- Guards ----------
 def _guard_params(action: str, params: Dict[str, Any]) -> None:
@@ -258,14 +295,15 @@ def _guard_params(action: str, params: Dict[str, Any]) -> None:
         if not host:
             raise HTTPException(status_code=400, detail="isolate_host requires 'host'")
     elif action == "open_ticket":
-        title = str(params.get("title", "")).strip()
+        # accept either 'title' or 'summary' for convenience
+        title = str(params.get("title", "")).strip() or str(params.get("summary", "")).strip()
         if not title:
-            raise HTTPException(status_code=400, detail="open_ticket requires 'title'")
+            raise HTTPException(status_code=400, detail="open_ticket requires 'title' or 'summary'")
     else:
         raise HTTPException(status_code=400, detail="unsupported action")
 
 # ---------- App ----------
-app = FastAPI(title="TinySocs Bot Bridge", version="0.1.2")
+app = FastAPI(title="TinySocs Bot Bridge", version="0.1.3")
 
 @app.post("/bot/ack", dependencies=[Depends(verify_hmac)])
 def bot_ack(body: AckBody = Body(...)) -> Dict[str, Any]:
@@ -276,9 +314,9 @@ def bot_ack(body: AckBody = Body(...)) -> Dict[str, Any]:
         "who": body.who,
         "ts": _now(),
     }
-    _queue_append(entry)
+    qpath = _stage_entry(entry)
     ledger_res = _post_ledger(entry)
-    return {"queued": True, "ledger": ledger_res, "node": NODE_URL, "path": str(QUEUE_PATH)}
+    return {"queued": True, "ledger": ledger_res, "node": NODE_URL, "path": str(qpath)}
 
 @app.post("/bot/exec", dependencies=[Depends(verify_hmac)])
 def bot_exec(body: ExecBody = Body(...)) -> Dict[str, Any]:
@@ -291,11 +329,11 @@ def bot_exec(body: ExecBody = Body(...)) -> Dict[str, Any]:
         "params": body.params,
         "who": body.who,
         "ts": _now(),
-        "dry_run": True,  # stage only; no live changes
+        "dry_run": True if body.dry_run is None else bool(body.dry_run),
     }
-    _queue_append(entry)
+    qpath = _stage_entry(entry)
     ledger_res = _post_ledger(entry)
-    return {"queued": True, "ledger": ledger_res, "node": NODE_URL, "path": str(QUEUE_PATH)}
+    return {"queued": True, "ledger": ledger_res, "node": NODE_URL, "path": str(qpath)}
 
 # ---- Diagnostic endpoint: try all shapes and return their statuses (HMAC-protected) ----
 @app.post("/bot/_diag/ledger-shapes", dependencies=[Depends(verify_hmac)])
@@ -311,7 +349,6 @@ def bot_diag_ledger_shapes(sample: Dict[str, Any] = Body(default=None)) -> Dict[
         "who": "diag",
         "ts": _now(),
     }
-    # Run attempts but return detailed results
     url = f"{NODE_URL.rstrip('/')}/evidence/append"
     headers = _node_hmac_headers()
     shapes: List[Tuple[str, Any]] = [
@@ -335,9 +372,12 @@ def bot_diag_ledger_shapes(sample: Dict[str, Any] = Body(default=None)) -> Dict[
     return {"node": NODE_URL, "results": results}
 
 def cli():
-    port = int(os.getenv("BOT_PORT", "8090"))
-    workers = int(os.getenv("TINYSOCS_BOT_WORKERS", "1"))
-    uvicorn.run(app, host="0.0.0.0", port=port, reload=False, workers=workers)
+  # Guard: if the project forgot to set BOT_SHARED_SECRET, fail loudly.
+  if not BOT_SECRET:
+      raise SystemExit("BOT_SHARED_SECRET must be set (see .env).")
+  port = int(os.getenv("BOT_PORT", "8090"))
+  workers = int(os.getenv("TINYSOCS_BOT_WORKERS", "1"))
+  uvicorn.run(app, host="0.0.0.0", port=port, reload=False, workers=workers)
 
 if __name__ == "__main__":
     cli()

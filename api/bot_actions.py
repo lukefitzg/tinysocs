@@ -1,0 +1,84 @@
+# tinysocs/api/bot_actions.py
+from __future__ import annotations
+
+import hmac, hashlib, os
+from typing import Optional, Dict, Any, Literal
+from fastapi import APIRouter, Request, HTTPException, Depends
+from pydantic import BaseModel, Field
+from tinysocs.agent.actions_queue import write_action
+
+router = APIRouter(prefix="/bot", tags=["bot"])
+
+# Keep the action surface tiny & safe
+ALLOWED_ACTIONS: set[str] = {
+    "ack_incident", "open_ticket", "disable_user", "isolate_host", "block_ip"
+}
+
+# --- HMAC verification (accept ts OR ts|nonce OR ts.nonce; raw or 'sha256=' prefix) ---
+def _consteq(a: str, b: str) -> bool:
+    try:  # constant-time compare
+        return hmac.compare_digest(a, b)
+    except Exception:
+        return a == b
+
+def _normalize_sig(sig: str) -> str:
+    sig = sig.strip()
+    if sig.lower().startswith("sha256="):
+        sig = sig.split("=", 1)[1]
+    return sig
+
+def _calc_mac(secret: str, msg: str) -> str:
+    return hmac.new(secret.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256).hexdigest()
+
+def verify_hmac(request: Request) -> None:
+    secret = os.getenv("BOT_SHARED_SECRET", "")
+    if not secret:
+        raise HTTPException(status_code=503, detail="BOT_SHARED_SECRET not set")
+
+    ts = request.headers.get("X-TinySOCS-Timestamp")
+    if not ts:
+        raise HTTPException(status_code=401, detail="missing timestamp")
+
+    nonce = request.headers.get("X-TinySOCS-Nonce", "")
+    provided = request.headers.get("X-TinySOCS-Signature") or ""
+    provided = _normalize_sig(provided)
+
+    # Accept any of the three message shapes
+    candidates = [ts]
+    if nonce:
+        candidates.append(f"{ts}|{nonce}")
+        candidates.append(f"{ts}.{nonce}")
+
+    for msg in candidates:
+        if _consteq(_calc_mac(secret, msg), provided):
+            return
+
+    raise HTTPException(status_code=401, detail="bad signature")
+
+# --- Models ---
+class ExecBody(BaseModel):
+    action: Literal["ack_incident","open_ticket","disable_user","isolate_host","block_ip"]
+    params: Dict[str, Any] = Field(default_factory=dict)
+    # optional human context
+    tldr: Optional[str] = None
+    incident_id: Optional[str] = None
+    dry_run: bool = True
+
+@router.post("/exec")
+async def bot_exec(body: ExecBody, _: None = Depends(verify_hmac)):
+    if body.action not in ALLOWED_ACTIONS:
+        raise HTTPException(status_code=400, detail="action not allowed")
+
+    # guardrails examples (cheap loopback checks)
+    if body.action == "block_ip":
+        ip = (body.params or {}).get("ip") or ""
+        if ip.startswith("127.") or ip in ("::1","localhost"):
+            raise HTTPException(status_code=400, detail="refusing to block loopback")
+
+    # enrich minimal context into params for the operator runner
+    params = dict(body.params or {})
+    if body.tldr:        params["tldr"] = body.tldr
+    if body.incident_id: params["incident_id"] = body.incident_id
+
+    entry = write_action(action=body.action, params=params, actor="chat-bot", dry_run=body.dry_run)
+    return {"queued": True, "action_id": entry["action_id"], "dry_run": entry["dry_run"]}

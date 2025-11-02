@@ -1,5 +1,6 @@
-# TinySocs Quickstart (Windows-only)
-# Brings the box to "ready" (WB + shim + Node + Bot), runs master once, then verifies anchors.
+# scripts/Start-TinySocs-Quick.ps1
+# TinySocs Quickstart
+# Brings the box to "ready" (WB + shim + Node + Bot), runs master once, verifies anchors, then runs Doctor.
 
 Import-Module "$PSScriptRoot\TinySocs.Utils.psm1" -Force
 
@@ -20,18 +21,48 @@ function Import-DotEnv {
   }
 }
 
+function Get-PythonExe {
+  param([string]$RepoRoot = (Resolve-Path ".").Path)
+  $venvPy = Join-Path $RepoRoot ".venv\Scripts\python.exe"
+  if (Test-Path $venvPy) { return $venvPy }
+  return "python"
+}
+
 function New-TinySocsHmacHeaders {
-  param([string]$Secret)
+  param(
+    [Parameter(Mandatory)][string]$Secret,
+    [string]$Style = $env:TINYSOCS_HMAC_STYLE,
+    [string]$SigPrefix = $env:TINYSOCS_SIG_PREFIX
+  )
+  if (-not $Style) { $Style = 'pipe' }   # default
+  $Style = $Style.ToLower()
+
   $ts    = [int][DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
   $nonce = [Guid]::NewGuid().ToString('N')
-  $payload = "$ts.$nonce"
+
+  switch ($Style) {
+    'dot'  { $msg = "$ts.$nonce"; $includeNonce = $true }
+    'pipe' { $msg = "$ts|$nonce"; $includeNonce = $true }
+    default { # 'ts'
+      $msg = "$ts"; $includeNonce = $false
+    }
+  }
+
   $h   = [System.Security.Cryptography.HMACSHA256]::new([Text.Encoding]::UTF8.GetBytes($Secret))
-  $sig = -join ($h.ComputeHash([Text.Encoding]::UTF8.GetBytes($payload)) | ForEach-Object { $_.ToString('x2') })
-  @{
+  try {
+    $raw = -join ($h.ComputeHash([Text.Encoding]::UTF8.GetBytes($msg)) | ForEach-Object { $_.ToString('x2') })
+  } finally {
+    $h.Dispose()
+  }
+
+  $sig = if ($SigPrefix -and $SigPrefix.Trim()) { "sha256=$raw" } else { $raw }
+
+  $hdr = @{
     'X-TinySOCS-Timestamp' = $ts
-    'X-TinySOCS-Nonce'     = $nonce
     'X-TinySOCS-Signature' = $sig
   }
+  if ($includeNonce) { $hdr['X-TinySOCS-Nonce'] = $nonce }
+  return $hdr
 }
 
 function Test-HttpReady {
@@ -43,7 +74,11 @@ function Test-HttpReady {
   $t0 = Get-Date
   while ((Get-Date) -lt $t0.AddSeconds($TimeoutSec)) {
     try {
-      $r = Invoke-WebRequest -Uri $Url -Headers $Headers -UseBasicParsing -TimeoutSec 4 -ErrorAction Stop
+      if ($null -ne $Headers) {
+        $r = Invoke-WebRequest -Uri $Url -Headers $Headers -UseBasicParsing -TimeoutSec 4 -ErrorAction Stop
+      } else {
+        $r = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 4 -ErrorAction Stop
+      }
       if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 500) { return $true }
     } catch { Start-Sleep -Milliseconds 500 }
   }
@@ -66,6 +101,7 @@ function Start-TinySocs-Ready {
   }
 
   # 2) Python venv + deps (best-effort)
+  $PyExe = Get-PythonExe -RepoRoot $RepoRoot
   if (-not $env:VIRTUAL_ENV -and (Test-Path "$RepoRoot\.venv\Scripts\Activate.ps1")) {
     & "$RepoRoot\.venv\Scripts\Activate.ps1"
   }
@@ -73,7 +109,7 @@ function Start-TinySocs-Ready {
     Ensure-PythonRequirements
   }
 
-  # 3) SIEM defaults (OpenSearch)
+  # 3) SIEM + Core defaults
   if (-not $env:SIEM_URL)               { Set-Item Env:SIEM_URL "https://127.0.0.1:9201" }
   if (-not $env:SIEM_USER)              { Set-Item Env:SIEM_USER "admin" }
   if (-not $env:SIEM_PASS)              { Set-Item Env:SIEM_PASS "ChangeMe123!" }
@@ -84,6 +120,8 @@ function Start-TinySocs-Ready {
   if (-not $env:BOT_SHARED_SECRET)      { Set-Item Env:BOT_SHARED_SECRET "supersecret" }
   if (-not $env:ENSURE_ANCHORS)         { Set-Item Env:ENSURE_ANCHORS "1" }
   if (-not $env:TINYSOCS_INSECURE_SKIP_VERIFY) { Set-Item Env:TINYSOCS_INSECURE_SKIP_VERIFY "1" }
+  if (-not $env:TINYSOCS_HMAC_STYLE)    { Set-Item Env:TINYSOCS_HMAC_STYLE "pipe" }
+  if ($null -eq $env:TINYSOCS_SIG_PREFIX) { Set-Item Env:TINYSOCS_SIG_PREFIX "" }
 
   # 4) Winlogbeat + Shim (idempotent)
   if (Get-Command Ensure-WB-Setup -ErrorAction SilentlyContinue) { Ensure-WB-Setup }
@@ -99,10 +137,16 @@ function Start-TinySocs-Ready {
     $isListening = Get-NetTCPConnection -ErrorAction SilentlyContinue |
                    Where-Object { $_.LocalPort -eq $NodePort -and $_.State -eq 'Listen' }
     if (-not $isListening) {
-      Start-Process -FilePath "python" -ArgumentList @("-m","tinysocs.api.node") -WorkingDirectory $RepoRoot -WindowStyle Minimized
+      Start-Process -FilePath $PyExe -ArgumentList @("-m","tinysocs.api.node") -WorkingDirectory $RepoRoot -WindowStyle Minimized
     }
-    $hdr = New-TinySocsHmacHeaders -Secret $env:MASTER_SHARED_SECRET
-    $nodeUp = Test-HttpReady -Url "http://localhost:$NodePort/evidence/head" -Headers $hdr -TimeoutSec 20
+
+    # try ts-only first (widest compatibility), then env style if needed
+    $hdrTsOnly = New-TinySocsHmacHeaders -Secret $env:MASTER_SHARED_SECRET -Style 'ts' -SigPrefix ''
+    $nodeUp = Test-HttpReady -Url "http://localhost:$NodePort/evidence/head" -Headers $hdrTsOnly -TimeoutSec 20
+    if (-not $nodeUp) {
+      $hdrEnv = New-TinySocsHmacHeaders -Secret $env:MASTER_SHARED_SECRET -Style $env:TINYSOCS_HMAC_STYLE -SigPrefix $env:TINYSOCS_SIG_PREFIX
+      $nodeUp = Test-HttpReady -Url "http://localhost:$NodePort/evidence/head" -Headers $hdrEnv -TimeoutSec 10
+    }
   } catch {}
 
   # 6) Start Bot (background)
@@ -111,8 +155,9 @@ function Start-TinySocs-Ready {
     $botListening = Get-NetTCPConnection -ErrorAction SilentlyContinue |
                     Where-Object { $_.LocalPort -eq $BotPort -and $_.State -eq 'Listen' }
     if (-not $botListening) {
-      Start-Process -FilePath "python" -ArgumentList @("-m","tinysocs.api.bot") -WorkingDirectory $RepoRoot -WindowStyle Minimized
+      Start-Process -FilePath $PyExe -ArgumentList @("-m","tinysocs.api.bot") -WorkingDirectory $RepoRoot -WindowStyle Minimized
     }
+    # docs isn't auth-protected; simple probe without headers
     $botUp = Test-HttpReady -Url "http://localhost:$BotPort/docs" -TimeoutSec 15
   } catch {}
 
@@ -144,14 +189,17 @@ function Invoke-TinySocs-Scan {
     [double] $Deadline = 30,
     [switch] $AlwaysAnchor
   )
+  $RepoRoot = (Resolve-Path ".").Path
+  $PyExe = Get-PythonExe -RepoRoot $RepoRoot
   $args = @("-m","tinysocs.orchestrator.master","--rules",$Rules,"--window",$Window,"--deadline",$Deadline)
   if ($AlwaysAnchor) { $args += "--always-anchor" }
-  & python $args
-  & python -m tinysocs.orchestrator.check_ledger --verify
+  & $PyExe $args
+  & $PyExe -m tinysocs.orchestrator.check_ledger --verify
 }
 
 # ---- Quickstart flow ----
-$ready = Start-TinySocs-Ready
+$RepoRoot = (Resolve-Path "$PSScriptRoot\..").Path
+$ready = Start-TinySocs-Ready -RepoRoot $RepoRoot
 $ready | Format-List
 
 $rules = if ($env:TSQ_RULES) { $env:TSQ_RULES } else { "ps_script_block_lab" }
@@ -160,17 +208,44 @@ Invoke-TinySocs-Scan -Rules $rules -Window "10m" -Deadline 30
 Write-Host "`nTinySocs is up." -ForegroundColor Green
 Write-Host "  Node: $($ready.NodeUrl)"
 Write-Host "  Bot:  $($ready.BotUrl)"
-Write-Host "Stop with:  Get-Process python | ? {$_.MainWindowTitle -eq ''} | Stop-Process"
+Write-Host 'Stop with:  Get-Process python | ? {$_.MainWindowTitle -eq ''''} | Stop-Process'
 
 function Invoke-TinySocs {
   param([Parameter(Mandatory)][string]$Path, [string]$Secret = $env:MASTER_SHARED_SECRET)
-  $hdr = New-TinySocsHmacHeaders -Secret $Secret
+  $style = if ($env:TINYSOCS_HMAC_STYLE) { $env:TINYSOCS_HMAC_STYLE } else { 'pipe' }
+  $hdr = New-TinySocsHmacHeaders -Secret $Secret -Style $style -SigPrefix $env:TINYSOCS_SIG_PREFIX
   Invoke-RestMethod -Uri ("http://localhost:8081/" + $Path.TrimStart('/')) -Headers $hdr
 }
 
 function Invoke-TinySocsBot {
   param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][hashtable]$Body)
-  $hdr = New-TinySocsHmacHeaders -Secret $env:BOT_SHARED_SECRET
+  $style = if ($env:TINYSOCS_HMAC_STYLE) { $env:TINYSOCS_HMAC_STYLE } else { 'pipe' }
+  $hdr = New-TinySocsHmacHeaders -Secret $env:BOT_SHARED_SECRET -Style $style -SigPrefix $env:TINYSOCS_SIG_PREFIX
   Invoke-RestMethod -Uri ("http://localhost:8090/" + $Path.TrimStart('/')) -Method Post `
     -Headers $hdr -ContentType application/json -Body ($Body | ConvertTo-Json -Compress)
 }
+
+# ---- Doctor (final gate) ----------------------------------------------------
+try {
+  # Doctor writes formatted lines to the pipeline before emitting the PSObject.
+  # Select the *last* pipeline object, which is the structured summary we need.
+  $doc = & "$PSScriptRoot\Doctor.ps1" -RepoRoot $RepoRoot | Select-Object -Last 1
+} catch {
+  Write-Error "Doctor.ps1 failed to execute: $($_.Exception.Message)"
+  exit 2
+}
+
+# Core checks: if any are false → non-zero exit so CI/scripts can catch it
+$critical = @('PythonReady','NodeReady','BotReady','BotAckQueued','SIEMReachable','AnchorsAliasOK','SecretsPresent')
+$bad = @()
+foreach ($k in $critical) {
+  if (-not ($doc.PSObject.Properties.Name -contains $k)) { $bad += "$k(missing)"; continue }
+  if (-not ($doc.$k)) { $bad += $k }
+}
+
+if ($bad.Count -gt 0) {
+  Write-Error ("Doctor failed checks: " + ($bad -join ', '))
+  exit 1
+}
+
+Write-Host "Doctor checks passed." -ForegroundColor Green

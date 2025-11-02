@@ -8,6 +8,9 @@ Reads env:
   - TINYSOCS_NODES                (comma-separated URLs; e.g. http://localhost:8081)
   - MASTER_SHARED_SECRET          (HMAC secret)
   - TINYSOCS_INSECURE_SKIP_VERIFY (default "1" → skip TLS verify for local/self-signed)
+  - TINYSOCS_HMAC_STYLE           (pipe | dot | ts)  [default: pipe]
+  - TINYSOCS_SIG_PREFIX           (truthy → emit 'sha256=<hex>'; else raw hex)
+  - TINYSOCS_ANCHORS_ALIAS        (OpenSearch alias for anchors; default tinysocs_anchors)
   - SIEM_URL                      (e.g. https://localhost:9201)
   - SIEM_USER                     (e.g. admin)
   - SIEM_PASS                     (password)
@@ -110,15 +113,39 @@ SIEM_TIMEOUT: float = float(os.getenv("SIEM_TIMEOUT_SECONDS", "30"))
 
 REQUEST_TIMEOUT: float = float(os.getenv("REQUEST_TIMEOUT_SEC", "30"))
 
-# ---------------- HMAC headers (raw hex; no "sha256=" prefix) ----------------
+# HMAC style/prefix + anchors alias (parity with master/bot)
+HMAC_STYLE: str = (os.getenv("TINYSOCS_HMAC_STYLE", "pipe") or "pipe").strip().lower()  # pipe|dot|ts
+USE_PREFIX: bool = str(os.getenv("TINYSOCS_SIG_PREFIX", "")).strip().lower() in ("1", "true", "yes", "on", "sha256")
+ANCHORS_ALIAS: str = os.getenv("TINYSOCS_ANCHORS_ALIAS", "tinysocs_anchors")
+
+# ---------------- HMAC headers (supports pipe|dot|ts; raw or prefixed) ----------------
 def _headers() -> Dict[str, str]:
+    import secrets
     ts = str(int(time.time()))
-    mac = hmac.new((SECRET or "").encode("utf-8"), ts.encode("utf-8"), hashlib.sha256).hexdigest()
-    return {
+    if HMAC_STYLE == "dot":
+        nonce = secrets.token_hex(8)
+        msg = f"{ts}.{nonce}"
+        include_nonce = True
+    elif HMAC_STYLE == "ts":
+        msg = ts
+        include_nonce = False
+        nonce = None
+    else:  # pipe (default)
+        nonce = secrets.token_hex(8)
+        msg = f"{ts}|{nonce}"
+        include_nonce = True
+
+    mac_hex = hmac.new((SECRET or "").encode("utf-8"), msg.encode("utf-8"), hashlib.sha256).hexdigest()
+    sig_val = f"sha256={mac_hex}" if USE_PREFIX else mac_hex
+
+    h = {
         "X-TinySOCS-Timestamp": ts,
-        "X-TinySOCS-Signature": mac,
+        "X-TinySOCS-Signature": sig_val,
         "User-Agent": "tinysocs/ledger-check",
     }
+    if include_nonce and nonce:
+        h["X-TinySOCS-Nonce"] = nonce
+    return h
 
 # ---------------- Node helpers ----------------
 def _derive_node_id(node_url: str) -> str:
@@ -164,12 +191,14 @@ def _es_auth() -> HTTPBasicAuth:
 
 def _search_latest_anchor(node_url: str, node_id: str) -> Optional[Dict[str, Any]]:
     """
-    Return the most recent anchor doc for this node from 'tinysocs_anchors'.
+    Return the most recent anchor doc for this node from the anchors alias.
     Tries node_url (with localhost/127.0.0.1 variants) OR node_id.
     """
-    search_url = SIEM_URL.rstrip('/') + '/tinysocs_anchors/_search'
+    search_url = SIEM_URL.rstrip('/') + f'/{ANCHORS_ALIAS}/_search'
     should = []
     for u in _alt_node_urls(node_url):
+        # Try both keyword and non-keyword to be resilient to mapping differences
+        should.append({"term": {"node_url.keyword": {"value": u}}})
         should.append({"term": {"node_url": {"value": u}}})
     should.append({"term": {"node_id": {"value": node_id}}})
 

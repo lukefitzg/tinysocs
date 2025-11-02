@@ -305,7 +305,7 @@ $secretsOk = -not ([string]::IsNullOrWhiteSpace($ms) -or [string]::IsNullOrWhite
 # Queue file (if configured)
 $queuePath = $env:TINYSOCS_QUEUE_PATH
 if (-not $queuePath) { $queuePath = $env:ACTIONS_QUEUE_PATH }
-if (-not $queuePath) { $queuePath = Join-Path $RepoRoot "tinysocs\actions_queue.jsonl" }
+if (-not $queuePath) { $queuePath = Join-Path $RepoRoot "data\actions_queue.jsonl" }
 $queueExists = Test-Path $queuePath
 
 $result = [pscustomobject]@{

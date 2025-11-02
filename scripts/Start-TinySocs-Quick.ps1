@@ -95,6 +95,9 @@ function Start-TinySocs-Ready {
   Import-DotEnv (Join-Path $RepoRoot ".env")
   Import-DotEnv (Join-Path $RepoRoot "tinysocs\.env")
 
+  # 0.1) Honor BOT_PORT env if provided
+  if ($env:BOT_PORT) { try { $BotPort = [int]$env:BOT_PORT } catch {} }
+
   # 1) Elevation (if you kept Ensure-AdminOrRelaunch, use it)
   if (Get-Command Ensure-AdminOrRelaunch -ErrorAction SilentlyContinue) {
     Ensure-AdminOrRelaunch
@@ -122,6 +125,8 @@ function Start-TinySocs-Ready {
   if (-not $env:TINYSOCS_INSECURE_SKIP_VERIFY) { Set-Item Env:TINYSOCS_INSECURE_SKIP_VERIFY "1" }
   if (-not $env:TINYSOCS_HMAC_STYLE)    { Set-Item Env:TINYSOCS_HMAC_STYLE "pipe" }
   if ($null -eq $env:TINYSOCS_SIG_PREFIX) { Set-Item Env:TINYSOCS_SIG_PREFIX "" }
+  # Canonical queue path default if not set
+  if (-not $env:TINYSOCS_QUEUE_PATH) { Set-Item Env:TINYSOCS_QUEUE_PATH (Join-Path $RepoRoot 'data\actions_queue.jsonl') }
 
   # 4) Winlogbeat + Shim (idempotent)
   if (Get-Command Ensure-WB-Setup -ErrorAction SilentlyContinue) { Ensure-WB-Setup }
@@ -203,7 +208,8 @@ $ready = Start-TinySocs-Ready -RepoRoot $RepoRoot
 $ready | Format-List
 
 $rules = if ($env:TSQ_RULES) { $env:TSQ_RULES } else { "ps_script_block_lab" }
-Invoke-TinySocs-Scan -Rules $rules -Window "10m" -Deadline 30
+$ensure = ($env:ENSURE_ANCHORS -and $env:ENSURE_ANCHORS.ToString().ToLower() -in @('1','true','yes','on'))
+Invoke-TinySocs-Scan -Rules $rules -Window "10m" -Deadline 30 -AlwaysAnchor:$ensure
 
 Write-Host "`nTinySocs is up." -ForegroundColor Green
 Write-Host "  Node: $($ready.NodeUrl)"

@@ -1,2 +1,0 @@
-{"kind": "bot_action", "action": "ack_incident", "params": {"incident_id": "demo-123", "tldr": "Ack via helper"}, "who": null, "ts": "2025-11-02T16:35:42.348223Z"}
-{"kind": "bot_action", "action": "open_ticket", "params": {"summary": "From PS", "title": "Ticket via helper"}, "who": null, "ts": "2025-11-02T16:35:44.999168Z", "dry_run": true}

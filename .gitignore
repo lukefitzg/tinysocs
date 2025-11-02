@@ -23,3 +23,8 @@ sysmon-bin/
 
 # Vendor binaries (ignored)
 winlogbeat-bin/
+
+# Local logs
+/data/*.jsonl
+/actions_queue.jsonl
+/tinysocs/actions_queue.jsonl

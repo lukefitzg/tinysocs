@@ -7,19 +7,24 @@ Purpose:
   - Append a compact bot_action record to the node ledger via /evidence/append.
 
 Security:
-  - HMAC headers (raw-hex) with BOT_SHARED_SECRET.
-  - ±300s clock skew, 5-minute replay cache on timestamp.
+  - HMAC headers with BOT_SHARED_SECRET.
+  - Supports styles: 'pipe' (ts|nonce), 'dot' (ts.nonce), or 'ts' (timestamp only).
+  - Signature may be raw hex or 'sha256=<hex>'.
+  - ±300s clock skew, 5-minute replay cache keyed by the exact signed message.
 
 Env:
-  BOT_SHARED_SECRET            HMAC secret for inbound bot calls (required)
-  MASTER_SHARED_SECRET         Reused when calling node /evidence/append (fallback for NODE_SECRET)
-  NODE_SECRET                  Optional override for the secret used to call /evidence/append
-  TINYSOCS_NODES               Comma list; first is used to append ledger (default http://localhost:8081)
+  BOT_SHARED_SECRET              HMAC secret for inbound bot calls (required)
+  TINYSOCS_HMAC_STYLE            'pipe' | 'dot' | 'ts'  (default 'pipe')
+  TINYSOCS_SIG_PREFIX            if truthy, accept/emit 'sha256=<hex>' (server always accepts both)
+  MASTER_SHARED_SECRET           Reused when calling node /evidence/append (fallback for NODE_SECRET)
+  NODE_SECRET                    Optional override for the secret used to call /evidence/append
+  TINYSOCS_NODES                 Comma list; first is used to append ledger (default http://localhost:8081)
   TINYSOCS_INSECURE_SKIP_VERIFY  "1" to skip TLS verify to node (default 1)
-  TINYSOCS_QUEUE_PATH          Path to actions queue JSONL (default: <repo>/tinysocs/actions_queue.jsonl)
-  TINYSOCS_SKEW_SECS           Override inbound skew seconds (default 300)
-  BOT_PORT                     Uvicorn port (default 8090)
-  TINYSOCS_BOT_WORKERS         Uvicorn workers (default 1)
+  TINYSOCS_QUEUE_PATH            Path to actions queue JSONL
+  ACTIONS_QUEUE_PATH             (fallback) legacy env name for queue path
+  TINYSOCS_SKEW_SECS             Override inbound skew seconds (default 300)
+  BOT_PORT                       Uvicorn port (default 8090)
+  TINYSOCS_BOT_WORKERS           Uvicorn workers (default 1)
 
 Run:
   python -m tinysocs.api.bot  (uvicorn)
@@ -89,41 +94,65 @@ NODE_SECRET = (_env("NODE_SECRET", _env("MASTER_SHARED_SECRET", "dev-secret-chan
 NODES = [x.strip() for x in (_env("TINYSOCS_NODES", "http://localhost:8081") or "").split(",") if x.strip()]
 NODE_URL = NODES[0] if NODES else "http://localhost:8081"
 NODE_TLS_VERIFY = not str(_env("TINYSOCS_INSECURE_SKIP_VERIFY", "1")).lower() in ("1", "true", "yes", "on")
-QUEUE_PATH = Path(_env("TINYSOCS_QUEUE_PATH", str(Path(__file__).resolve().parents[1] / "actions_queue.jsonl")))
+
+# Queue path: prefer TINYSOCS_QUEUE_PATH, fallback to ACTIONS_QUEUE_PATH, else default under package dir
+_queue_path_env = _env("TINYSOCS_QUEUE_PATH") or _env("ACTIONS_QUEUE_PATH")
+QUEUE_PATH = Path(_queue_path_env or str(Path(__file__).resolve().parents[1] / "actions_queue.jsonl"))
+
 ALLOWED_SKEW_SECONDS = int(_env("TINYSOCS_SKEW_SECS", "300") or "300")
 REPLAY_CACHE_SECONDS = 300
 
-_recent_ts: Dict[int, int] = {}  # timestamp -> expiry epoch
+# HMAC style for inbound requests (default 'pipe' to match master & PS helpers)
+HMAC_STYLE = (_env("TINYSOCS_HMAC_STYLE", "pipe") or "pipe").strip().lower()
+
+# Replay cache keyed by the exact signed message (ts / ts|nonce / ts.nonce)
+_recent_ts: Dict[str, int] = {}  # replay_key -> expiry epoch
 
 # ---------- HMAC auth (inbound) ----------
 def _gc(now: int) -> None:
-    stale = [t for t, exp in _recent_ts.items() if exp <= now]
-    for t in stale:
-        _recent_ts.pop(t, None)
+    stale = [k for k, exp in _recent_ts.items() if exp <= now]
+    for k in stale:
+        _recent_ts.pop(k, None)
 
 def verify_hmac(request: Request) -> None:
     if not BOT_SECRET:
         raise HTTPException(status_code=500, detail="BOT_SHARED_SECRET not set")
-    ts_hdr = request.headers.get("X-TinySOCS-Timestamp")
+
+    ts_hdr  = request.headers.get("X-TinySOCS-Timestamp")
     sig_hdr = request.headers.get("X-TinySOCS-Signature", "")
-    if not ts_hdr or not sig_hdr:
+    nonce   = request.headers.get("X-TinySOCS-Nonce")
+
+    # For pipe/dot, nonce is required
+    if not ts_hdr or not sig_hdr or (HMAC_STYLE in ("pipe", "dot") and not nonce):
         raise HTTPException(status_code=401, detail="Missing auth headers")
+
     try:
         ts = int(ts_hdr)
     except ValueError:
         raise HTTPException(status_code=401, detail="Invalid timestamp")
+
     now = int(time.time())
     if abs(now - ts) > ALLOWED_SKEW_SECONDS:
         raise HTTPException(status_code=401, detail="Timestamp skew too large")
-    calc = hmac.new(BOT_SECRET.encode("utf-8"), str(ts).encode("utf-8"), hashlib.sha256).hexdigest()
+
+    if HMAC_STYLE == "dot":
+        msg = f"{ts}.{nonce}"
+    elif HMAC_STYLE == "pipe":
+        msg = f"{ts}|{nonce}"
+    else:  # 'ts'
+        msg = str(ts)
+
+    calc = hmac.new(BOT_SECRET.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256).hexdigest()
     provided = sig_hdr.split("=", 1)[1] if sig_hdr.startswith("sha256=") else sig_hdr
     if not hmac.compare_digest(calc, provided):
         raise HTTPException(status_code=401, detail="Bad signature")
+
+    # Replay protection keyed by the exact message string
     _gc(now)
-    exp = _recent_ts.get(ts)
+    exp = _recent_ts.get(msg)
     if exp and exp > now:
         raise HTTPException(status_code=401, detail="Replay detected")
-    _recent_ts[ts] = now + REPLAY_CACHE_SECONDS
+    _recent_ts[msg] = now + REPLAY_CACHE_SECONDS
 
 # ---------- Queue + ledger helpers ----------
 def _queue_append(obj: Dict[str, Any]) -> None:
@@ -135,6 +164,9 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 def _node_hmac_headers() -> Dict[str, str]:
+    """
+    Bot -> node ledger append uses timestamp-only HMAC (node accepts ts).
+    """
     ts = str(int(time.time()))
     sig = hmac.new(NODE_SECRET.encode("utf-8"), ts.encode("utf-8"), hashlib.sha256).hexdigest()
     return {
@@ -233,7 +265,7 @@ def _guard_params(action: str, params: Dict[str, Any]) -> None:
         raise HTTPException(status_code=400, detail="unsupported action")
 
 # ---------- App ----------
-app = FastAPI(title="TinySocs Bot Bridge", version="0.1.1")
+app = FastAPI(title="TinySocs Bot Bridge", version="0.1.2")
 
 @app.post("/bot/ack", dependencies=[Depends(verify_hmac)])
 def bot_ack(body: AckBody = Body(...)) -> Dict[str, Any]:

@@ -162,9 +162,9 @@ SIEM_VERIFY: bool = _tls_verify_from("SIEM_SSL_VERIFY", default=True)
 
 # Optional ensure-anchors pre-flight (import lazily)
 try:
-    from .ensure_anchors import main as _ensure_anchors_main  # type: ignore
+    from .anchors import ensure_anchors_if_missing as _ensure_anchors
 except Exception:
-    _ensure_anchors_main = None  # type: ignore
+    _ensure_anchors = None  # fallback; Start-TinySocs-Quick also ensures
 
 # silence local TLS warnings if verify is disabled
 try:
@@ -1031,16 +1031,19 @@ def main() -> None:
     if not NODES:
         raise SystemExit("TINYSOCS_NODES is empty; set it to comma-separated node URLs.")
 
-    # env fallback with safe default (True) to preserve current behavior
+    # env fallback (keeps current behavior unless explicitly disabled)
     env_always = _env_bool("ALWAYS_ANCHOR", False)
     always_anchor = args.always_anchor or env_always
 
+    # Pre-flight ensure of anchors alias/mapping using unified module (idempotent)
     if os.getenv("ENSURE_ANCHORS", "1").strip().lower() not in ("0", "false", "no", "off"):
         try:
-            if _ensure_anchors_main:
-                _ensure_anchors_main()
+            if _ensure_anchors:
+                _ensure_anchors()  # anchors.ensure_anchors_if_missing()
+            else:
+                print("[master] WARN: anchors.ensure_anchors_if_missing not available")
         except Exception as e:
-            print(f"[master] WARN: ensure_anchors failed: {e}")
+            print(f"[master] WARN: anchors ensure failed: {e}")
 
     run_master(args.rules, args.window, args.host, args.deadline, always_anchor)
 

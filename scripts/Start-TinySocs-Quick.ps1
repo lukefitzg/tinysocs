@@ -1,4 +1,3 @@
-# scripts/Start-TinySocs-Quick.ps1
 # TinySocs Quickstart
 # Brings the box to "ready" (WB + shim + Node + Bot), runs master once, verifies anchors, then runs Doctor.
 
@@ -51,9 +50,7 @@ function New-TinySocsHmacHeaders {
   $h   = [System.Security.Cryptography.HMACSHA256]::new([Text.Encoding]::UTF8.GetBytes($Secret))
   try {
     $raw = -join ($h.ComputeHash([Text.Encoding]::UTF8.GetBytes($msg)) | ForEach-Object { $_.ToString('x2') })
-  } finally {
-    $h.Dispose()
-  }
+  } finally { $h.Dispose() }
 
   $sig = if ($SigPrefix -and $SigPrefix.Trim()) { "sha256=$raw" } else { $raw }
 
@@ -127,6 +124,11 @@ function Start-TinySocs-Ready {
   if ($null -eq $env:TINYSOCS_SIG_PREFIX) { Set-Item Env:TINYSOCS_SIG_PREFIX "" }
   # Canonical queue path default if not set
   if (-not $env:TINYSOCS_QUEUE_PATH) { Set-Item Env:TINYSOCS_QUEUE_PATH (Join-Path $RepoRoot 'data\actions_queue.jsonl') }
+
+  # 3.1) Preflight anchors alias/mapping via unified CLI (idempotent)
+  if ($env:ENSURE_ANCHORS -and $env:ENSURE_ANCHORS.ToString().ToLower() -in @('1','true','yes','on')) {
+    try { & $PyExe -m tinysocs.orchestrator.anchors --ensure 2>$null | Out-Null } catch {}
+  }
 
   # 4) Winlogbeat + Shim (idempotent)
   if (Get-Command Ensure-WB-Setup -ErrorAction SilentlyContinue) { Ensure-WB-Setup }

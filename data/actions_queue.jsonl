@@ -10,3 +10,9 @@
 
 {"kind": "bot_action", "action": "ack_incident", "params": {"incident_id": "demo-123", "tldr": "Ack via helper"}, "who": null, "ts": "2025-11-02T16:35:42.348223Z"}
 {"kind": "bot_action", "action": "open_ticket", "params": {"summary": "From PS", "title": "Ticket via helper"}, "who": null, "ts": "2025-11-02T16:35:44.999168Z", "dry_run": true}
+{"kind": "bot_action", "action": "ack_incident", "params": {"incident_id": "doctor-202511022355260973", "tldr": "doctor ping"}, "who": null, "ts": "2025-11-02T23:55:26.190406Z"}
+{"kind": "bot_action", "action": "ack_incident", "params": {"incident_id": "doctor-202511030003058519", "tldr": "doctor ping"}, "who": null, "ts": "2025-11-03T00:03:05.944007Z"}
+{"kind": "bot_action", "action": "ack_incident", "params": {"incident_id": "doctor-202511030006286197", "tldr": "doctor ping"}, "who": null, "ts": "2025-11-03T00:06:28.699389Z"}
+{"kind": "bot_action", "action": "ack_incident", "params": {"incident_id": "doctor-202511030010459658", "tldr": "doctor ping"}, "who": null, "ts": "2025-11-03T00:10:46.032073Z"}
+{"kind": "bot_action", "action": "ack_incident", "params": {"incident_id": "doctor-202511030013371145", "tldr": "doctor ping"}, "who": null, "ts": "2025-11-03T00:13:37.281937Z"}
+{"kind": "bot_action", "action": "ack_incident", "params": {"incident_id": "doctor-202511030019003510", "tldr": "doctor ping"}, "who": null, "ts": "2025-11-03T00:19:00.410685Z"}

@@ -16,3 +16,5 @@
 {"kind": "bot_action", "action": "ack_incident", "params": {"incident_id": "doctor-202511030010459658", "tldr": "doctor ping"}, "who": null, "ts": "2025-11-03T00:10:46.032073Z"}
 {"kind": "bot_action", "action": "ack_incident", "params": {"incident_id": "doctor-202511030013371145", "tldr": "doctor ping"}, "who": null, "ts": "2025-11-03T00:13:37.281937Z"}
 {"kind": "bot_action", "action": "ack_incident", "params": {"incident_id": "doctor-202511030019003510", "tldr": "doctor ping"}, "who": null, "ts": "2025-11-03T00:19:00.410685Z"}
+{"kind": "bot_action", "action": "ack_incident", "params": {"incident_id": "doctor-202511031908001698", "tldr": "doctor ping"}, "who": null, "ts": "2025-11-03T19:08:00.297110Z"}
+{"kind": "bot_action", "action": "ack_incident", "params": {"incident_id": "doctor-202511031908351930", "tldr": "doctor ping"}, "who": null, "ts": "2025-11-03T19:08:35.197275Z"}

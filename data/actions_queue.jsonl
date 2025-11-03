@@ -18,3 +18,7 @@
 {"kind": "bot_action", "action": "ack_incident", "params": {"incident_id": "doctor-202511030019003510", "tldr": "doctor ping"}, "who": null, "ts": "2025-11-03T00:19:00.410685Z"}
 {"kind": "bot_action", "action": "ack_incident", "params": {"incident_id": "doctor-202511031908001698", "tldr": "doctor ping"}, "who": null, "ts": "2025-11-03T19:08:00.297110Z"}
 {"kind": "bot_action", "action": "ack_incident", "params": {"incident_id": "doctor-202511031908351930", "tldr": "doctor ping"}, "who": null, "ts": "2025-11-03T19:08:35.197275Z"}
+{"timestamp": "2025-11-03T20:11:57Z", "action": "block_ip", "params": {"ip": "203.0.113.10"}, "status": "staged"}
+{"timestamp": "2025-11-03T20:11:57Z", "action": "disable_user", "params": {"user": "alice"}, "status": "staged"}
+{"timestamp": "2025-11-03T20:12:01Z", "action": "ack_incident", "params": {"incident_id": "inc-demo-001", "tldr": "demo"}, "status": "staged"}
+{"timestamp": "2025-11-03T20:19:23Z", "action": "ack_incident", "params": {"incident_id": "inc-demo-001", "tldr": "demo"}, "status": "staged"}

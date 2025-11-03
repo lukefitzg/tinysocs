@@ -44,7 +44,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 import uvicorn
-from fastapi import Body, Depends, FastAPI, HTTPException, Request
+from fastapi import Body, Depends, FastAPI, HTTPException, Request, Query
 from pydantic import BaseModel, Field
 
 # ---------- permissive .env autoload (repo/.env or tinysocs/.env) ----------
@@ -126,6 +126,18 @@ if _aq is not None:
     _aq_queue_path = getattr(_aq, "QUEUE_PATH", None)
 # ---------------------------------------------------------------------------
 
+def _effective_queue_path() -> Path:
+    """
+    Return the JSONL queue path we should read/write.
+    Precedence: actions_queue.QUEUE_PATH > TINYSOCS_QUEUE_PATH/ACTIONS_QUEUE_PATH > fallback file next to this module.
+    """
+    qp = _aq_queue_path or str(FALLBACK_QUEUE_PATH)
+    p = Path(qp).expanduser()
+    if not p.is_absolute():
+        p = (Path.cwd() / p).resolve()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
 # ---------- HMAC auth (inbound) ----------
 def _gc(now: int) -> None:
     stale = [k for k, exp in _recent_ts.items() if exp <= now]
@@ -174,10 +186,11 @@ def verify_hmac(request: Request) -> None:
 
 # ---------- Queue + ledger helpers ----------
 def _fallback_queue_append(obj: Dict[str, Any]) -> Path:
-    FALLBACK_QUEUE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(FALLBACK_QUEUE_PATH, "a", encoding="utf-8") as f:
+    p = _effective_queue_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p, "a", encoding="utf-8") as f:
         f.write(json.dumps(obj, ensure_ascii=False) + "\n")
-    return FALLBACK_QUEUE_PATH
+    return p
 
 def _stage_entry(entry: Dict[str, Any]) -> Path:
     """
@@ -187,15 +200,36 @@ def _stage_entry(entry: Dict[str, Any]) -> Path:
     if _aq is not None and hasattr(_aq, "stage_actions"):
         try:
             _aq.stage_actions([entry])  # your existing interface
-            # Derive a visible path if the module exposes one
             qp = getattr(_aq, "QUEUE_PATH", None)
-            return Path(qp) if qp else (Path.cwd() / "actions_queue.jsonl")
+            return Path(qp) if qp else _effective_queue_path()
         except Exception as e:
-            # If the project module fails, fall back to local writer
             print(f"[bot] WARN: actions_queue.stage_actions failed: {e} — using fallback queue")
             return _fallback_queue_append(entry)
     else:
         return _fallback_queue_append(entry)
+
+def _read_queue_items(limit: int) -> List[Dict[str, Any]]:
+    """
+    Read up to `limit` newest items from the JSONL queue file. Newest-first.
+    """
+    p = _effective_queue_path()
+    if not p.exists():
+        return []
+    try:
+        with p.open("r", encoding="utf-8") as f:
+            lines = [ln for ln in f.readlines() if ln.strip()]
+    except Exception:
+        return []
+    # take tail, then reverse for newest-first
+    tail = lines[-limit:] if limit > 0 else lines
+    items: List[Dict[str, Any]] = []
+    for ln in tail:
+        try:
+            items.append(json.loads(ln))
+        except Exception:
+            continue
+    items.reverse()
+    return items
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -274,6 +308,19 @@ class ExecBody(BaseModel):
     who: Optional[str] = Field(None, description="Human display name (optional)")
     dry_run: Optional[bool] = True  # allow caller to specify, default True
 
+class QueueItem(BaseModel):
+    timestamp: str
+    action: str
+    params: Dict[str, Any] = Field(default_factory=dict)
+    status: str = "staged"
+    who: Optional[str] = None
+    kind: Optional[str] = "bot_action"
+
+class ActionsResponse(BaseModel):
+    items: List[QueueItem]
+    count: int
+    next_cursor: Optional[str] = None
+
 # ---------- Guards ----------
 def _guard_params(action: str, params: Dict[str, Any]) -> None:
     if action == "block_ip":
@@ -303,7 +350,7 @@ def _guard_params(action: str, params: Dict[str, Any]) -> None:
         raise HTTPException(status_code=400, detail="unsupported action")
 
 # ---------- App ----------
-app = FastAPI(title="TinySocs Bot Bridge", version="0.1.3")
+app = FastAPI(title="TinySocs Bot Bridge", version="0.1.4")
 
 @app.post("/bot/ack", dependencies=[Depends(verify_hmac)])
 def bot_ack(body: AckBody = Body(...)) -> Dict[str, Any]:
@@ -313,6 +360,7 @@ def bot_ack(body: AckBody = Body(...)) -> Dict[str, Any]:
         "params": {"incident_id": body.incident_id, "tldr": body.tldr},
         "who": body.who,
         "ts": _now(),
+        "status": "staged",
     }
     qpath = _stage_entry(entry)
     ledger_res = _post_ledger(entry)
@@ -330,10 +378,66 @@ def bot_exec(body: ExecBody = Body(...)) -> Dict[str, Any]:
         "who": body.who,
         "ts": _now(),
         "dry_run": True if body.dry_run is None else bool(body.dry_run),
+        "status": "staged",
     }
     qpath = _stage_entry(entry)
     ledger_res = _post_ledger(entry)
     return {"queued": True, "ledger": ledger_res, "node": NODE_URL, "path": str(qpath)}
+
+# ---- Actions Review (read-only): newest-first listing with filters ----------
+@app.get("/bot/actions", response_model=ActionsResponse, dependencies=[Depends(verify_hmac)])
+def bot_actions(
+    limit: int = Query(50, ge=1, le=500),
+    action: Optional[str] = Query(None, description="Exact action filter"),
+    since: Optional[str] = Query(None, description="ISO8601 (e.g., 2025-10-31T12:00:00Z)"),
+    status: Optional[str] = Query(None, description="status filter, e.g. 'staged'"),
+) -> ActionsResponse:
+    # Read extra to allow filtering, then apply filters and cut to limit.
+    items = _read_queue_items(limit * 5)
+    # parse since (UTC)
+    dt_cut = None
+    if since:
+        try:
+            dt_cut = datetime.fromisoformat(since.replace("Z", "+00:00")).astimezone(timezone.utc)
+        except Exception:
+            dt_cut = None
+
+    out: List[QueueItem] = []
+    for it in items:
+        # normalize missing fields
+        act = it.get("action")
+        st  = it.get("status", "staged")
+        ts  = it.get("timestamp") or it.get("ts")  # accept either
+        if not ts:
+            # skip un-timestamped items
+            continue
+
+        if action and act != action:
+            continue
+        if status and st != status:
+            continue
+        if dt_cut:
+            try:
+                t = datetime.fromisoformat(str(ts).replace("Z", "+00:00")).astimezone(timezone.utc)
+                if t < dt_cut:
+                    continue
+            except Exception:
+                # if timestamp can't be parsed, skip it for since-filter
+                continue
+
+        # map to QueueItem fields
+        out.append(QueueItem(
+            timestamp=str(ts),
+            action=str(act or ""),
+            params=it.get("params") or {},
+            status=str(st or "staged"),
+            who=it.get("who"),
+            kind=it.get("kind", "bot_action"),
+        ))
+        if len(out) >= limit:
+            break
+
+    return ActionsResponse(items=out, count=len(out), next_cursor=None)
 
 # ---- Diagnostic endpoint: try all shapes and return their statuses (HMAC-protected) ----
 @app.post("/bot/_diag/ledger-shapes", dependencies=[Depends(verify_hmac)])
@@ -348,6 +452,7 @@ def bot_diag_ledger_shapes(sample: Dict[str, Any] = Body(default=None)) -> Dict[
         "params": {"incident_id": "diag-123", "tldr": "diag"},
         "who": "diag",
         "ts": _now(),
+        "status": "staged",
     }
     url = f"{NODE_URL.rstrip('/')}/evidence/append"
     headers = _node_hmac_headers()
@@ -370,6 +475,30 @@ def bot_diag_ledger_shapes(sample: Dict[str, Any] = Body(default=None)) -> Dict[
         except Exception as e:
             results.append({"shape": name, "status": None, "ok": False, "error": f"{type(e).__name__}: {e}"})
     return {"node": NODE_URL, "results": results}
+
+# ---- Diagnostic endpoint: append sample queue items (HMAC-protected) ----
+@app.post("/bot/_diag/queue-append-sample", dependencies=[Depends(verify_hmac)])
+def bot_diag_queue_append_sample() -> Dict[str, Any]:
+    """
+    Append a couple of canned items to the queue for quick testing.
+    Enable with BOT_ENABLE_DIAG=1 (or true/yes/on).
+    """
+    if str(os.getenv("BOT_ENABLE_DIAG", "0")).strip().lower() not in ("1", "true", "yes", "on"):
+        raise HTTPException(status_code=403, detail="diag disabled")
+    ts = _now()
+    entries = [
+        {
+            "kind": "bot_action", "action": "block_ip",
+            "params": {"ip": "203.0.113.10"}, "who": "diag", "ts": ts, "timestamp": ts, "status": "staged",
+        },
+        {
+            "kind": "bot_action", "action": "disable_user",
+            "params": {"user": "alice"}, "who": "diag", "ts": ts, "timestamp": ts, "status": "staged",
+        },
+    ]
+    for e in entries:
+        _stage_entry(e)
+    return {"ok": True, "added": len(entries), "path": str(_effective_queue_path())}
 
 def cli():
   # Guard: if the project forgot to set BOT_SHARED_SECRET, fail loudly.

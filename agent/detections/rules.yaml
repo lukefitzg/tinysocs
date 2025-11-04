@@ -22,6 +22,19 @@
   tuning_envvars:
     - AUTH_FAIL_THRESHOLD
 
+# NEW: aggregation-first rule used by the harness
+- id: script_block_volume
+  description: PowerShell Script Block volume per host (4104)
+  index: "winlogbeat-*"
+  time_field: "@timestamp"
+  kql: >
+    (event.code:4104 OR winlog.event_id:4104)
+    AND (winlog.channel:"Microsoft-Windows-PowerShell/Operational" OR channel:"Microsoft-Windows-PowerShell/Operational")
+  group_by: ["host.name"]
+  threshold: 10
+  severity: medium
+  category: powershell
+
 - id: sysmon_proc_creation
   description: Sysmon process creation events (ID 1)
   index: "winlogbeat-*"
@@ -313,8 +326,7 @@
     AND (
       process.name:("rundll32.exe" "regsvr32.exe" "mshta.exe" "certutil.exe" "powershell.exe" "wmic.exe" "pwsh.exe")
       OR process.executable:(*\\rundll32.exe *\\regsvr32.exe *\\mshta.exe *\\certutil.exe *\\powershell.exe *\\wmic.exe *\\pwsh.exe)
-      OR winlog.event_data.NewProcessName:(*\\rundll32.exe *\\regsvr32.exe *\\mshta.exe *\\certutil.exe *\\powershell.exe *\\wmic.exe *\\pwsh.exe)
-    )
+      OR winlog.event_data.NewProcessName:(*\\rundll32.exe *\\regsvr32.exe *\\mshta.exe *\\certutil.exe *\\powershell.exe *\\wmic.exe *\\pwsh.exe)    )
   group_by: ["host.name","user.name"]
   threshold: 2
   severity: medium

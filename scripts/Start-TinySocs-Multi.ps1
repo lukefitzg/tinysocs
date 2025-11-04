@@ -114,7 +114,7 @@ function Test-NodeReady {
 }
 
 function Wait-NodeReady {
-  param([string]$BaseUrl,[int]$Retries=40)
+  param([string]$BaseUrl,[int]$Retries=120) # 120 * 250ms ~ 30s
   for ($i=0; $i -lt $Retries; $i++) {
     if (Test-NodeReady -BaseUrl $BaseUrl) { return }
     Start-Sleep -Milliseconds 250
@@ -139,6 +139,7 @@ try {
   $procs += Start-Proc -Name "bot-$botPort" -Cmd "python -m tinysocs.api.bot" -EnvOverride @{
     "BOT_PORT"            = "$botPort"
     "TINYSOCS_QUEUE_PATH" = "$queuePath"
+    "BOT_SHARED_SECRET"   = $Env:MASTER_SHARED_SECRET   # ensure bot starts
   }
   Start-Sleep -Milliseconds 600
 
@@ -166,8 +167,14 @@ try {
   # Master one-shot
   $Env:TINYSOCS_NODES = "http://127.0.0.1:$node1Port,http://127.0.0.1:$node2Port"
   $Env:MASTER_DEADLINE_SEC = "$DeadlineSec"
+
+  # Choose flat vs namespaced module to avoid import clashes
+  $masterModule = "tinysocs.orchestrator.master"
+  if (Test-Path (Join-Path $repo "orchestrator\master.py")) { $masterModule = "orchestrator.master" }
+
   Write-Host ""
   Write-Host "Running Master once:" -ForegroundColor Cyan
+  Write-Host "  Module:    $masterModule"
   Write-Host "  Nodes:     $Env:TINYSOCS_NODES"
   Write-Host "  Rules:     $Rules"
   Write-Host "  Window:    $Window"
@@ -175,7 +182,7 @@ try {
   Write-Host ""
 
   $masterArgs = @("--rules", $Rules, "--window", $Window, "--deadline", $DeadlineSec)
-  python -m tinysocs.orchestrator.master @masterArgs
+  python -m $masterModule @masterArgs
   $masterExit = $LASTEXITCODE
 
   # ---- Doctor (robust locator) --------------------------------------------

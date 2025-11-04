@@ -480,6 +480,17 @@ def bot_diag_ledger_shapes(sample: Dict[str, Any] = Body(default=None)) -> Dict[
             results.append({"shape": name, "status": None, "ok": False, "error": f"{type(e).__name__}: {e}"})
     return {"node": NODE_URL, "results": results}
 
+# ---- Diagnostic endpoint: append /meta for health checks ----
+@app.get("/meta", dependencies=[Depends(verify_hmac)])
+def meta():
+    from datetime import datetime, timezone
+    return {
+        "bot_id": os.getenv("BOT_ID", f"bot-{PORT}"),
+        "queue": str(_effective_queue_path()),
+        "capabilities": ["exec-staging","actions-review"],
+        "time_utc": datetime.now(timezone.utc).isoformat()
+    }
+
 # ---- Diagnostic endpoint: append sample queue items (HMAC-protected) ----
 @app.post("/bot/_diag/queue-append-sample", dependencies=[Depends(verify_hmac)])
 def bot_diag_queue_append_sample() -> Dict[str, Any]:

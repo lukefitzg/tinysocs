@@ -7,6 +7,29 @@ __pycache__/
 .env
 *.log
 
+# —— TinySocs build artifacts ——
+/build/
+/dist/
+/artifacts/build/
+/artifacts/dist/
+/dist/**/*
+/artifacts/dist/**/*
+
+# Python caches / venv
+__pycache__/
+*.py[cod]
+*.pyd
+.venv/
+.env
+.env.*.local
+!.env.example
+
+# Logs & scratch
+*.log
+
+# VS Code (optional)
+.vscode/
+
 # OS cruft
 .DS_Store
 Thumbs.db

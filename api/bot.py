@@ -237,15 +237,19 @@ def _now() -> str:
 def _node_hmac_headers() -> Dict[str, str]:
     """
     Bot -> node ledger append uses timestamp-only HMAC (node accepts ts).
+    If TINYSOCS_SIG_PREFIX is truthy, emit 'sha256=<hex>' form.
     """
     ts = str(int(time.time()))
-    sig = hmac.new(NODE_SECRET.encode("utf-8"), ts.encode("utf-8"), hashlib.sha256).hexdigest()
+    sig_hex = hmac.new(NODE_SECRET.encode("utf-8"), ts.encode("utf-8"), hashlib.sha256).hexdigest()
+    pref = str(os.getenv("TINYSOCS_SIG_PREFIX", "1")).strip().lower()
+    signature = f"sha256={sig_hex}" if pref in ("1", "true", "yes", "on") else sig_hex
     return {
         "X-TinySOCS-Timestamp": ts,
-        "X-TinySOCS-Signature": sig,
+        "X-TinySOCS-Signature": signature,
         "User-Agent": "tinysocs/bot",
         "Content-Type": "application/json",
     }
+
 
 def _ledger_attempts(entry: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
     """
@@ -501,12 +505,23 @@ def bot_diag_queue_append_sample() -> Dict[str, Any]:
     return {"ok": True, "added": len(entries), "path": str(_effective_queue_path())}
 
 def cli():
-  # Guard: if the project forgot to set BOT_SHARED_SECRET, fail loudly.
-  if not BOT_SECRET:
-      raise SystemExit("BOT_SHARED_SECRET must be set (see .env).")
-  port = int(os.getenv("BOT_PORT", "8090"))
-  workers = int(os.getenv("TINYSOCS_BOT_WORKERS", "1"))
-  uvicorn.run(app, host="0.0.0.0", port=port, reload=False, workers=workers)
+    # Guard: if the project forgot to set BOT_SHARED_SECRET, fail loudly.
+    if not BOT_SECRET:
+        raise SystemExit("BOT_SHARED_SECRET must be set (see .env).")
+    port = int(os.getenv("BOT_PORT", "8090"))
+    workers = int(os.getenv("TINYSOCS_BOT_WORKERS", "1"))
+    loglvl = os.getenv("UVICORN_LOG_LEVEL", "info")
+    # Use import-string to avoid spawn/pickle issues in frozen builds
+    uvicorn.run(
+        APP_IMPORT,
+        host="0.0.0.0",
+        port=port,
+        reload=False,
+        workers=workers,
+        log_level=loglvl,
+    )
+
+APP_IMPORT = "tinysocs.api.bot:app"
 
 if __name__ == "__main__":
     cli()

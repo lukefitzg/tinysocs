@@ -14,8 +14,8 @@ Endpoints:
 Auth (HMAC v1):
   X-TinySOCS-Timestamp: unix seconds
   X-TinySOCS-Signature: sha256=<HMAC_SHA256(NODE_SECRET, timestamp)>
-  - Allowed skew: ±300s
-  - 5-minute replay cache on the exact timestamp value
+  - Allowed skew: ±300s (overridable)
+  - 5-minute replay cache on the exact timestamp/nonce
 
 Backends:
   - Uses your adapters via `make_client()` and your `agent/detections/rules.yaml`.
@@ -24,6 +24,7 @@ Backends:
 
 from __future__ import annotations
 
+# ---------- .env (best-effort) ----------
 try:
     from dotenv import load_dotenv
     load_dotenv(override=False)   # picks up .env if present; shell vars still win
@@ -40,17 +41,40 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import uvicorn
 import yaml
+import sys
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from tinysocs.agent.adapters.select import make_client
-from tinysocs.agent.detections.engine import _rules_path as rules_path_resolver
+# ---------- adapters: select client with fallbacks ----------
+try:
+    from tinysocs.agent.adapters.select import make_client
+except Exception:
+    try:
+        from agent.adapters.select import make_client  # flat tree (frozen)
+    except Exception:
+        # last-ditch: build an OpenSearch client directly
+        try:
+            from tinysocs.agent.adapters.opensearch_client import OpenSearchClient as _OSC
+        except Exception:
+            from agent.adapters.opensearch_client import OpenSearchClient as _OSC  # type: ignore
+        def make_client():
+            return _OSC()
+
+# ---------- rules path resolver (optional import; provide fallback) ----------
+try:
+    from tinysocs.agent.detections.engine import _rules_path as _rules_path_resolver  # type: ignore
+    rules_path_resolver = _rules_path_resolver  # expose under expected name
+except Exception:
+    def rules_path_resolver(*parts: str) -> Path:
+        # Fallback: relative to repo-ish root (two parents up: <repo>/tinysocs/api/node.py)
+        return Path(__file__).resolve().parents[1] / Path(*parts)
+
 from tinysocs.agent.models.evidence import DetectionEvidence, EvidenceExemplar
 
 # ----------- Limits / caps -----------
-ALLOWED_SKEW_SECONDS = 300             # ±5 minutes
+ALLOWED_SKEW_SECONDS = 300             # default ±5 minutes if no env override
 REPLAY_CACHE_SECONDS = 300             # reject re-use of the same timestamp for 5 minutes
 
 # Hard caps for API behavior
@@ -101,13 +125,13 @@ try:
 except Exception:
     LEDGER_AVAILABLE = False
 
-# ---------- Simple replay cache (timestamp -> expires_at_epoch) ----------
-_recent_timestamps: Dict[int, int] = {}
+# ---------- Simple replay cache (timestamp/nonce -> expires_at_epoch) ----------
+_recent_timestamps: Dict[str, int] = {}
 
 def _replay_cache_gc(now: int) -> None:
-    stale = [ts for ts, exp in _recent_timestamps.items() if exp <= now]
-    for ts in stale:
-        _recent_timestamps.pop(ts, None)
+    stale = [k for k, exp in _recent_timestamps.items() if exp <= now]
+    for k in stale:
+        _recent_timestamps.pop(k, None)
 
 # ---------- Auth ----------
 def verify_hmac(request: Request) -> None:
@@ -123,8 +147,10 @@ def verify_hmac(request: Request) -> None:
         ts = int(ts_hdr)
     except Exception:
         raise HTTPException(status_code=400, detail="Bad timestamp")
+
     now = int(time.time())
-    max_skew = int(os.getenv("ALLOWED_SKEW_SEC", "300") or "300")
+    # unify env knobs: prefer TINYSOCS_SKEW_SECS, fall back to ALLOWED_SKEW_SEC, else default
+    max_skew = int(os.getenv("TINYSOCS_SKEW_SECS", os.getenv("ALLOWED_SKEW_SEC", str(ALLOWED_SKEW_SECONDS))) or str(ALLOWED_SKEW_SECONDS))
     if abs(now - ts) > max_skew:
         raise HTTPException(status_code=401, detail="Clock skew")
 
@@ -150,7 +176,7 @@ def verify_hmac(request: Request) -> None:
     if not ok:
         raise HTTPException(status_code=401, detail="Bad signature")
 
-    # Replay protection: key by "ts:nonce" when nonce exists; otherwise "ts"
+    # Replay protection: key by exact signed message (ts[:|.]nonce or ts)
     _replay_cache_gc(now)
     key = f"{ts}:{nonce}" if nonce else str(ts)
     if _recent_timestamps.get(key, 0) > now:
@@ -159,50 +185,186 @@ def verify_hmac(request: Request) -> None:
 
 # ---------- Rule path + loading (robust) ----------
 def _guess_rules_path() -> Optional[Path]:
+    """
+    Try several locations to find rules.yaml in source layouts.
+    Priority:
+      1) TINYSOCS_RULES_PATH env
+      2) resolver from detections.engine if available
+      3) <repo>/agent/detections/rules.yaml
+      4) <repo>/tinysocs/agent/detections/rules.yaml
+      5) rglob under repo for */agent/detections/rules.yaml
+    """
     env_path = os.getenv("TINYSOCS_RULES_PATH")
     if env_path:
         p = Path(env_path).expanduser()
         if p.is_file():
             return p
 
+    # engine resolver, if present
     try:
-        p = Path(rules_path_resolver("detections/rules.yaml"))
+        p = Path(rules_path_resolver("agent", "detections", "rules.yaml"))
         if p.is_file():
             return p
     except Exception:
         pass
 
-    try:
-        p = Path(rules_path_resolver("agent/detections/rules.yaml"))
-        if p.is_file():
-            return p
-    except Exception:
-        pass
-
+    # repo candidates relative to this file
     repo_root = Path(__file__).resolve().parents[1]  # <repo>/tinysocs
-    direct_candidates = [
-        repo_root / "agent" / "detections" / "rules.yaml",
-        repo_root / "detections" / "rules.yaml",
+    candidates = [
+        repo_root.parent / "agent" / "detections" / "rules.yaml",             # <repo>/agent/...
+        repo_root / "agent" / "detections" / "rules.yaml",                    # <repo>/tinysocs/agent/...
     ]
-    for p in direct_candidates:
+    for p in candidates:
         if p.is_file():
             return p
 
-    for p in repo_root.rglob("rules.yaml"):
-        lower = str(p.as_posix()).lower()
-        if "/agent/detections/" in lower or "\\agent\\detections\\" in str(p):
-            return p
+    # deep search with guard
+    try:
+        for p in repo_root.parent.rglob("rules.yaml"):
+            lower = str(p.as_posix()).lower()
+            if "/agent/detections/" in lower or "\\agent\\detections\\" in str(p):
+                return p
+    except Exception:
+        pass
+
+    return None
+
+def _packaged_rules_path() -> Optional[Path]:
+    """
+    Locate rules.yaml when running from a PyInstaller onedir or frozen build.
+    We check a few likely spots relative to this module, the onedir root, and CWD.
+    """
+    bases: List[Path] = []
+    try:
+        # api/node.py is at <onedir>/<something>/api/node.py → parent(1) likely onedir root
+        bases.append(Path(__file__).resolve().parents[1])
+    except Exception:
+        pass
+    bases.append(Path.cwd())
+    exe_dir = os.getenv("PYINSTALLER_EXEDIR")
+    if exe_dir:
+        try:
+            bases.append(Path(exe_dir))
+        except Exception:
+            pass
+
+    rels = [
+        Path("tinysocs") / "agent" / "detections" / "rules.yaml",
+        Path("agent") / "detections" / "rules.yaml",
+    ]
+    for base in bases:
+        for rel in rels:
+            p = (base / rel)
+            if p.is_file():
+                return p
+    return None
+
+def _guess_rules_path() -> Optional[str]:
+    """
+    Resolve agent/detections/rules.yaml from:
+      1) TINYSOCS_RULES_PATH (env override)
+      2) engine resolver (_rules_path from detections.engine)
+      3) PyInstaller locations (onefile/onedir) and common repo layouts
+    """
+    # 1) explicit override
+    p = os.getenv("TINYSOCS_RULES_PATH")
+    if p and os.path.isfile(p):
+        return p
+
+    # 2) packaged engine helper
+    try:
+        rp = rules_path_resolver()
+        if rp and os.path.isfile(rp):
+            return rp
+    except Exception:
+        pass
+
+    # 3) common bundle/repo locations
+    bases: List[Path] = []
+    meipass = getattr(sys, "_MEIPASS", None)  # PyInstaller onefile
+    if meipass:
+        bases.append(Path(meipass))
+    # onedir/exe folder
+    bases.append(Path(sys.executable).resolve().parent)
+    # current working dir
+    bases.append(Path.cwd())
+    # this file’s parent (…/api)
+    bases.append(Path(__file__).resolve().parent)
+    # repo-ish roots
+    bases.append(Path(__file__).resolve().parent.parent)  # …/ (api/..)
+
+    candidates: List[Path] = []
+    for b in bases:
+        candidates.extend([
+            b / "tinysocs" / "agent" / "detections" / "rules.yaml",  # packaged datas
+            b / "agent"    / "detections" / "rules.yaml",            # flat tree
+        ])
+
+    for c in candidates:
+        try:
+            if c.is_file():
+                return str(c)
+        except Exception:
+            continue
 
     return None
 
 def _load_rules() -> List[Dict[str, Any]]:
-    path = _guess_rules_path()
+    """
+    Load rules.yaml robustly in both source and frozen builds.
+    Order:
+      1) use _guess_rules_path()
+      2) search packaged onedir (tinysocs/agent/detections/rules.yaml, agent/detections/rules.yaml)
+      3) importlib.resources/pkgutil fallback
+    """
+    path: Optional[Path] = None
+
+    # (1) source layout
+    try:
+        path = _guess_rules_path()
+    except Exception:
+        path = None
+
+    # (2) packaged/onedir search
+    if not path:
+        path = _packaged_rules_path()
+
+    # (3) resources/pkgutil fallback
+    if not path:
+        try:
+            import importlib.resources as res
+            for pkg_name in ("tinysocs.agent.detections", "agent.detections"):
+                try:
+                    files = res.files(pkg_name)
+                    cand = files / "rules.yaml"
+                    if cand.name == "rules.yaml":
+                        with res.as_file(cand) as fp:
+                            p = Path(fp)
+                            if p.is_file():
+                                path = p
+                                break
+                except Exception:
+                    # Last resort: pkgutil to a temp file
+                    try:
+                        import pkgutil, tempfile
+                        data = pkgutil.get_data(pkg_name, "rules.yaml")
+                        if data:
+                            tmp = Path(tempfile.gettempdir()) / "tinysocs_rules.yaml"
+                            tmp.write_bytes(data)
+                            path = tmp
+                            break
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
     if not path:
         print(
-            "[node] WARN: could not locate 'agent/detections/rules.yaml' — set TINYSOCS_RULES_PATH to override.",
+            "[node] WARN: could not locate 'agent/detections/rules.yaml' — set TINYSOCS_RULES_PATH or ensure it is bundled.",
             flush=True,
         )
         return []
+
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or []
@@ -250,7 +412,6 @@ def _time_bounds_iso(window: str) -> Tuple[str, str]:
     now = datetime.now(timezone.utc)
     delta = _parse_window(window)
     gte = now - delta
-    # strip microseconds for nicer query_string
     gte_s = gte.replace(microsecond=0).isoformat().replace("+00:00", "Z")
     lte_s = now.replace(microsecond=0).isoformat().replace("+00:00", "Z")
     return gte_s, lte_s
@@ -494,7 +655,7 @@ class LedgerAppendRequest(BaseModel):
     payload: Dict[str, Any]
 
 # ---------- App ----------
-app = FastAPI(title="TinySocs Node API", version="0.5.2")
+app = FastAPI(title="TinySocs Node API", version="0.5.3")
 
 @app.get("/meta")
 async def meta(_: None = Depends(verify_hmac)) -> Dict[str, Any]:

@@ -1,4 +1,4 @@
-# agent/summarizer_adapter.py
+# tinysocs/agent/summarizer_adapter.py
 from __future__ import annotations
 import hashlib, hmac, os, re, json
 from typing import Dict, List, Any

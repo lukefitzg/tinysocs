@@ -231,7 +231,7 @@ def _coerce_incident(obj, findings):
                     {
                         k: v
                         for k, v in f["evidence"].items()
-                        if k in {"ip", "ip_rdns", "user", "count", "host", "process"} and v is not None
+                        if k in {"ip", "ip_rdns", "user", "count", "rule", "host", "process"} and v is not None
                     }
                 )
             if f.get("rule"):

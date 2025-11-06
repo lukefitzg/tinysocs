@@ -76,42 +76,10 @@ except Exception:
         def model_dump(self):
             return dict(self)
 
-# --- best-effort .env loader (tolerant encodings) ---
-def _parse_dotenv_content(s: str) -> None:
-    for raw in s.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, _, v = line.partition("=")  # only first '='
-        k, v = k.strip(), v.strip().strip('"').strip("'")
-        if k and (k not in os.environ):
-            os.environ[k] = v
-
-def _read_text_permissive(p: Path) -> str:
-    for enc in ("utf-8", "utf-8-sig", "cp1252", "latin-1"):
-        try:
-            return p.read_text(encoding=enc)
-        except UnicodeDecodeError:
-            continue
-    return p.read_bytes().decode("utf-8", errors="ignore")
-
-def _load_dotenv_inplace():
-    here = Path(__file__).resolve()
-    candidates = [
-        here.parents[2] / ".env",  # <repo>/.env
-        here.parents[1] / ".env",  # <repo>/tinysocs/.env
-        Path.cwd() / ".env",
-    ]
-    for p in candidates:
-        if p.is_file():
-            try:
-                content = _read_text_permissive(p)
-                _parse_dotenv_content(content)
-            except Exception as e:
-                print(f"[master] WARN: failed to load {p.name}: {e}")
-            break
-
-_load_dotenv_inplace()
+# --- centralized .env loader (replaces ad-hoc loader) ---
+from pathlib import Path
+from tinysocs.env import load_dotenv_if_present
+load_dotenv_if_present(Path(__file__).resolve().parents[1])
 # ------------------------------------------------
 
 # ---------------- Env helpers ----------------

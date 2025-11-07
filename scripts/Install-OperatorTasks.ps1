@@ -1,16 +1,22 @@
 param(
   [string]$RepoRoot = (Resolve-Path "$PSScriptRoot\..").Path,
   [int]$RotateEveryMinutes = 60,
-  [string]$VerifyAt = "02:15"  # HH:mm 24h
+  [string]$VerifyAt = "02:15",   # HH:mm 24h
+  [int]$MasterEveryMinutes = 15  # heartbeat interval for master
 )
 
 $ErrorActionPreference = 'Stop'
 Set-Location $RepoRoot
 
+# Script paths
 $rotate = Join-Path $RepoRoot "scripts\Rotate-Queues.ps1"
 $verify = Join-Path $RepoRoot "scripts\Nightly-VerifyLedger.ps1"
-if (-not (Test-Path $rotate)) { throw "Missing $rotate" }
-if (-not (Test-Path $verify)) { throw "Missing $verify" }
+$runMaster = Join-Path $RepoRoot "scripts\Run-Master.ps1"
+
+# Sanity checks
+foreach ($p in @($rotate,$verify,$runMaster)) {
+  if (-not (Test-Path $p)) { throw "Missing $p" }
+}
 
 function New-PSAction([string]$ScriptPath){
   $args = "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`""
@@ -37,51 +43,67 @@ try {
   $principal = New-ScheduledTaskPrincipal -UserId $who -LogonType Interactive
 }
 
-# Task 1: Rotate-Queues every N minutes
+# Settings (common)
+$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -Compatibility Win8
+
+# --- Task 1: Rotate-Queues every N minutes ---
 $start = (Get-Date).AddMinutes(1)
 $rotTrigger = New-ScheduledTaskTrigger -Once -At $start `
   -RepetitionInterval (New-TimeSpan -Minutes $RotateEveryMinutes) `
   -RepetitionDuration (New-TimeSpan -Days 3650)
 $rotAction  = New-PSAction $rotate
-$rotTask = New-ScheduledTask -Action $rotAction -Trigger $rotTrigger -Principal $principal `
-  -Settings (New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -Compatibility Win8)
+$rotTask = New-ScheduledTask -Action $rotAction -Trigger $rotTrigger -Principal $principal -Settings $settings
 try { Unregister-ScheduledTask -TaskName "TinySocs-RotateQueues" -Confirm:$false -ErrorAction SilentlyContinue } catch {}
-
 $rotOk = $true
 try {
   Register-ScheduledTask -TaskName "TinySocs-RotateQueues" -InputObject $rotTask | Out-Null
 } catch {
   $rotOk = $false
 }
-
 if (-not $rotOk) {
   Write-Warning "Register-ScheduledTask denied for RotateQueues; attempting schtasks.exe fallback."
   schtasks /Create /TN "TinySocs-RotateQueues" /SC MINUTE /MO $RotateEveryMinutes /F /TR `
     "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$rotate`""
 }
+Write-Host "Installed (or attempted) RotateQueues (every $RotateEveryMinutes min, starts $($start.ToString('HH:mm')))"
 
-Write-Host "Installed (or attempted) RotateQueues (every $RotateEveryMinutes min, starts $($start.ToString('HH:mm'))) "
-
-# Task 2: Nightly verify
+# --- Task 2: Nightly Verify Ledger ---
 $hh,$mm = $VerifyAt.Split(':')
 $verifyTime = (Get-Date).Date.AddHours([int]$hh).AddMinutes([int]$mm)
 $verTrigger = New-ScheduledTaskTrigger -Daily -At $verifyTime
 $verAction  = New-PSAction $verify
-$verTask = New-ScheduledTask -Action $verAction -Trigger $verTrigger -Principal $principal `
-  -Settings (New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -Compatibility Win8)
+$verTask = New-ScheduledTask -Action $verAction -Trigger $verTrigger -Principal $principal -Settings $settings
 try { Unregister-ScheduledTask -TaskName "TinySocs-NightlyVerifyLedger" -Confirm:$false -ErrorAction SilentlyContinue } catch {}
-
 $verOk = $true
 try {
   Register-ScheduledTask -TaskName "TinySocs-NightlyVerifyLedger" -InputObject $verTask | Out-Null
 } catch {
   $verOk = $false
 }
-
 if (-not $verOk) {
   Write-Warning "Register-ScheduledTask denied for NightlyVerify; attempting schtasks.exe fallback."
   schtasks /Create /TN "TinySocs-NightlyVerifyLedger" /SC DAILY /ST $VerifyAt /F /TR `
     "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$verify`""
 }
-
 Write-Host "Installed (or attempted) NightlyVerify (@ $VerifyAt)"
+
+# --- Task 3: Master Heartbeat (Phase 6: scheduled fan-out) ---
+$hbStart = (Get-Date).AddMinutes(2)
+$hbTrigger = New-ScheduledTaskTrigger -Once -At $hbStart `
+  -RepetitionInterval (New-TimeSpan -Minutes $MasterEveryMinutes) `
+  -RepetitionDuration (New-TimeSpan -Days 3650)
+$hbAction = New-PSAction $runMaster
+$hbTask = New-ScheduledTask -Action $hbAction -Trigger $hbTrigger -Principal $principal -Settings $settings
+try { Unregister-ScheduledTask -TaskName "TinySocs-MasterHeartbeat" -Confirm:$false -ErrorAction SilentlyContinue } catch {}
+$hbOk = $true
+try {
+  Register-ScheduledTask -TaskName "TinySocs-MasterHeartbeat" -InputObject $hbTask | Out-Null
+} catch {
+  $hbOk = $false
+}
+if (-not $hbOk) {
+  Write-Warning "Register-ScheduledTask denied for MasterHeartbeat; attempting schtasks.exe fallback."
+  schtasks /Create /TN "TinySocs-MasterHeartbeat" /SC MINUTE /MO $MasterEveryMinutes /F /TR `
+    "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$runMaster`""
+}
+Write-Host "Installed (or attempted) MasterHeartbeat (every $MasterEveryMinutes min, starts $($hbStart.ToString('HH:mm')))"

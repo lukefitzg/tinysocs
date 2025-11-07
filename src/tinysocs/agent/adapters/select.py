@@ -1,6 +1,6 @@
-# tinysocs/agent/adapters/select.py
+﻿# tinysocs/agent/adapters/select.py
 """
-Adapter selector for TinySocs — Golden config (OpenSearch-only).
+Adapter selector for TinySocs â€” Golden config (OpenSearch-only).
 
 We hard-select the OpenSearch client to avoid accidental drift or
 undeclared dependencies. If Elasticsearch support returns in future,
@@ -11,7 +11,7 @@ try:
     from .opensearch_client import OpenSearchClient  # namespace/regular package relative
 except Exception:
     try:
-        from agent.adapters.opensearch_client import OpenSearchClient  # flat tree
+        from tinysocs.agent.adapters.opensearch_client import OpenSearchClient  # flat tree
     except Exception:
         from tinysocs.agent.adapters.opensearch_client import OpenSearchClient  # shimmed
 

@@ -1,4 +1,4 @@
-# tinysocs/agent/models/evidence.py
+﻿# tinysocs/agent/models/evidence.py
 """
 TinySocs Evidence Models (Pydantic)
 

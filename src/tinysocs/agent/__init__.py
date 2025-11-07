@@ -1,8 +1,9 @@
-﻿import sys, importlib as _il
-_pkg = __name__
+﻿# tinysocs/agent/__init__.py
+# Allow both `tinysocs.agent.*` and flat `agent.*`
+import sys, importlib as _il
 try:
-    pkg = _il.import_module("agent")
-    sys.modules[_pkg] = pkg
+    m = _il.import_module("agent")
+    sys.modules[__name__] = m
 except Exception:
     pass
-del _il, _pkg
+del _il

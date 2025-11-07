@@ -1,4 +1,4 @@
-# tinysocs/agent/privacy.py
+﻿# tinysocs/agent/privacy.py
 from __future__ import annotations
 import re
 from typing import Any, Dict, Iterable, List, Set

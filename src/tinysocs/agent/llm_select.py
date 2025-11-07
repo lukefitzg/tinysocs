@@ -32,7 +32,7 @@ def _import_summarizers():
         openai_fn = _s_openai
     except Exception:
         try:
-            from agent.llm_openai_tools import summarize_findings as _s_openai
+            from tinysocs.agent.llm_openai_tools import summarize_findings as _s_openai
             openai_fn = _s_openai
         except Exception:
             openai_fn = None
@@ -43,7 +43,7 @@ def _import_summarizers():
         ollama_fn = _s_ollama
     except Exception:
         try:
-            from agent.llm_ollama import summarize_findings as _s_ollama
+            from tinysocs.agent.llm_ollama import summarize_findings as _s_ollama
             ollama_fn = _s_ollama
         except Exception:
             ollama_fn = None

@@ -1,4 +1,4 @@
-# actions_queue.py
+﻿# actions_queue.py
 """
 TinySocs local action staging queue.
 Stores candidate response actions (dry-run only).

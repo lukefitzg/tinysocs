@@ -1,4 +1,4 @@
-# tinysocs/agent/detections/engine.py
+﻿# tinysocs/agent/detections/engine.py
 from __future__ import annotations
 
 import os
@@ -76,7 +76,7 @@ def _short_sample(hits: List[Dict[str, Any]], limit: int = 10) -> List[Dict[str,
             or "-"
         )
         if isinstance(cmd, str) and len(cmd) > 140:
-            cmd = cmd[:140] + "…"
+            cmd = cmd[:140] + "â€¦"
         out.append({"@timestamp": ts, "process": proc, "cmd": cmd})
     return out
 

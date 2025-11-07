@@ -1,4 +1,4 @@
-# tinysocs/agent/tools.py
+﻿# tinysocs/agent/tools.py
 from __future__ import annotations
 
 import os
@@ -41,7 +41,7 @@ def search_kql(
     source: bool | None = None,
 ) -> Dict[str, Any]:
     """
-    Run a simple KQL-like query. Never raises — returns a structured error on failure.
+    Run a simple KQL-like query. Never raises â€” returns a structured error on failure.
     Accepts optional pass-through args (track_total_hits/source) for adapter parity.
     """
     c = _client_or_make()
@@ -95,7 +95,7 @@ def search_kql(
 
 def aggregate(index: str, dsl: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Run a raw DSL aggregation. Never raises — returns structured error on failure.
+    Run a raw DSL aggregation. Never raises â€” returns structured error on failure.
     """
     c = _client_or_make()
     try:

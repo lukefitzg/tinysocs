@@ -1,4 +1,4 @@
-# tinysocs/agent/summarizer_adapter.py
+﻿# tinysocs/agent/summarizer_adapter.py
 from __future__ import annotations
 import hashlib, hmac, os, re, json
 from typing import Dict, List, Any
@@ -35,7 +35,7 @@ def _truncate_cmd(s: str) -> str:
     if s is None: 
         return s
     s = s.strip()
-    return (s[:PRIVACY_MAX_CMDLEN] + " …") if len(s) > PRIVACY_MAX_CMDLEN else s
+    return (s[:PRIVACY_MAX_CMDLEN] + " â€¦") if len(s) > PRIVACY_MAX_CMDLEN else s
 
 def _salted_hash(blob: Any, salt: str) -> str:
     try:
@@ -164,7 +164,7 @@ def prepare_payload(evidences: List[Dict[str, Any]], window: str) -> Dict[str, A
             "window": window,
         }
 
-        # Failsafe: if no evidences → insert stub; else ensure summarizer never sees empty
+        # Failsafe: if no evidences â†’ insert stub; else ensure summarizer never sees empty
         if not evidences:
             payload["debug_summary"]["status_hint"] = "No evidences found by adapter."
         else:

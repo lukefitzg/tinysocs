@@ -1,4 +1,4 @@
-# tinysocs/agent/config.py
+﻿# tinysocs/agent/config.py
 from __future__ import annotations
 
 import os
@@ -8,7 +8,7 @@ from pathlib import Path
 from tinysocs.env import load_dotenv_if_present
 load_dotenv_if_present(Path(__file__).resolve())
 
-# Package root (…/tinysocs)
+# Package root (â€¦/tinysocs)
 PKG_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -57,7 +57,7 @@ def load() -> Config:
     actions_queue_path = Path(os.getenv("ACTIONS_QUEUE_PATH", "./data/actions_queue.jsonl")).resolve()
     actions_queue_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Rules file (still overridable) — now anchored to package root
+    # Rules file (still overridable) â€” now anchored to package root
     rules_path = Path(os.getenv(
         "TINYSOCS_RULES",
         str(PKG_ROOT / "agent" / "detections" / "rules.yaml")

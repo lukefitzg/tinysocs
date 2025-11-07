@@ -1,4 +1,4 @@
-# tinysocs/agent/netutil.py
+﻿# tinysocs/agent/netutil.py
 """
 Loopback helper (canonical implementation).
 

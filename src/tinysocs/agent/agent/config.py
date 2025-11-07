@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tinysocs.env import load_dotenv_if_present
+load_dotenv_if_present(Path(__file__).resolve())
 
 # Package root (…/tinysocs)
 PKG_ROOT = Path(__file__).resolve().parents[1]
@@ -45,9 +46,7 @@ def _prod_guard(cfg: Config, env_mode: str) -> None:
 
 
 def load() -> Config:
-    # Load .env from repo root if present (without overwriting real env)
-    repo_root = Path(__file__).resolve().parents[2]  # <repo>
-    load_dotenv_if_present(repo_root)
+    load_dotenv_if_present(Path(__file__).resolve())
 
     siem_url = os.getenv("SIEM_URL", "https://localhost:9201")
     siem_user = os.getenv("SIEM_USER", "admin")

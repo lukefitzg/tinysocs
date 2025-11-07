@@ -1,22 +1,5 @@
 # Python
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-.venv/
-.env
-*.log
-
-# —— TinySocs build artifacts ——
-/build/
-/dist/
-/artifacts/build/
-/artifacts/dist/
-/dist/**/*
-/artifacts/dist/**/*
-
-# Python caches / venv
-__pycache__/
 *.py[cod]
 *.pyd
 .venv/
@@ -26,8 +9,31 @@ __pycache__/
 
 # Logs & scratch
 *.log
+/logs/
+/data/*.jsonl
+/actions_queue.jsonl
+/tinysocs/actions_queue.jsonl
 
-# VS Code (optional)
+# —— TinySocs build artifacts ——
+/build/
+/dist/
+/artifacts/build/
+/artifacts/dist/
+/artifacts/support/
+/*.spec
+
+# PyInstaller & other bundles
+/dist/**/*
+/artifacts/dist/**/*
+
+# Test/Tool caches
+/.pytest_cache/
+/.mypy_cache/
+/.ruff_cache/
+/coverage.xml
+/.coverage
+
+# Editors
 .vscode/
 
 # OS cruft
@@ -43,11 +49,5 @@ sysmon-bin/
 !integrations/
 !integrations/**
 
-
-# Vendor binaries (ignored)
-winlogbeat-bin/
-
-# Local logs
-/data/*.jsonl
-/actions_queue.jsonl
-/tinysocs/actions_queue.jsonl
+# Support bundles (generated zips)
+artifacts/support/*.zip

@@ -1,10 +1,14 @@
 # tinysocs/api/bot_actions.py
 from __future__ import annotations
 
-import hmac, hashlib, os
-from typing import Optional, Dict, Any, Literal
-from fastapi import APIRouter, Request, HTTPException, Depends
+import hashlib
+import hmac
+import os
+from typing import Any, Dict, Literal, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
+
 from tinysocs.agent.actions_queue import write_action
 
 router = APIRouter(prefix="/bot", tags=["bot"])

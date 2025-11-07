@@ -1,5 +1,6 @@
 ﻿# agent/llm_select.py
 from __future__ import annotations
+
 import os
 from typing import Any, Dict, List, Optional, Union
 
@@ -15,10 +16,10 @@ try:
     from tinysocs.agent import netutil as _netutil  # packaged
 except Exception:
     try:
-        import tinysocs.netutil as _netutil         # shimmed alias to agent.netutil
+        import tinysocs.netutil as _netutil  # shimmed alias to agent.netutil
     except Exception:
         try:
-            from agent import netutil as _netutil   # flat
+            from agent import netutil as _netutil  # flat
         except Exception:
             _netutil = None  # not strictly required here
 

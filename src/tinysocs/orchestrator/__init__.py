@@ -1,4 +1,6 @@
-import sys, importlib as _il
+﻿import importlib as _il
+import sys
+
 _pkg = __name__
 for _mod in ("master","anchors"):
     try:

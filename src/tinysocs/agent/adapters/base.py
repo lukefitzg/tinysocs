@@ -1,4 +1,5 @@
-﻿from typing import Protocol, Dict, Any, List
+﻿from typing import Any, Dict, List, Protocol
+
 
 class SIEMClient(Protocol):
     def search_kql(self, index: str, kql: str, size: int = 500) -> List[Dict[str, Any]]: ...

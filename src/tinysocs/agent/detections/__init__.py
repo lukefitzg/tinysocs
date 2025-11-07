@@ -1,5 +1,7 @@
 ﻿# Allow both `tinysocs.agent.detections.*` and flat `agent.detections.*`
-import sys, importlib as _il
+import importlib as _il
+import sys
+
 _pkg = __name__
 
 # Alias the flat package into this namespace (if present)

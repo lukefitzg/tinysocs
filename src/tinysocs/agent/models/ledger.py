@@ -1,9 +1,12 @@
 ﻿from __future__ import annotations
-from dataclasses import dataclass, asdict
+
+import hashlib
+import json
+import os
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-import hashlib, json, os
-from typing import Optional, Dict, Any, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 # Resolve and ensure the ledger directory exists
 LEDGER_DIR = Path(os.getenv("TINYSOCS_LEDGER_DIR", "ledger")).resolve()

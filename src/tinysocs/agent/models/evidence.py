@@ -16,15 +16,14 @@ Run tests:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Dict, List, Optional, Any
 import hashlib
 import json
 import sys
 import unittest
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, validator
-
 
 ISO_FMT = "%Y-%m-%dT%H:%M:%S.%fZ"
 
@@ -103,7 +102,7 @@ class DetectionEvidence(BaseModel):
     def compute_hash(self) -> str:
         return self._hash_dict(self._canonical_payload())
 
-    def materialize(self) -> "DetectionEvidence":
+    def materialize(self) -> DetectionEvidence:
         if self.generated_at is None:
             self.generated_at = datetime.now(timezone.utc)
         self.hash = self.compute_hash()

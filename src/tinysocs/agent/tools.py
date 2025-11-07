@@ -9,10 +9,14 @@ from tinysocs.netutil import is_loopback
 
 # Try to import OpenSearch-specific exceptions for nicer error typing; fall back to Exception.
 try:
+    from opensearchpy.exceptions import (
+        ConnectionError as OSConnectionError,
+    )
+    from opensearchpy.exceptions import (
+        ConnectionTimeout as OSConnectionTimeout,
+    )
     from opensearchpy.exceptions import (  # type: ignore
         NotFoundError as OSNotFoundError,
-        ConnectionTimeout as OSConnectionTimeout,
-        ConnectionError as OSConnectionError,
     )
 except Exception:  # opensearch-py may not be installed in some dev flows
     OSNotFoundError = OSConnectionTimeout = OSConnectionError = Exception  # type: ignore

@@ -1,7 +1,12 @@
 ﻿# tinysocs/agent/summarizer_adapter.py
 from __future__ import annotations
-import hashlib, hmac, os, re, json
-from typing import Dict, List, Any
+
+import hashlib
+import hmac
+import json
+import os
+import re
+from typing import Any, Dict, List
 
 # --------- env + defaults ----------
 PRIVACY_MODE = os.getenv("PRIVACY_MODE", "abstract").strip().lower()  # abstract|raw
@@ -32,7 +37,7 @@ def _coarsen_ip(s: str) -> str:
     return _ip_re.sub(_m, s)
 
 def _truncate_cmd(s: str) -> str:
-    if s is None: 
+    if s is None:
         return s
     s = s.strip()
     return (s[:PRIVACY_MAX_CMDLEN] + " â€¦") if len(s) > PRIVACY_MAX_CMDLEN else s

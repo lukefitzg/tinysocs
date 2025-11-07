@@ -1,5 +1,6 @@
 ﻿# agent/report.py
-from typing import Dict, Any, List
+from typing import Any, Dict, List
+
 
 def _lines_if(title: str, items: List[str]) -> List[str]:
     if not items:

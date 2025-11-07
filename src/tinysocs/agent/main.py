@@ -1,16 +1,17 @@
 ﻿# tinysocs/agent/main.py
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
 import os
 import time
+from dataclasses import dataclass
+from pathlib import Path
 
 from dotenv import load_dotenv
+
+from tinysocs.agent.actions_queue import stage_actions
 from tinysocs.agent.detections.engine import run_detections
 from tinysocs.agent.llm_select import summarize as summarize_findings
 from tinysocs.agent.report import to_markdown
-from tinysocs.agent.actions_queue import stage_actions
 
 
 @dataclass(frozen=True)

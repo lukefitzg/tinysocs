@@ -1,13 +1,13 @@
-# tinysocs/orchestrator/anchors.py
+﻿# tinysocs/orchestrator/anchors.py
 #!/usr/bin/env python3
 """
-TinySocs — Anchors index manager (ensure + prune)
+TinySocs â€” Anchors index manager (ensure + prune)
 
 What it does
-  • Ensures alias points to today's daily index: <ALIAS>-YYYY.MM.DD
-  • Creates index with mapping if missing
-  • Prunes old daily indices by age (index-level, fast)
-  • Works with self-signed clusters (SIEM_SSL_VERIFY=false)
+  â€¢ Ensures alias points to today's daily index: <ALIAS>-YYYY.MM.DD
+  â€¢ Creates index with mapping if missing
+  â€¢ Prunes old daily indices by age (index-level, fast)
+  â€¢ Works with self-signed clusters (SIEM_SSL_VERIFY=false)
 
 Env
   TINYSOCS_ANCHORS_ALIAS   Alias/prefix (default: tinysocs_anchors)
@@ -35,6 +35,7 @@ from urllib.parse import urljoin
 import requests
 from requests.auth import HTTPBasicAuth
 
+
 # ---------------- permissive .env loader ----------------
 def _parse_dotenv_content(s: str) -> None:
     for raw in s.splitlines():
@@ -49,7 +50,7 @@ def _parse_dotenv_content(s: str) -> None:
 def _read_text_permissive(path: str) -> str:
     for enc in ("utf-8", "utf-8-sig", "cp1252", "latin-1"):
         try:
-            with open(path, "r", encoding=enc) as f:
+            with open(path, encoding=enc) as f:
                 return f.read()
         except UnicodeDecodeError:
             continue

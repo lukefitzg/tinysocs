@@ -1,8 +1,13 @@
 # node_api.py
-import os, time, hmac, hashlib, json
+import hashlib
+import hmac
+import json
+import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-from fastapi import FastAPI, Request, HTTPException
+
+from fastapi import FastAPI, HTTPException, Request
 
 APP = FastAPI(title="TinySOCS Node API - Ledger")
 LEDGER_DIR = Path(os.getenv("TINYSOCS_LEDGER_DIR", "ledger"))
@@ -44,7 +49,7 @@ def _append_jsonl(entry: dict):
 def _read_head():
     if not HEAD_FILE.exists():
         return {"ok": False, "reason": "empty"}
-    with open(HEAD_FILE, "r", encoding="utf-8") as f:
+    with open(HEAD_FILE, encoding="utf-8") as f:
         return json.load(f)
 
 def _write_head(head):

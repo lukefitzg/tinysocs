@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tinysocs.env import load_dotenv_if_present
+
 load_dotenv_if_present(Path(__file__).resolve())
 
 # Package root (â€¦/tinysocs)

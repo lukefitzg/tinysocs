@@ -44,12 +44,12 @@ import hmac
 import json
 import os
 import random
+import secrets
+import smtplib
 import textwrap
 import time
-import smtplib
-import secrets
-from email.message import EmailMessage
 from datetime import datetime, timezone
+from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse
@@ -58,6 +58,7 @@ import httpx
 import requests
 import yaml  # actions.yaml
 from requests.auth import HTTPBasicAuth
+
 # ------------------------------------------------
 
 # ---------------- Path constants ----------------
@@ -78,7 +79,9 @@ except Exception:
 
 # --- centralized .env loader (replaces ad-hoc loader) ---
 from pathlib import Path
+
 from tinysocs.env import load_dotenv_if_present
+
 load_dotenv_if_present(Path(__file__).resolve().parents[1])
 # ------------------------------------------------
 
@@ -146,9 +149,13 @@ except Exception:
 # ---------------- Privacy adapter + summarizer ----------------
 try:
     from tinysocs.agent.summarizer_adapter import (
-        prepare_payload as _prepare_privacy_payload,
-        annotate_report_header as _annotate_header,
         PRIVACY_MODE as _ADAPTER_PRIVACY_MODE,
+    )
+    from tinysocs.agent.summarizer_adapter import (
+        annotate_report_header as _annotate_header,
+    )
+    from tinysocs.agent.summarizer_adapter import (
+        prepare_payload as _prepare_privacy_payload,
     )
     if _ADAPTER_PRIVACY_MODE:
         PRIVACY_MODE = (_ADAPTER_PRIVACY_MODE or PRIVACY_MODE).strip().lower()
@@ -508,7 +515,7 @@ def _load_actions() -> Dict[str, List[Dict[str, str]]]:
     if not path:
         return {}
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
             return data if isinstance(data, dict) else {}
     except Exception as e:
@@ -604,7 +611,7 @@ def _pack_preview_extras(merged: List[DetectionEvidence], *, max_rules: int = 5,
         rule = d.get("rule") or "unknown"
         if rule == "fleet_total":
             continue
-        count = int((d.get("count") or 0))
+        count = int(d.get("count") or 0)
         rule_totals[rule] = rule_totals.get(rule, 0) + count
         if "summary" in d:
             hosts = _extract_hosts(d["summary"])
@@ -787,7 +794,7 @@ def run_master(rules: str, window: str, host: Optional[str], deadline_sec: float
                         except Exception:
                             continue
                 rule_count = len(norm)
-                items = sum(int((d.get("count") or 0)) for d in norm)
+                items = sum(int(d.get("count") or 0) for d in norm)
                 for d in norm:
                     all_rule_rows.append(
                         DetectionEvidence(

@@ -1,6 +1,10 @@
 ﻿# agent/llm_ollama.py
-import os, json, re, httpx
-from typing import List, Dict, Any
+import json
+import os
+from typing import Any, Dict, List
+
+import httpx
+
 from tinysocs.agent.llm_schema import SCHEMA
 
 OLLAMA_URL = os.getenv("OFFLINE_LLM_URL", "http://localhost:11434")

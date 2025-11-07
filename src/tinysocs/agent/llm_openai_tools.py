@@ -1,19 +1,20 @@
 ﻿# tinysocs/agent/llm_openai_tools.py
 from __future__ import annotations
 
+import json
 import os
 import sys
-import json
-import httpx
-from typing import Any, Dict, List
-from fnmatch import fnmatch
 from datetime import datetime, timezone
+from fnmatch import fnmatch
+from typing import Any, Dict, List
 
+import httpx
+
+from tinysocs.agent.adapters.opensearch_client import OpenSearchClient as OSClient
 from tinysocs.agent.llm_schema import SCHEMA
 from tinysocs.agent.redact import scrub
-from tinysocs.agent.tools import search_kql, aggregate, propose_rule, stage_action
+from tinysocs.agent.tools import aggregate, propose_rule, search_kql, stage_action
 from tinysocs.netutil import is_loopback
-from tinysocs.agent.adapters.opensearch_client import OpenSearchClient as OSClient
 
 API_KEY = os.getenv("OPENAI_API_KEY")
 MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")

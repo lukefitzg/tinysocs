@@ -26,16 +26,18 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
 import json
 import os
 import time
-import hmac
-import hashlib
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 from urllib.parse import urlparse
+
 import requests
 from requests.auth import HTTPBasicAuth
+
 
 # ---------------- Env helpers ----------------
 def _env_bool(name: str, default: bool = False) -> bool:

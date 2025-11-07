@@ -1,5 +1,6 @@
-import os
+﻿import os
 from pathlib import Path
+
 
 def load_dotenv_if_present(repo_root: Path | None = None) -> None:
     """

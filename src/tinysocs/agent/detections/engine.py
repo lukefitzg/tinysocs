@@ -1,9 +1,9 @@
 ﻿# tinysocs/agent/detections/engine.py
 from __future__ import annotations
 
-import os
 import collections
 import ipaddress
+import os
 from typing import Any, Dict, List, Optional
 
 import yaml
@@ -84,7 +84,7 @@ def _short_sample(hits: List[Dict[str, Any]], limit: int = 10) -> List[Dict[str,
 def run_detections(rules_path: Optional[str] = None) -> List[Dict[str, Any]]:
     path = rules_path or _rules_path()
     print(f"[DEBUG] rules path -> {path}")
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         rules = yaml.safe_load(f) or []
 
     findings: List[Dict[str, Any]] = []

@@ -11,7 +11,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Any, Dict, List
 
 # Use unified config so defaults are cross-platform and directory is auto-created.
 from tinysocs.agent.config import load as load_config

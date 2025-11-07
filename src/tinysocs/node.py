@@ -36,12 +36,12 @@ import hmac
 import os
 import time
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import uvicorn
 import yaml
-import sys
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
@@ -61,6 +61,11 @@ except Exception:
             from agent.adapters.opensearch_client import OpenSearchClient as _OSC  # type: ignore
         def make_client():
             return _OSC()
+
+# Lazy, cached client so imports/--help don't require OpenSearch.
+@lru_cache(maxsize=1)
+def get_client():
+    return make_client()
 
 # ---------- rules path resolver (optional import; provide fallback) ----------
 try:
@@ -110,14 +115,16 @@ SIEM_URL = _env("SIEM_URL", "https://localhost:9201")
 RULESET = _env("RULESET", "default")
 CAPABILITIES = ["agg", "sample"]
 
-_client = make_client()
-
 # ---------- Optional ledger imports (tamper-evidence) ----------
 LEDGER_AVAILABLE = True
 try:
     from tinysocs.agent.models.ledger import (
-        append_entry as _ledger_append,
         _read_head as _ledger_read_head,
+    )
+    from tinysocs.agent.models.ledger import (
+        append_entry as _ledger_append,
+    )
+    from tinysocs.agent.models.ledger import (
         verify_chain as _ledger_verify_chain,
     )
     # Advertise capability when present
@@ -259,56 +266,6 @@ def _packaged_rules_path() -> Optional[Path]:
                 return p
     return None
 
-def _guess_rules_path() -> Optional[str]:
-    """
-    Resolve agent/detections/rules.yaml from:
-      1) TINYSOCS_RULES_PATH (env override)
-      2) engine resolver (_rules_path from detections.engine)
-      3) PyInstaller locations (onefile/onedir) and common repo layouts
-    """
-    # 1) explicit override
-    p = os.getenv("TINYSOCS_RULES_PATH")
-    if p and os.path.isfile(p):
-        return p
-
-    # 2) packaged engine helper
-    try:
-        rp = rules_path_resolver()
-        if rp and os.path.isfile(rp):
-            return rp
-    except Exception:
-        pass
-
-    # 3) common bundle/repo locations
-    bases: List[Path] = []
-    meipass = getattr(sys, "_MEIPASS", None)  # PyInstaller onefile
-    if meipass:
-        bases.append(Path(meipass))
-    # onedir/exe folder
-    bases.append(Path(sys.executable).resolve().parent)
-    # current working dir
-    bases.append(Path.cwd())
-    # this file’s parent (…/api)
-    bases.append(Path(__file__).resolve().parent)
-    # repo-ish roots
-    bases.append(Path(__file__).resolve().parent.parent)  # …/ (api/..)
-
-    candidates: List[Path] = []
-    for b in bases:
-        candidates.extend([
-            b / "tinysocs" / "agent" / "detections" / "rules.yaml",  # packaged datas
-            b / "agent"    / "detections" / "rules.yaml",            # flat tree
-        ])
-
-    for c in candidates:
-        try:
-            if c.is_file():
-                return str(c)
-        except Exception:
-            continue
-
-    return None
-
 def _load_rules() -> List[Dict[str, Any]]:
     """
     Load rules.yaml robustly in both source and frozen builds.
@@ -346,7 +303,8 @@ def _load_rules() -> List[Dict[str, Any]]:
                 except Exception:
                     # Last resort: pkgutil to a temp file
                     try:
-                        import pkgutil, tempfile
+                        import pkgutil
+                        import tempfile
                         data = pkgutil.get_data(pkg_name, "rules.yaml")
                         if data:
                             tmp = Path(tempfile.gettempdir()) / "tinysocs_rules.yaml"
@@ -366,7 +324,7 @@ def _load_rules() -> List[Dict[str, Any]]:
         return []
 
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f) or []
             return data
     except Exception as e:
@@ -455,7 +413,7 @@ def _count_for_kql(index: str, kql: str, window: str) -> int:
         "stored_fields": "_none_",
     }
     try:
-        aggs = _client.aggregate(index=index, dsl=dsl) or {}
+        aggs = get_client().aggregate(index=index, dsl=dsl) or {}
         return int(aggs.get("q", {}).get("doc_count", 0))
     except Exception:
         return 0
@@ -540,7 +498,7 @@ def _agg_for_rule(rule: Dict[str, Any], window: str, host: Optional[str]) -> Tup
                         _kw_to_raw(child)
 
         try:
-            aggs = _client.aggregate(index=index, dsl=dsl) or {}
+            aggs = get_client().aggregate(index=index, dsl=dsl) or {}
         except Exception as e:
             msg = str(e)
             # Retry once with .raw if mapping lacks keyword fields / fielddata disabled
@@ -549,7 +507,7 @@ def _agg_for_rule(rule: Dict[str, Any], window: str, host: Optional[str]) -> Tup
                 dsl_retry["aggs"] = {"groups": build_terms(gb_effective, int(threshold), AGG_TERMS_SIZE)}
                 _kw_to_raw(dsl_retry["aggs"]["groups"])
                 try:
-                    aggs = _client.aggregate(index=index, dsl=dsl_retry) or {}
+                    aggs = get_client().aggregate(index=index, dsl=dsl_retry) or {}
                     # Also reflect the effective fields we actually used
                     gb_effective = []
                     def _collect_fields(node: Dict[str, Any]) -> None:
@@ -606,7 +564,7 @@ def _agg_for_rule(rule: Dict[str, Any], window: str, host: Optional[str]) -> Tup
             "top_processes": {"terms": {"field": _kw("process.name"), "size": 5}},
         }
         try:
-            a2 = _client.aggregate(index=index, dsl=dsl2) or {}
+            a2 = get_client().aggregate(index=index, dsl=dsl2) or {}
             summary.update({
                 "top_users": [b["key"] for b in (a2.get("top_users", {}) or {}).get("buckets", [])],
                 "top_processes": [b["key"] for b in (a2.get("top_processes", {}) or {}).get("buckets", [])],
@@ -745,7 +703,7 @@ async def _sample_impl(rule: str, window: str, host: Optional[str], k: int) -> D
     fetch_n = min(k, SAMPLE_MAX_DOCS, NODE_MAX_HITS)
     try:
         # Prefer KQL search for exemplars (adapter interface), with KQL-native time
-        docs = _client.search_kql(index=index, kql=kql_with_time, size=fetch_n) or []
+        docs = get_client().search_kql(index=index, kql=kql_with_time, size=fetch_n) or []
     except Exception as e:
         ev = DetectionEvidence(
             rule=rule, window=window, host=host, count=0,

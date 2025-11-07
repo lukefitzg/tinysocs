@@ -44,8 +44,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 import uvicorn
-from fastapi import Body, Depends, FastAPI, HTTPException, Request, Query
+from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, Field
+
 
 # ---------- permissive .env autoload (repo/.env or tinysocs/.env) ----------
 def _parse_dotenv_content(s: str) -> None:
@@ -93,7 +94,7 @@ BOT_SECRET = (_env("BOT_SHARED_SECRET", "") or "")
 NODE_SECRET = (_env("NODE_SECRET", _env("MASTER_SHARED_SECRET", "dev-secret-change-me")) or "dev-secret-change-me")
 NODES = [x.strip() for x in (_env("TINYSOCS_NODES", "http://localhost:8081") or "").split(",") if x.strip()]
 NODE_URL = NODES[0] if NODES else "http://localhost:8081"
-NODE_TLS_VERIFY = not str(_env("TINYSOCS_INSECURE_SKIP_VERIFY", "1")).lower() in ("1", "true", "yes", "on")
+NODE_TLS_VERIFY = str(_env("TINYSOCS_INSECURE_SKIP_VERIFY", "1")).lower() not in ("1", "true", "yes", "on")
 
 # Queue path (fallback if we can't import a project-level actions_queue module)
 _queue_path_env = _env("TINYSOCS_QUEUE_PATH") or _env("ACTIONS_QUEUE_PATH")

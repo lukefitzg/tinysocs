@@ -9,7 +9,8 @@ Loopback helper (canonical implementation).
 """
 
 from __future__ import annotations
-from ipaddress import ip_address, IPv6Address
+
+from ipaddress import IPv6Address, ip_address
 
 __all__ = ["is_loopback"]
 

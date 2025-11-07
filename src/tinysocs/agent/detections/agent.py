@@ -1,11 +1,14 @@
-﻿import collections, yaml
+﻿import collections
 from typing import Any, Dict, List
+
+import yaml
+
 from ..adapters.select import make_client
 
 client = make_client()
 
 def run_detections(rules_path="agent/detections/rules.yaml") -> List[Dict[str, Any]]:
-    rules = yaml.safe_load(open(rules_path, "r", encoding="utf-8"))
+    rules = yaml.safe_load(open(rules_path, encoding="utf-8"))
     findings: List[Dict[str, Any]] = []
 
     for r in rules:

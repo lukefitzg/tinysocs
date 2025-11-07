@@ -1,6 +1,8 @@
 ﻿# tinysocs/agent/adapters/__init__.py
 # Allow both `tinysocs.agent.adapters.*` and flat `agent.adapters.*`
-import sys, importlib as _il
+import importlib as _il
+import sys
+
 _pkg = __name__
 
 # Alias the flat package

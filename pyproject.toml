@@ -31,9 +31,10 @@ dev = [
 ]
 
 [project.scripts]
-tinysocs-master = "tinysocs.orchestrator.master:main"
-tinysocs-node   = "tinysocs.node:main"
-tinysocs-agent  = "tinysocs.agent.main:main"
+tinysocs-node = "tinysocs.api.node:cli"
+tinysocs-master = "tinysocs.orchestrator.master:cli"
+tinysocs-quickstart = "tinysocs.launcher.quickstart:cli"
+
 
 # Tell Hatch/pip that the package is under src/
 [tool.hatch.build.targets.wheel]

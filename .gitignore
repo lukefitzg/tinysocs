@@ -1,53 +1,104 @@
-# Python
+# -----------------------
+# Virtual environments
+# -----------------------
+.venv/
+venv/
+ENV/
+env/
+pip-wheel-metadata/
+
+# dotenv & local config
+.env
+.env.*
+.envrc
+
+# -----------------------
+# Python bytecode & caches
+# -----------------------
 __pycache__/
 *.py[cod]
-*.pyd
-.venv/
-.env
-.env.*.local
-!.env.example
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.pyre/
+.cache/
 
-# Logs & scratch
+# Coverage
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# -----------------------
+# Build / distribution outputs
+# (keep spec files tracked)
+# -----------------------
+build/
+dist/
+artifacts/
+wheelhouse/
+*.egg-info/
+*.egg
+*.whl
+
+# PyInstaller products
+# (avoid ignoring *.spec so packaging/*.spec can be committed)
+build/**/*
+dist/**/*
+
+# Common compiled libs (scoped to build artifacts above)
+# If you ever need to ignore globally, scope carefully to not hide tool bins.
+# *.so
+# *.dylib
+# *.pyd
+# *.dll
+
+# -----------------------
+# Logs & temp
+# -----------------------
 *.log
-/logs/
-/data/*.jsonl
-/actions_queue.jsonl
-/tinysocs/actions_queue.jsonl
+logs/
+*.tmp
+*.temp
 
-# —— TinySocs build artifacts ——
-/build/
-/dist/
-/artifacts/build/
-/artifacts/dist/
-/artifacts/support/
-/*.spec
-
-# PyInstaller & other bundles
-/dist/**/*
-/artifacts/dist/**/*
-
-# Test/Tool caches
-/.pytest_cache/
-/.mypy_cache/
-/.ruff_cache/
-/coverage.xml
-/.coverage
-
-# Editors
+# -----------------------
+# Editor/IDE
+# -----------------------
 .vscode/
+.idea/
+*.code-workspace
 
+# -----------------------
 # OS cruft
+# -----------------------
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# Large/vendor (local-only)
-winlogbeat-bin/
-sysmon-bin/
-*.zip
+# -----------------------
+# Project runtime data (keep folder via .gitkeep)
+# -----------------------
+data/queue-rot/*
+!data/queue-rot/.gitkeep
+data/actions_queue.json
 
-# Keep all integration code tracked
-!integrations/
-!integrations/**
+# -----------------------
+# Bundled vendor bins you DO want tracked
+# (keep dirs, but ignore oversized binaries that can't be pushed)
+# -----------------------
+# sysmon-bin/
+# winlogbeat-bin/
+winlogbeat-bin/winlogbeat.exe
 
-# Support bundles (generated zips)
-artifacts/support/*.zip
+# -----------------------
+# Local installer binaries (keep local, don't commit)
+# -----------------------
+TinySocs-Setup.exe
+packaging/iss/TinySocs-Setup.exe
+
+# -----------------------
+# Local packaging scratch (keep spec tracked)
+# -----------------------
+# packaging/*.spec  # intentionally NOT ignored

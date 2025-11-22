@@ -14,6 +14,7 @@ What this master does (lean + hardened):
 Env knobs (with sensible defaults):
   TINYSOCS_NODES                 Comma-separated node URLs (e.g., http://localhost:8081)
   MASTER_SHARED_SECRET           HMAC shared secret (string)
+  NODE_SECRET                    Optional; if set, preferred over MASTER_SHARED_SECRET
   REQUEST_TIMEOUT_SEC            Per-call timeout seconds (default 30)
   MASTER_RETRIES                 Total tries per call (default 3)
   MASTER_RETRY_MIN_MS            Min backoff in ms (default 250)
@@ -24,6 +25,7 @@ Env knobs (with sensible defaults):
   ENSURE_ANCHORS                 "1" (default) to pre-flight create alias/mapping if missing
   FANOUT_WAIT_ALL                "1" to wait for all nodes (until deadline) instead of returning after first result
   HIDE_ZERO_RULES                "1" (default) to suppress zero-count rules in TL;DR headline
+  TINYSOCS_SIG_PREFIX            "1"/"true"/"sha256" => use "sha256=<hex>" signature header
 
 OpenSearch (anchor store):
   SIEM_URL        e.g. https://localhost:9201
@@ -113,8 +115,40 @@ def _derive_node_id(node_url: str) -> str:
 # ------------------------------------------------
 
 # ---------------- Config ----------------
+
+def _load_secret() -> str:
+    """
+    Decide which secret to use for HMAC and log which source won.
+
+    Precedence:
+      1) NODE_SECRET            (if present; useful when secrets rotated symmetrically)
+      2) MASTER_SHARED_SECRET   (typical master-side var)
+      3) dev-secret-change-me   (lab fallback only)
+    """
+    node_secret = os.getenv("NODE_SECRET")
+    master_secret = os.getenv("MASTER_SHARED_SECRET")
+
+    if node_secret:
+        sha = hashlib.sha256(node_secret.encode("utf-8")).hexdigest()
+        print(f"[master] using NODE_SECRET; secret_sha256={sha}")
+        return node_secret
+
+    if master_secret:
+        sha = hashlib.sha256(master_secret.encode("utf-8")).hexdigest()
+        print(f"[master] using MASTER_SHARED_SECRET; secret_sha256={sha}")
+        return master_secret
+
+    dev = "dev-secret-change-me"
+    sha = hashlib.sha256(dev.encode("utf-8")).hexdigest()
+    print(
+        f"[master] WARNING: no NODE_SECRET/MASTER_SHARED_SECRET; "
+        f"falling back to dev-secret-change-me; secret_sha256={sha}"
+    )
+    return dev
+
+
 NODES: List[str] = [x.strip() for x in os.getenv("TINYSOCS_NODES", "http://localhost:8081").split(",") if x.strip()]
-SECRET: str = os.getenv("MASTER_SHARED_SECRET", "dev-secret-change-me")
+SECRET: str = _load_secret()
 NODE_TLS_VERIFY: bool = not _env_bool("TINYSOCS_INSECURE_SKIP_VERIFY", True)  # default skip verify (lab)
 
 REQUEST_TIMEOUT_SEC: float = float(os.getenv("REQUEST_TIMEOUT_SEC", "30"))
@@ -180,46 +214,43 @@ def _display_privacy_mode() -> str:
     m = (PRIVACY_MODE or "abstract").strip().split()[0].lower()
     return "raw" if m == "raw" else "abstract"
 
-# ---------------- HMAC headers (raw hex or "sha256=<hex>") ----------------
+# ---------------- HMAC headers (ts-only; raw hex or "sha256=<hex>") ----------------
 def _headers() -> Dict[str, str]:
     """
     Generate TinySOCS HMAC headers.
 
-    Default style is 'pipe' => HMAC(secret, f"{ts}|{nonce}").
-    Override with:  TINYSOCS_HMAC_STYLE = pipe | dot | ts
-    Add prefix with: TINYSOCS_SIG_PREFIX = 1  (renders "sha256=<hex>")
+    Canonical scheme (must match node):
+      MAC = HMAC_SHA256(secret, ts_str)
+
+    - X-TinySOCS-Timestamp: "<unix_ts>"
+    - X-TinySOCS-Signature: "<hex>" or "sha256=<hex>"
+
+    The node accepts both raw hex and "sha256=<hex>" forms.
     """
     ts = str(int(time.time()))
-    nonce = secrets.token_hex(8)  # 16 hex chars
-    style = (os.getenv("TINYSOCS_HMAC_STYLE", "pipe") or "pipe").strip().lower()
-
-    if style == "dot":
-        msg = f"{ts}.{nonce}"
-        include_nonce = True
-    elif style == "ts":
-        msg = ts
-        include_nonce = False
-    else:  # 'pipe' (default)
-        msg = f"{ts}|{nonce}"
-        include_nonce = True
+    secret = SECRET or ""
 
     mac_hex = hmac.new(
-        (SECRET or "").encode("utf-8"),
-        msg.encode("utf-8"),
+        secret.encode("utf-8"),
+        ts.encode("utf-8"),
         hashlib.sha256
     ).hexdigest()
 
-    use_prefix = str(os.getenv("TINYSOCS_SIG_PREFIX", "0")).strip().lower() in ("1", "true", "yes", "on", "sha256")
+    # Optional prefix for backwards/interop: "sha256=<hex>"
+    use_prefix = str(os.getenv("TINYSOCS_SIG_PREFIX", "0")).strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+        "sha256",
+    )
     sig_value = f"sha256={mac_hex}" if use_prefix else mac_hex
 
-    headers = {
+    return {
         "X-TinySOCS-Timestamp": ts,
         "X-TinySOCS-Signature": sig_value,
         "User-Agent": "tinysocs/master",
     }
-    if include_nonce:
-        headers["X-TinySOCS-Nonce"] = nonce
-    return headers
 
 # ---------------- Retry + jitter helpers ----------------
 def _sleep_jitter(min_ms: int, max_ms: int) -> None:
@@ -273,7 +304,7 @@ def _get_head(node: str) -> Dict[str, Any]:
 # ---------------- Node client calls (sync) ----------------
 def _post_json(node_url: str, obj: Dict[str, Any], timeout: float = 6.0) -> None:
     """
-    Best-effort POST (uses same HMAC headers as /agg).
+    Best-effort POST (uses same HMAC headers as /agg and /evidence/head).
     """
     requests.post(
         node_url.rstrip("/") + "/evidence/append",
@@ -985,8 +1016,12 @@ def run_master(rules: str, window: str, host: Optional[str], deadline_sec: float
 
     return summary
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description="TinySOCS Master (fan-out + summarize + anchor)")
+def cli() -> None:
+    import argparse
+    ap = argparse.ArgumentParser(
+        prog="tinysocs-master",
+        description="TinySOCS Master (fan-out + summarize + anchor)"
+    )
     ap.add_argument("--rules", type=str, required=True, help="Comma separated rule IDs")
     ap.add_argument("--window", type=str, required=True, help="Window, e.g., 15m")
     ap.add_argument("--host", type=str, default=None, help="Optional host filter")
@@ -1022,5 +1057,11 @@ def main() -> None:
 
     run_master(args.rules, args.window, args.host, args.deadline, always_anchor)
 
+
+# Back-compat shim for old entry point
+def main() -> None:
+    cli()
+
+
 if __name__ == "__main__":
-    main()
+    cli()

@@ -242,5 +242,9 @@ def main() -> None:
     else:
         time.sleep(5.0)
 
+# Console-script entrypoint expects `cli`
+def cli() -> None:
+    main()
+
 if __name__ == "__main__":
     main()

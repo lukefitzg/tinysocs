@@ -1,4 +1,0 @@
-http.host: "0.0.0.0"
-xpack.monitoring.enabled: false
-# Prevent LS from auto-injecting old ES monitoring defaults
-xpack.monitoring.elasticsearch.hosts: []

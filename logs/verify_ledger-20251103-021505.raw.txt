@@ -1,0 +1,14 @@
+﻿[
+  {
+    "node": "http://localhost:8081",
+    "node_id": "node-8081",
+    "ok": true,
+    "reason": null,
+    "sequence": 65,
+    "current_head": "ad796b70364dc801806022e650292811a59ac6ba6e69cbb19565f1ae41a8e1b1",
+    "anchored_head": "ad796b70364dc801806022e650292811a59ac6ba6e69cbb19565f1ae41a8e1b1",
+    "anchored_at": "2025-11-03T00:18:45.871108Z",
+    "ledger_path": "C:\\tinysocs\\tinysocs\\ledger\\node-8081.jsonl"
+  }
+]
+

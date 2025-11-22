@@ -1,25 +1,104 @@
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
+# -----------------------
+# Virtual environments
+# -----------------------
 .venv/
-.env
-*.log
+venv/
+ENV/
+env/
+pip-wheel-metadata/
 
+# dotenv & local config
+.env
+.env.*
+.envrc
+
+# -----------------------
+# Python bytecode & caches
+# -----------------------
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.pyre/
+.cache/
+
+# Coverage
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# -----------------------
+# Build / distribution outputs
+# (keep spec files tracked)
+# -----------------------
+build/
+dist/
+artifacts/
+wheelhouse/
+*.egg-info/
+*.egg
+*.whl
+
+# PyInstaller products
+# (avoid ignoring *.spec so packaging/*.spec can be committed)
+build/**/*
+dist/**/*
+
+# Common compiled libs (scoped to build artifacts above)
+# If you ever need to ignore globally, scope carefully to not hide tool bins.
+# *.so
+# *.dylib
+# *.pyd
+# *.dll
+
+# -----------------------
+# Logs & temp
+# -----------------------
+*.log
+logs/
+*.tmp
+*.temp
+
+# -----------------------
+# Editor/IDE
+# -----------------------
+.vscode/
+.idea/
+*.code-workspace
+
+# -----------------------
 # OS cruft
+# -----------------------
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# Large/vendor (local-only)
-winlogbeat-bin/
-sysmon-bin/
-*.zip
+# -----------------------
+# Project runtime data (keep folder via .gitkeep)
+# -----------------------
+data/queue-rot/*
+!data/queue-rot/.gitkeep
+data/actions_queue.json
 
-# Keep all integration code tracked
-!integrations/
-!integrations/**
+# -----------------------
+# Bundled vendor bins you DO want tracked
+# (keep dirs, but ignore oversized binaries that can't be pushed)
+# -----------------------
+# sysmon-bin/
+# winlogbeat-bin/
+winlogbeat-bin/winlogbeat.exe
 
+# -----------------------
+# Local installer binaries (keep local, don't commit)
+# -----------------------
+TinySocs-Setup.exe
+packaging/iss/TinySocs-Setup.exe
 
-# Vendor binaries (ignored)
-winlogbeat-bin/
+# -----------------------
+# Local packaging scratch (keep spec tracked)
+# -----------------------
+# packaging/*.spec  # intentionally NOT ignored

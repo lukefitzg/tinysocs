@@ -1,0 +1,56 @@
+﻿# Winlogbeat → OpenSearch (TinySocs-managed)
+# Keep this file under version control. The deploy script copies it to Program Files.
+
+winlogbeat.event_logs:
+  # Security log (basic audit events)
+  - name: Security
+    ignore_older: 72h
+
+  # Sysmon telemetry (process, network, registry, etc.)
+  - name: Microsoft-Windows-Sysmon/Operational
+    ignore_older: 72h
+    processors:
+      - add_fields:
+          target: ''
+          fields:
+            event.module: sysmon
+            tags: [sysmon]
+
+  # PowerShell Script Block Logging (Event ID 4104)
+  - name: Microsoft-Windows-PowerShell/Operational
+    ignore_older: 72h
+    include_event_ids: [4104]
+    api: wineventlog                   # ensure structured EventData
+    include_event_data: ["ScriptBlockText"]
+    # include_xml: true                # optional, to capture raw XML payloads
+    processors:
+      - add_fields:
+          target: ''
+          fields:
+            event.module: powershell
+            tags: [powershell, scriptblock]
+
+# Output: OpenSearch/Elasticsearch (via shim)
+output.elasticsearch:
+  hosts: ["${SIEM_URL:http://127.0.0.1:40001}"]
+  username: "${SIEM_USER:admin}"
+  password: "${SIEM_PASS:ChangeMe123!}"
+  ssl.verification_mode: ${WB_SSL_VERIFY:none}
+  allow_older_versions: true
+  worker: 1
+  bulk_max_size: 512
+  headers:
+    Connection: "close"
+
+# TinySOCS owns ILM/templates; keep Beats from fighting us
+setup.ilm.enabled: false
+setup.template.enabled: false
+
+# Logging to file so we can tail it after restart
+logging.level: info
+logging.to_files: true
+logging.files:
+  path: "C:/ProgramData/winlogbeat/Logs"
+  name: "winlogbeat"
+  keepfiles: 7
+  rotateeverybytes: 10485760

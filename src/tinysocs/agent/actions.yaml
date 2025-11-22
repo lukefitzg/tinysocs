@@ -1,0 +1,85 @@
+# TinySocs Action Snippets v1
+# Map rule-id -> list of action blocks (label + cmd).
+# Placeholders use <angle brackets> for operator fill-in.
+
+auth_failed_burst:
+  - label: Disable user (AD)
+    cmd: Disable-ADAccount -Identity <user>
+  - label: Reset password (AD)
+    cmd: Set-ADAccountPassword -Identity <user> -Reset -NewPassword (Read-Host -AsSecureString)
+  - label: Lock IP at Windows Firewall (temporary)
+    cmd: netsh advfirewall firewall add rule name="TinySOCS Block <ip>" dir=in action=block remoteip=<ip>
+
+ps_script_block:
+  - label: Pull ScriptBlock transcript for host
+    cmd: Get-WinEvent -LogName "Microsoft-Windows-PowerShell/Operational" | Where-Object {$_.Id -eq 4104 -and $_.MachineName -eq "<host>"} | Select-Object -First 50 | Format-List
+  - label: Constrain PowerShell (AppLocker/WDAC)
+    cmd: Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -Name "EnableConstrainedLanguage" -Value 1
+  - label: Isolate host (EDR)
+    cmd: crowdstrike RTR isolate --device <device_id>
+
+proc_creation_powershell_suspicious:
+  - label: Inspect process tree
+    cmd: Get-WinEvent -FilterHashtable @{LogName="Security"; Id=4688} | Where-Object {$_.Properties[5].Value -like "*<proc>*"} | Select-Object -First 50
+  - label: Add Defender block (path/hash)
+    cmd: Add-MpPreference -AttackSurfaceReductionOnlyExclusions "<path or hash>"
+
+proc_creation_lolbins:
+  - label: Capture suspicious binary + command line
+    cmd: Get-WinEvent -FilterHashtable @{LogName="Security"; Id=4688} | Where-Object {$_.Properties[5].Value -match "(rundll32|regsvr32|mshta|wmic)"} | Select-Object -First 50
+
+suspicious_powershell:
+  - label: Dump recent PS 4688 events
+    cmd: Get-WinEvent -FilterHashtable @{LogName="Security"; Id=4688} | Where-Object {$_.Properties[5].Value -like "*powershell.exe*"} | Select-Object -First 50
+
+lolbin_execs:
+  - label: Review LOLBIN executions on host
+    cmd: Get-WinEvent -FilterHashtable @{LogName="Security"; Id=4688} | Where-Object {$_.MachineName -eq "<host>"} | Select-Object -First 50
+
+local_admin_create:
+  - label: Remove from Administrators
+    cmd: net localgroup Administrators "<user>" /delete
+  - label: Disable local account
+    cmd: net user "<user>" /active:no
+
+scheduled_task_creation:
+  - label: Query scheduled task
+    cmd: schtasks /Query /TN "<taskname>" /V /FO LIST
+  - label: Delete scheduled task
+    cmd: schtasks /Delete /TN "<taskname>" /F
+
+wmi_process_creation:
+  - label: Query WMI consumers
+    cmd: Get-WMIObject -Namespace "root\subscription" -Class __EventConsumer
+  - label: Remove suspicious consumer
+    cmd: '# Remove-WMIObject -Namespace "root\subscription" -Class __EventConsumer -Filter "Name='' <name> ''"'
+
+suspicious_svchost:
+  - label: List child processes of svchost
+    cmd: Get-WinEvent -LogName Security | Where-Object {$_.Id -eq 4688 -and $_.Properties[4].Value -like "*\\svchost.exe"} | Select-Object -First 50
+
+powershell_web_dl:
+  - label: Block egress for host temporarily
+    cmd: netsh advfirewall firewall add rule name="TinySOCS Egress Block <host>" dir=out action=block remoteip=any program=C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe
+
+vpn_geo_impossible:
+  - label: Force password reset
+    cmd: Set-ADAccountPassword -Identity <user> -Reset -NewPassword (Read-Host -AsSecureString)
+  - label: Revoke active sessions (IdP)
+    cmd: az ad user revoke-signins --id <userUPN>   # example (Azure AD)
+
+firewall_deny_burst:
+  - label: Confirm deny rule intent
+    cmd: '# review firewall policy that created the denies, ensure destination is expected'
+
+m365_mfa_fatigue:
+  - label: Disable sign-in temporarily
+    cmd: az ad user update --id <userUPN> --account-enabled false
+  - label: Reset MFA
+    cmd: '# Use Microsoft Graph/Portal to reset strong auth methods'
+
+m365_mail_forward_rule:
+  - label: List inbox rules
+    cmd: Get-InboxRule -Mailbox "<userUPN>"
+  - label: Remove forward rule
+    cmd: Remove-InboxRule -Mailbox "<userUPN>" -Identity "<ruleName>"

@@ -1,0 +1,2 @@
+﻿param([string]$window="15m",[int]$deadline=30,[string]$rules="auth_failed_burst,ps_script_block")
+& "C:\Program Files\TinySocs\bin\TinySocsMaster.exe" --window $window --deadline $deadline --rules $rules

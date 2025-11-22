@@ -1,53 +1,31 @@
+# docker-compose.yaml
 services:
-  elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.14.3
-    container_name: ts-es
-    restart: unless-stopped
-    environment:
-      - discovery.type=single-node
-      - xpack.security.enabled=false
-      - ES_JAVA_OPTS=-Xms1g -Xmx1g
-    ports: ["9200:9200"]
-    ulimits:
-      memlock: { soft: -1, hard: -1 }
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9200/"]
-      interval: 10s
-      timeout: 5s
-      retries: 60
-
-  kibana:
-    image: docker.elastic.co/kibana/kibana:8.14.3
-    container_name: ts-kibana
-    restart: unless-stopped
-    environment:
-      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
-    ports: ["5601:5601"]
-    depends_on:
-      elasticsearch:
-        condition: service_healthy
-
   opensearch:
     image: opensearchproject/opensearch:2.13.0
     container_name: ts-opensearch
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
       - discovery.type=single-node
       - bootstrap.memory_lock=true
-      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_INITIAL_ADMIN_PASSWORD}
-      # ↑↑ bumped heap to 2g to avoid parent circuit breaker trips
+      # Align admin password with golden SIEM creds
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${SIEM_PASS}
+      # Heap tuned to reduce circuit-breaker trips (adjust to your host)
       - OPENSEARCH_JAVA_OPTS=-Xms2g -Xmx2g
       - plugins.security.disabled=false
       - plugins.security.ssl.http.enabled=true
       - plugins.security.ssl.transport.enforce_hostname_verification=false
     ports:
-      - "9201:9200"
+      - "9201:9200"   # direct access (dev)
     ulimits:
-      memlock: { soft: -1, hard: -1 }
+      memlock:
+        soft: -1
+        hard: -1
     volumes:
       - opensearch-data:/usr/share/opensearch/data
     healthcheck:
-      test: ["CMD-SHELL", "curl -skf -u \"admin:${OPENSEARCH_INITIAL_ADMIN_PASSWORD}\" https://localhost:9200/_cluster/health"]
+      test: ["CMD-SHELL", "curl -skf -u ${SIEM_USER}:${SIEM_PASS} https://localhost:9200/_cluster/health > /dev/null"]
       interval: 15s
       timeout: 5s
       retries: 60
@@ -56,42 +34,83 @@ services:
     image: opensearchproject/opensearch-dashboards:2.13.0
     container_name: ts-opensearch-dashboards
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
       - OPENSEARCH_HOSTS=["https://opensearch:9200"]
-      - OPENSEARCH_USERNAME=admin
-      - OPENSEARCH_PASSWORD=${OPENSEARCH_INITIAL_ADMIN_PASSWORD}
+      - OPENSEARCH_USERNAME=${SIEM_USER}
+      - OPENSEARCH_PASSWORD=${SIEM_PASS}
       - OPENSEARCH_SSL_VERIFICATIONMODE=none
     ports:
-      - "5602:5601"
+      - "5602:5601"   # direct access (dev)
     depends_on:
       opensearch:
         condition: service_healthy
 
-  logstash:
-    build:
-      context: ./integrations/winlogbeat/logstash
-      dockerfile: Dockerfile
-    image: tinysocs-logstash
-    container_name: ts-logstash
-    restart: unless-stopped
-    environment:
-      - LS_JAVA_OPTS=-Xms512m -Xmx512m
-      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_INITIAL_ADMIN_PASSWORD}
-    ports:
-      - "5044:5044"
-    volumes:
-      - ./integrations/winlogbeat/logstash/pipeline:/usr/share/logstash/pipeline:ro
-      - ./integrations/winlogbeat/logstash/config/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf localhost:9600/_node/pipelines | grep -q '\"main\"' && bash -lc 'exec 3<>/dev/tcp/127.0.0.1/5044'"]
-      interval: 10s
-      timeout: 5s
-      retries: 60
-    depends_on:
-      opensearch:
-        condition: service_healthy
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+  # ------------------------------------------------------------------
+  # Reverse proxy (Phase 4): TLS term + clean public ports 80/443
+  # Uncomment this block and the depends_on lines when you're ready.
+  #
+  # reverse-proxy:
+  #   image: caddy:2.8.4
+  #   container_name: ts-reverse-proxy
+  #   restart: unless-stopped
+  #   env_file:
+  #     - .env
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   depends_on:
+  #     opensearch:
+  #       condition: service_healthy
+  #     opensearch-dashboards:
+  #       condition: service_started
+  #   volumes:
+  #     # Mount your Caddyfile (example template below)
+  #     - ./reverse-proxy/Caddyfile:/etc/caddy/Caddyfile:ro
+  #     - caddy-data:/data
+  #     - caddy-config:/config
+  #
+  # Caddyfile (save as ./reverse-proxy/Caddyfile):
+  #
+  # {
+  #   email {$EMAIL}
+  # }
+  #
+  # # Route 1: OpenSearch API under /os (option A: single vhost with paths)
+  # {$DOMAIN} {
+  #   @os path /os* /_cat* /_cluster* /_plugins*
+  #   handle @os {
+  #     uri strip_prefix /os
+  #     reverse_proxy opensearch:9200 {
+  #       transport http {
+  #         tls_insecure_skip_verify
+  #       }
+  #       header_up Authorization {>Authorization}
+  #     }
+  #   }
+  #
+  #   # Route 2: Dashboards under /
+  #   reverse_proxy opensearch-dashboards:5601
+  # }
+  #
+  # # Option B: separate vhosts if you want two hostnames
+  # os.{$DOMAIN} {
+  #   reverse_proxy opensearch:9200 {
+  #     transport http {
+  #       tls_insecure_skip_verify
+  #     }
+  #     header_up Authorization {>Authorization}
+  #   }
+  # }
+  #
+  # dash.{$DOMAIN} {
+  #   reverse_proxy opensearch-dashboards:5601
+  # }
+  #
+  # ------------------------------------------------------------------
 
 volumes:
   opensearch-data:
+  # caddy-data:
+  # caddy-config:

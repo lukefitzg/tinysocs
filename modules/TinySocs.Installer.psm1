@@ -13,47 +13,50 @@ function Install-TinySocs {
   Write-Host "[TinySocs] ProgramData ensured."
 }
 
-
 # ── Credential Manager helpers (TinySocs/Phase7) ──────────────────────────────
 # We store secrets as Generic credentials so services and tasks can read them.
 # Targets we use:
 #   TinySocs/Node/Secret
 #   TinySocs/Master/SharedSecret
 #   TinySocs/SIEM/Creds
-Add-Type -Namespace TinySocs.Security -Name CredNative -MemberDefinition @"
+
+Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
 
-public static class CredNative
+namespace TinySocs.Security
 {
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    public struct CREDENTIAL
+    public static class CredNative
     {
-        public uint Flags;
-        public uint Type;
-        public string TargetName;
-        public string Comment;
-        public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
-        public uint CredentialBlobSize;
-        public IntPtr CredentialBlob;
-        public uint Persist;
-        public uint AttributeCount;
-        public IntPtr Attributes;
-        public string TargetAlias;
-        public string UserName;
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        public struct CREDENTIAL
+        {
+            public uint Flags;
+            public uint Type;
+            public string TargetName;
+            public string Comment;
+            public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
+            public uint CredentialBlobSize;
+            public IntPtr CredentialBlob;
+            public uint Persist;
+            public uint AttributeCount;
+            public IntPtr Attributes;
+            public string TargetAlias;
+            public string UserName;
+        }
+
+        [DllImport("advapi32.dll", EntryPoint = "CredWriteW", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern bool CredWrite(ref CREDENTIAL userCredential, uint flags);
+
+        [DllImport("advapi32.dll", EntryPoint = "CredReadW", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern bool CredRead(string target, uint type, uint reservedFlag, out IntPtr credentialPtr);
+
+        [DllImport("advapi32.dll", EntryPoint = "CredFree", SetLastError = false)]
+        public static extern void CredFree(IntPtr cred);
+
+        [DllImport("advapi32.dll", EntryPoint = "CredDeleteW", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern bool CredDelete(string target, uint type, uint flags);
     }
-
-    [DllImport("advapi32.dll", EntryPoint="CredWriteW", CharSet = CharSet.Unicode, SetLastError = true)]
-    public static extern bool CredWrite(ref CREDENTIAL userCredential, uint flags);
-
-    [DllImport("advapi32.dll", EntryPoint="CredReadW", CharSet = CharSet.Unicode, SetLastError = true)]
-    public static extern bool CredRead(string target, uint type, uint reservedFlag, out IntPtr credentialPtr);
-
-    [DllImport("advapi32.dll", EntryPoint="CredFree", SetLastError = false)]
-    public static extern void CredFree(IntPtr cred);
-
-    [DllImport("advapi32.dll", EntryPoint="CredDeleteW", CharSet = CharSet.Unicode, SetLastError = true)]
-    public static extern bool CredDelete(string target, uint type, uint flags);
 }
 "@
 
@@ -96,7 +99,10 @@ function Get-TSCredential {
   try {
     $ok = [TinySocs.Security.CredNative]::CredRead($Name, 1, 0, [ref]$ptr) # CRED_TYPE_GENERIC
     if (-not $ok -or $ptr -eq [IntPtr]::Zero) { return $null }
-    $raw = [Runtime.InteropServices.Marshal]::PtrToStructure($ptr, [Type][TinySocs.Security.CredNative+CREDENTIAL])
+    $raw = [Runtime.InteropServices.Marshal]::PtrToStructure(
+      $ptr,
+      [Type][TinySocs.Security.CredNative+CREDENTIAL]
+    )
     if ($raw.CredentialBlobSize -le 0 -or $raw.CredentialBlob -eq [IntPtr]::Zero) { return $null }
     $bytes = New-Object byte[] $raw.CredentialBlobSize
     [Runtime.InteropServices.Marshal]::Copy($raw.CredentialBlob, $bytes, 0, $raw.CredentialBlobSize)
@@ -152,23 +158,33 @@ function Set-TinySocsSiemCredential {
   Write-Host "[TinySocs] SIEM credentials stored in CredMan and env (url=$normUrl, sslVerify=$verifyString)."
 }
 
+
 # ── Service via NSSM ────────────────────────────────────────────────────────────
-...
+function Register-TinySocsNodeService {
+  $binDir = "C:\Program Files\TinySocs\bin"
+  $n      = Join-Path $binDir "nssm.exe"
+  $e      = Join-Path $binDir "TinySocsNode.exe"
+  $w      = "$env:ProgramData\TinySocs"
+
   if (!(Test-Path $n)) {
     Write-Warning "[TinySocs] nssm.exe missing; skipping service."
     return
   }
 
+  # Ensure logs dir exists
+  New-Item -ItemType Directory -Force -Path "$w\logs" | Out-Null
+
   # Install or update service config idempotently
   & $n install TinySocsNode $e | Out-Null
-  & $n set TinySocsNode AppDirectory    $w                                   | Out-Null
-  & $n set TinySocsNode Start           SERVICE_AUTO_START                   | Out-Null
-  & $n set TinySocsNode AppStdout       "$w\logs\TinySocsNode.out.log"       | Out-Null
-  & $n set TinySocsNode AppStderr       "$w\logs\TinySocsNode.err.log"       | Out-Null
-  & $n set TinySocsNode AppNoConsole    1                                    | Out-Null
-  & $n set TinySocsNode AppRestartDelay 2000                                 | Out-Null
-  & $n set TinySocsNode AppEnvironmentExtra `
-      'PORT=8081;SIEM_URL=https://localhost:9201;SIEM_SSL_VERIFY=false;PRIVACY_MODE=abstract' | Out-Null
+  & $n set TinySocsNode AppDirectory    $w                             | Out-Null
+  & $n set TinySocsNode Start           SERVICE_AUTO_START             | Out-Null
+  & $n set TinySocsNode AppStdout       "$w\logs\TinySocsNode.out.log" | Out-Null
+  & $n set TinySocsNode AppStderr       "$w\logs\TinySocsNode.err.log" | Out-Null
+  & $n set TinySocsNode AppNoConsole    1                              | Out-Null
+  & $n set TinySocsNode AppRestartDelay 2000                           | Out-Null
+
+  # We deliberately *don’t* push secrets into AppEnvironmentExtra.
+  # Node picks up config from machine env, which Pair-TinySocs + CredMan own.
 
   Write-Host "[TinySocs] Node service registered."
 }
@@ -177,9 +193,66 @@ function Register-TinySocsServices {
   Register-TinySocsNodeService
 }
 
-# ── Scheduled tasks (Master, Anchors, Queue rotation) ──────────────────────────
-...
-  Ensure-TaskFolder -FolderPath "\TinySocs"
+
+# ── Scheduled task helpers (PowerShell ScheduledTasks API) ─────────────────────
+function Ensure-TaskFolder {
+  param([string]$FolderPath = "\TinySocs")
+  $svc  = New-Object -ComObject "Schedule.Service"
+  $svc.Connect()
+  $root = $svc.GetFolder("\")
+  try {
+    $null = $root.GetFolder($FolderPath)
+  } catch {
+    # Create relative folder name: "TinySocs" from "\TinySocs" or "TinySocs\"
+    $folderName = $FolderPath.Trim('\')
+    if (-not [string]::IsNullOrWhiteSpace($folderName)) {
+      $null = $root.CreateFolder($folderName)
+    } else {
+      throw "Invalid task folder name '$FolderPath'"
+    }
+  }
+}
+
+function New-TinySocsTaskAction {
+  param(
+    [Parameter(Mandatory)][string]$ScriptPath,
+    [string]$Args = ""
+  )
+  $ps  = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
+  $arg = "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" $Args".Trim()
+  New-ScheduledTaskAction -Execute $ps -Argument $arg
+}
+
+function New-TinySocsExeAction {
+  param(
+    [Parameter(Mandatory)][string]$ExePath,
+    [string]$Args = ""
+  )
+  New-ScheduledTaskAction -Execute $ExePath -Argument $Args
+}
+
+function New-TinySocsRepeatTrigger {
+  param([Parameter(Mandatory)][int]$EveryMinutes)
+  $start = (Get-Date).AddMinutes(1)
+  # Task Scheduler rejects infinite duration; pick something absurdly long (~10 years)
+  $dur = New-TimeSpan -Days 3650
+  New-ScheduledTaskTrigger -Once -At $start `
+    -RepetitionInterval (New-TimeSpan -Minutes $EveryMinutes) `
+    -RepetitionDuration $dur
+}
+
+function New-TinySocsDailyTrigger {
+  param([Parameter(Mandatory)][string]$At) # "HH:mm"
+  $time = [DateTime]::Today.Add([TimeSpan]::Parse($At))
+  New-ScheduledTaskTrigger -Daily -At $time
+}
+
+function Register-TinySocsTasks {
+  $taskPath  = "\TinySocs\"
+  $modDir    = "C:\Program Files\TinySocs\modules"
+  $binDir    = "C:\Program Files\TinySocs\bin"
+
+  Ensure-TaskFolder -FolderPath $taskPath
 
   # Derive heartbeat + retention from env (with sane defaults)
   $hb = 15
@@ -192,15 +265,17 @@ function Register-TinySocsServices {
     [int]::TryParse($env:ANCHORS_RETENTION_DAYS, [ref]$retention) | Out-Null
   }
 
-  function _RegisterIdempotent(
-    [string]$TaskName,
-    [scriptblock]$ActionFactory,
-    [Microsoft.Win32.TaskScheduler.TaskTrigger]$Trigger
-  ) {
+  function _RegisterIdempotent {
+    param(
+      [string]$TaskName,
+      [scriptblock]$ActionFactory,
+      $Trigger
+    )
+
     try {
-      $existing = Get-ScheduledTask -TaskPath "\TinySocs\" -TaskName $TaskName -ErrorAction SilentlyContinue
+      $existing = Get-ScheduledTask -TaskPath $taskPath -TaskName $TaskName -ErrorAction SilentlyContinue
       if ($existing) {
-        Unregister-ScheduledTask -TaskName $TaskName -TaskPath "\TinySocs\" -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
+        Unregister-ScheduledTask -TaskName $TaskName -TaskPath $taskPath -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
       }
     } catch { }
 
@@ -208,33 +283,35 @@ function Register-TinySocsServices {
     $settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 60)
 
     $action = & $ActionFactory
-    $task = New-ScheduledTask -Action $action -Trigger $Trigger -Principal $principal -Settings $settings
-    Register-ScheduledTask -TaskName $TaskName -TaskPath "\TinySocs\" -InputObject $task -Force | Out-Null
+    $task   = New-ScheduledTask -Action $action -Trigger $Trigger -Principal $principal -Settings $settings
+    Register-ScheduledTask -TaskName $TaskName -TaskPath $taskPath -InputObject $task -Force | Out-Null
   }
 
-  # Heartbeat: TinySocsMaster every $hb minutes
-  $masterScript = "C:\Program Files\TinySocs\modules\Launch-Master.ps1"
-  $masterArgs   = "-window 15m -deadline 30 -rules 'auth_failed_burst,ps_script_block'"
-  $masterTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes $hb) -RepetitionDuration ([TimeSpan]::MaxValue)
+  # Heartbeat: TinySocsMaster every $hb minutes via Launch-Master.ps1
+  $masterScript = Join-Path $modDir "Launch-Master.ps1"
+  $masterArgs   = ("-window {0}m -deadline 30 -rules 'auth_failed_burst,ps_script_block'" -f $hb)
+  $masterTrigger = New-TinySocsRepeatTrigger -EveryMinutes $hb
+
   _RegisterIdempotent -TaskName "TinySocsHeartbeat" -ActionFactory {
     New-TinySocsTaskAction -ScriptPath $masterScript -Args $masterArgs
   } -Trigger $masterTrigger
 
-  # Anchors ensure + prune (daily)
-  $anchorsScript = "C:\Program Files\TinySocs\modules\Launch-Anchors.ps1"
-  $ensureTrigger  = New-ScheduledTaskTrigger -Daily -At 02:00
+  # Anchors ensure daily 03:10
+  $anchorsExe   = Join-Path $binDir "TinySocsAnchors.exe"
+  $ensureTrigger  = New-TinySocsDailyTrigger -At "03:10"
   _RegisterIdempotent -TaskName "TinySocsAnchorsEnsure" -ActionFactory {
-    New-TinySocsTaskAction -ScriptPath $anchorsScript -Args "-Ensure"
+    New-TinySocsExeAction -ExePath $anchorsExe -Args "--ensure"
   } -Trigger $ensureTrigger
 
-  $pruneTrigger = New-ScheduledTaskTrigger -Daily -At 03:00
+  # Anchors prune daily 03:15
+  $pruneTrigger = New-TinySocsDailyTrigger -At "03:15"
   _RegisterIdempotent -TaskName "TinySocsAnchorsPrune" -ActionFactory {
-    New-TinySocsTaskAction -ScriptPath $anchorsScript -Args ("-Prune -RetentionDays {0}" -f $retention)
+    New-TinySocsExeAction -ExePath $anchorsExe -Args ("--prune --retention-days {0}" -f $retention)
   } -Trigger $pruneTrigger
 
-  # Queue rotation (hourly)
-  $rotateScript = "C:\Program Files\TinySocs\modules\TinySocs.RotateQueue.ps1"
-  $rotateTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(5) -RepetitionInterval (New-TimeSpan -Hours 1) -RepetitionDuration ([TimeSpan]::MaxValue)
+  # Queue rotation hourly via TinySocs.RotateQueue.ps1
+  $rotateScript  = Join-Path $modDir "TinySocs.RotateQueue.ps1"
+  $rotateTrigger = New-TinySocsRepeatTrigger -EveryMinutes 60
   _RegisterIdempotent -TaskName "TinySocsRotateQueue" -ActionFactory {
     New-TinySocsTaskAction -ScriptPath $rotateScript -Args ""
   } -Trigger $rotateTrigger
@@ -242,10 +319,7 @@ function Register-TinySocsServices {
   Write-Host "[TinySocs] Scheduled tasks registered."
 }
 
-function Register-TinySocsTasks {
-  New-TinySocsTasks
-}
-
+# ── Environment + pairing ──────────────────────────────────────────────────────
 function Set-MachineEnv([hashtable]$Vars){
   foreach($k in $Vars.Keys){
     $v = [string]$Vars[$k]
@@ -351,8 +425,8 @@ function Pair-TinySocs{
 
 function Rotate-TinySocsSecrets([Parameter(Mandatory)][string]$SharedSecret){
   # Single source of truth now lives in CredMan, env is just delivery.
-  Set-TSCredential -Name 'TinySocs/Node/Secret'           -Secret $SharedSecret
-  Set-TSCredential -Name 'TinySocs/Master/SharedSecret'   -Secret $SharedSecret
+  Set-TSCredential -Name 'TinySocs/Node/Secret'         -Secret $SharedSecret
+  Set-TSCredential -Name 'TinySocs/Master/SharedSecret' -Secret $SharedSecret
 
   Set-MachineEnv @{
     MASTER_SHARED_SECRET = $SharedSecret
@@ -430,4 +504,4 @@ function Uninstall-TinySocs {
   Write-Host "[TinySocs] Uninstall complete."
 }
 
-Export-ModuleMember -Function Install-TinySocs,Register-TinySocsServices,Register-TinySocsTasks,Pair-TinySocs,Rotate-TinySocsSecrets,Uninstall-TinySocs
+Export-ModuleMember -Function Install-TinySocs,Register-TinySocsServices,Register-TinySocsTasks,Pair-TinySocs,Rotate-TinySocsSecrets,Uninstall-TinySocs,Set-TSCredential,Get-TSCredential,Remove-TSCredential,Set-TinySocsSiemCredential

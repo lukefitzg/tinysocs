@@ -1,0 +1,14 @@
+﻿cluster.name: tinysocs-local
+node.name: tinysocs-node-1
+
+network.host: 127.0.0.1
+http.port: 9200
+
+discovery.type: single-node
+
+path.data: C:/ProgramData/TinySocs/OpenSearch/data
+path.logs: C:/ProgramData/TinySocs/OpenSearch/logs
+
+# TinyBox: local-only, no auth for now. Harden later.
+plugins.security.disabled: true
+

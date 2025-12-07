@@ -6,8 +6,8 @@ import requests
 import re
 
 # ==== target & tuning ====
-TARGET = "https://127.0.0.1:9201"  # OpenSearch endpoint
-VERIFY_TLS = False                  # dev: self-signed
+TARGET = "http://127.0.0.1:9200"  # TinyBox OpenSearch endpoint
+VERIFY_TLS = False                # TLS off for TinyBox local
 TIMEOUT = 30                        # a bit more generous for bulk
 
 # Safe destination for any wildcard write targets (env overrides)

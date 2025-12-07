@@ -28,10 +28,10 @@ Env knobs (with sensible defaults):
   TINYSOCS_SIG_PREFIX            "1"/"true"/"sha256" => use "sha256=<hex>" signature header
 
 OpenSearch (anchor store):
-  SIEM_URL        e.g. https://localhost:9201
+  SIEM_URL        e.g. http://127.0.0.1:9200
   SIEM_USER       e.g. admin
   SIEM_PASS       e.g. ChangeMe123!
-  SIEM_SSL_VERIFY "false"/"0" to disable verify; anything else enables
+  SIEM_SSL_VERIFY "false"/"0" to disable verify; default verify=disabled for TinyBox HTTP
 
 CLI:
   python -m tinysocs.orchestrator.master --rules ps_script_block,auth_failed_burst --window 15m
@@ -160,16 +160,44 @@ PRIVACY_MODE: str = os.getenv("PRIVACY_MODE", "abstract")
 FANOUT_WAIT_ALL: bool = _env_bool("FANOUT_WAIT_ALL", False)
 HIDE_ZERO_RULES: bool = _env_bool("HIDE_ZERO_RULES", True)
 
-SIEM_URL: str = os.getenv("SIEM_URL", "https://localhost:9201")
+SIEM_URL: str = os.getenv("SIEM_URL", "http://127.0.0.1:9200")
 SIEM_USER: str = os.getenv("SIEM_USER", "admin")
 SIEM_PASS: str = os.getenv("SIEM_PASS", "admin")
-SIEM_VERIFY: bool = _tls_verify_from("SIEM_SSL_VERIFY", default=True)
+SIEM_VERIFY: bool = _tls_verify_from("SIEM_SSL_VERIFY", default=False)
+
+print(f"[master] SIEM_URL={SIEM_URL} verify={SIEM_VERIFY} user={SIEM_USER}")
 
 # Optional ensure-anchors pre-flight (import lazily)
 try:
-    from .anchors import ensure_anchors_if_missing as _ensure_anchors
-except Exception:
+    from tinysocs.orchestrator.anchors import ensure_anchors_if_missing as _ensure_anchors
+except Exception as e:
+    print(f"[master] DEBUG: failed to import anchors.ensure_anchors_if_missing: {e}")
     _ensure_anchors = None  # fallback; Start-TinySocs-Quick also ensures
+
+_ANCHORS_ENSURED: bool = False
+
+def _maybe_ensure_anchors() -> None:
+    """
+    Idempotent, env-aware wrapper around anchors.ensure_anchors_if_missing().
+    - Respects ENSURE_ANCHORS env knob.
+    - Ensures we only successfully run once per process.
+    """
+    global _ANCHORS_ENSURED
+    if _ANCHORS_ENSURED:
+        return
+
+    if os.getenv("ENSURE_ANCHORS", "1").strip().lower() in ("0", "false", "no", "off"):
+        return
+
+    if not _ensure_anchors:
+        print("[master] WARN: anchors.ensure_anchors_if_missing not available")
+        return
+
+    try:
+        _ensure_anchors()
+        _ANCHORS_ENSURED = True
+    except Exception as e:
+        print(f"[master] WARN: anchors ensure failed: {e}")
 
 # silence local TLS warnings if verify is disabled
 try:
@@ -760,6 +788,7 @@ def _es_index(doc: Dict[str, Any]) -> None:
 # ----------------------------------------------------
 
 def run_master(rules: str, window: str, host: Optional[str], deadline_sec: float, always_anchor: bool) -> Dict[str, Any]:
+    _maybe_ensure_anchors()
     t0 = time.time()
     deadline_at = t0 + max(0.1, deadline_sec)
     summary = {
@@ -1045,15 +1074,8 @@ def cli() -> None:
     env_always = _env_bool("ALWAYS_ANCHOR", False)
     always_anchor = args.always_anchor or env_always
 
-    # Pre-flight ensure of anchors alias/mapping using unified module (idempotent)
-    if os.getenv("ENSURE_ANCHORS", "1").strip().lower() not in ("0", "false", "no", "off"):
-        try:
-            if _ensure_anchors:
-                _ensure_anchors()  # anchors.ensure_anchors_if_missing()
-            else:
-                print("[master] WARN: anchors.ensure_anchors_if_missing not available")
-        except Exception as e:
-            print(f"[master] WARN: anchors ensure failed: {e}")
+    # Pre-flight ensure of anchors alias/mapping (idempotent per process)
+    _maybe_ensure_anchors()
 
     run_master(args.rules, args.window, args.host, args.deadline, always_anchor)
 

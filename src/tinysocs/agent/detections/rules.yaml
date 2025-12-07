@@ -9,13 +9,13 @@
 
 - id: auth_failed_burst
   description: Multiple failed Windows logons (4625) from same IP/user in 2 hours
-  index: "winlogbeat-*"
+  index: "tinysocs-winlog-*"
   time_field: "@timestamp"
   kql: >
     (event.code:4625 OR winlog.event_id:4625)
-    AND NOT source.ip:(127.0.0.1 OR "::1")
-    AND NOT user.name:(NoSuchUser)
-  group_by: ["source.ip","user.name"]
+    AND NOT winlog.event_data.IpAddress:(127.0.0.1 OR "::1")
+    AND NOT winlog.event_data.TargetUserName:(NoSuchUser)
+  group_by: ["winlog.event_data.IpAddress","winlog.event_data.TargetUserName"]
   threshold: 5
   severity: medium
   category: auth
@@ -25,7 +25,7 @@
 # NEW: aggregation-first rule used by the harness
 - id: script_block_volume
   description: PowerShell Script Block volume per host (4104)
-  index: "winlogbeat-*"
+  index: "tinysocs-winlog-*"
   time_field: "@timestamp"
   kql: >
     (event.code:4104 OR winlog.event_id:4104)
@@ -37,7 +37,7 @@
 
 - id: sysmon_proc_creation
   description: Sysmon process creation events (ID 1)
-  index: "winlogbeat-*"
+  index: "tinysocs-winlog-*"
   time_field: "@timestamp"
   kql: >
     (event.code:1 OR winlog.event_id:1)
@@ -49,7 +49,7 @@
 
 - id: ps_script_block
   description: PowerShell ScriptBlock logging (ID 4104)
-  index: "winlogbeat-*"
+  index: "tinysocs-winlog-*"
   time_field: "@timestamp"
   kql: >
     (event.code:4104 OR winlog.event_id:4104)
@@ -62,7 +62,7 @@
 
 - id: proc_creation_powershell_suspicious
   description: PowerShell with suspicious flags (4688 / Sysmon ID 1)
-  index: "winlogbeat-*"
+  index: "tinysocs-winlog-*"
   time_field: "@timestamp"
   kql: >
     (event.code:(4688 OR 1) OR winlog.event_id:(4688 OR 1))
@@ -82,7 +82,7 @@
 
 - id: proc_creation_lolbins
   description: Possible LOLBIN execution (4688 / Sysmon 1) — rundll32, regsvr32, mshta, wmic, certutil
-  index: "winlogbeat-*"
+  index: "tinysocs-winlog-*"
   time_field: "@timestamp"
   kql: >
     (event.code:(4688 OR 1) OR winlog.event_id:(4688 OR 1))
@@ -98,7 +98,7 @@
 
 - id: suspicious_powershell
   description: Suspicious PowerShell flags (NoProfile, EncodedCommand, Hidden, Bypass)
-  index: "winlogbeat-*"
+  index: "tinysocs-winlog-*"
   time_field: "@timestamp"
   kql: >
     (event.code:4688 OR winlog.event_id:4688)
@@ -118,7 +118,7 @@
 
 - id: lolbin_execs
   description: Multiple LOLBIN executions in short window
-  index: "winlogbeat-*"
+  index: "tinysocs-winlog-*"
   time_field: "@timestamp"
   kql: >
     (event.code:4688 OR winlog.event_id:4688)
@@ -136,7 +136,7 @@
 
 - id: local_admin_create
   description: Local admin account created (4720)
-  index: "winlogbeat-*"
+  index: "tinysocs-winlog-*"
   time_field: "@timestamp"
   kql: '(event.code:4720 OR winlog.event_id:4720)'
   group_by: ["host.name","user.name"]
@@ -146,7 +146,7 @@
 
 - id: scheduled_task_creation
   description: Scheduled task created (4698)
-  index: "winlogbeat-*"
+  index: "tinysocs-winlog-*"
   time_field: "@timestamp"
   kql: '(event.code:4698 OR winlog.event_id:4698)'
   group_by: ["host.name","user.name"]
@@ -156,7 +156,7 @@
 
 - id: wmi_process_creation
   description: WMI-spawned process (4688 parent is WmiPrvSE or process is wmic.exe)
-  index: "winlogbeat-*"
+  index: "tinysocs-winlog-*"
   time_field: "@timestamp"
   kql: >
     (event.code:4688 OR winlog.event_id:4688) AND (
@@ -172,7 +172,7 @@
 
 - id: suspicious_svchost
   description: svchost.exe spawning scripting/LOL processes
-  index: "winlogbeat-*"
+  index: "tinysocs-winlog-*"
   time_field: "@timestamp"
   kql: >
     (event.code:4688 OR winlog.event_id:4688)
@@ -190,7 +190,7 @@
 
 - id: powershell_web_dl
   description: PowerShell web download usage (Invoke-WebRequest/DownloadString)
-  index: "winlogbeat-*"
+  index: "tinysocs-winlog-*"
   time_field: "@timestamp"
   kql: >
     (event.code:(4104 OR 4688) OR winlog.event_id:(4104 OR 4688)) AND (
@@ -205,7 +205,7 @@
 
 - id: ps_transcription_off
   description: PowerShell transcription disabled
-  index: "winlogbeat-*"
+  index: "tinysocs-winlog-*"
   time_field: "@timestamp"
   kql: >
     (event.code:4104 OR winlog.event_id:4104)
@@ -217,7 +217,7 @@
 
 - id: scriptblock_base64
   description: Large base64 chunk observed in ScriptBlock
-  index: "winlogbeat-*"
+  index: "tinysocs-winlog-*"
   time_field: "@timestamp"
   kql: >
     (event.code:4104 OR winlog.event_id:4104)
@@ -267,11 +267,23 @@
   severity: medium
   category: cloud
 
+
 # ===== Lab-only, low-threshold kickers =====
+
+- id: auth_failed_burst_lab
+  description: Multiple failed Windows logons (4625) from same IP/user (lab, no loopback exclusion)
+  index: "tinysocs-winlog-*"
+  time_field: "@timestamp"
+  kql: >
+    (event.code:4625 OR winlog.event_id:4625)
+  group_by: ["winlog.event_data.IpAddress","winlog.event_data.TargetUserName"]
+  threshold: 1
+  severity: medium
+  category: auth
 
 - id: ps_script_block_lab
   description: PowerShell ScriptBlock (4104) — lab, group by host only
-  index: "winlogbeat-*"
+  index: "tinysocs-winlog-*"
   time_field: "@timestamp"
   kql: >
     (event.code:4104 OR winlog.event_id:4104)
@@ -283,7 +295,7 @@
 
 - id: proc_creation_powershell_suspicious_lab
   description: PowerShell suspicious flags (4688 or Sysmon 1) — lab, threshold 1
-  index: "winlogbeat-*"
+  index: "tinysocs-winlog-*"
   time_field: "@timestamp"
   kql: >
     (event.code:(4688 OR 1) OR winlog.event_id:(4688 OR 1))
@@ -303,7 +315,7 @@
 
 - id: proc_creation_lolbins_lab
   description: LOLBIN executions (4688 or Sysmon 1) — lab, threshold 1
-  index: "winlogbeat-*"
+  index: "tinysocs-winlog-*"
   time_field: "@timestamp"
   kql: >
     (event.code:(4688 OR 1) OR winlog.event_id:(4688 OR 1))
@@ -319,14 +331,15 @@
 
 - id: lolbin_execs_lab
   description: Multiple LOLBINs in short window — lab, threshold 2
-  index: "winlogbeat-*"
+  index: "tinysocs-winlog-*"
   time_field: "@timestamp"
   kql: >
     (event.code:4688 OR winlog.event_id:4688)
     AND (
       process.name:("rundll32.exe" "regsvr32.exe" "mshta.exe" "certutil.exe" "powershell.exe" "wmic.exe" "pwsh.exe")
       OR process.executable:(*\\rundll32.exe *\\regsvr32.exe *\\mshta.exe *\\certutil.exe *\\powershell.exe *\\wmic.exe *\\pwsh.exe)
-      OR winlog.event_data.NewProcessName:(*\\rundll32.exe *\\regsvr32.exe *\\mshta.exe *\\certutil.exe *\\powershell.exe *\\wmic.exe *\\pwsh.exe)    )
+      OR winlog.event_data.NewProcessName:(*\\rundll32.exe *\\regsvr32.exe *\\mshta.exe *\\certutil.exe *\\powershell.exe *\\wmic.exe *\\pwsh.exe)
+    )
   group_by: ["host.name","user.name"]
   threshold: 2
   severity: medium

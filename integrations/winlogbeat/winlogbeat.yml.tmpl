@@ -1,12 +1,21 @@
 ﻿# Winlogbeat → OpenSearch (TinySocs-managed)
-# Keep this file under version control. The deploy script copies it to Program Files.
+# Keep this file under version control. The deploy script copies it to Program Files:
+#   C:\Program Files\TinySocs\Collector\winlogbeat\winlogbeat.yml
 
 winlogbeat.event_logs:
   # Security log (basic audit events)
   - name: Security
     ignore_older: 72h
 
-  # Sysmon telemetry (process, network, registry, etc.)
+  # System log (service / driver noise, useful for context)
+  - name: System
+    ignore_older: 72h
+
+  # Application log (app/service level events)
+  - name: Application
+    ignore_older: 72h
+
+  # Sysmon telemetry (process, network, registry, etc.) – optional if Sysmon is installed
   - name: Microsoft-Windows-Sysmon/Operational
     ignore_older: 72h
     processors:
@@ -30,13 +39,11 @@ winlogbeat.event_logs:
             event.module: powershell
             tags: [powershell, scriptblock]
 
-# Output: OpenSearch/Elasticsearch (via shim)
+# Output: TinyBox OpenSearch on localhost
 output.elasticsearch:
-  hosts: ["${SIEM_URL:http://127.0.0.1:40001}"]
-  username: "${SIEM_USER:admin}"
-  password: "${SIEM_PASS:ChangeMe123!}"
-  ssl.verification_mode: ${WB_SSL_VERIFY:none}
-  allow_older_versions: true
+  hosts: ["http://127.0.0.1:9200"]
+  index: "tinysocs-winlog-%{+yyyy.MM.dd}"
+  allow_older_versions: true          # tolerate newer OpenSearch clusters
   worker: 1
   bulk_max_size: 512
   headers:
@@ -46,11 +53,11 @@ output.elasticsearch:
 setup.ilm.enabled: false
 setup.template.enabled: false
 
-# Logging to file so we can tail it after restart
+# Logging to the TinySocs collector log path
 logging.level: info
 logging.to_files: true
 logging.files:
-  path: "C:/ProgramData/winlogbeat/Logs"
+  path: "C:/ProgramData/TinySocs/Collector/logs"
   name: "winlogbeat"
   keepfiles: 7
   rotateeverybytes: 10485760

@@ -102,3 +102,31 @@ packaging/iss/TinySocs-Setup.exe
 # Local packaging scratch (keep spec tracked)
 # -----------------------
 # packaging/*.spec  # intentionally NOT ignored
+
+# -----------------------
+# Third-party/vendor content (ignore all Sigma/YAML rulepacks etc.)
+# -----------------------
+rules/sigma/
+detections/sigma/
+sigma/
+vendor/
+third_party/
+src/tinysocs/agent/detections/sigma/
+src/tinysocs/agent/detections/rules/*
+
+# Ignore OpenSearch/Beats/vendor bundles if extracted accidentally
+OpenSearch/
+OpenSearch/*
+winlogbeat-*/
+beats-*/
+opensearch-*/
+
+# -----------------------
+# Repo-local runtime artefacts (should not be versioned)
+# -----------------------
+# Local runtime config (rendered files, not templates)
+config/
+
+# Dev/test ledger artefacts created when running from repo
+ledger/*.jsonl
+ledger/head.json

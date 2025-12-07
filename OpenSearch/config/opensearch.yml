@@ -12,3 +12,5 @@ path.logs: C:/ProgramData/TinySocs/OpenSearch/logs
 # TinyBox: local-only, no auth for now. Harden later.
 plugins.security.disabled: true
 
+compatibility:
+  override_main_response_version: true

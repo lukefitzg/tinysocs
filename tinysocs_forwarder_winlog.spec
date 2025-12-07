@@ -2,11 +2,11 @@
 
 
 a = Analysis(
-    ['src\\tinysocs\\orchestrator\\master.py'],
-    pathex=['src'],
+    ['C:\\Program Files\\TinySocs\\Collector\\forwarder\\tinysocs_forwarder_winlog.py'],
+    pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=['tinysocs.orchestrator.anchors', 'tinysocs.env'],
+    hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -14,12 +14,7 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
-
-pyz = PYZ(
-    a.pure,
-    a.zipped_data,
-    cipher=None,
-)
+pyz = PYZ(a.pure)
 
 exe = EXE(
     pyz,
@@ -27,7 +22,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='TinySocsMaster',
+    name='tinysocs_forwarder_winlog',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

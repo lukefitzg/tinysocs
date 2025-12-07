@@ -1,8 +1,8 @@
 [Setup]
 AppName=TinySocs
-AppVersion=0.7.0
+AppVersion=0.7.1
 AppPublisher=TinySocs
-AppId={{F2DCCF8F-6F5F-4D8B-9EAF-6E2C2C6B1234}
+AppId={{F2DCCF8F-6F5F-4D8B-9EAF-6E2C2C6B1234}}
 DefaultDirName={commonpf}\TinySocs
 DefaultGroupName=TinySocs
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -15,12 +15,12 @@ WizardStyle=modern
 [Files]
 ; Binaries (paths relative to this .iss → back out two levels)
 Source: "..\..\dist\TinySocsNode.exe";      DestDir: "{app}\bin"; Flags: ignoreversion
-Source: "..\..\dist\TinySocsMaster.exe";    DestDir: "{app}\bin"; Flags: ignoreversion
-Source: "..\..\dist\TinySocsAnchors.exe";   DestDir: "{app}\bin"; Flags: ignoreversion
+Source: "..\..\dist\TinySocsMaster.exe";   DestDir: "{app}\bin"; Flags: ignoreversion
+Source: "..\..\dist\TinySocsAnchors.exe";  DestDir: "{app}\bin"; Flags: ignoreversion
 
 ; NSSM is optional — include only if present at build time
 #ifexist "..\..\thirdparty\nssm.exe"
-Source: "..\..\thirdparty\nssm.exe";        DestDir: "{app}\bin"; Flags: ignoreversion
+Source: "..\..\thirdparty\nssm.exe";       DestDir: "{app}\bin"; Flags: ignoreversion
 #endif
 
 ; Modules / helpers
@@ -30,6 +30,26 @@ Source: "..\..\modules\Launch-Master.ps1";        DestDir: "{app}\modules"; Flag
 Source: "..\..\modules\Launch-Anchors.ps1";       DestDir: "{app}\modules"; Flags: ignoreversion
 Source: "..\..\modules\OPERATOR-README.txt";      DestDir: "{app}\modules"; Flags: ignoreversion
 Source: "..\..\modules\PostInstall.ps1";          DestDir: "{app}\modules"; Flags: ignoreversion
+
+; --- Build-time sanity checks for vendor payloads + payload copy ---
+
+; OpenSearch distro (TinyBox local SIEM)
+#ifnexist "..\..\vendor\opensearch-3.3.2-windows-x64\opensearch-3.3.2\bin\opensearch.bat"
+  #error "OpenSearch vendor payload missing. Extract opensearch-3.3.2-windows-x64.zip into vendor\opensearch-3.3.2-windows-x64"
+#endif
+
+Source: "..\..\vendor\opensearch-3.3.2-windows-x64\opensearch-3.3.2\*"; \
+    DestDir: "{app}\OpenSearch"; \
+    Flags: ignoreversion recursesubdirs createallsubdirs
+
+; Winlogbeat distro for TinySocsCollector (pinned to 7.10.2 for OpenSearch compatibility)
+#ifnexist "..\..\vendor\winlogbeat-7.10.2-windows-x86_64\winlogbeat-7.10.2-windows-x86_64\winlogbeat.exe"
+  #error "Winlogbeat vendor payload missing. Extract winlogbeat-7.10.2-windows-x86_64.zip into vendor\winlogbeat-7.10.2-windows-x86_64"
+#endif
+
+Source: "..\..\vendor\winlogbeat-7.10.2-windows-x86_64\winlogbeat-7.10.2-windows-x86_64\*"; \
+    DestDir: "{app}\Collector\winlogbeat"; \
+    Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Dirs]
 Name: "{commonappdata}\TinySocs"
@@ -52,9 +72,9 @@ Filename: "cmd.exe"; \
   Flags: runhidden
 
 [UninstallRun]
-; Gracefully tear down service, tasks, env, but keep data by default
+; Gracefully tear down service, tasks, env. Let Inno remove binaries and program directory.
 Filename: "powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""Import-Module '{app}\modules\TinySocs.Installer.psm1'; Uninstall-TinySocs -KeepData"""; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""Import-Module '{app}\modules\TinySocs.Installer.psm1'; Uninstall-TinySocs"""; \
   Flags: runhidden
 
 [Icons]
@@ -361,7 +381,9 @@ begin
     SiemUrl := Trim(SiemUrlEdit.Text);
     SiemUser := Trim(SiemUserEdit.Text);
     SiemPass := SiemPassEdit.Text;
-    InstallTinyBox := TinyBoxCheck.Checked;
+
+    { TinyBox role always implies local SIEM, even if the checkbox isn't ticked }
+    InstallTinyBox := TinyBoxCheck.Checked or (SelectedRole = ROLE_TINYBOX);
   end
   else if CurPageID = SchedulePage.ID then
   begin
@@ -402,7 +424,12 @@ begin
     Script :=
       'Import-Module ''' + InstallerModule + '''' + #13#10 +
       'Install-TinySocsLocalSiem -SiemUser ''' + PsEscape(SiemUser) +
-      ''' -SiemPass ''' + PsEscape(SiemPass) + ''' -SiemSslVerify:$false' + #13#10;
+      ''' -SiemPass ''' + PsEscape(SiemPass) +
+      ''' -ApiPort 9200' + #13#10 +
+      'Set-TinySocsSiemCredential -SiemUrl ''http://127.0.0.1:9200'' ' +
+      '-SiemUser ''' + PsEscape(SiemUser) + ''' ' +
+      '-SiemPass ''' + PsEscape(SiemPass) + ''' -SiemSslVerify:$false' + #13#10 +
+      'Install-TinySocsCollector -IndexPrefix ''tinysocs-winlog'' -ForceConfig' + #13#10;
 
     RunPowerShellScript(Script);
   end;
@@ -410,7 +437,10 @@ begin
   { Node pairing (Node role or TinyBox) }
   if (SelectedRole = ROLE_NODE) or (SelectedRole = ROLE_TINYBOX) then
   begin
-    if SiemUrl = '' then
+    { For TinyBox, always use local HTTP OpenSearch on 9200 }
+    if InstallTinyBox then
+      SiemUrl := 'http://127.0.0.1:9200'
+    else if SiemUrl = '' then
       SiemUrl := 'https://localhost:9201';
 
     Script :=
@@ -428,7 +458,7 @@ begin
   if (SelectedRole = ROLE_MASTER) or (SelectedRole = ROLE_TINYBOX) then
   begin
     if InstallTinyBox then
-      MasterSiemUrl := 'https://localhost:9201'
+      MasterSiemUrl := 'http://127.0.0.1:9200'
     else if SiemUrl <> '' then
       MasterSiemUrl := SiemUrl
     else

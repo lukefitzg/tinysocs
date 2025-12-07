@@ -1,5 +1,4 @@
-﻿# tinysocs/orchestrator/anchors.py
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 TinySocs â€” Anchors index manager (ensure + prune)
 
@@ -11,10 +10,10 @@ What it does
 
 Env
   TINYSOCS_ANCHORS_ALIAS   Alias/prefix (default: tinysocs_anchors)
-  SIEM_URL                 https://127.0.0.1:9201
+  SIEM_URL                 http://127.0.0.1:9200
   SIEM_USER                admin
   SIEM_PASS                admin
-  SIEM_SSL_VERIFY          "false"/"0" to disable verify
+  SIEM_SSL_VERIFY          "false"/"0" to disable verify (default: verify enabled)
 
 CLI
   python -m tinysocs.orchestrator.anchors --ensure --retention-days 30
@@ -32,60 +31,22 @@ import sys
 from typing import Any, Dict, List, Tuple
 from urllib.parse import urljoin
 
+from pathlib import Path
+from tinysocs.env import load_dotenv_if_present
+
 import requests
 from requests.auth import HTTPBasicAuth
 
-
-# ---------------- permissive .env loader ----------------
-def _parse_dotenv_content(s: str) -> None:
-    for raw in s.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, _, v = line.partition("=")
-        k, v = k.strip(), v.strip().strip('"').strip("'")
-        if k and (k not in os.environ):
-            os.environ[k] = v
-
-def _read_text_permissive(path: str) -> str:
-    for enc in ("utf-8", "utf-8-sig", "cp1252", "latin-1"):
-        try:
-            with open(path, encoding=enc) as f:
-                return f.read()
-        except UnicodeDecodeError:
-            continue
-        except FileNotFoundError:
-            break
-    try:
-        with open(path, "rb") as f:
-            return f.read().decode("utf-8", errors="ignore")
-    except Exception:
-        return ""
-
-def _load_dotenv_inplace() -> None:
-    here = os.path.abspath(__file__)
-    candidates = [
-        os.path.abspath(os.path.join(here, "..", "..", "..", ".env")),   # <repo>/.env
-        os.path.abspath(os.path.join(here, "..", "..", ".env")),         # <repo>/tinysocs/.env
-        os.path.abspath(os.path.join(os.getcwd(), ".env")),              # CWD
-    ]
-    for p in candidates:
-        if os.path.isfile(p):
-            try:
-                _parse_dotenv_content(_read_text_permissive(p))
-            except Exception as e:
-                print(f"[anchors] WARN: dotenv load failed for {p}: {e}")
-            break
-
-_load_dotenv_inplace()
-# -------------------------------------------------------
+load_dotenv_if_present(Path(__file__).resolve().parents[1])
 
 ALIAS = os.getenv("TINYSOCS_ANCHORS_ALIAS", "tinysocs_anchors")
 
-SIEM_URL    = os.getenv("SIEM_URL", "https://127.0.0.1:9201")
+SIEM_URL    = os.getenv("SIEM_URL", "http://127.0.0.1:9200")
 SIEM_USER   = os.getenv("SIEM_USER", "admin")
 SIEM_PASS   = os.getenv("SIEM_PASS", "admin")
 VERIFY_TLS  = str(os.getenv("SIEM_SSL_VERIFY", "true")).strip().lower() not in ("0", "false", "no", "off")
+
+print(f"[anchors] SIEM_URL={SIEM_URL} verify={VERIFY_TLS} user={SIEM_USER}")
 
 try:
     import urllib3  # type: ignore

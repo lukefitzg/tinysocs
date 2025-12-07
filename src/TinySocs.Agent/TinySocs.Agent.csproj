@@ -1,0 +1,61 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+
+  <!-- Release builds target Windows and are self-contained single-file EXEs -->
+  <PropertyGroup Condition="'$(Configuration)'=='Release'">
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="8.0.0" />
+    <PackageReference Include="YamlDotNet" Version="15.1.0" />
+  </ItemGroup>
+
+  <!-- Kill any rogue literal "**/*.cs" compile items coming from imported props/targets -->
+  <ItemGroup>
+    <Compile Remove="**/*.cs" />
+  </ItemGroup>
+
+  <!-- Explicitly include the actual source files for this project -->
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="AgentService.cs" />
+    <Compile Include="Configuration/**/*.cs" />
+    <Compile Include="Inputs/**/*.cs" />
+    <Compile Include="Models/**/*.cs" />
+    <Compile Include="Queue/**/*.cs" />
+    <Compile Include="Shipper/**/*.cs" />
+  </ItemGroup>
+
+  <!-- Stop bogus literal JSON/config content items -->
+  <ItemGroup>
+    <Content Remove="**/*.json" />
+    <Content Remove="**/*.config" />
+  </ItemGroup>
+
+  <!-- Explicitly include appsettings files and copy them to output -->
+  <ItemGroup>
+    <None Include="appsettings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="appsettings.Development.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Prevent any imported props/targets from treating a literal "**/*.resx" as a required resource -->
+    <EmbeddedResource Remove="**/*.resx" />
+  </ItemGroup>
+
+</Project>

@@ -43,6 +43,15 @@ wheelhouse/
 *.egg
 *.whl
 
+# -----------------------
+# .NET / dotnet build artefacts
+# -----------------------
+**/bin/
+**/obj/
+*.user
+*.suo
+*.userprefs
+
 # PyInstaller products
 # (avoid ignoring *.spec so packaging/*.spec can be committed)
 build/**/*
@@ -130,3 +139,11 @@ config/
 # Dev/test ledger artefacts created when running from repo
 ledger/*.jsonl
 ledger/head.json
+
+# Ignore Windows-style queue paths created on macOS during dev
+C:\ProgramData\TinySocs\Collector\agent\queue/
+C:\ProgramData\TinySocs\Collector\agent\queue/**
+
+# Ignore local queue segment files created during agent runs
+segment-*.jsonl
+**/segment-*.jsonl

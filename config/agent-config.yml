@@ -3,7 +3,7 @@ agent:
   node_id: default-node
   log_level: info
   log_file: C:\ProgramData\TinySocs\Collector\logs\agent.log
-  debug_fake_input: true
+  debug_fake_input: false        # set to true in labs to generate synthetic test events
 
 inputs:
   - type: eventlog

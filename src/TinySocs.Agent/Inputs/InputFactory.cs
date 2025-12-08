@@ -35,9 +35,22 @@ namespace TinySocs.Agent.Inputs
                 }
                 else if (string.Equals(inputConfig.Type, "fake", StringComparison.OrdinalIgnoreCase))
                 {
+                    // Dev-only synthetic input used for testing queue + shipper behaviour.
+                    // Guarded by agent.debug_fake_input so it is not enabled in production.
+                    if (config.Agent == null || !config.Agent.DebugFakeInput)
+                    {
+                        factoryLogger.LogInformation(
+                            "Skipping dev-only input type 'fake' because agent.debug_fake_input is disabled.");
+                        continue;
+                    }
+
                     var logger = loggerFactory.CreateLogger<FakeInput>();
                     var input = new FakeInput(logger, config, queueWriter);
                     results.Add(input);
+
+                    factoryLogger.LogInformation(
+                        "Created dev-only FakeInput '{Name}' (agent.debug_fake_input = true).",
+                        inputConfig.Name);
                 }
                 else
                 {

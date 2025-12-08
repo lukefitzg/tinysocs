@@ -17,8 +17,13 @@ public sealed class AgentSection
     public string Name { get; set; } = "TinySocsAgent";
     public string NodeId { get; set; } = "default-node";
     public string LogLevel { get; set; } = "info";
+
     public string LogFile { get; set; } =
         @"C:\ProgramData\TinySocs\Collector\logs\agent.log";
+
+    // Dev-only switch to guard FakeInput so it never runs in production
+    // unless explicitly enabled in config (agent.debug_fake_input: true).
+    public bool DebugFakeInput { get; set; } = false;
 }
 
 /// <summary>

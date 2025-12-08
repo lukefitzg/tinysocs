@@ -1,0 +1,74 @@
+agent:
+  name: TinySocsAgent
+  node_id: default-node
+  log_level: info
+  log_file: C:\ProgramData\TinySocs\Collector\logs\agent.log
+  debug_fake_input: true
+
+inputs:
+  - type: eventlog
+    name: win-events
+    channels:
+      - name: Security
+        level: information          # critical/error/warning/information/verbose
+        start_from: now             # now | bookmark | beginning
+      - name: System
+        level: warning
+        start_from: now
+      - name: Application
+        level: information
+        start_from: now
+      - name: Microsoft-Windows-PowerShell/Operational
+        level: information
+        start_from: now
+      - name: Microsoft-Windows-Sysmon/Operational
+        level: information
+        start_from: now
+      - name: Microsoft-Windows-Windows Defender/Operational
+        level: information
+        start_from: now
+    bookmarks:
+      path: C:\ProgramData\TinySocs\Collector\agent\bookmarks
+      persist_interval_seconds: 10
+
+  - type: fake
+    name: fake-test
+
+queue:
+  path: C:\ProgramData\TinySocs\Collector\agent\queue
+  segment_max_bytes: 10485760        # 10 MB
+  max_segments: 100                  # ~1 GB cap
+  flush_interval_ms: 200
+  sync_on_flush: true
+  retention_policy:
+    min_successful_ship_count: 1     # how many ship passes before deletion
+
+output:
+  type: opensearch
+  url: https://localhost:9201
+  ssl_verify: false
+  index_pattern: tinysocs-winlog-{yyyy.MM.dd}
+  pipeline: ""                       # optional ingest pipeline name
+  bulk:
+    batch_size_events: 500
+    batch_size_bytes: 5242880        # 5 MB
+    flush_interval_ms: 1000
+  retry:
+    max_retries: 5
+    initial_backoff_ms: 1000
+    max_backoff_ms: 60000
+
+privacy:
+  drop_fields:
+    - "winlog.event_data.CommandLine"
+    - "winlog.event_data.ProcessCommandLine"
+  hash_fields:
+    - "winlog.event_data.TargetUserName"
+    - "winlog.event_data.TargetDomainName"
+  truncate_fields:
+    - field: "message"
+      max_length: 4096
+
+siem_credentials:
+  source: credman
+  target: TinySocs/SIEM/Creds

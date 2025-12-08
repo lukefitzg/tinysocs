@@ -134,7 +134,10 @@ opensearch-*/
 # Repo-local runtime artefacts (should not be versioned)
 # -----------------------
 # Local runtime config (rendered files, not templates)
-config/
+config/*
+!config/agent-config.yml
+!config/agent-config.example.yml
+!config/.gitkeep
 
 # Dev/test ledger artefacts created when running from repo
 ledger/*.jsonl

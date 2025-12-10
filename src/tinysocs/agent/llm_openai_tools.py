@@ -25,8 +25,12 @@ MAX_FINDINGS_FOR_CLOUD = int(os.getenv("MAX_FINDINGS_FOR_CLOUD", "12"))
 MAX_PROMPT_CHARS = int(os.getenv("MAX_PROMPT_CHARS", "18000"))  # hard stop << 128k tokens
 
 # ▶ tool index allow-list (model can ONLY query these)
-ALLOW_INDICES = [s.strip() for s in os.getenv("LLM_TOOL_INDEX_ALLOW", "winlogbeat-*").split(",") if s.strip()]
-DEFAULT_INDEX = ALLOW_INDICES[0] if ALLOW_INDICES else "winlogbeat-*"
+ALLOW_INDICES = [
+    s.strip()
+    for s in os.getenv("LLM_TOOL_INDEX_ALLOW", "tinysocs-winlog-*").split(",")
+    if s.strip()
+]
+DEFAULT_INDEX = ALLOW_INDICES[0] if ALLOW_INDICES else "tinysocs-winlog-*"
 
 # ▶ persistence toggles
 # Prefer explicit case index; otherwise use write index; finally default.
@@ -393,7 +397,7 @@ def summarize_findings(findings: List[Dict[str, Any]]) -> Dict[str, Any]:
         "required": ["tldr", "severity", "evidence", "next_steps", "candidate_actions"],
     }
 
-    allowed_str = ", ".join(ALLOW_INDICES) if ALLOW_INDICES else "winlogbeat-*"
+    allowed_str = ", ".join(ALLOW_INDICES) if ALLOW_INDICES else "tinysocs-winlog-*"
     system = (
         "You are TinySocs' analyst. You may call tools to run LOCAL queries. "
         f"When calling tools, the ONLY allowed indices are: {allowed_str}. "

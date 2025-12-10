@@ -18,6 +18,17 @@ Source: "..\..\dist\TinySocsNode.exe";      DestDir: "{app}\bin"; Flags: ignorev
 Source: "..\..\dist\TinySocsMaster.exe";   DestDir: "{app}\bin"; Flags: ignoreversion
 Source: "..\..\dist\TinySocsAnchors.exe";  DestDir: "{app}\bin"; Flags: ignoreversion
 
+; TinySocs collector agent binary (self-contained win-x64 publish)
+Source: "..\..\src\TinySocs.Agent\bin\Release\net8.0\win-x64\publish\TinySocs.Agent.exe"; \
+    DestDir: "{app}\bin"; \
+    Flags: ignoreversion
+
+; TinySocs collector agent config template → ProgramData
+Source: "..\..\config\agent-config.yml"; \
+    DestDir: "{commonappdata}\TinySocs\Collector\agent"; \
+    DestName: "config.yml"; \
+    Flags: ignoreversion
+
 ; NSSM is optional — include only if present at build time
 #ifexist "..\..\thirdparty\nssm.exe"
 Source: "..\..\thirdparty\nssm.exe";       DestDir: "{app}\bin"; Flags: ignoreversion
@@ -42,14 +53,10 @@ Source: "..\..\vendor\opensearch-3.3.2-windows-x64\opensearch-3.3.2\*"; \
     DestDir: "{app}\OpenSearch"; \
     Flags: ignoreversion recursesubdirs createallsubdirs
 
-; Winlogbeat distro for TinySocsCollector (pinned to 7.10.2 for OpenSearch compatibility)
-#ifnexist "..\..\vendor\winlogbeat-7.10.2-windows-x86_64\winlogbeat-7.10.2-windows-x86_64\winlogbeat.exe"
-  #error "Winlogbeat vendor payload missing. Extract winlogbeat-7.10.2-windows-x86_64.zip into vendor\winlogbeat-7.10.2-windows-x86_64"
-#endif
-
-Source: "..\..\vendor\winlogbeat-7.10.2-windows-x86_64\winlogbeat-7.10.2-windows-x86_64\*"; \
-    DestDir: "{app}\Collector\winlogbeat"; \
-    Flags: ignoreversion recursesubdirs createallsubdirs
+; OpenSearch index templates for TinySocs
+Source: "..\opensearch\templates\*.json"; \
+    DestDir: "{app}\OpenSearch\templates"; \
+    Flags: ignoreversion
 
 [Dirs]
 Name: "{commonappdata}\TinySocs"
@@ -60,11 +67,23 @@ Name: "{commonappdata}\TinySocs\rules"
 Name: "{commonappdata}\TinySocs\anchors\state"
 Name: "{commonappdata}\TinySocs\ledger"
 
+; TinySocs collector agent directories under ProgramData
+Name: "{commonappdata}\TinySocs\Collector"
+Name: "{commonappdata}\TinySocs\Collector\agent"
+Name: "{commonappdata}\TinySocs\Collector\agent\queue"
+Name: "{commonappdata}\TinySocs\Collector\agent\bookmarks"
+Name: "{commonappdata}\TinySocs\Collector\logs"
+
 [Run]
 ; Do the post-install work from a script (safer than inline one-liners)
 Filename: "powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\modules\PostInstall.ps1"""; \
   Flags: runhidden; StatusMsg: "Configuring TinySocs..."
+
+; Register TinySocs collector agent Windows service
+Filename: "powershell.exe"; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""Import-Module '{app}\modules\TinySocs.Installer.psm1'; Install-TinySocsAgentService"""; \
+  Flags: runhidden; StatusMsg: "Registering TinySocs collector agent..."
 
 ; Inbound firewall rule for Node port 8081 (idempotent) — NETSH avoids brace parsing
 Filename: "cmd.exe"; \
@@ -76,6 +95,9 @@ Filename: "cmd.exe"; \
 Filename: "powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""Import-Module '{app}\modules\TinySocs.Installer.psm1'; Uninstall-TinySocs"""; \
   Flags: runhidden
+
+[UninstallDelete]
+Type: filesandordirs; Name: "{app}"
 
 [Icons]
 Name: "{group}\Operator README"; Filename: "{app}\modules\OPERATOR-README.txt"; WorkingDir: "{app}\modules"
@@ -96,6 +118,8 @@ var
   RoleMasterRadio: TRadioButton;
   RoleTinyBoxRadio: TRadioButton;
 
+  RemoveDataCheck: TNewCheckBox;
+
   SharedSecretEdit: TNewEdit;
   NodePortEdit: TNewEdit;
   NodesEdit: TNewEdit;
@@ -109,6 +133,7 @@ var
 
   SelectedRole: Integer;
   InstallTinyBox: Boolean;
+  RemoveDataOnUninstall: Boolean;
 
   SharedSecret: String;
   NodePort: String;
@@ -154,6 +179,7 @@ var
 procedure InitializeWizard;
 var
   L: TNewStaticText;
+  FlagPath: String;
 begin
   { --- Role selection page --- }
   RolePage := CreateCustomPage(
@@ -327,6 +353,21 @@ begin
   RetentionEdit.Width := 80;
   RetentionEdit.Text := '45';
 
+  { Uninstall behaviour: optional full data removal }
+  RemoveDataCheck := TNewCheckBox.Create(SchedulePage.Surface);
+  RemoveDataCheck.Parent := SchedulePage.Surface;
+  RemoveDataCheck.Left := 0;
+  RemoveDataCheck.Top := RetentionEdit.Top + 60;
+  RemoveDataCheck.Width := SchedulePage.SurfaceWidth + 150;
+  RemoveDataCheck.Height := ScaleY(24);
+  RemoveDataCheck.Caption := 'Remove all TinySocs data (logs, ledger, config) when uninstalling';
+  RemoveDataCheck.Checked := False;
+
+  { If a previous install left a marker flag, pre-tick the checkbox }
+  FlagPath := ExpandConstant('{commonappdata}\TinySocs\remove_on_uninstall.flag');
+  if FileExists(FlagPath) then
+    RemoveDataCheck.Checked := True;
+
   { Defaults }
   SelectedRole := ROLE_NODE;
   InstallTinyBox := False;
@@ -396,6 +437,8 @@ begin
     if TmpInt <= 0 then
       TmpInt := 45;
     AnchorsRetentionDays := TmpInt;
+
+    RemoveDataOnUninstall := RemoveDataCheck.Checked;
   end;
 end;
 
@@ -405,6 +448,7 @@ var
   AppDir: String;
   MasterSiemUrl: String;
   Script: String;
+  DataFlagFile: String;
 begin
   if CurStep <> ssPostInstall then
     Exit;
@@ -428,8 +472,7 @@ begin
       ''' -ApiPort 9200' + #13#10 +
       'Set-TinySocsSiemCredential -SiemUrl ''http://127.0.0.1:9200'' ' +
       '-SiemUser ''' + PsEscape(SiemUser) + ''' ' +
-      '-SiemPass ''' + PsEscape(SiemPass) + ''' -SiemSslVerify:$false' + #13#10 +
-      'Install-TinySocsCollector -IndexPrefix ''tinysocs-winlog'' -ForceConfig' + #13#10;
+      '-SiemPass ''' + PsEscape(SiemPass) + ''' -SiemSslVerify:$false' + #13#10;
 
     RunPowerShellScript(Script);
   end;
@@ -477,5 +520,31 @@ begin
       '-HeartbeatMinutes ' + IntToStr(HeartbeatMinutes) + #13#10;
 
     RunPowerShellScript(Script);
+  end;
+
+  { Persist uninstall preference marker under ProgramData }
+  DataFlagFile := ExpandConstant('{commonappdata}\TinySocs\remove_on_uninstall.flag');
+  if RemoveDataOnUninstall then
+    SaveStringToFile(DataFlagFile, '1', False)
+  else if FileExists(DataFlagFile) then
+    DeleteFile(DataFlagFile);
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  DataRoot: String;
+  FlagPath: String;
+begin
+  { After the normal uninstall (including UninstallRun), optionally remove all data under ProgramData }
+  if CurUninstallStep <> usPostUninstall then
+    Exit;
+
+  DataRoot := ExpandConstant('{commonappdata}\TinySocs');
+  FlagPath := DataRoot + '\remove_on_uninstall.flag';
+
+  if FileExists(FlagPath) then
+  begin
+    { Best-effort removal; ignore failures }
+    DelTree(DataRoot, True, True, True);
   end;
 end;

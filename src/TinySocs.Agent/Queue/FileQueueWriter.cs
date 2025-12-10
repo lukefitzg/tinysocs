@@ -77,14 +77,36 @@ namespace TinySocs.Agent.Queueing
                     await RotateSegmentAsync(cancellationToken).ConfigureAwait(false);
                 }
 
-                // Append line
                 if (_currentSegmentPath == null)
                 {
                     throw new InvalidOperationException("Current segment path should not be null after EnsureCurrentSegmentAsync.");
                 }
 
-                await File.AppendAllTextAsync(_currentSegmentPath, line, Encoding.UTF8, cancellationToken)
-                          .ConfigureAwait(false);
+                // Append line using a FileStream that allows concurrent readers/writers
+                try
+                {
+                    await using var fs = new FileStream(
+                        _currentSegmentPath,
+                        FileMode.Append,
+                        FileAccess.Write,
+                        FileShare.ReadWrite, // allow reader and any future writers
+                        4096,
+                        FileOptions.Asynchronous | FileOptions.WriteThrough);
+
+                    using var writer = new StreamWriter(fs, Encoding.UTF8, bufferSize: 4096, leaveOpen: false);
+#if NET8_0_OR_GREATER
+                    await writer.WriteAsync(line.AsMemory(), cancellationToken).ConfigureAwait(false);
+                    await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
+#else
+                    await writer.WriteAsync(line).ConfigureAwait(false);
+                    await writer.FlushAsync().ConfigureAwait(false);
+#endif
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to append event to queue segment {Path}", _currentSegmentPath);
+                    throw;
+                }
 
                 _currentSegmentBytes += bytes;
             }
@@ -108,8 +130,14 @@ namespace TinySocs.Agent.Queueing
 
             try
             {
-                // Create empty file
-                await using (File.Create(fullPath, 4096, FileOptions.Asynchronous | FileOptions.WriteThrough))
+                // Create empty file, but allow future readers/writers to open it concurrently
+                await using (var fs = new FileStream(
+                    fullPath,
+                    FileMode.CreateNew,
+                    FileAccess.Write,
+                    FileShare.ReadWrite,
+                    4096,
+                    FileOptions.Asynchronous | FileOptions.WriteThrough))
                 {
                     // no-op; just ensure it exists
                 }

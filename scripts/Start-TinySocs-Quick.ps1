@@ -1,5 +1,5 @@
 # TinySocs Quickstart
-# Brings the box to "ready" (WB + shim + Node + Bot), runs master once, verifies anchors, then runs Doctor.
+# Brings the box to "ready" (Node + Bot + local SIEM shim), runs master once, verifies anchors, then runs Doctor.
 
 Import-Module "$PSScriptRoot\TinySocs.Utils.psm1" -Force
 
@@ -130,12 +130,7 @@ function Start-TinySocs-Ready {
     try { & $PyExe -m tinysocs.orchestrator.anchors --ensure 2>$null | Out-Null } catch {}
   }
 
-  # 4) Winlogbeat + Shim (idempotent)
-  if (Get-Command Ensure-WB-Setup -ErrorAction SilentlyContinue) { Ensure-WB-Setup }
-  if (Get-Command Install-Or-Repair-WinlogbeatService -ErrorAction SilentlyContinue) { Install-Or-Repair-WinlogbeatService }
-  if (Get-Command Sync-TinySocsWinlogbeatConfig -ErrorAction SilentlyContinue) { Sync-TinySocsWinlogbeatConfig }
-  if (Get-Command Ensure-OSShim-And-PointWinlogbeat -ErrorAction SilentlyContinue) { Ensure-OSShim-And-PointWinlogbeat }
-  if (Get-Command Start-WinlogbeatAndWaitHealthy -ErrorAction SilentlyContinue) { Start-WinlogbeatAndWaitHealthy }
+  # 4) Local SIEM shim (optional, idempotent)
   if (Get-Command Start-OSShim -ErrorAction SilentlyContinue) { Start-OSShim }
 
   # 5) Start Node (background)
@@ -169,10 +164,6 @@ function Start-TinySocs-Ready {
   } catch {}
 
   # 7) Gather optional status (PowerShell 5.1-safe)
-  $wbSvc = $null
-  try { $wbSvc = Get-Service -Name winlogbeat -ErrorAction SilentlyContinue } catch {}
-  $wbStatus = if ($null -ne $wbSvc) { $wbSvc.Status } else { $null }
-
   $shimPort = $null
   if (Get-Command Get-TinySOCSShimPort -ErrorAction SilentlyContinue) {
     try { $shimPort = Get-TinySOCSShimPort } catch { $shimPort = $null }
@@ -180,12 +171,11 @@ function Start-TinySocs-Ready {
 
   # 8) Return status object
   [pscustomobject]@{
-    NodeUrl    = "http://localhost:$NodePort"
-    BotUrl     = "http://localhost:$BotPort"
-    NodeReady  = $nodeUp
-    BotReady   = $botUp
-    Winlogbeat = $wbStatus
-    ShimPort   = $shimPort
+    NodeUrl   = "http://localhost:$NodePort"
+    BotUrl    = "http://localhost:$BotPort"
+    NodeReady = $nodeUp
+    BotReady  = $botUp
+    ShimPort  = $shimPort
   }
 }
 

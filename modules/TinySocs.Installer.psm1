@@ -30,7 +30,17 @@ function Write-TinySocsLog {
 
 function New-ProgramDataLayout {
   $root = Get-TinySocsDataRoot
-  "$root\logs","$root\queue","$root\ledger","$root\rules","$root\anchors\state","$root\config" |
+  "$root\logs",
+  "$root\queue",
+  "$root\ledger",
+  "$root\rules",
+  "$root\anchors\state",
+  "$root\config",
+  "$root\Collector",
+  "$root\Collector\agent",
+  "$root\Collector\agent\queue",
+  "$root\Collector\agent\bookmarks",
+  "$root\Collector\logs" |
     ForEach-Object { New-Item -ItemType Directory -Force -Path $_ | Out-Null }
 }
 
@@ -244,72 +254,6 @@ path.logs: $logsPathNormalized
   Write-TinySocsLog "OpenSearch config written to $ConfigPath"
 }
 
-# Helper: Write Winlogbeat config pointing at TinySocs file-out (TinyBox or remote via forwarder)
-function Write-TinySocsWinlogbeatConfig {
-  [CmdletBinding()]
-  param(
-    [Parameter(Mandatory)][string]$ConfigPath,
-    [string]$SiemUrl,
-    [string]$IndexPrefix = "tinysocs-winlog",
-    [switch]$Force
-  )
-
-  if ((Test-Path $ConfigPath -PathType Leaf) -and -not $Force.IsPresent) {
-    Write-TinySocsLog "winlogbeat.yml already exists and -ForceConfig not set; leaving as-is: $ConfigPath"
-    return
-  }
-
-  # We no longer send directly to OpenSearch from Winlogbeat. All events go to a local file
-  # which the TinySocs forwarder reads and ships to the SIEM.
-  $configContent = @"
-winlogbeat.event_logs:
-  - name: Security
-  - name: System
-  - name: Application
-  - name: Windows PowerShell
-  - name: Microsoft-Windows-PowerShell/Operational
-
-  # Optional: if Sysmon is present
-  - name: Microsoft-Windows-Sysmon/Operational
-    ignore_older: 72h
-
-processors:
-  - add_host_metadata: ~
-  - add_cloud_metadata: ~
-  - add_process_metadata: ~
-  - add_fields:
-      target: ''
-      fields:
-        tinysocs_source: winlogbeat
-  - add_fields:
-      target: ''
-      fields:
-        tinysocs_node: \${COMPUTERNAME}
-
-output.file:
-  path: C:/ProgramData/TinySocs/Collector/winlogbeat/out
-  filename: events
-  rotate_every_kb: 10240
-  number_of_files: 10
-
-logging.to_files: true
-logging.files:
-  path: C:/ProgramData/TinySocs/Collector/logs
-  name: winlogbeat
-  keepfiles: 7
-  rotateeverybytes: 10485760
-
-logging.level: info
-"@
-
-  $configDir = Split-Path -Parent $ConfigPath
-  if (-not (Test-Path $configDir)) {
-    New-Item -ItemType Directory -Force -Path $configDir | Out-Null
-  }
-
-  $configContent | Out-File -FilePath $ConfigPath -Encoding UTF8 -Force
-  Write-TinySocsLog "Winlogbeat config written to $ConfigPath (file-output -> TinySocs forwarder)."
-}
 
 # Helper: Ensure OpenSearch security plugin is disabled (plugins/opensearch-security)
 function Disable-TinySocsOpenSearchSecurityPlugin {
@@ -397,12 +341,13 @@ function Ensure-TinySocsOpenSearchService {
   Write-TinySocsLog "Service '$ServiceName' ensured via NSSM."
 }
 
-#
-# Helper: Ensure TinySocsCollector (Winlogbeat) service via NSSM
-function Ensure-TinySocsCollectorService {
+
+
+# Helper: Ensure TinySocs Agent service via NSSM
+function Ensure-TinySocsAgentService {
   [CmdletBinding()]
   param(
-    [Parameter(Mandatory)][string]$WinlogbeatRoot,
+    [Parameter(Mandatory)][string]$AgentExePath,
     [Parameter(Mandatory)][string]$NssmPath,
     [Parameter(Mandatory)][string]$ServiceName,
     [Parameter(Mandatory)][string]$DisplayName,
@@ -410,82 +355,36 @@ function Ensure-TinySocsCollectorService {
   )
 
   if (-not (Test-Path $NssmPath -PathType Leaf)) {
-    throw "nssm.exe not found at '$NssmPath'. Ensure the TinySocs installer copies nssm.exe before installing the collector."
+    throw "nssm.exe not found at '$NssmPath'. Ensure the TinySocs installer copies nssm.exe before installing the agent."
   }
 
-  $exePath = Join-Path $WinlogbeatRoot "winlogbeat.exe"
-  if (-not (Test-Path $exePath -PathType Leaf)) {
-    Write-TinySocsLog -Level "WARN" -Message "winlogbeat.exe not found at '$exePath'. Collector service '$ServiceName' will not be installed. Ensure Winlogbeat is installed under '$WinlogbeatRoot'."
+  if (-not (Test-Path $AgentExePath -PathType Leaf)) {
+    Write-TinySocsLog -Level "WARN" -Message "TinySocs.Agent.exe not found at '$AgentExePath'. Agent service '$ServiceName' will not be installed."
     return
   }
 
-  $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+  $agentRoot = Split-Path -Parent $AgentExePath
+  $service   = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 
   if ($null -eq $service) {
-    Write-TinySocsLog "Creating NSSM service '$ServiceName' for TinySocs Collector (Winlogbeat)"
-    & $NssmPath install $ServiceName $exePath | Out-Null
+    Write-TinySocsLog "Creating NSSM service '$ServiceName' for TinySocs Collector Agent"
+    & $NssmPath install $ServiceName $AgentExePath | Out-Null
   } else {
     Write-TinySocsLog "Service '$ServiceName' already exists; updating NSSM configuration"
   }
 
-  & $NssmPath set $ServiceName DisplayName  $DisplayName    | Out-Null
-  & $NssmPath set $ServiceName Description  $Description    | Out-Null
-  & $NssmPath set $ServiceName AppDirectory $WinlogbeatRoot | Out-Null
-
-  # Winlogbeat standard args: -c winlogbeat.yml -e (log to stderr)
-  & $NssmPath set $ServiceName AppParameters "-c winlogbeat.yml -e" | Out-Null
+  & $NssmPath set $ServiceName DisplayName  $DisplayName | Out-Null
+  & $NssmPath set $ServiceName Description  $Description | Out-Null
+  & $NssmPath set $ServiceName AppDirectory $agentRoot   | Out-Null
 
   # Run as LocalSystem, delayed start, restart on exit
-  & $NssmPath set $ServiceName ObjectName "LocalSystem"                           | Out-Null
-  & $NssmPath set $ServiceName Start "SERVICE_DELAYED_AUTO_START"                 | Out-Null
-  & $NssmPath set $ServiceName AppExit Default Restart                            | Out-Null
-  & $NssmPath set $ServiceName AppStdout "C:\ProgramData\TinySocs\Collector\logs\winlogbeat.out.log" | Out-Null
-  & $NssmPath set $ServiceName AppStderr "C:\ProgramData\TinySocs\Collector\logs\winlogbeat.err.log" | Out-Null
+  & $NssmPath set $ServiceName ObjectName "LocalSystem"            | Out-Null
+  & $NssmPath set $ServiceName Start "SERVICE_DELAYED_AUTO_START"  | Out-Null
+  & $NssmPath set $ServiceName AppExit Default Restart             | Out-Null
+  & $NssmPath set $ServiceName AppStdout "C:\ProgramData\TinySocs\Collector\logs\TinySocsAgent.out.log" | Out-Null
+  & $NssmPath set $ServiceName AppStderr "C:\ProgramData\TinySocs\Collector\logs\TinySocsAgent.err.log" | Out-Null
 
-  Write-TinySocsLog "Service '$ServiceName' ensured via NSSM (Collector)."
-}
-
-# Helper: Ensure TinySocs Winlog forwarder service via NSSM
-function Ensure-TinySocsWinlogForwarderService {
-  [CmdletBinding()]
-  param(
-    [Parameter(Mandatory)][string]$ForwarderRoot,
-    [Parameter(Mandatory)][string]$NssmPath,
-    [Parameter(Mandatory)][string]$ServiceName,
-    [Parameter(Mandatory)][string]$DisplayName,
-    [Parameter(Mandatory)][string]$Description
-  )
-
-  if (-not (Test-Path $NssmPath -PathType Leaf)) {
-    throw "nssm.exe not found at '$NssmPath'. Ensure the TinySocs installer copies nssm.exe before installing the forwarder."
-  }
-
-  $exePath = Join-Path $ForwarderRoot "tinysocs_forwarder_winlog.exe"
-  if (-not (Test-Path $exePath -PathType Leaf)) {
-    Write-TinySocsLog -Level "WARN" -Message "tinysocs_forwarder_winlog.exe not found at '$exePath'. Forwarder service '$ServiceName' will not be installed. Ensure the forwarder EXE is installed under '$ForwarderRoot'."
-    return
-  }
-
-  $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-
-  if ($null -eq $service) {
-    Write-TinySocsLog "Creating NSSM service '$ServiceName' for TinySocs Winlog forwarder"
-    & $NssmPath install $ServiceName $exePath | Out-Null
-  } else {
-    Write-TinySocsLog "Service '$ServiceName' already exists; updating NSSM configuration"
-  }
-
-  & $NssmPath set $ServiceName DisplayName  $DisplayName   | Out-Null
-  & $NssmPath set $ServiceName Description  $Description   | Out-Null
-  & $NssmPath set $ServiceName AppDirectory $ForwarderRoot | Out-Null
-
-  & $NssmPath set $ServiceName ObjectName "LocalSystem"                | Out-Null
-  & $NssmPath set $ServiceName Start "SERVICE_DELAYED_AUTO_START"      | Out-Null
-  & $NssmPath set $ServiceName AppExit Default Restart                 | Out-Null
-  & $NssmPath set $ServiceName AppStdout "C:\ProgramData\TinySocs\Collector\logs\tinysocs_forwarder_winlog.out.log" | Out-Null
-  & $NssmPath set $ServiceName AppStderr "C:\ProgramData\TinySocs\Collector\logs\tinysocs_forwarder_winlog.err.log" | Out-Null
-
-  Write-TinySocsLog "Service '$ServiceName' ensured via NSSM (Winlog forwarder)."
+  Write-TinySocsLog "Service '$ServiceName' ensured via NSSM (TinySocs Agent)."
 }
 
 # Helper: Wait for local SIEM HTTP to become ready
@@ -594,84 +493,80 @@ function Install-TinySocsLocalSiem {
   Write-TinySocsLog "Local SIEM (OpenSearch) configured at $siemUrl (no auth, local-only)."
 }
 
-function Install-TinySocsCollector {
+
+function Install-TinySocsAgentService {
   [CmdletBinding()]
   param(
-    [string]$IndexPrefix = "tinysocs-winlog",
     [switch]$NoStart,
-    [switch]$ForceConfig
+    [string]$ConfigPath
   )
 
-  $installRoot    = Get-TinySocsInstallRoot
-  $collectorRoot  = Join-Path $installRoot "Collector"
-  $winlogbeatRoot = Join-Path $collectorRoot "winlogbeat"
-  $dataRoot       = Join-Path (Get-TinySocsDataRoot) "Collector"
-  $logsPath       = Join-Path $dataRoot "logs"
-  $nssmPath       = Join-Path $installRoot "bin\nssm.exe"
-  $forwarderRoot  = Join-Path $collectorRoot "forwarder"
-  $outDir         = Join-Path $dataRoot "winlogbeat\out"
+  Install-TinySocs  # ensure ProgramData layout
 
-  New-Item -ItemType Directory -Force -Path $dataRoot | Out-Null
-  New-Item -ItemType Directory -Force -Path $logsPath | Out-Null
-  New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+  $installRoot = Get-TinySocsInstallRoot
+  $agentExe    = Join-Path $installRoot "bin\TinySocs.Agent.exe"
+  $nssmPath    = Join-Path $installRoot "bin\nssm.exe"
 
-  $configFile = Join-Path $winlogbeatRoot "winlogbeat.yml"
-  Write-TinySocsWinlogbeatConfig -ConfigPath $configFile `
-    -IndexPrefix $IndexPrefix `
-    -Force:$ForceConfig
+  if (-not (Test-Path $agentExe -PathType Leaf)) {
+    Write-TinySocsLog -Level "WARN" -Message "TinySocs.Agent.exe not found at '$agentExe'. Skipping agent service installation."
+    return
+  }
 
-  $serviceName = "TinySocsCollector"
-  $displayName = "TinySocs Collector (Winlogbeat)"
-  $description = "Local Windows Event Log collector for TinySocs TinyBox SIEM"
+  if (-not (Test-Path $nssmPath -PathType Leaf)) {
+    Write-TinySocsLog -Level "WARN" -Message "nssm.exe not found at '$nssmPath'. Skipping agent service installation."
+    return
+  }
 
-  Ensure-TinySocsCollectorService -WinlogbeatRoot $winlogbeatRoot `
+  if (-not $ConfigPath) {
+    $ConfigPath = "C:\ProgramData\TinySocs\Collector\agent\config.yml"
+  }
+
+  # Ensure agent-specific dirs exist
+  $dataRoot    = Join-Path (Get-TinySocsDataRoot) "Collector"
+  $agentRoot   = Join-Path $dataRoot "agent"
+  $queueDir    = Join-Path $agentRoot "queue"
+  $bookmarkDir = Join-Path $agentRoot "bookmarks"
+  $logsDir     = Join-Path $dataRoot "logs"
+
+  New-Item -ItemType Directory -Force -Path $agentRoot   | Out-Null
+  New-Item -ItemType Directory -Force -Path $queueDir    | Out-Null
+  New-Item -ItemType Directory -Force -Path $bookmarkDir | Out-Null
+  New-Item -ItemType Directory -Force -Path $logsDir     | Out-Null
+
+  # Point the agent at its config via machine env
+  Set-MachineEnv @{
+    TINYSOCS_AGENT_CONFIG = $ConfigPath
+  }
+
+  $serviceName = "TinySocsAgent"
+  $displayName = "TinySocs Collector Agent"
+  $description = "TinySocs-native Windows Event Log collector with local queue and OpenSearch output"
+
+  Ensure-TinySocsAgentService -AgentExePath $agentExe `
     -NssmPath $nssmPath `
     -ServiceName $serviceName `
     -DisplayName $displayName `
     -Description $description
 
-  $fwdServiceName = "TinySocsWinlogForwarder"
-  $fwdDisplayName = "TinySocs Winlog Forwarder"
-  $fwdDescription = "TinySocs local forwarder from Winlogbeat file output into OpenSearch"
-
-  Ensure-TinySocsWinlogForwarderService -ForwarderRoot $forwarderRoot `
-    -NssmPath $nssmPath `
-    -ServiceName $fwdServiceName `
-    -DisplayName $fwdDisplayName `
-    -Description $fwdDescription
-
-  $collectorService = Get-Service -Name $serviceName      -ErrorAction SilentlyContinue
-  $forwarderService = Get-Service -Name $fwdServiceName   -ErrorAction SilentlyContinue
+  $agentService = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
 
   if (-not $NoStart) {
-    if ($null -ne $collectorService) {
+    if ($null -ne $agentService) {
       try {
         Start-Service -Name $serviceName -ErrorAction Stop
-        Write-TinySocsLog "Collector service '$serviceName' started."
+        Write-TinySocsLog "Agent service '$serviceName' started."
       } catch {
-        Write-TinySocsLog -Level "WARN" -Message "Failed to start collector service '$serviceName': $($_.Exception.Message)"
+        Write-TinySocsLog -Level "WARN" -Message "Failed to start agent service '$serviceName': $($_.Exception.Message)"
       }
     } else {
-      Write-TinySocsLog -Level "WARN" -Message "Collector service '$serviceName' is not installed; nothing to start. Ensure Winlogbeat is present under '$winlogbeatRoot' before enabling the collector."
-    }
-
-    if ($null -ne $forwarderService) {
-      try {
-        Start-Service -Name $fwdServiceName -ErrorAction Stop
-        Write-TinySocsLog "Forwarder service '$fwdServiceName' started."
-      } catch {
-        Write-TinySocsLog -Level "WARN" -Message "Failed to start forwarder service '$fwdServiceName': $($_.Exception.Message)"
-      }
-    } else {
-      Write-TinySocsLog -Level "WARN" -Message "Forwarder service '$fwdServiceName' is not installed; nothing to start. Ensure tinysocs_forwarder_winlog.exe is present under '$forwarderRoot' before enabling the forwarder."
+      Write-TinySocsLog -Level "WARN" -Message "Agent service '$serviceName' is not installed; nothing to start."
     }
   } else {
-    Write-TinySocsLog -Level "WARN" -Message "NoStart specified; collector + forwarder services configured but not started."
+    Write-TinySocsLog -Level "WARN" -Message "NoStart specified; agent service '$serviceName' configured but not started."
   }
 
-  Write-TinySocsLog "Collector configured (Winlogbeat file-output, index prefix '$IndexPrefix')."
+  Write-TinySocsLog "TinySocs Agent configured (config='$ConfigPath')."
 }
-
 
 # ── Service via NSSM ────────────────────────────────────────────────────────────
 function Register-TinySocsNodeService {
@@ -977,9 +872,8 @@ function Uninstall-TinySocs {
 
   $svcNames = @(
     "TinySocsNode",
-    "TinySocsCollector",
-    "TinySocsWinlogForwarder",
-    "TinySocsOpenSearch"
+    "TinySocsOpenSearch",
+    "TinySocsAgent"
   )
   $taskPath = "\TinySocs\"
   $binDir  = "C:\Program Files\TinySocs\bin"
@@ -1000,7 +894,7 @@ function Uninstall-TinySocs {
       Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
   } catch { }
 
-  # Stop and remove TinySocs services (node, collector, local SIEM)
+  # Stop and remove TinySocs services (node, collector, local SIEM, agent)
   $n = Join-Path $binDir "nssm.exe"
   foreach ($svcName in $svcNames) {
     try {
@@ -1019,7 +913,7 @@ function Uninstall-TinySocs {
     "TinySocsNode",
     "TinySocsMaster",
     "TinySocsAnchors",
-    "winlogbeat",
+    "TinySocs.Agent",
     "opensearch-service-x64",
     "opensearch-service-mgr"
   )
@@ -1037,7 +931,8 @@ function Uninstall-TinySocs {
     "SIEM_PASS",
     "PRIVACY_MODE","NODE_SECRET","MASTER_SHARED_SECRET",
     "TINYSOCS_NODES","HEARTBEAT_MINUTES","ANCHORS_RETENTION_DAYS",
-    "ALWAYS_ANCHOR","MASTER_DEADLINE_SEC"
+    "ALWAYS_ANCHOR","MASTER_DEADLINE_SEC",
+    "TINYSOCS_AGENT_CONFIG"
   )
   foreach ($v in $vars) {
     [Environment]::SetEnvironmentVariable($v, $null, 'Machine')
@@ -1061,4 +956,4 @@ function Uninstall-TinySocs {
   Write-Host "[TinySocs] Uninstall complete."
 }
 
-Export-ModuleMember -Function Install-TinySocs,Install-TinySocsLocalSiem,Install-TinySocsCollector,Register-TinySocsServices,Register-TinySocsTasks,Pair-TinySocs,Rotate-TinySocsSecrets,Uninstall-TinySocs,Set-TSCredential,Get-TSCredential,Remove-TSCredential,Set-TinySocsSiemCredential,Get-TinySocsDataRoot,Write-TinySocsLog
+Export-ModuleMember -Function Install-TinySocs,Install-TinySocsLocalSiem,Install-TinySocsAgentService,Register-TinySocsServices,Register-TinySocsTasks,Pair-TinySocs,Rotate-TinySocsSecrets,Uninstall-TinySocs,Set-TSCredential,Get-TSCredential,Remove-TSCredential,Set-TinySocsSiemCredential,Get-TinySocsDataRoot,Write-TinySocsLog

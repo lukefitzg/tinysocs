@@ -97,7 +97,7 @@ def _ensure_winlog_template() -> None:
         "priority": 500,
         "_meta": {
             "managed_by": "tinysocs",
-            "description": "TinySocs winlogbeat index template for TinyBox local SIEM",
+            "description": "TinySocs winlog index template for TinyBox local SIEM",
         },
     }
 

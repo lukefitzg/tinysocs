@@ -1,8 +1,0 @@
-﻿{
-  "properties": {
-    "host":    { "properties": { "name": { "type":"text", "fields": { "keyword": { "type":"keyword", "ignore_above":256 } } } } },
-    "process": { "properties": { "name": { "type":"text", "fields": { "keyword": { "type":"keyword", "ignore_above":256 } } } } },
-    "user":    { "properties": { "name": { "type":"text", "fields": { "keyword": { "type":"keyword", "ignore_above":256 } } } } },
-    "winlog":  { "properties": { "computer_name": { "type":"text", "fields": { "keyword": { "type":"keyword", "ignore_above":256 } } } } }
-  }
-}

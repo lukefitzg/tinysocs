@@ -8,7 +8,7 @@ import re
 # ==== target & tuning ====
 TARGET = "http://127.0.0.1:9200"  # TinyBox OpenSearch endpoint
 VERIFY_TLS = False                # TLS off for TinyBox local
-TIMEOUT = 30                        # a bit more generous for bulk
+TIMEOUT = 30                      # a bit more generous for bulk
 
 # Safe destination for any wildcard write targets (env overrides)
 SAFE_WRITE_INDEX = os.getenv("SIEM_INDEX_WRITE", "siem_index")
@@ -56,7 +56,7 @@ def _flatten_typeful_mappings(body_bytes: bytes) -> bytes:
 def _rewrite_index_wildcards_in_path(path: str) -> str:
     """
     For write endpoints that include the index in the URL, replace wildcard indices
-    (e.g. 'winlogbeat-*' or anything with '*') with SAFE_WRITE_INDEX.
+    (e.g. 'tinysocs-winlog-*' or anything with '*') with SAFE_WRITE_INDEX.
     Handles: /{index}/_bulk, /{index}/_doc, /{index}/_create, /{index}/_update, /{index}/_delete
     """
     def _fix_segment(seg: str) -> str:
@@ -72,11 +72,11 @@ def _rewrite_index_wildcards_in_path(path: str) -> str:
 
     # Rewrite known write forms
     # Examples:
-    #   /winlogbeat-*/_bulk
-    #   /winlogbeat-*/_doc[/id]
-    #   /winlogbeat-*/_create[/id]
-    #   /winlogbeat-*/_update[/id]
-    #   /winlogbeat-*/_delete[/id]
+    #   /tinysocs-winlog-*/_bulk
+    #   /tinysocs-winlog-*/_doc[/id]
+    #   /tinysocs-winlog-*/_create[/id]
+    #   /tinysocs-winlog-*/_update[/id]
+    #   /tinysocs-winlog-*/_delete[/id]
     if len(parts) >= 2 and parts[1] in ("_bulk", "_doc", "_create", "_update", "_delete"):
         parts[0] = _fix_segment(parts[0])
 
@@ -121,7 +121,7 @@ def _rewrite_bulk_typeless(ndjson: bytes) -> bytes:
                 # drop legacy types
                 meta_body.pop("_type", None)
                 meta_body.pop("type", None)
-                # fix wildcard index targets (e.g. "_index": "winlogbeat-*")
+                # fix wildcard index targets (e.g. "_index": "tinysocs-winlog-*")
                 idx = meta_body.get("_index")
                 if isinstance(idx, str) and "*" in idx:
                     meta_body["_index"] = SAFE_WRITE_INDEX

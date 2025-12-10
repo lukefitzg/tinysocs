@@ -76,7 +76,7 @@ def search_kql(
             "index": index,
             "message": str(e),
             "backend": _backend_name(),
-            "retry_hint": "Use an existing index pattern (e.g., winlogbeat-*)",
+            "retry_hint": "Use an existing index pattern (e.g., tinysocs-winlog-*)",
         }
     except (OSConnectionTimeout, OSConnectionError) as e:
         return {
@@ -118,7 +118,7 @@ def aggregate(index: str, dsl: Dict[str, Any]) -> Dict[str, Any]:
             "index": index,
             "message": str(e),
             "backend": _backend_name(),
-            "retry_hint": "Use an existing index pattern (e.g., winlogbeat-*)",
+            "retry_hint": "Use an existing index pattern (e.g., tinysocs-winlog-*)",
         }
     except (OSConnectionTimeout, OSConnectionError) as e:
         return {

@@ -225,29 +225,97 @@ namespace TinySocs.Agent.Inputs
 
         private static AgentEvent MapRecordToAgentEvent(string inputName, string channel, EventRecord record)
         {
-            // Extremely minimal mapping – enough for OpenSearch to have something useful.
-            var ts = record.TimeCreated ?? DateTime.UtcNow;
-
-            var body = new System.Collections.Generic.Dictionary<string, object?>
+            // Defensive timestamp handling:
+            // - Prefer the event's own TimeCreated
+            // - Fall back to "now" if it's null or clearly bogus (year <= 1900)
+            DateTime ts;
+            try
             {
-                ["@timestamp"] = ts.ToUniversalTime().ToString("o"),
-                ["message"] = record.FormatDescription() ?? string.Empty,
-                ["event"] = new System.Collections.Generic.Dictionary<string, object?>
+                if (record.TimeCreated.HasValue && record.TimeCreated.Value.Year > 1900)
+                {
+                    ts = record.TimeCreated.Value.ToUniversalTime();
+                }
+                else
+                {
+                    ts = DateTime.UtcNow;
+                }
+            }
+            catch
+            {
+                ts = DateTime.UtcNow;
+            }
+
+            // Defensive message formatting: FormatDescription() can throw on some providers.
+            string message;
+            try
+            {
+                message = record.FormatDescription() ?? string.Empty;
+            }
+            catch
+            {
+                message = string.Empty;
+            }
+
+            object? level = null;
+            try
+            {
+                level = record.LevelDisplayName;
+            }
+            catch
+            {
+                level = null;
+            }
+
+            string? providerName = null;
+            try
+            {
+                providerName = record.ProviderName;
+            }
+            catch
+            {
+                providerName = null;
+            }
+
+            long? recordId = null;
+            try
+            {
+                recordId = record.RecordId;
+            }
+            catch
+            {
+                recordId = null;
+            }
+
+            string? machineName = null;
+            try
+            {
+                machineName = record.MachineName;
+            }
+            catch
+            {
+                machineName = null;
+            }
+
+            var body = new Dictionary<string, object?>
+            {
+                ["@timestamp"] = ts.ToString("o"),
+                ["message"] = message,
+                ["event"] = new Dictionary<string, object?>
                 {
                     ["id"] = record.Id,
                     ["code"] = record.Id,
-                    ["level"] = record.LevelDisplayName,
-                    ["provider"] = record.ProviderName,
-                    ["record_id"] = record.RecordId
+                    ["level"] = level,
+                    ["provider"] = providerName,
+                    ["record_id"] = recordId
                 },
-                ["winlog"] = new System.Collections.Generic.Dictionary<string, object?>
+                ["winlog"] = new Dictionary<string, object?>
                 {
                     ["channel"] = channel,
-                    ["computer_name"] = record.MachineName,
-                    ["provider_name"] = record.ProviderName,
-                    ["record_id"] = record.RecordId
+                    ["computer_name"] = machineName,
+                    ["provider_name"] = providerName,
+                    ["record_id"] = recordId
                 },
-                ["tinysocs"] = new System.Collections.Generic.Dictionary<string, object?>
+                ["tinysocs"] = new Dictionary<string, object?>
                 {
                     ["input_name"] = inputName
                 }
@@ -255,11 +323,11 @@ namespace TinySocs.Agent.Inputs
 
             return new AgentEvent
             {
-                Ts = ts.ToUniversalTime(),
+                Ts = ts,
                 Input = inputName,
                 Channel = channel,
                 EventId = record.Id,
-                OpenSearchIndex = string.Empty,
+                OpenSearchIndex = string.Empty, // shipper decides final index from config
                 Body = body
             };
         }

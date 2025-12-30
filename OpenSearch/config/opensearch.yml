@@ -3,14 +3,51 @@ node.name: tinysocs-node-1
 
 network.host: 127.0.0.1
 http.port: 9200
+transport.port: 9300
 
 discovery.type: single-node
 
-path.data: C:/ProgramData/TinySocs/OpenSearch/data
-path.logs: C:/ProgramData/TinySocs/OpenSearch/logs
+# Make sure Security is NOT disabled
+plugins.security.disabled: false
 
-# TinyBox: local-only, no auth for now. Harden later.
-plugins.security.disabled: true
+########## OpenSearch Security TLS (PKCS12) ##########
+# NOTE: passwords are stored in opensearch.keystore, not in this file.
 
-compatibility:
-  override_main_response_version: true
+# Transport (node-to-node) TLS — REQUIRED
+plugins.security.ssl.transport.keystore_type: PKCS12
+plugins.security.ssl.transport.keystore_filepath: certs/node.p12
+plugins.security.ssl.transport.keystore_alias: node
+
+plugins.security.ssl.transport.truststore_type: PKCS12
+plugins.security.ssl.transport.truststore_filepath: certs/trust.p12
+plugins.security.ssl.transport.truststore_alias: tinysocs-ca
+
+# For localhost/dev this avoids SAN/hostname pain. Tighten later for multi-node.
+plugins.security.ssl.transport.enforce_hostname_verification: false
+
+# HTTP (client-to-node) TLS — recommended
+plugins.security.ssl.http.enabled: true
+plugins.security.ssl.http.keystore_type: PKCS12
+plugins.security.ssl.http.keystore_filepath: certs/node.p12
+plugins.security.ssl.http.keystore_alias: node
+
+plugins.security.ssl.http.truststore_type: PKCS12
+plugins.security.ssl.http.truststore_filepath: certs/trust.p12
+plugins.security.ssl.http.truststore_alias: tinysocs-ca
+
+# Don’t require client certs for normal REST usage (admin cert is for securityadmin tooling)
+plugins.security.ssl.http.clientauth_mode: NONE
+
+# Bootstrap the security index on first start (installer can flip this off later)
+plugins.security.allow_default_init_securityindex: true
+
+# Tell Security which cert DN is allowed to run admin operations
+plugins.security.authcz.admin_dn:
+  - "CN=tinysocs-admin,OU=TinySocs,O=TinySocs,L=Dublin,ST=Dublin,C=IE"
+
+# Tell Security which cert DN(s) are valid cluster nodes
+plugins.security.nodes_dn:
+  - "CN=tinysocs-node-1,OU=TinySocs,O=TinySocs,L=Dublin,ST=Dublin,C=IE"
+
+# Optional but useful (later tighten roles)
+plugins.security.restapi.roles_enabled: ["all_access","security_rest_api_access"]

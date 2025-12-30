@@ -34,6 +34,8 @@ namespace TinySocs.Agent.Queueing
             WriteIndented = false
         };
 
+        private static readonly byte[] Newline = new byte[] { (byte)'\n' };
+
         public FileQueueWriter(ILogger<FileQueueWriter> logger, AgentConfig agentConfig)
         {
             _logger = logger;
@@ -53,10 +55,10 @@ namespace TinySocs.Agent.Queueing
 
         public async Task EnqueueAsync(AgentEvent evt, CancellationToken cancellationToken)
         {
-            // Serialize to a single JSON line
-            var json = JsonSerializer.Serialize(evt, _jsonOptions);
-            var line = json + "\n";
-            var bytes = Encoding.UTF8.GetByteCount(line);
+            // Serialize to a single JSON line as UTF-8 bytes.
+            // We write bytes directly to avoid BOM/encoding surprises from StreamWriter.
+            var jsonBytes = JsonSerializer.SerializeToUtf8Bytes(evt, _jsonOptions);
+            var bytes = jsonBytes.Length + Newline.Length;
 
             await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
@@ -82,24 +84,30 @@ namespace TinySocs.Agent.Queueing
                     throw new InvalidOperationException("Current segment path should not be null after EnsureCurrentSegmentAsync.");
                 }
 
-                // Append line using a FileStream that allows concurrent readers/writers
+                // Append bytes using a FileStream that allows concurrent readers.
+                // NOTE: We intentionally avoid StreamWriter(Encoding.UTF8) because it may emit a BOM
+                // when the file is empty and the encoding has a preamble.
                 try
                 {
                     await using var fs = new FileStream(
                         _currentSegmentPath,
-                        FileMode.Append,
+                        FileMode.OpenOrCreate,
                         FileAccess.Write,
-                        FileShare.ReadWrite, // allow reader and any future writers
+                        FileShare.ReadWrite, // allow reader while we append
                         4096,
                         FileOptions.Asynchronous | FileOptions.WriteThrough);
 
-                    using var writer = new StreamWriter(fs, Encoding.UTF8, bufferSize: 4096, leaveOpen: false);
+                    // Ensure we're appending.
+                    fs.Seek(0, SeekOrigin.End);
+
 #if NET8_0_OR_GREATER
-                    await writer.WriteAsync(line.AsMemory(), cancellationToken).ConfigureAwait(false);
-                    await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
+                    await fs.WriteAsync(jsonBytes, cancellationToken).ConfigureAwait(false);
+                    await fs.WriteAsync(Newline, cancellationToken).ConfigureAwait(false);
+                    await fs.FlushAsync(cancellationToken).ConfigureAwait(false);
 #else
-                    await writer.WriteAsync(line).ConfigureAwait(false);
-                    await writer.FlushAsync().ConfigureAwait(false);
+                    await fs.WriteAsync(jsonBytes, 0, jsonBytes.Length, cancellationToken).ConfigureAwait(false);
+                    await fs.WriteAsync(Newline, 0, Newline.Length, cancellationToken).ConfigureAwait(false);
+                    await fs.FlushAsync(cancellationToken).ConfigureAwait(false);
 #endif
                 }
                 catch (Exception ex)
@@ -149,7 +157,14 @@ namespace TinySocs.Agent.Queueing
             }
 
             _currentSegmentPath = fullPath;
-            _currentSegmentBytes = 0;
+            try
+            {
+                _currentSegmentBytes = new FileInfo(fullPath).Length;
+            }
+            catch
+            {
+                _currentSegmentBytes = 0;
+            }
 
             _logger.LogInformation("Created new queue segment: {Path}", _currentSegmentPath);
         }

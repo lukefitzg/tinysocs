@@ -5,15 +5,18 @@ a = Analysis(
     ['src\\tinysocs\\api\\node.py'],
     pathex=['src'],
     binaries=[],
+    datas=[
+        # Bundle detections rules so the onefile extraction has:
+        # <_MEI...>\tinysocs\agent\detections\rules.yaml
+        ('src\\tinysocs\\agent\\detections\\rules.yaml', 'tinysocs\\agent\\detections'),
+    ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[],
     noarchive=False,
-    datas=[
-        ('src\\tinysocs\\agent\\detections\\rules.yaml', 'tinysocs\\agent\\detections'),
-    ],
+    optimize=0,
 )
 pyz = PYZ(a.pure)
 

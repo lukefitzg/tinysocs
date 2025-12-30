@@ -6,7 +6,7 @@ a = Analysis(
     pathex=['src'],
     binaries=[],
     datas=[],
-    hiddenimports=['tinysocs.orchestrator.anchors', 'tinysocs.env'],
+    hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -14,12 +14,7 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
-
-pyz = PYZ(
-    a.pure,
-    a.zipped_data,
-    cipher=None,
-)
+pyz = PYZ(a.pure)
 
 exe = EXE(
     pyz,

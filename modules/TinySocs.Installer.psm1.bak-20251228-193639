@@ -1285,11 +1285,11 @@ function Assert-TinySocsOpenSearchSecurityConfigPresent {
     [Parameter(Mandatory)][string]$ConfigPath
   )
 
-  if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
+  if (-not (Test-Path $ConfigPath -PathType Leaf)) {
     throw "OpenSearch config file missing: $ConfigPath"
   }
 
-  $raw = Get-Content -LiteralPath $ConfigPath -Raw -ErrorAction Stop
+  $raw = Get-Content -Path $ConfigPath -Raw -ErrorAction Stop
 
   $requiredPatterns = @(
     '(?m)^\s*plugins\.security\.disabled\s*:\s*false\s*$',
@@ -1310,48 +1310,7 @@ function Assert-TinySocsOpenSearchSecurityConfigPresent {
            "ConfigPath=$ConfigPath; MissingPatterns=$($missing -join '; ')")
   }
 
-  # --- NEW: also verify ProgramData opensearch-security config tree is readable ---
-  $confDir = Split-Path -Parent $ConfigPath
-  $secDir  = Join-Path -Path $confDir -ChildPath "opensearch-security"
-
-  if (-not (Test-Path -LiteralPath $secDir -PathType Container)) {
-    throw "OpenSearch security config directory missing: $secDir"
-  }
-
-  # Repair ACLs before read-checking (prevents the “Access denied” you hit)
-  try { Repair-TinySocsOpenSearchSecurityConfigAcls -SecurityDir $secDir } catch { }
-
-  $requiredFiles = @(
-    "config.yml",
-    "internal_users.yml",
-    "roles.yml",
-    "roles_mapping.yml",
-    "action_groups.yml",
-    "tenants.yml"
-  )
-
-  foreach ($f in $requiredFiles) {
-    $p = Join-Path -Path $secDir -ChildPath $f
-    if (-not (Test-Path -LiteralPath $p -PathType Leaf)) {
-      throw "Security config file missing: $p"
-    }
-
-    # IMPORTANT: read-only open (do NOT use ReadWrite here)
-    try {
-      $fs = [System.IO.File]::Open(
-        $p,
-        [System.IO.FileMode]::Open,
-        [System.IO.FileAccess]::Read,
-        [System.IO.FileShare]::ReadWrite
-      )
-      $fs.Dispose()
-    } catch {
-      throw "Security config file unreadable: '$p' : $($_.Exception.Message)"
-    }
-  }
-  # --- END NEW ---
-
-  Write-TinySocsLog "Verified OpenSearch security/TLS keys present in $ConfigPath and security YAMLs readable under $secDir"
+  Write-TinySocsLog "Verified OpenSearch security/TLS keys present in $ConfigPath"
 }
 
 function Get-TinySocsInstallRoot {
@@ -1388,34 +1347,25 @@ function Repair-TinySocsProgramDataAcls {
     (Join-TsPath $root @('OpenSearch')),
     (Join-TsPath $root @('OpenSearch','config')),
     (Join-TsPath $root @('OpenSearch','config','certs')),
-    (Join-TsPath $root @('OpenSearch','config','opensearch-security')),  # <-- NEW (real security dir)
     (Join-TsPath $root @('OpenSearch','certs')),
     (Join-TsPath $root @('OpenSearch','data')),
-    (Join-TsPath $root @('OpenSearch','security'))                       # keep if legacy paths exist
+    (Join-TsPath $root @('OpenSearch','security'))
   )
 
   foreach ($t in $targets) {
-    if (-not (Test-Path -LiteralPath $t)) { continue }
+    if (-not (Test-Path $t)) { continue }
 
     try {
-      # recurse + continue on errors so we actually fix the tree
       & icacls $t /inheritance:e /grant:r `
         "SYSTEM:(OI)(CI)F" `
-        "BUILTIN\Administrators:(OI)(CI)F" `
-        /T /C /Q | Out-Null
+        "BUILTIN\Administrators:(OI)(CI)F" | Out-Null
     } catch { }
   }
 
   # logs dir: allow Users modify so normal reads/writes don’t explode
   $logs = Join-TsPath $root @('logs')
-  if (Test-Path -LiteralPath $logs) {
-    try { & icacls $logs /grant:r "BUILTIN\Users:(OI)(CI)M" /T /C /Q | Out-Null } catch { }
-  }
-
-  # NEW: explicitly repair opensearch-security ACLs as well (dir + files)
-  $secDir = Join-TsPath $root @('OpenSearch','config','opensearch-security')
-  if (Test-Path -LiteralPath $secDir -PathType Container) {
-    try { Repair-TinySocsOpenSearchSecurityConfigAcls -SecurityDir $secDir } catch { }
+  if (Test-Path $logs) {
+    try { & icacls $logs /grant:r "BUILTIN\Users:(OI)(CI)M" | Out-Null } catch { }
   }
 }
 
@@ -1521,73 +1471,6 @@ function Repair-TinySocsOpenSearchCertAcls {
 }
 
 # -- Security/ACL helpers ------------------------------------------------------
-function Repair-TinySocsOpenSearchSecurityConfigAcls {
-  [CmdletBinding()]
-  param(
-    [Parameter(Mandatory)][string]$SecurityDir
-  )
-
-  if (-not (Test-Path -LiteralPath $SecurityDir -PathType Container)) { return }
-
-  function _ResolveServiceStartName {
-    param([string]$ServiceName)
-    try {
-      $svc = Get-CimInstance Win32_Service -Filter ("Name='{0}'" -f $ServiceName) -ErrorAction Stop
-      $sn  = ($svc.StartName | ForEach-Object { $_.Trim() })
-      if ([string]::IsNullOrWhiteSpace($sn)) { return $null }
-      return $sn
-    } catch { return $null }
-  }
-
-  try {
-    # 0) Ensure not EFS-encrypted (can create “works for me / fails for service” weirdness)
-    try { Invoke-TinySocsCmd ('cipher /d /s:"{0}" >nul 2>&1' -f $SecurityDir) } catch { }
-
-    # 1) Clear attributes that can block reads/propagation
-    try { & attrib.exe -R -S -H "$SecurityDir" /S /D 2>$null | Out-Null } catch { }
-
-    # 2) Take ownership as Administrators (important if the tree gets “stuck”)
-    try { Invoke-TinySocsCmd ('takeown /F "{0}" /A /R /D Y >nul 2>&1' -f $SecurityDir) } catch { }
-
-    # 3) HARD reset ACLs recursively (this fixes “protected DACL on file” cases)
-    try { Invoke-TinySocsCmd ('icacls "{0}" /reset /T /C >nul 2>&1' -f $SecurityDir) } catch { }
-
-    # 4) Enable inheritance, then apply explicit grants we actually want
-    #    NOTE: include Users RX so non-elevated shells (and dashboards tooling) can read config.yml.
-    #    If you decide later you want to lock this down harder, do it selectively (NOT by breaking local installs).
-    $grantParts = @(
-      '"*S-1-5-18:(OI)(CI)F"'        # SYSTEM
-      '"*S-1-5-32-544:(OI)(CI)F"'    # BUILTIN\Administrators
-      '"*S-1-5-32-545:(OI)(CI)RX"'   # BUILTIN\Users
-    )
-
-    # 5) If the OpenSearch service runs as a custom account, grant it RX too
-    $startName = _ResolveServiceStartName -ServiceName 'TinySocsOpenSearch'
-    if ($startName) {
-      switch -Regex ($startName) {
-        '^LocalSystem$' { }
-        '^NT AUTHORITY\\LocalService$' { $grantParts += '"*S-1-5-19:(OI)(CI)RX"' }
-        '^NT AUTHORITY\\NetworkService$' { $grantParts += '"*S-1-5-20:(OI)(CI)RX"' }
-        default {
-          # normalize .\User -> COMPUTER\User
-          if ($startName.StartsWith('.\')) { $startName = "$env:COMPUTERNAME\" + $startName.Substring(2) }
-          # icacls wants the NTAccount form here
-          $grantParts += ('"{0}:(OI)(CI)RX"' -f $startName)
-        }
-      }
-    }
-
-    try { Invoke-TinySocsCmd ('icacls "{0}" /inheritance:e /T /C >nul 2>&1' -f $SecurityDir) } catch { }
-    try {
-      Invoke-TinySocsCmd ('icacls "{0}" /grant:r {1} /T /C >nul 2>&1' -f $SecurityDir, ($grantParts -join ' '))
-    } catch { }
-
-    Write-TinySocsLog "Repaired OpenSearch security config ACLs (reset + Users RX) under: $SecurityDir"
-  } catch {
-    Write-TinySocsLog -Level "WARN" -Message "Repair-TinySocsOpenSearchSecurityConfigAcls failed for ${SecurityDir}: $($_.Exception.Message)"
-  }
-}
-
 function Set-TinySocsSecureAcl {
   [CmdletBinding()]
   param(
@@ -1645,7 +1528,7 @@ function Ensure-TinySocsLogAcl {
     # Make sure the directory exists
     New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
-    # IMPORTANT: avoid "${sid}:(...)" parsing bug by using ${} (or string concatenation)
+    # IMPORTANT: avoid "$sid:(...)" parsing bug by using ${} (or string concatenation)
     & icacls $LogDir /inheritance:e /grant:r `
       "${sidSystem}:(OI)(CI)(F)" `
       "${sidAdmins}:(OI)(CI)(F)" `
@@ -2074,8 +1957,8 @@ function Set-TinySocsOpenSearchAcls {
     _AclTree -Path $LogsPath -Grant $baseGrant -UsersRead -AlsoGrantCurrentUser -ResetFirst
 
     $logFileGrants = @('BUILTIN\Users:R')
-    if ($curUser) { $logFileGrants += "${curUser}:R" }
-    if ($curSid)  { $logFileGrants += "*${curSid}:R" }
+    if ($curUser) { $logFileGrants += "$curUser:R" }
+    if ($curSid)  { $logFileGrants += "*$curSid:R" }
 
     _AclFiles -Root $LogsPath -Patterns @('*.log','*.out','*.err','*.err.log','*.out.log') -FileGrants $logFileGrants
 
@@ -2145,7 +2028,7 @@ function Repair-TinySocsTreeReadability {
         Write-TinySocsLog "EFS decrypt attempted on: $Path"
       }
     } catch {
-      Write-TinySocsLog -Level "WARN" -Message "EFS decrypt failed for ${Path}: $($_.Exception.Message)"
+      Write-TinySocsLog -Level "WARN" -Message "EFS decrypt failed for $Path: $($_.Exception.Message)"
     }
   }
 
@@ -2158,7 +2041,7 @@ function Repair-TinySocsTreeReadability {
         Write-TinySocsLog "Attributes cleared (R/S/H) on: $Path"
       }
     } catch {
-      Write-TinySocsLog -Level "WARN" -Message "Attribute cleanup failed for ${Path}: $($_.Exception.Message)"
+      Write-TinySocsLog -Level "WARN" -Message "Attribute cleanup failed for $Path: $($_.Exception.Message)"
     }
   }
 }
@@ -2748,7 +2631,7 @@ function Write-TinySocsOpenSearchConfig {
   $dataPathNormalized = $DataPath.Replace('\','/')
   $logsPathNormalized = $LogsPath.Replace('\','/')
 
-  if ((-not (Test-Path $ConfigPath -PathType Leaf)) -or $Force.IsPresent) {
+  if (-not (Test-Path $ConfigPath -PathType Leaf)) {
     "# TinySocs-generated opensearch.yml`r`n" | Out-File -FilePath $ConfigPath -Encoding UTF8 -Force
   }
 
@@ -2756,12 +2639,12 @@ function Write-TinySocsOpenSearchConfig {
   $rawText = ""
   try { $rawText = Get-Content -Path $ConfigPath -Raw -ErrorAction Stop } catch { $rawText = "" }
 
-  # Normalize line endings and split (PS5-safe)
+  # Normalize line endings and split
   $lines = @()
   if (-not [string]::IsNullOrEmpty($rawText)) {
     $rawText = $rawText -replace "`r`n", "`n"
     $rawText = $rawText -replace "`r", "`n"
-    $lines   = @($rawText -split "`n")
+    $lines   = @($rawText -split "`n", 0, "SimpleMatch")
   } else {
     $lines = @()
   }
@@ -2809,93 +2692,6 @@ function Write-TinySocsOpenSearchConfig {
   Write-TinySocsLog "OpenSearch config ensured/merged at $ConfigPath"
 }
 
-function Ensure-TinySocsOpenSearchCertBundlePresent {
-  [CmdletBinding()]
-  param(
-    [Parameter(Mandatory)] [string] $CertsDir,
-    [Parameter()] $TlsPaths,
-    [Parameter()] [string] $OpenSearchRoot
-  )
-
-  function _Log([string]$msg, [string]$level="INFO") {
-    if (Get-Command Write-TinySocsLog -ErrorAction SilentlyContinue) {
-      Write-TinySocsLog -Level $level -Message $msg
-    } else {
-      Write-Host "[$level] $msg"
-    }
-  }
-
-  function _GetTlsVal {
-    param([Parameter(Mandatory)] $Obj, [Parameter(Mandatory)] [string[]] $Keys)
-    foreach ($k in $Keys) {
-      try {
-        if ($Obj -is [hashtable] -and $Obj.ContainsKey($k) -and $Obj[$k]) { return [string]$Obj[$k] }
-        $v = $Obj.$k
-        if ($v) { return [string]$v }
-      } catch { }
-    }
-    return $null
-  }
-
-  function _FindFirstExisting([string[]]$paths) {
-    foreach ($p in $paths) { if ($p -and (Test-Path -LiteralPath $p -PathType Leaf)) { return $p } }
-    return $null
-  }
-
-  New-Item -ItemType Directory -Force -Path $CertsDir | Out-Null
-
-  $want = @(
-    @{ name="http.p12";      keys=@("HttpP12","HttpP12Path","http_p12","HttpKeystorePath","HttpKeystore","HttpKeystoreP12") },
-    @{ name="transport.p12"; keys=@("TransportP12","TransportP12Path","transport_p12","TransportKeystorePath","TransportKeystore","TransportKeystoreP12") },
-    @{ name="trust.p12";     keys=@("TrustP12","TrustP12Path","trust_p12","TruststorePath","Truststore","TruststoreP12") },
-    @{ name="opensearch-tls-storepass.dpapi"; keys=@("StorePassDpapi","StorePassDpapiPath","DpapiPath","dpapi","StorePasswordDpapi") }
-  )
-
-  foreach ($w in $want) {
-    $dst = Join-Path $CertsDir $w.name
-    if (Test-Path -LiteralPath $dst -PathType Leaf) { continue }
-
-    $src = $null
-
-    if ($TlsPaths) {
-      $src = _GetTlsVal -Obj $TlsPaths -Keys $w.keys
-      if ($src -and -not (Test-Path -LiteralPath $src -PathType Leaf)) { $src = $null }
-    }
-
-    if (-not $src -and $OpenSearchRoot) {
-      $src = _FindFirstExisting @(
-        (Join-Path $OpenSearchRoot ("config\certs\" + $w.name)),
-        (Join-Path $OpenSearchRoot ("seed\config\certs\" + $w.name)),
-        (Join-Path $OpenSearchRoot ("OpenSearch\seed\config\certs\" + $w.name))
-      )
-    }
-
-    if ($src) {
-      Copy-Item -LiteralPath $src -Destination $dst -Force
-      _Log ("Seeded missing cert material: {0} <= {1}" -f $dst, $src)
-    } else {
-      _Log ("Missing required cert material and no source found: {0}" -f $dst) "WARN"
-    }
-  }
-
-  $missing = @("http.p12","transport.p12","trust.p12","opensearch-tls-storepass.dpapi") |
-    Where-Object { -not (Test-Path -LiteralPath (Join-Path $CertsDir $_) -PathType Leaf) }
-
-  if ($missing.Count -gt 0) {
-    throw ("Cert bundle incomplete in {0}. Missing: {1}" -f $CertsDir, ($missing -join ", "))
-  }
-}
-
-function Add-TinySocsYamlLine {
-  param(
-    [Parameter(Mandatory)] [ref] $Buffer,
-    [Parameter(Mandatory)] [string] $Key,
-    [Parameter(Mandatory)] [string] $Value
-  )
-  # NOTE: $Key followed by ":" must be $($Key): or ${Key}: to avoid PowerShell treating it like a drive scope.
-  $Buffer.Value += "`r`n$($Key): $Value`r`n"
-}
-
 function Ensure-TinySocsOpenSearchSecuritySettings {
   [CmdletBinding()]
   param(
@@ -2911,15 +2707,25 @@ function Ensure-TinySocsOpenSearchSecuritySettings {
   Ensure-TinySocsWritableFile -Path $ConfigPath
   if ($null -eq $TlsPaths) { throw "Ensure-TinySocsOpenSearchSecuritySettings: TlsPaths was null." }
 
+  foreach ($k in @('HttpKeystoreP12','TransportKeystoreP12','TruststoreP12')) {
+    if (-not $TlsPaths.ContainsKey($k) -or [string]::IsNullOrWhiteSpace([string]$TlsPaths[$k])) {
+      throw "Ensure-TinySocsOpenSearchSecuritySettings: TlsPaths missing required key '$k'."
+    }
+  }
+
+  foreach ($p in @($TlsPaths.HttpKeystoreP12, $TlsPaths.TransportKeystoreP12, $TlsPaths.TruststoreP12)) {
+    if (-not (Test-Path $p -PathType Leaf)) {
+      throw "Ensure-TinySocsOpenSearchSecuritySettings: TLS file missing on disk: $p"
+    }
+  }
+
+  if (-not (Test-Path $ConfigPath -PathType Leaf)) {
+    throw "Ensure-TinySocsOpenSearchSecuritySettings: ConfigPath not found: $ConfigPath"
+  }
+
   $configDir = Split-Path -Parent $ConfigPath
-  if (-not (Test-Path $configDir)) { New-Item -ItemType Directory -Force -Path $configDir | Out-Null }
-
-  # Canonical certs dir under ProgramData conf
-  $certsDir = Join-Path $configDir "certs"
-  if (-not (Test-Path $certsDir)) { New-Item -ItemType Directory -Force -Path $certsDir | Out-Null }
-
   if ([string]::IsNullOrWhiteSpace($StorePassDpapiPath)) {
-    $StorePassDpapiPath = Join-Path $certsDir "opensearch-tls-storepass.dpapi"
+    $StorePassDpapiPath = Join-Path $configDir "certs\opensearch-tls-storepass.dpapi"
   }
 
   function _Ensure-TinySocsReadable {
@@ -3038,6 +2844,29 @@ function Ensure-TinySocsOpenSearchSecuritySettings {
     return $null
   }
 
+  function _TryGet-TinySocsYamlScalar {
+    param(
+      [Parameter(Mandatory)][string]$Path,
+      [Parameter(Mandatory)][string]$Key
+    )
+    if (-not (Test-Path $Path -PathType Leaf)) { return $null }
+    try {
+      $raw = Get-Content -Path $Path -Raw -ErrorAction Stop
+      if ($null -eq $raw) { return $null }
+      $m = [regex]::Match($raw, "(?im)^\s*"+[regex]::Escape($Key)+"\s*:\s*(.+?)\s*$")
+      if (-not $m.Success) { return $null }
+      $v = $m.Groups[1].Value.Trim()
+      if ($v.StartsWith("#")) { return $null }
+      # strip simple single/double quotes
+      if (($v.StartsWith("'") -and $v.EndsWith("'")) -or ($v.StartsWith('"') -and $v.EndsWith('"'))) {
+        $v = $v.Substring(1, $v.Length-2)
+      }
+      return $v.Trim()
+    } catch {
+      return $null
+    }
+  }
+
   function _Invoke-TinySocsKeytoolList {
     param(
       [Parameter(Mandatory)][string]$KeytoolPath,
@@ -3070,6 +2899,7 @@ function Ensure-TinySocsOpenSearchSecuritySettings {
     _Ensure-TinySocsReadable -Path $KeystorePath
 
     try {
+      # Capture BOTH stdout + stderr so we can classify properly.
       $out = & $KeytoolPath @('-list','-storetype','PKCS12','-keystore',$KeystorePath,'-storepass',$Password) 2>&1
       $res.Exit = $LASTEXITCODE
       $res.Error = (($out | Out-String).Trim())
@@ -3096,6 +2926,7 @@ function Ensure-TinySocsOpenSearchSecuritySettings {
     if ($e -match '(?i)Keystore file does not exist') { return "CANNOT_READ_OR_PATH" }
     if ($e -match '(?i)Access is denied')            { return "ACCESS_DENIED" }
 
+    # Common wrong-password indicators across JDKs / keytool variants
     if ($e -match '(?i)keystore password was incorrect' -or
         $e -match '(?i)password was incorrect' -or
         $e -match '(?i)UnrecoverableKeyException' -or
@@ -3107,93 +2938,7 @@ function Ensure-TinySocsOpenSearchSecuritySettings {
     return "KEYTOOL_FAILED"
   }
 
-  function _Get-TinySocsOpenSearchKeystoreTokens {
-    param(
-      [Parameter(Mandatory)][string]$OpenSearchRoot,
-      [Parameter(Mandatory)][string]$ConfDir
-    )
-    $kbat = Join-Path $OpenSearchRoot "bin\opensearch-keystore.bat"
-    if (-not (Test-Path $kbat -PathType Leaf)) { return @() }
-
-    $old = $env:OPENSEARCH_PATH_CONF
-    try {
-      $env:OPENSEARCH_PATH_CONF = $ConfDir
-      $raw = & $kbat list 2>$null
-    } catch {
-      $raw = @()
-    } finally {
-      $env:OPENSEARCH_PATH_CONF = $old
-    }
-
-    if ($null -eq $raw) { return @() }
-
-    # Be robust: some terminals wrap output; split on any whitespace.
-    $txt = ($raw | Out-String)
-    if ([string]::IsNullOrWhiteSpace($txt)) { return @() }
-    return ($txt -split '\s+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-  }
-
-  function _Purge-TinySocsLegacyPlaintextSslKeystoreKeys {
-    param(
-      [Parameter(Mandatory)][string]$OpenSearchRoot,
-      [Parameter(Mandatory)][string]$ConfDir
-    )
-
-    $kbat = Join-Path $OpenSearchRoot "bin\opensearch-keystore.bat"
-    if (-not (Test-Path $kbat -PathType Leaf)) { return }
-
-    $legacy = @(
-      'plugins.security.ssl.http.keystore_password',
-      'plugins.security.ssl.http.keystore_keypassword',
-      'plugins.security.ssl.http.truststore_password',
-      'plugins.security.ssl.transport.keystore_password',
-      'plugins.security.ssl.transport.keystore_keypassword',
-      'plugins.security.ssl.transport.truststore_password'
-    )
-
-    $old = $env:OPENSEARCH_PATH_CONF
-    try {
-      $env:OPENSEARCH_PATH_CONF = $ConfDir
-      foreach ($k in $legacy) {
-        try { & $kbat remove $k 2>$null | Out-Null } catch { }
-      }
-    } finally {
-      $env:OPENSEARCH_PATH_CONF = $old
-    }
-  }
-
-  # ---- ensure canonical cert bundle exists BEFORE we validate or write YAML ----
-  $osRootGuess = Join-Path $env:ProgramFiles "TinySocs\OpenSearch"
-  try {
-    Ensure-TinySocsOpenSearchCertBundlePresent -CertsDir $certsDir -TlsPaths $TlsPaths -OpenSearchRoot $osRootGuess
-  } catch {
-    throw
-  }
-
-  # Canonicalize TlsPaths to ProgramData names if present (prevents path drift)
-  $httpCanon  = Join-Path $certsDir "http.p12"
-  $tranCanon  = Join-Path $certsDir "transport.p12"
-  $trustCanon = Join-Path $certsDir "trust.p12"
-  if (Test-Path $httpCanon  -PathType Leaf) { $TlsPaths["HttpKeystoreP12"]      = $httpCanon }
-  if (Test-Path $tranCanon  -PathType Leaf) { $TlsPaths["TransportKeystoreP12"] = $tranCanon }
-  if (Test-Path $trustCanon -PathType Leaf) { $TlsPaths["TruststoreP12"]        = $trustCanon }
-
-  foreach ($k in @('HttpKeystoreP12','TransportKeystoreP12','TruststoreP12')) {
-    if (-not $TlsPaths.ContainsKey($k) -or [string]::IsNullOrWhiteSpace([string]$TlsPaths[$k])) {
-      throw "Ensure-TinySocsOpenSearchSecuritySettings: TlsPaths missing required key '$k'."
-    }
-  }
-
-  foreach ($p in @($TlsPaths.HttpKeystoreP12, $TlsPaths.TransportKeystoreP12, $TlsPaths.TruststoreP12)) {
-    if (-not (Test-Path $p -PathType Leaf)) {
-      throw "Ensure-TinySocsOpenSearchSecuritySettings: TLS file missing on disk: $p"
-    }
-  }
-
-  if (-not (Test-Path $ConfigPath -PathType Leaf)) {
-    throw "Ensure-TinySocsOpenSearchSecuritySettings: ConfigPath not found: $ConfigPath"
-  }
-
+  # Self-heal readability for common OpenSearch config files we’ve seen shipped with empty DACLs.
   _Ensure-TinySocsReadable -Path $configDir -IsDir
   foreach ($p in @(
     (Join-Path $configDir "jvm.options"),
@@ -3223,20 +2968,17 @@ function Ensure-TinySocsOpenSearchSecuritySettings {
   } elseif ($TlsPaths.ContainsKey('StorePassword') -and -not [string]::IsNullOrWhiteSpace([string]$TlsPaths.StorePassword)) {
     $pw = [string]$TlsPaths.StorePassword
   } else {
-    throw "Ensure-TinySocsOpenSearchSecuritySettings: No PKCS12 store password available. Expected DPAPI file at '$StorePassDpapiPath' or TlsPaths.StorePassword."
-  }
-
-  # Hard validation: OpenSearch PKCS12 password must be clean ASCII (this also catches UTF-16/null-padded mistakes)
-  $pw = $pw.Trim()
-  if ($pw.IndexOf([char]0) -ge 0 -or $pw -match "[`r`n]") {
-    throw "Ensure-TinySocsOpenSearchSecuritySettings: Store password contains null/newline characters (source=$pwSource). This will break OpenSearch and usually indicates wrong decoding/encoding. Fix the DPAPI decode or regenerate the cert bundle."
-  }
-  $badAscii = $false
-  foreach ($ch in $pw.ToCharArray()) {
-    if ([int][char]$ch -gt 127) { $badAscii = $true; break }
-  }
-  if ($badAscii) {
-    throw "Ensure-TinySocsOpenSearchSecuritySettings: Store password contains non-ASCII characters (source=$pwSource). OpenSearch/Java PKCS12 commonly rejects this (seen as 'Password is not ASCII'). Regenerate the bundle with an ASCII-only storepass."
+    # Fallback: try to recover from existing YAML (useful when DPAPI got lost but YAML is still correct)
+    $pwYaml = _TryGet-TinySocsYamlScalar -Path $ConfigPath -Key "plugins.security.ssl.transport.keystore_password"
+    if ([string]::IsNullOrWhiteSpace($pwYaml)) {
+      $pwYaml = _TryGet-TinySocsYamlScalar -Path $ConfigPath -Key "plugins.security.ssl.http.keystore_password"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($pwYaml)) {
+      $pw = [string]$pwYaml
+      $pwSource = "YAML:$ConfigPath"
+    } else {
+      throw "Ensure-TinySocsOpenSearchSecuritySettings: No PKCS12 store password available. Expected DPAPI file at '$StorePassDpapiPath' or TlsPaths.StorePassword."
+    }
   }
 
   # Validate password against keystores if keytool is available
@@ -3253,8 +2995,9 @@ function Ensure-TinySocsOpenSearchSecuritySettings {
   $allOk = ($rHttp.Ok -and $rTrans.Ok -and $rTrust.Ok)
 
   if (-not $allOk) {
+    # If we used DPAPI and it didn't work, fall back to TlsPaths.StorePassword (if present).
     if ($pwSource -like "DPAPI:*" -and $TlsPaths.ContainsKey('StorePassword') -and -not [string]::IsNullOrWhiteSpace([string]$TlsPaths.StorePassword)) {
-      $pw2 = [string]$TlsPaths.StorePassword.Trim()
+      $pw2 = [string]$TlsPaths.StorePassword
 
       $rHttp2  = _Invoke-TinySocsKeytoolList -KeytoolPath $ktDefault -KeystorePath $TlsPaths.HttpKeystoreP12      -Password $pw2
       $rTrans2 = _Invoke-TinySocsKeytoolList -KeytoolPath $ktDefault -KeystorePath $TlsPaths.TransportKeystoreP12 -Password $pw2
@@ -3280,6 +3023,7 @@ function Ensure-TinySocsOpenSearchSecuritySettings {
       if (-not $rTrust.Ok) { $details += "trust.p12: $failTrust" }
       $detailText = ($details -join "; ")
 
+      # Special: only transport fails with BAD_PASSWORD => cert bundle mismatch
       $onlyTransportBad = ($rHttp.Ok -and -not $rTrans.Ok -and $rTrust.Ok -and $failTrans -eq "BAD_PASSWORD")
       if ($onlyTransportBad) {
         throw "Ensure-TinySocsOpenSearchSecuritySettings: transport.p12 does not accept the same password as http/trust (source=$pwSource). This usually means the cert bundle was generated/copied with mismatched passwords. Regenerate/redeploy http.p12/transport.p12/trust.p12 + DPAPI storepass as a single coherent unit. Details: $detailText"
@@ -3297,15 +3041,12 @@ function Ensure-TinySocsOpenSearchSecuritySettings {
     }
   }
 
-  # Self-heal DPAPI if we validated using TlsPaths.StorePassword
-  if ($pwSource -like "TlsPaths.StorePassword*" -and -not [string]::IsNullOrWhiteSpace($StorePassDpapiPath)) {
-    try { _Write-TinySocsDpapiStorePass -Path $StorePassDpapiPath -Password $pw } catch { }
-    $pwSource = "TlsPaths.StorePassword->$StorePassDpapiPath"
-  }
-
+  # Prefer relative paths under OPENSEARCH_PATH_CONF when possible
   $httpKs  = _ToYamlRelPathIfUnderConf -AbsPath ([string]$TlsPaths.HttpKeystoreP12)       -ConfDir $configDir
   $transKs = _ToYamlRelPathIfUnderConf -AbsPath ([string]$TlsPaths.TransportKeystoreP12) -ConfDir $configDir
   $ts      = _ToYamlRelPathIfUnderConf -AbsPath ([string]$TlsPaths.TruststoreP12)        -ConfDir $configDir
+
+  $pwOut   = _YamlSingleQuote -s ([string]$pw)
 
   $adminDn = 'CN=TinySocs-OpenSearch-Admin'
   $nodeDn  = 'CN=TinySocs-OpenSearch'
@@ -3316,14 +3057,20 @@ function Ensure-TinySocsOpenSearchSecuritySettings {
     'plugins.security.ssl.http.enabled',
     'plugins.security.ssl.http.keystore_type',
     'plugins.security.ssl.http.keystore_filepath',
+    'plugins.security.ssl.http.keystore_password',
+    'plugins.security.ssl.http.keystore_keypassword',
     'plugins.security.ssl.http.truststore_type',
     'plugins.security.ssl.http.truststore_filepath',
+    'plugins.security.ssl.http.truststore_password',
     'plugins.security.ssl.http.clientauth_mode',
 
     'plugins.security.ssl.transport.keystore_type',
     'plugins.security.ssl.transport.keystore_filepath',
+    'plugins.security.ssl.transport.keystore_password',
+    'plugins.security.ssl.transport.keystore_keypassword',
     'plugins.security.ssl.transport.truststore_type',
     'plugins.security.ssl.transport.truststore_filepath',
+    'plugins.security.ssl.transport.truststore_password',
     'plugins.security.ssl.transport.enforce_hostname_verification',
 
     'plugins.security.allow_unsafe_democertificates',
@@ -3339,6 +3086,7 @@ function Ensure-TinySocsOpenSearchSecuritySettings {
   $lines = Get-Content -Path $ConfigPath -ErrorAction Stop
   if ($null -eq $lines) { $lines = @() }
 
+  # PATCH: strip *any* TinySocs security/TLS block variant (incl. "(minimal)")
   $beginRe = '^\s*#\s*---\s*BEGIN\s*TinySocs\s*security/TLS'
   $endRe   = '^\s*#\s*---\s*END\s*TinySocs\s*security/TLS'
 
@@ -3385,23 +3133,6 @@ function Ensure-TinySocsOpenSearchSecuritySettings {
     if (-not $isOwned) { [void]$filtered.Add($ln) }
   }
 
-  # Strip any plaintext SSL password keys that may exist anywhere in YAML
-  $plaintextKeyRegex = @(
-    '^\s*plugins\.security\.ssl\.http\.(keystore|truststore)_password\s*:.*$',
-    '^\s*plugins\.security\.ssl\.http\.keystore_keypassword\s*:.*$',
-    '^\s*plugins\.security\.ssl\.transport\.(keystore|truststore)_password\s*:.*$',
-    '^\s*plugins\.security\.ssl\.transport\.keystore_keypassword\s*:.*$'
-  )
-  $filtered2 = New-Object System.Collections.Generic.List[string]
-  foreach ($ln in $filtered) {
-    $kill = $false
-    foreach ($re in $plaintextKeyRegex) {
-      if ($ln -match $re) { $kill = $true; break }
-    }
-    if (-not $kill) { [void]$filtered2.Add($ln) }
-  }
-  $filtered = $filtered2
-
   if ($filtered.Count -gt 0 -and $filtered[$filtered.Count-1].Trim() -ne '') { [void]$filtered.Add('') }
 
   $beginMarker = '# --- BEGIN TinySocs security/TLS ---'
@@ -3424,16 +3155,22 @@ function Ensure-TinySocsOpenSearchSecuritySettings {
   [void]$filtered.Add("plugins.security.ssl.http.enabled: true")
   [void]$filtered.Add("plugins.security.ssl.http.keystore_type: PKCS12")
   [void]$filtered.Add("plugins.security.ssl.http.keystore_filepath: $httpKs")
+  [void]$filtered.Add("plugins.security.ssl.http.keystore_password: $pwOut")
+  [void]$filtered.Add("plugins.security.ssl.http.keystore_keypassword: $pwOut")
   [void]$filtered.Add("plugins.security.ssl.http.truststore_type: PKCS12")
   [void]$filtered.Add("plugins.security.ssl.http.truststore_filepath: $ts")
+  [void]$filtered.Add("plugins.security.ssl.http.truststore_password: $pwOut")
 
   $httpClientAuthMode = if ($env:TINYSOCS_HTTP_CLIENTAUTH_MODE) { $env:TINYSOCS_HTTP_CLIENTAUTH_MODE } else { "NONE" }
   [void]$filtered.Add("plugins.security.ssl.http.clientauth_mode: $httpClientAuthMode")
 
   [void]$filtered.Add("plugins.security.ssl.transport.keystore_type: PKCS12")
   [void]$filtered.Add("plugins.security.ssl.transport.keystore_filepath: $transKs")
+  [void]$filtered.Add("plugins.security.ssl.transport.keystore_password: $pwOut")
+  [void]$filtered.Add("plugins.security.ssl.transport.keystore_keypassword: $pwOut")
   [void]$filtered.Add("plugins.security.ssl.transport.truststore_type: PKCS12")
   [void]$filtered.Add("plugins.security.ssl.transport.truststore_filepath: $ts")
+  [void]$filtered.Add("plugins.security.ssl.transport.truststore_password: $pwOut")
   [void]$filtered.Add("plugins.security.ssl.transport.enforce_hostname_verification: true")
 
   [void]$filtered.Add("plugins.security.allow_unsafe_democertificates: false")
@@ -3460,523 +3197,16 @@ function Ensure-TinySocsOpenSearchSecuritySettings {
     _Ensure-TinySocsReadable -Path $p
   }
 
-  # **Critical**: purge any legacy plaintext SSL password keys from opensearch.keystore (these cause:
-  # "One of ..._password or ..._password_secure must be set not both")
-  try { _Purge-TinySocsLegacyPlaintextSslKeystoreKeys -OpenSearchRoot $osRootGuess -ConfDir $configDir } catch { }
-
-  # Persist passwords securely: enforce *_password_secure entries in opensearch.keystore (no plaintext YAML)
-  try {
-    Ensure-TinySocsOpenSearchKeystoreSecurePasswords `
-      -OpenSearchRoot   $osRootGuess `
-      -ProgramDataConf  $configDir `
-      -CertsDir         $certsDir `
-      -StorePass        $pw `
-      -Keys @(
-        'plugins.security.ssl.http.keystore_password_secure',
-        'plugins.security.ssl.http.keystore_keypassword_secure',
-        'plugins.security.ssl.http.truststore_password_secure',
-        'plugins.security.ssl.transport.keystore_password_secure',
-        'plugins.security.ssl.transport.keystore_keypassword_secure',
-        'plugins.security.ssl.transport.truststore_password_secure'
-      )
-  } catch {
-    throw "Ensure-TinySocsOpenSearchSecuritySettings: Failed to enforce opensearch.keystore secure passwords: $($_.Exception.Message)"
-  }
-
-  # Post-check: ensure plaintext keys are truly absent from the active keystore
-  try {
-    $tokens = _Get-TinySocsOpenSearchKeystoreTokens -OpenSearchRoot $osRootGuess -ConfDir $configDir
-    $bad = $tokens | Where-Object { $_ -match '^plugins\.security\.ssl\.(http|transport)\.(keystore_password|keystore_keypassword|truststore_password)$' }
-    if ($bad -and $bad.Count -gt 0) {
-      throw ("legacy_plaintext_keystore_keys_present: " + ($bad -join ", "))
-    }
-  } catch {
-    throw "Ensure-TinySocsOpenSearchSecuritySettings: Keystore still contains legacy plaintext SSL password keys after purge/enforce. $($_.Exception.Message)"
+  # If we sourced from YAML, self-heal DPAPI (so upgrades stop being haunted)
+  if ($pwSource -like "YAML:*" -and -not [string]::IsNullOrWhiteSpace($StorePassDpapiPath)) {
+    _Write-TinySocsDpapiStorePass -Path $StorePassDpapiPath -Password $pw
+    $pwSource = "YAML->$StorePassDpapiPath"
   }
 
   # Belt-and-braces: ensure the specific scalar key that has historically killed OpenSearch is never duplicated.
   try { Ensure-OpenSearchYamlCanonical -YamlPath $ConfigPath } catch { }
 
-  Write-TinySocsLog "OpenSearch security/TLS settings ensured in $ConfigPath (TinySocs-managed PKCS12 block appended WITHOUT plaintext passwords). allow_default_init_securityindex=$initVal; storepass_source=$pwSource"
-}
-
-function Repair-TinySocsOpenSearchSslPasswordSettings {
-  [CmdletBinding()]
-  param(
-    [Parameter(Mandatory)][string] $ConfigPath
-  )
-
-  if (-not (Test-Path $ConfigPath -PathType Leaf)) {
-    throw "OpenSearch config not found: $ConfigPath"
-  }
-
-  $raw = Get-Content -LiteralPath $ConfigPath -Raw -ErrorAction Stop
-  $lines = $raw -split "(`r`n|`n|`r)"
-
-  # Remove ONLY the non-secure password settings; keep *_secure.
-  $filtered = foreach ($ln in $lines) {
-    $t = $ln
-
-    # Matches:
-    #   plugins.security.ssl.http.keystore_password:
-    #   plugins.security.ssl.http.truststore_password:
-    #   plugins.security.ssl.http.keystore_keypassword:
-    #   plugins.security.ssl.http.pemkey_password:
-    #   plugins.security.ssl.transport.keystore_password:
-    # etc...
-    #
-    # But NOT *_secure variants.
-    if ($t -match '^\s*plugins\.security\.ssl\.(http|transport)\..*(keystore_password|truststore_password|keystore_keypassword|pemkey_password)\s*:' -and
-        $t -notmatch '_secure\s*:') {
-      continue
-    }
-
-    $t
-  }
-
-  $out = ($filtered -join "`r`n").TrimEnd() + "`r`n"
-  if ($out -ne $raw) {
-    Set-Content -LiteralPath $ConfigPath -Value $out -Encoding UTF8
-    Write-TinySocsLog "Removed non-secure SSL password settings from '$ConfigPath' (prevented *_password + *_password_secure collision)."
-  }
-}
-
-# -- Local SIEM (OpenSearch via NSSM service) ----------------------------------
-function Install-TinySocsLocalSiem {
-  [CmdletBinding()]
-  param(
-    [string]$SiemUser = "admin",
-    [string]$SiemPass = "",
-
-    # NEW: allow separate kibana server creds (defaults to SiemUser + SiemPass if not supplied)
-    [string]$KibanaUser = "kibanaserver",
-    [string]$KibanaPass = "",
-
-    [int]$ApiPort = 9201,
-    [int]$DashboardsPort = 5602,
-    [switch]$NoStart,
-
-    [string]$ClusterName = "tinysocs-local",
-    [string]$NodeName    = "tinysocs-node-1",
-    [switch]$ForceConfig,
-
-    [switch]$TrustLocalCA
-  )
-  Assert-TinySocsAdmin
-  Install-TinySocs
-
-  $null = $DashboardsPort
-
-  function _GetTlsVal {
-    param(
-      [Parameter(Mandatory=$true)] $Obj,
-      [Parameter(Mandatory=$true)] [string[]] $Keys
-    )
-    foreach ($k in $Keys) {
-      try {
-        if ($Obj -is [hashtable] -and $Obj.ContainsKey($k) -and $Obj[$k]) { return [string]$Obj[$k] }
-        $v = $Obj.$k
-        if ($v) { return [string]$v }
-      } catch { }
-    }
-    return $null
-  }
-
-  function _FindFirst {
-    param(
-      [Parameter(Mandatory=$true)] [string] $Dir,
-      [Parameter(Mandatory=$true)] [string[]] $Patterns
-    )
-    foreach ($p in $Patterns) {
-      try {
-        $hit = Get-ChildItem -Path $Dir -File -Recurse -Force -ErrorAction SilentlyContinue |
-          Where-Object { $_.Name -like $p } |
-          Select-Object -First 1
-        if ($hit) { return $hit.FullName }
-      } catch { }
-    }
-    return $null
-  }
-
-  function _TryImportLocalCA {
-    param([Parameter(Mandatory=$true)] [string] $CaCertPath)
-
-    $ext = [IO.Path]::GetExtension($CaCertPath).ToLowerInvariant()
-    if ($ext -notin @(".cer", ".crt")) {
-      Write-TinySocsLog -Level "WARN" -Message "CA cert '$CaCertPath' is not .cer/.crt; skipping Windows trust import."
-      return $false
-    }
-
-    try {
-      $certObj = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($CaCertPath)
-      $thumb   = $certObj.Thumbprint
-
-      try {
-        $alreadyLM = Get-ChildItem -Path "Cert:\LocalMachine\Root" -ErrorAction SilentlyContinue |
-          Where-Object { $_.Thumbprint -eq $thumb } | Select-Object -First 1
-        if (-not $alreadyLM) {
-          Import-Certificate -FilePath $CaCertPath -CertStoreLocation "Cert:\LocalMachine\Root" | Out-Null
-          Write-TinySocsLog "Imported TinySocs local CA into LocalMachine\Root (Thumbprint=$thumb)."
-        }
-      } catch {
-        Write-TinySocsLog -Level "WARN" -Message "Failed importing CA into LocalMachine\Root: $($_.Exception.Message)"
-      }
-
-      try {
-        $alreadyCU = Get-ChildItem -Path "Cert:\CurrentUser\Root" -ErrorAction SilentlyContinue |
-          Where-Object { $_.Thumbprint -eq $thumb } | Select-Object -First 1
-        if (-not $alreadyCU) {
-          Import-Certificate -FilePath $CaCertPath -CertStoreLocation "Cert:\CurrentUser\Root" | Out-Null
-          Write-TinySocsLog "Imported TinySocs local CA into CurrentUser\Root (Thumbprint=$thumb)."
-        }
-      } catch {
-        Write-TinySocsLog -Level "WARN" -Message "Failed importing CA into CurrentUser\Root: $($_.Exception.Message)"
-      }
-
-      $checkLM = Get-ChildItem -Path "Cert:\LocalMachine\Root" -ErrorAction SilentlyContinue |
-        Where-Object { $_.Thumbprint -eq $thumb } | Select-Object -First 1
-      $checkCU = Get-ChildItem -Path "Cert:\CurrentUser\Root" -ErrorAction SilentlyContinue |
-        Where-Object { $_.Thumbprint -eq $thumb } | Select-Object -First 1
-
-      return [bool]($checkLM -or $checkCU)
-    } catch {
-      Write-TinySocsLog -Level "WARN" -Message "Failed loading CA cert for trust import ($CaCertPath): $($_.Exception.Message)"
-      return $false
-    }
-  }
-
-  # ---- HARDEN ROOT GETTERS (prevents Join-Path receiving System.Object[]) ----
-  $installRootVal = (Get-TinySocsInstallRoot | Select-Object -First 1)
-  $dataRootBase   = (Get-TinySocsDataRoot    | Select-Object -First 1)
-
-  $installRoot    = [string]$installRootVal
-  $openSearchRoot = Join-Path -Path $installRoot -ChildPath "OpenSearch"
-
-  $dataRoot       = Join-Path -Path ([string]$dataRootBase) -ChildPath "OpenSearch"
-  $dataPath       = Join-Path -Path $dataRoot -ChildPath "data"
-  $logsPath       = Join-Path -Path $dataRoot -ChildPath "logs"
-  $pdConf         = Join-Path -Path $dataRoot -ChildPath "config"
-  $certsDir       = Join-Path -Path $pdConf  -ChildPath "certs"
-  $nssmPath       = Join-Path -Path $installRoot -ChildPath "bin\nssm.exe"
-  # ---- END HARDEN ROOT GETTERS ----
-
-  $insecureLocalSiem = ($env:TINYSOCS_INSECURE_LOCAL_SIEM -eq 'true')
-
-  if ($ApiPort -ne 9201) {
-    Write-TinySocsLog -Level "WARN" -Message "ApiPort=$ApiPort (canonical TinySocs port is 9201). Proceeding because caller requested it."
-  }
-
-  Write-TinySocsLog "Local SIEM install starting (OpenSearchRoot=$openSearchRoot, DataRoot=$dataRoot, HttpPort=$ApiPort)."
-
-  New-Item -ItemType Directory -Force -Path $dataPath | Out-Null
-  New-Item -ItemType Directory -Force -Path $logsPath | Out-Null
-  New-Item -ItemType Directory -Force -Path $certsDir | Out-Null
-
-  Ensure-TinySocsOpenSearchProgramDataConfig -OpenSearchRoot $openSearchRoot -ProgramDataConf $pdConf -Force:$ForceConfig
-  Ensure-TinySocsOpenSearchSecurityConfigTree -InstallRoot $installRoot -OpenSearchRoot $openSearchRoot -ProgramDataConf $pdConf -Force:$ForceConfig | Out-Null
-
-  # --- NEW: repair security config ACLs BEFORE any reads/validation of opensearch-security YAMLs ---
-  try {
-    $secDir = Join-Path -Path $pdConf -ChildPath "opensearch-security"
-    Repair-TinySocsOpenSearchSecurityConfigAcls -SecurityDir $secDir
-  } catch {
-    Write-TinySocsLog -Level "WARN" -Message "Repair-TinySocsOpenSearchSecurityConfigAcls failed (continuing, but may fail later): $($_.Exception.Message)"
-  }
-  # --- END NEW ---
-
-  $tls = Ensure-TinySocsLocalCaAndServerCert -CertsDir $certsDir
-  Repair-TinySocsOpenSearchCertAcls -CertsDir $certsDir
-
-  # --- NEW: enforce canonical cert bundle presence + canonicalize TlsPaths before any validation/config writes ---
-  Ensure-TinySocsOpenSearchCertBundlePresent -CertsDir $certsDir -TlsPaths $tls -OpenSearchRoot $openSearchRoot
-  if ($tls -is [hashtable]) {
-    $h = Join-Path $certsDir "http.p12"
-    $t = Join-Path $certsDir "transport.p12"
-    $r = Join-Path $certsDir "trust.p12"
-    if (Test-Path $h -PathType Leaf) { $tls["HttpKeystoreP12"]      = $h }
-    if (Test-Path $t -PathType Leaf) { $tls["TransportKeystoreP12"] = $t }
-    if (Test-Path $r -PathType Leaf) { $tls["TruststoreP12"]        = $r }
-  }
-  # --- END NEW ---
-
-  # --- PATCH: ensure TLS storepass is present AND persisted (prevents “empty/forgotten storepass” regressions) ---
-  $tlsStorePass = $null
-  try {
-    $tlsStorePass = _GetTlsVal -Obj $tls -Keys @("StorePassword","storepass","storePass","TlsStorePass")
-    if ([string]::IsNullOrWhiteSpace($tlsStorePass)) {
-      try { $tlsStorePass = Read-TinySocsOpenSearchTlsStorePassFromDpapiFile -CertsDir $certsDir } catch { $tlsStorePass = $null }
-      if (-not [string]::IsNullOrWhiteSpace($tlsStorePass) -and $tls -is [hashtable]) {
-        $tls["StorePassword"] = [string]$tlsStorePass
-      }
-    }
-
-    if ([string]::IsNullOrWhiteSpace($tlsStorePass)) {
-      throw "TLS StorePassword is empty/unavailable (expected from Ensure-TinySocsLocalCaAndServerCert or DPAPI storepass file)."
-    }
-
-    # Persist (best-effort; param-name tolerant)
-    try {
-      $cmd = Get-Command Write-TinySocsOpenSearchTlsStorePassToDpapiFile -ErrorAction SilentlyContinue
-      if ($cmd) {
-        if ($cmd.Parameters.ContainsKey('StorePass')) {
-          $null = Write-TinySocsOpenSearchTlsStorePassToDpapiFile -CertsDir $certsDir -StorePass $tlsStorePass
-        } elseif ($cmd.Parameters.ContainsKey('TlsStorePass')) {
-          $null = Write-TinySocsOpenSearchTlsStorePassToDpapiFile -CertsDir $certsDir -TlsStorePass $tlsStorePass
-        } elseif ($cmd.Parameters.ContainsKey('Password')) {
-          $null = Write-TinySocsOpenSearchTlsStorePassToDpapiFile -CertsDir $certsDir -Password $tlsStorePass
-        }
-      }
-    } catch { }
-  } catch {
-    Write-TinySocsLog -Level "WARN" -Message "Failed ensuring/persisting TLS store password: $($_.Exception.Message)"
-  }
-  # --- END PATCH ---
-
-  $caCertPath = _GetTlsVal -Obj $tls -Keys @("CaCerPath","CaCertPath","ca","caCert","cacert","CaCert","RootCa","rootCa","ca_path")
-  if (-not $caCertPath) {
-    $caCertPath = _FindFirst -Dir $certsDir -Patterns @("*ca*.crt", "*ca*.cer", "*root*.crt", "*root*.cer", "*ca*.pem", "*root*.pem")
-  }
-
-  try {
-    Set-MachineEnv @{ OPENSEARCH_PATH_CONF = $pdConf }
-    $env:OPENSEARCH_PATH_CONF = $pdConf
-    Write-TinySocsLog "Set OPENSEARCH_PATH_CONF=$pdConf (machine + session) to ensure persistent ProgramData config is always used."
-  } catch {
-    Write-TinySocsLog -Level "WARN" -Message "Failed to set OPENSEARCH_PATH_CONF machine env var: $($_.Exception.Message)"
-  }
-
-  $configFile = Join-Path -Path $pdConf -ChildPath "opensearch.yml"
-  Write-TinySocsOpenSearchConfig -ConfigPath $configFile `
-    -ClusterName $ClusterName `
-    -NodeName    $NodeName `
-    -HttpPort    $ApiPort `
-    -DataPath    $dataPath `
-    -LogsPath    $logsPath `
-    -Force:$ForceConfig
-
-  $initMarker = Join-Path -Path $dataRoot -ChildPath ".tinysocs_security_initialized"
-
-  # --- PATCHED LOGIC: robust existing-data detection ---
-  $dataPresent = $false
-  try { $dataPresent = Test-TinySocsOpenSearchDataPresent -DataPath $dataPath } catch { $dataPresent = $true }
-
-  $hasMarker = $false
-  try { $hasMarker = (Test-Path $initMarker -PathType Leaf) } catch { $hasMarker = $false }
-
-  $allowInit = ((-not $dataPresent) -and (-not $hasMarker))
-  # --- END PATCHED LOGIC ---
-
-  Ensure-TinySocsOpenSearchSecuritySettings -ConfigPath $configFile -TlsPaths $tls -AllowDefaultInitSecurityIndex:$allowInit
-  Assert-TinySocsOpenSearchSecurityConfigPresent -ConfigPath $configFile
-
-  # NEW: determinism hardening (YAML dedupe + DPAPI storepass validation)
-  Ensure-TinySocsOpenSearchDeterministicBootstrap `
-    -OpenSearchRoot $openSearchRoot `
-    -ProgramDataConf $pdConf `
-    -CertsDir $certsDir `
-    -HttpPort $ApiPort `
-    -AllowDefaultInitSecurityIndex ([bool]$allowInit) `
-    -TlsPaths $tls
-
-  # NEW: enforce OpenSearch keystore _secure storepass entries (prevents “keystore exists but wrong” regressions)
-  try {
-    Ensure-TinySocsOpenSearchKeystoreSecurePasswords `
-      -OpenSearchRoot $openSearchRoot `
-      -ProgramDataConf $pdConf `
-      -CertsDir $certsDir `
-      -StorePass ([string]$tlsStorePass) | Out-Null
-  } catch {
-    Write-TinySocsLog -Level "WARN" -Message "Failed to enforce OpenSearch keystore _secure entries: $($_.Exception.Message)"
-  }
-
-  # --- NEW/CRITICAL: prevent *_password + *_password_secure collision (remove plain password keys from YAML) ---
-  try {
-    $cmd = Get-Command Repair-TinySocsOpenSearchSslPasswordSettings -ErrorAction SilentlyContinue
-    if ($cmd) {
-      Repair-TinySocsOpenSearchSslPasswordSettings -ConfigPath $configFile
-    }
-  } catch {
-    Write-TinySocsLog -Level "WARN" -Message "Failed to repair SSL password settings in opensearch.yml: $($_.Exception.Message)"
-  }
-  # --- END NEW ---
-
-  if ($insecureLocalSiem) {
-    Write-TinySocsLog -Level "WARN" -Message "TINYSOCS_INSECURE_LOCAL_SIEM=true - disabling OpenSearch security plugin (DEV ONLY)."
-    Disable-TinySocsOpenSearchSecurityPlugin -OpenSearchRoot $openSearchRoot
-  }
-
-  $scheme  = if ($insecureLocalSiem) { "http" } else { "https" }
-  $siemUrl = "${scheme}://127.0.0.1:$ApiPort"
-
-  $wantTrustLocalCA =
-    (-not $insecureLocalSiem) -and (
-      $TrustLocalCA.IsPresent -or
-      ($env:TINYSOCS_TRUST_LOCAL_CA -eq 'true')
-    )
-
-  $trustedLocalCA = $false
-  if ($wantTrustLocalCA -and $caCertPath) {
-    try { $trustedLocalCA = _TryImportLocalCA -CaCertPath $caCertPath } catch { $trustedLocalCA = $false }
-  }
-
-  $siemSslVerify = $false
-  if ($scheme -eq 'https') {
-    $siemSslVerify = [bool]$trustedLocalCA
-    if (-not $siemSslVerify) {
-      Write-TinySocsLog -Level "WARN" -Message "Local SIEM is https but local CA is not trusted; SIEM_SSL_VERIFY will be set to false."
-    }
-  }
-
-  $skipTlsForLocal = ($scheme -eq 'https' -and -not $siemSslVerify)
-
-  if ([string]::IsNullOrWhiteSpace($SiemUser)) { $SiemUser = "admin" }
-  if ([string]::IsNullOrWhiteSpace($KibanaUser)) { $KibanaUser = "kibanaserver" }
-
-  $callerProvided = (-not [string]::IsNullOrWhiteSpace($SiemPass) -and $SiemPass -ne "ChangeMe123!")
-
-  if (-not $callerProvided) {
-    try {
-      $existing = Get-TSCredential -Name 'TinySocs/SIEM/Creds'
-      if ($existing) {
-        $j = $existing | ConvertFrom-Json
-        if ($j.user) { $SiemUser = [string]$j.user }
-        if ($j.pass) {
-          $SiemPass = [string]$j.pass
-          Write-TinySocsLog "Reusing existing SIEM/OpenSearch admin password from CredMan (TinySocs/SIEM/Creds)."
-        }
-      }
-    } catch { }
-
-    if ([string]::IsNullOrWhiteSpace($SiemPass) -or $SiemPass -eq "ChangeMe123!") {
-      $dpapiPass = Read-TinySocsSiemAdminPassFromDpapiFile -CertsDir $certsDir
-      if ($dpapiPass) {
-        $SiemPass = $dpapiPass
-        Write-TinySocsLog "Restored SIEM/OpenSearch admin password from DPAPI file (stable across reinstalls)."
-      }
-    }
-  }
-
-  if ([string]::IsNullOrWhiteSpace($SiemPass) -or $SiemPass -eq "ChangeMe123!") {
-    if ($dataPresent -or -not $allowInit) {
-      throw "SIEM/OpenSearch admin password missing, but data appears to already exist. Refusing to generate a new password (would lock you out)."
-    }
-    $SiemPass = New-TinySocsPassword -Length 28
-    Write-TinySocsLog -Level "WARN" -Message "Generated a new strong SIEM/OpenSearch admin password (fresh init)."
-  }
-
-  # NEW: default Kibana password to admin password if not explicitly provided
-  if ([string]::IsNullOrWhiteSpace($KibanaPass)) {
-    $KibanaPass = $SiemPass
-  }
-
-  try { $null = Write-TinySocsSiemAdminPassToDpapiFile -CertsDir $certsDir -AdminPass $SiemPass } catch { }
-
-  Set-TinySocsSiemCredential -SiemUrl $siemUrl -SiemUser $SiemUser -SiemPass $SiemPass -SiemSslVerify:$siemSslVerify -CaCertPath $caCertPath
-
-  $runnerPath = Join-Path -Path $dataRoot -ChildPath "run-opensearch.ps1"
-  Ensure-TinySocsOpenSearchRunner -InstallRoot $installRoot -OpenSearchRoot $openSearchRoot -ProgramDataConf $pdConf -RunnerPath $runnerPath
-
-  $serviceName = "TinySocsOpenSearch"
-  Ensure-TinySocsOpenSearchService `
-    -ServiceName $serviceName `
-    -NssmExe $nssmPath `
-    -Runner $runnerPath `
-    -WorkDir $dataRoot `
-    -LogsDir $logsPath `
-    -HttpPort $ApiPort `
-    -ProgramDataConf $pdConf
-
-  Set-TinySocsOpenSearchAcls -ServiceName $serviceName -DataRoot $dataRoot -LogsPath $logsPath -ConfigPath $pdConf -RunnerPath $runnerPath
-  Repair-TinySocsOpenSearchCertAcls -CertsDir $certsDir
-
-  if (-not $NoStart) {
-    try {
-      # --- PATCH: handle PAUSED explicitly before Start-Service ---
-      try {
-        $svc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
-        if ($svc -and $svc.Status -eq 'Paused') {
-          Write-TinySocsLog -Level "WARN" -Message "Local SIEM service '$serviceName' is PAUSED; attempting Resume-Service before Start-Service."
-          try { Resume-Service -Name $serviceName -ErrorAction Stop } catch { }
-        }
-      } catch { }
-      # --- END PATCH ---
-
-      Start-Service -Name $serviceName -ErrorAction Stop
-      Write-TinySocsLog "Local SIEM service '$serviceName' started."
-
-      try { Set-TinySocsOpenSearchAcls -ServiceName $serviceName -DataRoot $dataRoot -LogsPath $logsPath -ConfigPath $pdConf -RunnerPath $runnerPath } catch { }
-      try { Repair-TinySocsOpenSearchCertAcls -CertsDir $certsDir } catch { }
-
-      $ready = Wait-TinySocsLocalSiemReady -Url $siemUrl -TimeoutSeconds 90 -IntervalSeconds 3 -SkipTlsVerify:($skipTlsForLocal)
-      if (-not $ready) {
-        Write-TinySocsLog -Level "WARN" -Message "Local SIEM started but HTTP not responding at $siemUrl; check logs under $logsPath."
-      } else {
-        if ($scheme -eq 'https' -and -not $insecureLocalSiem) {
-
-          # ---- NEW/CRITICAL: securityadmin sync must also hydrate internal_users.yml for admin + kibanaserver ----
-          try {
-            $adminStores = Ensure-TinySocsOpenSearchAdminKeyStores `
-              -OpenSearchRoot $openSearchRoot `
-              -CertsDir $certsDir `
-              -StorePass ([string]$tlsStorePass)
-
-            $ok = Invoke-TinySocsOpenSearchSecurityAdminSync `
-              -OpenSearchRoot      $openSearchRoot `
-              -ProgramDataConf     $pdConf `
-              -AdminStores         $adminStores `
-              -HttpPort            $ApiPort `
-              -TimeoutSeconds      180 `
-              -AdminUserName       $SiemUser `
-              -AdminUserPassword   $SiemPass `
-              -KibanaUserName      $KibanaUser `
-              -KibanaUserPassword  $KibanaPass
-
-            if (-not $ok) {
-              Write-TinySocsLog -Level "WARN" -Message "securityadmin sync did not succeed; continuing (REST init may still work), but security config may not be applied."
-            }
-          } catch {
-            Write-TinySocsLog -Level "WARN" -Message "securityadmin sync step failed: $($_.Exception.Message)"
-          }
-          # ---- END NEW ----
-
-          try {
-            $null = Initialize-TinySocsOpenSearchSecurity -SiemUrl $siemUrl -AdminUser $SiemUser -AdminPass $SiemPass -ServiceUser "tinysocs" -SkipTlsVerify:($skipTlsForLocal)
-            Write-TinySocsLog "OpenSearch security initialized via REST (service user + role + mapping)."
-
-            try {
-              New-Item -ItemType File -Force -Path $initMarker | Out-Null
-              Write-TinySocsLog "Wrote security init marker ($initMarker)."
-            } catch {
-              Write-TinySocsLog -Level "WARN" -Message "Security init succeeded but failed to write marker ($initMarker): $($_.Exception.Message)"
-            }
-          } catch {
-            Write-TinySocsLog -Level "WARN" -Message "OpenSearch REST security initialization failed: $($_.Exception.Message)"
-          }
-        }
-      }
-    } catch {
-      Write-TinySocsLog -Level "WARN" -Message "Failed to start local SIEM service '$serviceName': $($_.Exception.Message)"
-    }
-  } else {
-    Write-TinySocsLog -Level "WARN" -Message "NoStart specified; service '$serviceName' configured but not started."
-  }
-
-  $verifyString = if ([bool]$siemSslVerify) { "true" } else { "false" }
-  $envBlock = @{ SIEM_URL = $siemUrl; SIEM_SSL_VERIFY = $verifyString }
-  if ($caCertPath) { $envBlock["SIEM_CA_CERT"] = $caCertPath }
-  Set-MachineEnv $envBlock
-
-  if ($scheme -eq "http") {
-    Write-TinySocsLog -Level "WARN" -Message "Local SIEM configured at $siemUrl (INSECURE mode: no auth/TLS)."
-  } else {
-    $msg = "Local SIEM configured at $siemUrl (SECURE mode: TLS+auth, local-only bind)."
-    if (-not $siemSslVerify) {
-      $msg += " Note: SSL verify is disabled unless the local CA is trusted or clients use SIEM_CA_CERT."
-      Write-TinySocsLog -Level "WARN" -Message $msg
-    } else {
-      Write-TinySocsLog $msg
-    }
-  }
+  Write-TinySocsLog "OpenSearch security/TLS settings ensured in $ConfigPath (TinySocs-managed PKCS12 block appended). allow_default_init_securityindex=$initVal; storepass_source=$pwSource"
 }
 
 function Ensure-OpenSearchYamlCanonical {
@@ -4322,9 +3552,7 @@ function Ensure-TinySocsOpenSearchRunner {
 
   $template = @'
 $ErrorActionPreference = 'Stop'
-
-# Import module quietly (we don't care about unapproved verb warnings in a service context)
-try { Import-Module '__MODULE__' -Force -ErrorAction SilentlyContinue -WarningAction SilentlyContinue } catch { }
+try { Import-Module '__MODULE__' -Force } catch { }
 
 # Always force ProgramData config
 $env:OPENSEARCH_PATH_CONF = '__CONF__'
@@ -4334,17 +3562,20 @@ try {
   $confDir  = '__CONF__'
   $osConf   = Join-Path '__OSROOT__' 'config'
 
+  # Files OpenSearch launcher expects to exist in OPENSEARCH_PATH_CONF
   $mustHave = @('jvm.options','log4j2.properties')
 
   foreach ($f in $mustHave) {
     $dst = Join-Path $confDir $f
 
+    # If it is a directory (poison), remove it
     try {
       if (Test-Path $dst -PathType Container) {
         Remove-Item -Recurse -Force -LiteralPath $dst -ErrorAction SilentlyContinue
       }
     } catch { }
 
+    # If missing, copy baseline from packaged OpenSearch config
     if (-not (Test-Path $dst -PathType Leaf)) {
       $src = Join-Path $osConf $f
       if (Test-Path $src -PathType Leaf) {
@@ -4371,13 +3602,14 @@ try {
     }
 
     if ($vals.Count -gt 1) {
-      $val = $vals[0]
+      $val = $vals[0]  # keep first occurrence's value
       $lines2 = $lines | Where-Object { $_ -notmatch "^\s*$escaped\s*:" }
       $lines2 += ("{0}: {1}" -f $key, $val)
       Set-Content -LiteralPath $yml -Value $lines2 -Encoding UTF8 -Force
     }
   }
 
+  # Final sanity: if jvm.options still isn’t there, bail early with a clear error
   if (-not (Test-Path (Join-Path $confDir 'jvm.options') -PathType Leaf)) {
     throw "FATAL: jvm.options missing under OPENSEARCH_PATH_CONF=$confDir"
   }
@@ -4428,106 +3660,83 @@ if ([string]::IsNullOrWhiteSpace($env:OPENSEARCH_INITIAL_ADMIN_PASSWORD)) {
   } catch { }
 }
 
-# **Critical:** ensure TLS storepass is present ONLY as secure keystore settings (no YAML plaintext, no plaintext keystore keys).
+# Self-heal TLS storepass into opensearch.yml before starting, using DPAPI storepass file.
 try {
-  $confDir  = '__CONF__'
+  $confDir = '__CONF__'
   $certsDir = Join-Path $confDir 'certs'
-  $kbat     = Join-Path '__OSROOT__' 'bin\opensearch-keystore.bat'
-  $ks       = Join-Path $confDir 'opensearch.keystore'
+  $dp = Join-Path $certsDir 'opensearch-tls-storepass.dpapi'
+  $cfg = Join-Path $confDir 'opensearch.yml'
 
-  if (Test-Path $kbat -PathType Leaf) {
-    # Ensure keystore exists under ProgramData conf
-    if (-not (Test-Path $ks -PathType Leaf)) {
-      try { & $kbat create | Out-Null } catch { }
+  if ((Test-Path $dp -PathType Leaf) -and (Test-Path $cfg -PathType Leaf)) {
+
+    function _Read-DpapiText([string]$p) {
+      $bytes = $null
+      try {
+        $raw = (Get-Content -Path $p -Raw -ErrorAction Stop).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($raw) -and $raw -match '^[A-Za-z0-9+/=\r\n]+$') {
+          $bytes = [Convert]::FromBase64String($raw)
+        }
+      } catch { }
+      if (-not $bytes) {
+        try { $bytes = [System.IO.File]::ReadAllBytes($p) } catch { }
+      }
+      if (-not $bytes) { return $null }
+
+      Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue | Out-Null
+
+      $clear = $null
+      try { $clear = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, [System.Security.Cryptography.DataProtectionScope]::LocalMachine) } catch { }
+      if (-not $clear) {
+        try { $clear = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser) } catch { }
+      }
+      if (-not $clear) { return $null }
+
+      $s = $null
+      try { $s = [Text.Encoding]::UTF8.GetString($clear).Trim([char]0).Trim() } catch { }
+      if ([string]::IsNullOrWhiteSpace($s)) {
+        try { $s = [Text.Encoding]::Unicode.GetString($clear).Trim([char]0).Trim() } catch { }
+      }
+      if ([string]::IsNullOrWhiteSpace($s)) { return $null }
+      return $s
     }
 
-    # Purge legacy plaintext SSL password keys (these trigger "must be set not both")
-    $legacy = @(
-      'plugins.security.ssl.http.keystore_password',
-      'plugins.security.ssl.http.keystore_keypassword',
-      'plugins.security.ssl.http.truststore_password',
-      'plugins.security.ssl.transport.keystore_password',
-      'plugins.security.ssl.transport.keystore_keypassword',
-      'plugins.security.ssl.transport.truststore_password'
-    )
-    foreach ($k in $legacy) {
-      try { & $kbat remove $k 2>$null | Out-Null } catch { }
-    }
-  }
+    $pw = _Read-DpapiText $dp
+    if (-not [string]::IsNullOrWhiteSpace($pw)) {
+      $begin = '# --- BEGIN TinySocs security/TLS ---'
+      $end   = '# --- END TinySocs security/TLS ---'
+      $c = Get-Content -Path $cfg -Raw
 
-  if ((Get-Command Read-TinySocsOpenSearchTlsStorePassFromDpapiFile -ErrorAction SilentlyContinue)) {
-    $storePass = Read-TinySocsOpenSearchTlsStorePassFromDpapiFile -CertsDir $certsDir
-    if ($storePass) {
-      $storePass = ([string]$storePass).Trim()
-
-      # Guardrails: prevent UTF-16/null-padded/linebroken nonsense entering keystore
-      if ($storePass.IndexOf([char]0) -ge 0 -or $storePass -match "[`r`n]") {
-        throw "TLS storepass contains null/newline characters; refusing to write to keystore."
-      }
-      foreach ($ch in $storePass.ToCharArray()) {
-        if ([int][char]$ch -gt 127) { throw "TLS storepass contains non-ASCII characters; Java PKCS12 commonly rejects this." }
-      }
-
-      $keysSecure = @(
-        'plugins.security.ssl.http.keystore_password_secure',
-        'plugins.security.ssl.http.keystore_keypassword_secure',
-        'plugins.security.ssl.http.truststore_password_secure',
-        'plugins.security.ssl.transport.keystore_password_secure',
-        'plugins.security.ssl.transport.keystore_keypassword_secure',
-        'plugins.security.ssl.transport.truststore_password_secure'
-      )
-
-      # Prefer module helper if available, but ensure it uses deterministic overwrite.
-      if (Get-Command Ensure-TinySocsOpenSearchKeystoreSecurePasswords -ErrorAction SilentlyContinue) {
-        Ensure-TinySocsOpenSearchKeystoreSecurePasswords `
-          -OpenSearchRoot '__OSROOT__' `
-          -ProgramDataConf $confDir `
-          -CertsDir $certsDir `
-          -StorePass $storePass `
-          -Keys $keysSecure | Out-Null
-      }
-      elseif (Test-Path $kbat -PathType Leaf) {
-        # Fallback: write secure keys ourselves using ASCII stdin (NO PowerShell pipeline)
-        foreach ($k in $keysSecure) {
-          try { & $kbat remove $k 2>$null | Out-Null } catch { }
-
-          $psi = New-Object System.Diagnostics.ProcessStartInfo
-          $psi.FileName               = $kbat
-          $psi.Arguments              = "add -f --stdin $k"
-          $psi.WorkingDirectory       = (Join-Path '__OSROOT__' 'bin')
-          $psi.UseShellExecute        = $false
-          $psi.RedirectStandardInput  = $true
-          $psi.RedirectStandardOutput = $true
-          $psi.RedirectStandardError  = $true
-
-          # Force conf for the child too
-          $psi.EnvironmentVariables["OPENSEARCH_PATH_CONF"] = $confDir
-
-          $p = New-Object System.Diagnostics.Process
-          $p.StartInfo = $psi
-
-          if (-not $p.Start()) { throw "Failed to start opensearch-keystore for key $k" }
-
-          $sw = New-Object System.IO.StreamWriter($p.StandardInput.BaseStream, [Text.Encoding]::ASCII)
-          $sw.WriteLine($storePass)
-          $sw.Flush()
-          $sw.Close()
-
-          $stdout = $p.StandardOutput.ReadToEnd()
-          $stderr = $p.StandardError.ReadToEnd()
-          $p.WaitForExit()
-
-          if ($p.ExitCode -ne 0) {
-            throw "Failed setting $k (exit=$($p.ExitCode)). stdout=$stdout stderr=$stderr"
+      if ($c -like "*$begin*$end*") {
+        $pattern = "(?s)$([Regex]::Escape($begin)).*?$([Regex]::Escape($end))"
+        $block = [Regex]::Match($c, $pattern).Value
+        if (-not [string]::IsNullOrWhiteSpace($block)) {
+          $block2 = $block
+          $keys = @(
+            'plugins.security.ssl.http.keystore_password',
+            'plugins.security.ssl.http.keystore_keypassword',
+            'plugins.security.ssl.http.truststore_password',
+            'plugins.security.ssl.transport.keystore_password',
+            'plugins.security.ssl.transport.keystore_keypassword',
+            'plugins.security.ssl.transport.truststore_password'
+          )
+          foreach ($k in $keys) {
+            $block2 = [Regex]::Replace($block2, "(?m)^($([Regex]::Escape($k))\s*:\s*).*$", "`$1$pw")
           }
+          if ($block2 -ne $block) {
+            $c = $c.Replace($block, $block2)
+            Set-Content -Path $cfg -Value $c -Encoding UTF8 -Force
+          }
+        }
+      } else {
+        if ($c.Contains('__TINYSOCS_TLS_STOREPASS__')) {
+          $pwYaml = '"' + ($pw.Replace('\','\\').Replace('"','\"')) + '"'
+          $c = $c.Replace('__TINYSOCS_TLS_STOREPASS__', $pwYaml)
+          Set-Content -Path $cfg -Value $c -Encoding UTF8 -Force
         }
       }
     }
   }
-} catch {
-  # Don't hard-fail runner: log + continue to opensearch.bat, but you'll see it in NSSM logs
-  Write-Output ("WARN: TLS keystore secure-password enforcement failed: " + $_.Exception.Message)
-}
+} catch { }
 
 & '__BAT__'
 '@
@@ -4553,7 +3762,7 @@ try {
       & icacls $RunnerPath /inheritance:r /grant:r "*S-1-5-18:(F)" "*S-1-5-32-544:(F)" "*S-1-5-11:(RX)" /C | Out-Null
     } catch { }
 
-    Write-TinySocsLog "OpenSearch runner ensured at $RunnerPath (forces ProgramData config + heals mandatory config + dedupes known YAML key + reads CredMan/DPAPI admin pass + PURGES plaintext SSL keystore keys + writes TLS storepass via secure keystore settings using ASCII stdin)."
+    Write-TinySocsLog "OpenSearch runner ensured at $RunnerPath (forces ProgramData config + heals mandatory config + dedupes known YAML key + reads CredMan/DPAPI admin pass + self-heals TLS storepass at start)."
   } catch {
     Write-TinySocsLog -Level "ERROR" -Message "Failed to write OpenSearch runner at ${RunnerPath}: $($_.Exception.Message)"
     throw
@@ -4577,7 +3786,7 @@ function Ensure-YamlScalarKeyOnce {
   $keyRegex = '^\s*' + [regex]::Escape($Key) + '\s*:'
   $lines = Remove-YamlKeyAndBareValueLine -Lines $lines -KeyRegex $keyRegex
 
-  $kv = "${Key}: $Value"
+  $kv = "$Key: $Value"
 
   $inserted = $false
   if ($InsertAfterKey) {
@@ -4892,32 +4101,6 @@ function Ensure-OpenSearchServiceDeterministic {
   Write-TinySocsLog "OpenSearch service '$ServiceName' made deterministic (ProgramDataConf=$conf, Runner=$RunnerPath)."
 }
 
-function Invoke-TinySocsOpenSearchDeterministicBootstrap {
-  [CmdletBinding()]
-  param(
-    [string]$AppRoot = "C:\Program Files\TinySocs"
-  )
-
-  $script = Join-Path $AppRoot "bin\Ensure-TinySocsOpenSearchDeterministic.ps1"
-  if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
-    throw "Deterministic bootstrap script missing: $script"
-  }
-
-  # Run in a clean PowerShell so we don't inherit StrictMode / prefs weirdly
-  $ps = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
-  $args = @(
-    "-NoProfile",
-    "-ExecutionPolicy", "Bypass",
-    "-File", "`"$script`""
-  )
-
-  & $ps @args
-  $code = $LASTEXITCODE
-  if ($code -ne 0) {
-    throw "Ensure-TinySocsOpenSearchDeterministic.ps1 failed (exit code $code). Check ProgramData OpenSearch logs."
-  }
-}
-
 function Test-NssmManagedService {
   param(
     [Parameter(Mandatory)] [string] $ServiceName,
@@ -5069,9 +4252,9 @@ try {
   try { & $nssm set $serviceName AppExit Default Restart | Out-Null } catch { }
 
   # Keep env invariant at the service layer too (belt + braces)
-  $envExtra = Format-TinySocsNssmEnvExtra @(
+  $envExtra = @(
     "OPENSEARCH_PATH_CONF=$conf"
-  )
+  ) -join "`r`n"
   & $nssm set $serviceName AppEnvironmentExtra $envExtra | Out-Null
 
   # Recovery (use only restart actions; avoid the empty-string action which is fragile)
@@ -5085,104 +4268,23 @@ try {
   Write-TinySocsLog "OpenSearch service registered (TinySocsOpenSearch) via PowerShell runner with OPENSEARCH_PATH_CONF=$conf (runner=$runnerPath)"
 }
 
-function Format-TinySocsNssmEnvExtra {
-  [CmdletBinding()]
-  param(
-    [Parameter(Mandatory)][object]$Lines
-  )
-
-  # Normalize input -> string[]
-  $arr = @()
-  if ($Lines -is [string]) {
-    $arr = @([string]$Lines)
-  } elseif ($Lines -is [System.Collections.IEnumerable]) {
-    foreach ($x in $Lines) { $arr += @([string]$x) }
-  } else {
-    $arr = @([string]$Lines)
-  }
-
-  # Expand any embedded newlines (treat as separators, not characters inside a token)
-  $expanded = @()
-  foreach ($s in $arr) {
-    if ($null -eq $s) { continue }
-    $t = [string]$s
-    foreach ($p in ($t -split "(`r`n|`n|`r)")) {
-      if ($null -ne $p) { $expanded += @([string]$p) }
-    }
-  }
-
-  # Clean + keep only KEY=VALUE
-  $clean = @()
-  foreach ($s in $expanded) {
-    if ($null -eq $s) { continue }
-    $t = $s.ToString()
-
-    # Strip tabs + NULs; trim whitespace
-    $t = $t -replace "(`t|`0)", ""
-    $t = $t.Trim()
-
-    if ([string]::IsNullOrWhiteSpace($t)) { continue }
-
-    # If someone previously jammed multiple env pairs into one string via ';', split them.
-    # We only split when it *looks* like "X=1;Y=2" (to avoid mangling paths like "C:\...")
-    if ($t -match '^[^=\s][^=]*=.*;[^=\s][^=]*=.*$') {
-      foreach ($part in ($t -split ';')) {
-        $pt = ($part -replace "(`t|`0)", "").Trim()
-        if ([string]::IsNullOrWhiteSpace($pt)) { continue }
-        if ($pt -match '^[^=\s][^=]*=.*$') { $clean += $pt }
-      }
-      continue
-    }
-
-    if ($t -notmatch '^[^=\s][^=]*=.*$') { continue }
-
-    # Drop surrounding quotes if present (NSSM doesn't want them as part of the key)
-    if ($t.Length -ge 2 -and (
-        ($t.StartsWith('"') -and $t.EndsWith('"')) -or
-        ($t.StartsWith("'") -and $t.EndsWith("'"))
-      )) {
-      $t = $t.Substring(1, $t.Length - 2).Trim()
-      if ([string]::IsNullOrWhiteSpace($t)) { continue }
-      if ($t -notmatch '^[^=\s][^=]*=.*$') { continue }
-    }
-
-    $clean += $t
-  }
-
-  # De-dupe by key, preserve insertion order (last write wins)
-  $seen  = @{}
-  $order = New-Object System.Collections.Generic.List[string]
-  foreach ($line in $clean) {
-    $k = ($line -split '=', 2)[0].Trim()
-    if ([string]::IsNullOrWhiteSpace($k)) { continue }
-
-    if (-not $seen.ContainsKey($k)) { [void]$order.Add($k) }
-    $seen[$k] = $line
-  }
-
-  $out = foreach ($k in $order) { $seen[$k] }
-
-  # NSSM AppEnvironmentExtra is REG_MULTI_SZ; give it LF-only separators.
-  return (($out -join "`n").Trim("`r","`n"))
-}
-
 # NOTE: Ensure-* should NOT start the service (Install-* decides based on -NoStart).
 function Ensure-TinySocsOpenSearchService {
   [CmdletBinding()]
   param(
-    [string] $ServiceName     = "TinySocsOpenSearch",
-    [string] $NssmExe         = "C:\Program Files\TinySocs\bin\nssm.exe",
-    [string] $Runner          = "C:\ProgramData\TinySocs\OpenSearch\run-opensearch.ps1",
-    [string] $WorkDir         = "C:\ProgramData\TinySocs\OpenSearch",
-    [string] $LogsDir         = "C:\ProgramData\TinySocs\OpenSearch\logs",
-    [int]    $HttpPort        = 9200,
+    [string] $ServiceName    = "TinySocsOpenSearch",
+    [string] $NssmExe        = "C:\Program Files\TinySocs\bin\nssm.exe",
+    [string] $Runner         = "C:\ProgramData\TinySocs\OpenSearch\run-opensearch.ps1",
+    [string] $WorkDir        = "C:\ProgramData\TinySocs\OpenSearch",
+    [string] $LogsDir        = "C:\ProgramData\TinySocs\OpenSearch\logs",
+    [int]    $HttpPort       = 9200,
     [string] $ProgramDataConf = "C:\ProgramData\TinySocs\OpenSearch\config"
   )
 
-  if (-not (Test-Path -LiteralPath $NssmExe -PathType Leaf)) { throw "nssm.exe not found: $NssmExe" }
+  if (-not (Test-Path $NssmExe -PathType Leaf)) { throw "nssm.exe not found: $NssmExe" }
 
   $ps = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
-  if (-not (Test-Path -LiteralPath $Runner -PathType Leaf)) { throw "Missing runner: $Runner" }
+  if (-not (Test-Path $Runner -PathType Leaf)) { throw "Missing runner: $Runner" }
 
   New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
   New-Item -ItemType Directory -Force -Path $LogsDir | Out-Null
@@ -5224,8 +4326,8 @@ function Ensure-TinySocsOpenSearchService {
   try { & $NssmExe set $ServiceName AppThrottle      15000 | Out-Null } catch { }
   try { & $NssmExe set $ServiceName AppRestartDelay  5000  | Out-Null } catch { }
 
-  & $NssmExe set $ServiceName AppStopMethodSkip 1     | Out-Null
-  & $NssmExe set $ServiceName AppExit Default Restart | Out-Null
+  & $NssmExe set $ServiceName AppStopMethodSkip 1        | Out-Null
+  & $NssmExe set $ServiceName AppExit Default Restart    | Out-Null
 
   # Ensure identity + delayed-auto via BOTH NSSM + sc.exe
   try { & $NssmExe set $ServiceName ObjectName "LocalSystem" | Out-Null } catch { }
@@ -5240,14 +4342,8 @@ function Ensure-TinySocsOpenSearchService {
   } catch { }
 
   # Merge OPENSEARCH_PATH_CONF into existing AppEnvironmentExtra (don’t clobber)
-  # IMPORTANT: NSSM AppEnvironmentExtra must be a multi-string of KEY=VALUE lines.
-  # We therefore run everything through Format-TinySocsNssmEnvExtra which:
-  #   - drops junk
-  #   - splits accidental multi-pairs
-  #   - LF-only join
   try {
     if (-not [string]::IsNullOrWhiteSpace($ProgramDataConf)) {
-
       $current = @()
       try {
         $out = & $NssmExe get $ServiceName AppEnvironmentExtra 2>$null
@@ -5257,166 +4353,31 @@ function Ensure-TinySocsOpenSearchService {
         }
       } catch { $current = @() }
 
-      $desired = @()
-      if ($current) { $desired += $current }
-      $desired += "OPENSEARCH_PATH_CONF=$ProgramDataConf"
+      $kv = @{}
+      $passthru = New-Object System.Collections.Generic.List[string]
 
-      $envExtra = $null
-      try {
-        $envExtra = Format-TinySocsNssmEnvExtra $desired
-      } catch {
-        # Fallback (still LF-only)
-        $envExtra = (($desired | Where-Object { $_ -match '^[^=\s][^=]*=.*$' }) -join "`n").Trim("`r","`n")
-      }
-
-      # Final safety: if somehow empty, force our invariant only.
-      if ([string]::IsNullOrWhiteSpace($envExtra)) {
-        $envExtra = "OPENSEARCH_PATH_CONF=$ProgramDataConf"
-      }
-
-      & $NssmExe set $ServiceName AppEnvironmentExtra $envExtra | Out-Null
-    }
-  } catch {
-    Write-TinySocsLog -Level "WARN" -Message "Failed to merge/set NSSM AppEnvironmentExtra for '$ServiceName': $($_.Exception.Message)"
-  }
-
-  Write-TinySocsLog "OpenSearch service ensured via NSSM (not started here). (runner=$Runner, workdir=$WorkDir, conf=$ProgramDataConf)"
-}
-
-function Ensure-TinySocsOpenSearchDeterministicBootstrap {
-  [CmdletBinding()]
-  param(
-    [Parameter(Mandatory=$true)] [string] $OpenSearchRoot,
-    [Parameter(Mandatory=$true)] [string] $ProgramDataConf,
-    [Parameter(Mandatory=$true)] [string] $CertsDir,
-    [Parameter(Mandatory=$true)] [int]    $HttpPort,
-    [Parameter(Mandatory=$true)] [bool]   $AllowDefaultInitSecurityIndex,
-    [Parameter()] $TlsPaths
-  )
-
-  function _WriteUtf8NoBom([string]$Path, [string]$Text) {
-    if ($null -eq $Text) { $Text = "" }
-    if ($Text.Length -gt 0 -and [int]$Text[0] -eq 0xFEFF) { $Text = $Text.Substring(1) }
-    $enc = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText($Path, $Text, $enc)
-  }
-
-  function _EnsureSingleYamlKey {
-    param(
-      [Parameter(Mandatory=$true)] [string] $Path,
-      [Parameter(Mandatory=$true)] [string] $Key,
-      [Parameter(Mandatory=$true)] [string] $Value
-    )
-    $lines = @()
-    if (Test-Path -LiteralPath $Path -PathType Leaf) {
-      $lines = Get-Content -LiteralPath $Path -ErrorAction Stop
-    }
-    $rx = "^\s*" + [regex]::Escape($Key) + "\s*:"
-    $filtered = $lines | Where-Object { $_ -notmatch $rx }
-    $out = $filtered + ("{0}: {1}" -f $Key, $Value)
-    _WriteUtf8NoBom -Path $Path -Text ($out -join "`r`n")
-  }
-
-  function _NormalizePassword([string]$s) {
-    if ($null -eq $s) { return $null }
-    return ($s.Trim() -replace "`0+$","")
-  }
-
-  function _TestReadableFile([string]$Path) {
-    try {
-      $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-      $fs.Close()
-      return $true
-    } catch { return $false }
-  }
-
-  function _ReadDpapiLocalMachineString([string]$DpapiPath) {
-    if (-not (Test-Path -LiteralPath $DpapiPath -PathType Leaf)) { throw "DPAPI file not found: $DpapiPath" }
-    if (-not (_TestReadableFile $DpapiPath)) { throw "DPAPI file exists but is not readable (EFS/ACL?): $DpapiPath" }
-
-    $raw = $null
-    try { $raw = (Get-Content -LiteralPath $DpapiPath -Raw -ErrorAction Stop).Trim() } catch { $raw = $null }
-
-    # If file is base64 text (starts like AQAAANCM...), decode first.
-    if (-not [string]::IsNullOrWhiteSpace($raw) -and $raw -match '^[A-Za-z0-9+/=]+$') {
-      $dpapiBytes = [Convert]::FromBase64String($raw)
-      $plainBytes = [System.Security.Cryptography.ProtectedData]::Unprotect(
-        $dpapiBytes, $null, [System.Security.Cryptography.DataProtectionScope]::LocalMachine
-      )
-      return [System.Text.Encoding]::UTF8.GetString($plainBytes)
-    }
-
-    # Otherwise assume raw DPAPI bytes.
-    $bytes = [System.IO.File]::ReadAllBytes($DpapiPath)
-    $plainBytes2 = [System.Security.Cryptography.ProtectedData]::Unprotect(
-      $bytes, $null, [System.Security.Cryptography.DataProtectionScope]::LocalMachine
-    )
-    return [System.Text.Encoding]::UTF8.GetString($plainBytes2)
-  }
-
-  function _TestPkcs12Password([string]$P12Path, [string]$Password) {
-    try {
-      $col = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
-      $flags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::DefaultKeySet
-      $col.Import($P12Path, $Password, $flags) | Out-Null
-      return $true
-    } catch { return $false }
-  }
-
-  # ---- Begin deterministic actions ----
-  try {
-    # Canonicalize OPENSEARCH_PATH_CONF at process level (service-level env is handled elsewhere too)
-    $env:OPENSEARCH_PATH_CONF = $ProgramDataConf
-
-    $configFile = Join-Path -Path $ProgramDataConf -ChildPath "opensearch.yml"
-    if (-not (Test-Path -LiteralPath $configFile -PathType Leaf)) {
-      throw "opensearch.yml missing at $configFile (cannot enforce determinism)."
-    }
-
-    # 1) Hard-stop YAML duplicate-key regressions (exactly-once keys)
-    _EnsureSingleYamlKey -Path $configFile -Key "http.port" -Value ([string]$HttpPort)
-
-    $allowVal = if ($AllowDefaultInitSecurityIndex) { "true" } else { "false" }
-    _EnsureSingleYamlKey -Path $configFile -Key "plugins.security.allow_default_init_securityindex" -Value $allowVal
-
-    # Optional belt-and-braces: keys you *always* want set once (even if another helper appends duplicates)
-    _EnsureSingleYamlKey -Path $configFile -Key "plugins.security.ssl.http.enabled" -Value "true"
-    _EnsureSingleYamlKey -Path $configFile -Key "plugins.security.ssl.http.keystore_type" -Value "PKCS12"
-    _EnsureSingleYamlKey -Path $configFile -Key "plugins.security.ssl.http.truststore_type" -Value "PKCS12"
-    _EnsureSingleYamlKey -Path $configFile -Key "plugins.security.ssl.transport.keystore_type" -Value "PKCS12"
-    _EnsureSingleYamlKey -Path $configFile -Key "plugins.security.ssl.transport.truststore_type" -Value "PKCS12"
-
-    _EnsureSingleYamlKey -Path $configFile -Key "plugins.security.ssl.http.keystore_filepath" -Value "certs/http.p12"
-    _EnsureSingleYamlKey -Path $configFile -Key "plugins.security.ssl.http.truststore_filepath" -Value "certs/trust.p12"
-    _EnsureSingleYamlKey -Path $configFile -Key "plugins.security.ssl.transport.keystore_filepath" -Value "certs/transport.p12"
-    _EnsureSingleYamlKey -Path $configFile -Key "plugins.security.ssl.transport.truststore_filepath" -Value "certs/trust.p12"
-
-    # 2) Validate storepass deterministically (DPAPI base64 text OR raw DPAPI bytes)
-    $dpapiStorePassPath = Join-Path -Path $CertsDir -ChildPath "opensearch-tls-storepass.dpapi"
-    if (Test-Path -LiteralPath $dpapiStorePassPath -PathType Leaf) {
-      $storePass = _NormalizePassword (_ReadDpapiLocalMachineString -DpapiPath $dpapiStorePassPath)
-
-      $p12s = @(
-        (Join-Path $CertsDir "http.p12"),
-        (Join-Path $CertsDir "transport.p12"),
-        (Join-Path $CertsDir "trust.p12")
-      ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }
-
-      if ($p12s.Count -gt 0) {
-        foreach ($p12 in $p12s) {
-          if (-not (_TestPkcs12Password -P12Path $p12 -Password $storePass)) {
-            throw "DPAPI storepass does not open PKCS12 '$p12' (cert bundle/storepass mismatch)."
-          }
+      foreach ($ln in $current) {
+        if ($ln -match '^\s*([^=]+)=(.*)$') {
+          $k = $matches[1].Trim()
+          $v = $matches[2]
+          if (-not [string]::IsNullOrWhiteSpace($k)) { $kv[$k] = $v }
+        } else {
+          [void]$passthru.Add($ln)
         }
       }
-    }
 
-    Write-TinySocsLog "Deterministic OpenSearch bootstrap enforced (http.port=$HttpPort, allow_default_init_securityindex=$allowVal, yaml dedup + dpapi storepass validation)."
-  }
-  catch {
-    # Fail hard: determinism is not “best effort”
-    throw
-  }
+      $kv["OPENSEARCH_PATH_CONF"] = $ProgramDataConf
+
+      $merged = New-Object System.Collections.Generic.List[string]
+      foreach ($k in $kv.Keys) { [void]$merged.Add("$k=$($kv[$k])") }
+      foreach ($x in $passthru) { [void]$merged.Add($x) }
+
+      $envExtra = ($merged.ToArray() -join "`n")
+      & $NssmExe set $ServiceName AppEnvironmentExtra $envExtra | Out-Null
+    }
+  } catch { }
+
+  Write-TinySocsLog "OpenSearch service ensured via NSSM (not started here). (runner=$Runner, workdir=$WorkDir, conf=$ProgramDataConf)"
 }
 
 # Helper: Ensure TinySocs Agent service via NSSM
@@ -5545,46 +4506,30 @@ function Set-TinySocsOpenSearchAdminPasswordInConfig {
     [Parameter(Mandatory)][string]$AdminPassword
   )
 
-  $toolsDir = Join-Path $OpenSearchRoot "plugins\opensearch-security\tools"
-  if (-not (Test-Path $toolsDir -PathType Container)) {
-    throw "OpenSearch security tools dir not found at '$toolsDir'"
+  $hashTool = Join-Path $OpenSearchRoot "plugins\opensearch-security\tools\hash.bat"
+  if (-not (Test-Path $hashTool -PathType Leaf)) {
+    throw "OpenSearch hash tool not found at '$hashTool'"
   }
 
-  # Be robust across OpenSearch versions (hash.bat vs hash.sh vs hash-*.bat, etc.)
-  $hashTool = Get-ChildItem -Path $toolsDir -Filter "hash*.bat" -File -ErrorAction SilentlyContinue | Select-Object -First 1
-  if (-not $hashTool) {
-    throw "OpenSearch hash tool not found under '$toolsDir' (expected hash*.bat)"
+  $env:OPENSEARCH_JAVA_HOME = Join-Path $OpenSearchRoot "jdk"
+  $env:JAVA_HOME            = $env:OPENSEARCH_JAVA_HOME
+  $env:Path                 = (Join-Path $env:JAVA_HOME "bin") + ";" + $env:Path
+
+  $hashOut = & $hashTool -p $AdminPassword
+  $hash = ($hashOut | Select-Object -Last 1).Trim()
+  if ([string]::IsNullOrWhiteSpace($hash) -or ($hash -notmatch '^\$2')) {
+    throw "Failed to generate bcrypt hash for admin password (hash='$hash')"
   }
 
-  # Preserve env so we don't pollute caller session
-  $prevOpensearchJava = $env:OPENSEARCH_JAVA_HOME
-  $prevJavaHome       = $env:JAVA_HOME
-  $prevPath           = $env:Path
+  $iu = Join-Path $ConfigRoot "opensearch-security\internal_users.yml"
+  if (-not (Test-Path $iu -PathType Leaf)) {
+    throw "internal_users.yml not found at '$iu'"
+  }
 
-  try {
-    $env:OPENSEARCH_JAVA_HOME = Join-Path $OpenSearchRoot "jdk"
-    $env:JAVA_HOME            = $env:OPENSEARCH_JAVA_HOME
-    $env:Path                 = (Join-Path $env:JAVA_HOME "bin") + ";" + $env:Path
+  Ensure-TinySocsWritableFile -Path $iu
+  $text = Get-Content -Path $iu -Raw -ErrorAction Stop
 
-    $hashOut = & $hashTool.FullName -p $AdminPassword 2>&1
-
-    # Extract bcrypt hash reliably from noisy output
-    $hashLine = ($hashOut | Select-String -Pattern '\$2[aby]\$' | Select-Object -First 1)
-    $hash = if ($hashLine) { $hashLine.ToString().Trim() } else { "" }
-
-    if ([string]::IsNullOrWhiteSpace($hash) -or ($hash -notmatch '^\$2[aby]\$')) {
-      throw "Failed to generate bcrypt hash for admin password. Tool='$($hashTool.FullName)'. Output:`n$($hashOut | Out-String)"
-    }
-
-    $iu = Join-Path $ConfigRoot "opensearch-security\internal_users.yml"
-    if (-not (Test-Path $iu -PathType Leaf)) {
-      throw "internal_users.yml not found at '$iu'"
-    }
-
-    Ensure-TinySocsWritableFile -Path $iu
-    $text = Get-Content -Path $iu -Raw -ErrorAction Stop
-
-    $adminBlock = @"
+  $adminBlock = @"
 admin:
   hash: "$hash"
   reserved: true
@@ -5596,31 +4541,21 @@ admin:
   description: "TinySocs local admin"
 "@
 
-    if ($text -match '(?ms)^\s*admin\s*:\s*\r?\n') {
-      $text = [regex]::Replace(
-        $text,
-        '(?ms)^\s*admin\s*:\s*\r?\n.*?(?=^\S|\z)',
-        $adminBlock + "`r`n",
-        1
-      )
-    } else {
-      $text = $adminBlock + "`r`n`r`n" + $text
-    }
-
-    Ensure-TinySocsWritableFile -Path $iu
-
-    # Write UTF-8 *without BOM*
-    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText($iu, $text, $utf8NoBom)
-
-    Write-TinySocsLog "Updated ProgramData internal_users.yml admin block + hash (config=$iu)."
-    return $true
+  if ($text -match '(?ms)^\s*admin\s*:\s*\r?\n') {
+    $text = [regex]::Replace(
+      $text,
+      '(?ms)^\s*admin\s*:\s*\r?\n.*?(?=^\S|\z)',
+      $adminBlock + "`r`n",
+      1
+    )
+  } else {
+    $text = $adminBlock + "`r`n`r`n" + $text
   }
-  finally {
-    $env:OPENSEARCH_JAVA_HOME = $prevOpensearchJava
-    $env:JAVA_HOME            = $prevJavaHome
-    $env:Path                 = $prevPath
-  }
+
+  Ensure-TinySocsWritableFile -Path $iu
+  Set-Content -Path $iu -Value $text -Encoding UTF8 -Force
+
+  Write-TinySocsLog "Updated ProgramData internal_users.yml admin block + hash (config=$iu)."
 }
 
 function Get-TinySocsOpenSearchSecurityTemplatePath {
@@ -5661,9 +4596,7 @@ function Ensure-TinySocsOpenSearchSecurityConfigTree {
   )
 
   $dst = Join-Path $ProgramDataConf "opensearch-security"
-
-  # Required minimal security config files for OpenSearch Security plugin initialization
-  $required = @(
+  $needed = @(
     "config.yml",
     "internal_users.yml",
     "roles.yml",
@@ -5673,187 +4606,41 @@ function Ensure-TinySocsOpenSearchSecurityConfigTree {
     "nodes_dn.yml"
   )
 
-  $optional = @("audit.yml", "allowlist.yml")
-
-  function _ResolveServiceSidIcacls([string]$ServiceName) {
-    try {
-      $acct = "NT SERVICE\$ServiceName"
-      $sid  = (New-Object System.Security.Principal.NTAccount($acct)).Translate([System.Security.Principal.SecurityIdentifier]).Value
-      if ([string]::IsNullOrWhiteSpace($sid)) { return $null }
-      return ("*{0}" -f $sid)  # icacls SID form
-    } catch { return $null }
+  $haveAll = $true
+  if (-not (Test-Path $dst -PathType Container)) { $haveAll = $false }
+  foreach ($f in $needed) {
+    if (-not (Test-Path (Join-Path $dst $f) -PathType Leaf)) { $haveAll = $false; break }
   }
 
-  function _FindTemplateRoot {
-    param([string]$InstallRootPath, [string]$OpenSearchRootPath)
-
-    # Prefer the "blessed" template location if your module has it
-    if (Get-Command Get-TinySocsOpenSearchSecurityTemplatePath -ErrorAction SilentlyContinue) {
-      try {
-        $p = Get-TinySocsOpenSearchSecurityTemplatePath -InstallRoot $InstallRootPath -OpenSearchRoot $OpenSearchRootPath
-        if ($p -and (Test-Path $p -PathType Container)) { return [string]$p }
-      } catch { }
-    }
-
-    # Fallbacks (dev + packaged + upstream plugin)
-    $candidates = @(
-      (Join-Path $InstallRootPath "assets\opensearch-security"),
-      (Join-Path $OpenSearchRootPath "config\opensearch-security"),
-      (Join-Path $OpenSearchRootPath "plugins\opensearch-security\securityconfig"),
-      (Join-Path $OpenSearchRootPath "plugins\opensearch-security\securityconfig\config") # rare, but harmless
-    ) | Where-Object { $_ -and (Test-Path $_ -PathType Container) }
-
-    $first = $candidates | Select-Object -First 1
-    if ($first) { return [string]$first }
-
-    throw ("TinySocs OpenSearch security templates not found. Expected one of: " +
-           "'{0}', '{1}', '{2}', '{3}'" -f `
-           (Join-Path $InstallRootPath "assets\opensearch-security"),
-           (Join-Path $OpenSearchRootPath "config\opensearch-security"),
-           (Join-Path $OpenSearchRootPath "plugins\opensearch-security\securityconfig"),
-           (Join-Path $OpenSearchRootPath "plugins\opensearch-security\securityconfig\config"))
+  if ($haveAll -and -not $Force.IsPresent) {
+    Write-TinySocsLog "OpenSearch security config already present in ProgramData; leaving as-is: $dst"
+    return $dst
   }
 
-  function _CopyIfMissingOrForce {
-    param(
-      [Parameter(Mandatory)][string]$SrcRoot,
-      [Parameter(Mandatory)][string]$DstRoot,
-      [Parameter(Mandatory)][string]$FileName,
-      [switch]$ForceCopy
-    )
+  $src = Get-TinySocsOpenSearchSecurityTemplatePath -InstallRoot $InstallRoot -OpenSearchRoot $OpenSearchRoot
 
-    $src     = Join-Path $SrcRoot $FileName
-    $dstFile = Join-Path $DstRoot $FileName
+  Write-TinySocsLog ("Seeding ProgramData OpenSearch security config from template: src={0} dst={1} force={2}" -f $src, $dst, $Force.IsPresent)
 
-    if (-not (Test-Path $src -PathType Leaf)) { return $false }
+  New-Item -ItemType Directory -Force -Path $dst | Out-Null
 
-    if ($ForceCopy.IsPresent -or -not (Test-Path $dstFile -PathType Leaf)) {
-      try {
-        if (Get-Command Ensure-TinySocsWritableFile -ErrorAction SilentlyContinue) {
-          try { Ensure-TinySocsWritableFile -Path $dstFile } catch { }
-        }
-        Copy-Item -Force -Path $src -Destination $dstFile
-        return $true
-      } catch {
-        throw "Failed to copy '$FileName' from '$src' to '$dstFile': $($_.Exception.Message)"
-      }
-    }
-
-    return $false
+  foreach ($f in $needed) {
+    $s = Join-Path $src $f
+    $d = Join-Path $dst $f
+    if (-not (Test-Path $s -PathType Leaf)) { throw "Missing required security template file: $s" }
+    Ensure-TinySocsWritableFile -Path $d
+    Copy-Item -Force -Path $s -Destination $d
   }
 
-  function _EnsureNotEfs([string]$Path) {
-    if (Get-Command Ensure-FileNotEfsEncrypted -ErrorAction SilentlyContinue) {
-      try { Ensure-FileNotEfsEncrypted -Path $Path } catch { }
+  foreach ($extra in @("audit.yml","allowlist.yml")) {
+    $s = Join-Path $src $extra
+    if (Test-Path $s -PathType Leaf) {
+      $d = Join-Path $dst $extra
+      Ensure-TinySocsWritableFile -Path $d
+      Copy-Item -Force -Path $s -Destination $d
     }
   }
 
-  function _HardenSecurityDirAcl {
-    param([Parameter(Mandatory)][string]$Path)
-
-    # Locale-proof SIDs (icacls SID form with leading *)
-    $sidSystem = '*S-1-5-18'       # SYSTEM
-    $sidAdmins = '*S-1-5-32-544'   # BUILTIN\Administrators
-    $sidUsers  = '*S-1-5-32-545'   # BUILTIN\Users (needed for non-elevated shells under UAC)
-
-    # Best-effort: allow the service identity to read configs if it exists
-    $sidSvc = _ResolveServiceSidIcacls -ServiceName "TinySocsOpenSearch"
-
-    try {
-      # Enable inheritance so we can "wash" weird ACLs, then remove explicit denies, then set strict grants
-      & icacls $Path /inheritance:e /T /C 2>$null | Out-Null
-
-      # Remove explicit deny ACEs that commonly survive upgrades
-      & icacls $Path /remove:d "SYSTEM" "BUILTIN\Administrators" /T /C 2>$null | Out-Null
-      & icacls $Path /remove:d "Everyone" "Users" "Authenticated Users" /T /C 2>$null | Out-Null
-
-      # Now make it strict (no inheritance) and grant only what we want
-      $grant = @(
-        ('"{0}:(OI)(CI)F"'  -f $sidSystem),
-        ('"{0}:(OI)(CI)F"'  -f $sidAdmins),
-        ('"{0}:(OI)(CI)RX"' -f $sidUsers)
-      )
-
-      if ($sidSvc) {
-        $grant += ('"{0}:(OI)(CI)RX"' -f $sidSvc)
-      }
-
-      # IMPORTANT: pass array args to icacls (don’t -join into one giant string)
-      & icacls $Path /inheritance:r /grant:r $grant /T /C 2>$null | Out-Null
-    } catch {
-      Write-TinySocsLog -Level "WARN" -Message "Failed to harden OpenSearch security config ACLs at '$Path': $($_.Exception.Message)"
-    }
-
-    # File-level sanity: enforce readable + not EFS + clear attributes
-    foreach ($f in $required + $optional) {
-      $p = Join-Path $Path $f
-      if (-not (Test-Path $p -PathType Leaf)) { continue }
-
-      try { & attrib.exe -R -S -H "$p" 2>$null | Out-Null } catch { }
-      _EnsureNotEfs $p
-
-      try {
-        # For files: SYSTEM/Admins full; Users read; service read if resolved
-        $fileGrant = @(
-          ('"{0}:F"' -f $sidSystem),
-          ('"{0}:F"' -f $sidAdmins),
-          ('"{0}:R"' -f $sidUsers)
-        )
-        if ($sidSvc) { $fileGrant += ('"{0}:R"' -f $sidSvc) }
-
-        & icacls $p /inheritance:r /remove:d "SYSTEM" "BUILTIN\Administrators" "Everyone" "Users" "Authenticated Users" /C 2>$null | Out-Null
-        & icacls $p /grant:r $fileGrant /C 2>$null | Out-Null
-      } catch { }
-    }
-  }
-
-  # Ensure destination exists
-  try { New-Item -ItemType Directory -Force -Path $dst | Out-Null } catch { }
-
-  # Determine template root
-  $srcRoot = _FindTemplateRoot -InstallRootPath $InstallRoot -OpenSearchRootPath $OpenSearchRoot
-
-  # Copy required + optional files (missing-only unless -Force)
-  $copied = @()
-  foreach ($f in $required) {
-    $did = _CopyIfMissingOrForce -SrcRoot $srcRoot -DstRoot $dst -FileName $f -ForceCopy:$Force
-    if ($did) { $copied += $f }
-  }
-  foreach ($f in $optional) {
-    $did = _CopyIfMissingOrForce -SrcRoot $srcRoot -DstRoot $dst -FileName $f -ForceCopy:$Force
-    if ($did) { $copied += $f }
-  }
-
-  # Validate required presence
-  $missing = @()
-  foreach ($f in $required) {
-    if (-not (Test-Path (Join-Path $dst $f) -PathType Leaf)) { $missing += $f }
-  }
-  if ($missing.Count -gt 0) {
-    throw "ProgramData OpenSearch security config incomplete at '$dst'. Missing: $($missing -join ', '). Source used: '$srcRoot'"
-  }
-
-  # EFS + ACL hardening
-  _EnsureNotEfs $dst
-  _HardenSecurityDirAcl -Path $dst
-
-  # Sanity: try opening required files for read
-  foreach ($f in $required) {
-    $p = Join-Path $dst $f
-    try {
-      $fs = [System.IO.File]::Open($p, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-      $fs.Close()
-    } catch {
-      throw "Security config file unreadable: '$p' : $($_.Exception.Message)"
-    }
-  }
-
-  if ($copied.Count -gt 0) {
-    Write-TinySocsLog "ProgramData OpenSearch security config ensured at '$dst' (copied: $($copied -join ', '); src='$srcRoot'; force=$($Force.IsPresent))."
-  } else {
-    Write-TinySocsLog "ProgramData OpenSearch security config verified at '$dst' (no copy needed; src='$srcRoot')."
-  }
-
+  Write-TinySocsLog "ProgramData OpenSearch security config ensured: $dst"
   return $dst
 }
 
@@ -5928,24 +4715,7 @@ function Invoke-TinySocsOpenSearchSecurityAdminSync {
     [Parameter(Mandatory)][string]$OpenSearchRoot,
     [Parameter(Mandatory)][string]$ProgramDataConf,
     [Parameter(Mandatory)][hashtable]$AdminStores,
-
-    # Admin + Kibana users to (re)hydrate via internal_users.yml + securityadmin push
-    [string]$AdminUserName = "admin",
-    [string]$AdminUserPassword,
-
-    [string]$KibanaUserName = "kibanaserver",
-    [string]$KibanaUserPassword,
-
-    # If not supplied, we auto-discover from admin-keystore.(p12|jks)
-    [string]$AdminKeystoreAlias,
-
-    # Transport port is NOT used by securityadmin (kept for diagnostics / sanity checks / legacy calls)
-    [int]$TransportPort = 0,
-
-    # securityadmin connects to the REST/HTTP(S) endpoint (9200/9201). Also used for post-push verification.
-    [Alias("HttpPort")]
-    [int]$RestPort = 0,
-
+    [int]$HttpPort = 9200,
     [int]$TimeoutSeconds = 120
   )
 
@@ -5962,234 +4732,18 @@ function Invoke-TinySocsOpenSearchSecurityAdminSync {
   foreach ($p in @($ks,$ts)) {
     if (-not (Test-Path $p -PathType Leaf)) { throw "Admin store missing on disk: $p" }
   }
-  if ([string]::IsNullOrWhiteSpace($pw)) { throw "Invoke-TinySocsOpenSearchSecurityAdminSync: StorePassword was empty." }
-
-  # If caller didn’t supply kibana password, fall back safely (kibana -> admin if set).
-  if ([string]::IsNullOrWhiteSpace($KibanaUserPassword) -and -not [string]::IsNullOrWhiteSpace($AdminUserPassword)) {
-    $KibanaUserPassword = $AdminUserPassword
-  }
-
-  # Force bundled JDK for tools (securityadmin/keytool/hash.bat)
-  try {
-    $env:OPENSEARCH_JAVA_HOME = Join-Path $OpenSearchRoot 'jdk'
-    $env:JAVA_HOME            = $env:OPENSEARCH_JAVA_HOME
-    $env:PATH                 = (Join-Path $env:JAVA_HOME 'bin') + ';' + $env:PATH
-  } catch { }
-
-  $keytool = Join-Path $env:JAVA_HOME "bin\keytool.exe"
-  if (-not (Test-Path $keytool -PathType Leaf)) { $keytool = $null }
-
-  function _GetStoreType([string]$Path) {
-    $ext = [IO.Path]::GetExtension($Path).ToLowerInvariant()
-    if ($ext -in @(".p12",".pfx")) { return "PKCS12" }
-    return "JKS"
-  }
-
-  function _TryParseYamlPort([string]$Path, [string]$Key) {
-    if (-not (Test-Path $Path -PathType Leaf)) { return $null }
-    $rx = '^\s*' + [regex]::Escape($Key) + '\s*:\s*(?<p>\d+)\s*(?:#.*)?$'
-    $m  = Select-String -Path $Path -Pattern $rx -AllMatches -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $m) { return $null }
-    $mm = [regex]::Match($m.Line, $rx)
-    if ($mm.Success) { return [int]$mm.Groups['p'].Value }
-    return $null
-  }
-
-  function _PortOpen([int]$Port) {
-    try { return (Test-NetConnection -ComputerName 127.0.0.1 -Port $Port -InformationLevel Quiet) } catch { return $false }
-  }
-
-  # Infer ports from ProgramData opensearch.yml if caller didn't set them
-  $ymlPath = Join-Path $ProgramDataConf "opensearch.yml"
-  if ($TransportPort -le 0) {
-    $tp = _TryParseYamlPort -Path $ymlPath -Key "transport.port"
-    if (-not $tp) { $tp = 9300 }
-    $TransportPort = [int]$tp
-  }
-  if ($RestPort -le 0) {
-    $rp = _TryParseYamlPort -Path $ymlPath -Key "http.port"
-    if (-not $rp) { $rp = 9200 }
-    $RestPort = [int]$rp
-  }
-
-  # Self-heal common mistakes:
-  # - If RestPort was set to 9300, but 9200/9201 are listening, override to the listening REST port.
-  if ($RestPort -eq 9300) {
-    if (_PortOpen 9201) {
-      Write-TinySocsLog -Level "WARN" -Message "Invoke-TinySocsOpenSearchSecurityAdminSync: RestPort was 9300 (transport). Overriding to 9201."
-      $RestPort = 9201
-    } elseif (_PortOpen 9200) {
-      Write-TinySocsLog -Level "WARN" -Message "Invoke-TinySocsOpenSearchSecurityAdminSync: RestPort was 9300 (transport). Overriding to 9200."
-      $RestPort = 9200
-    } else {
-      Write-TinySocsLog -Level "WARN" -Message "Invoke-TinySocsOpenSearchSecurityAdminSync: RestPort is 9300 and no REST port (9200/9201) appears open. This will likely fail."
-    }
-  }
-
-  $ksType = _GetStoreType $ks
-  $tsType = _GetStoreType $ts
-
-  # ---- helper: discover alias in keystore (prefer PrivateKeyEntry) ----
-  function Resolve-TinySocsAdminKeystoreAlias {
-    param(
-      [Parameter(Mandatory)][string]$KeytoolExe,
-      [Parameter(Mandatory)][string]$KeystorePath,
-      [Parameter(Mandatory)][string]$StoreType,
-      [Parameter(Mandatory)][string]$StorePass
-    )
-
-    if (-not (Test-Path $KeytoolExe -PathType Leaf)) { throw "keytool.exe not found: $KeytoolExe" }
-    if (-not (Test-Path $KeystorePath -PathType Leaf)) { throw "Keystore not found: $KeystorePath" }
-
-    $out = & $KeytoolExe -list -v -storetype $StoreType -keystore $KeystorePath -storepass $StorePass 2>&1 | Out-String
-
-    $m = [regex]::Match($out, '(?ims)Alias name:\s*(?<a>.+?)\s*[\r\n]+.*?Entry type:\s*PrivateKeyEntry')
-    if ($m.Success) { return $m.Groups['a'].Value.Trim() }
-
-    $m2 = [regex]::Match($out, '(?im)^\s*Alias name:\s*(?<a>.+?)\s*$')
-    if ($m2.Success) { return $m2.Groups['a'].Value.Trim() }
-
-    throw "Failed to discover an alias in $KeystorePath. keytool output (trimmed): $($out.Trim() -replace '\s+',' ')"
-  }
-
-  # ---- helper: bcrypt hash via OpenSearch security tools hash*.bat ----
-  function Get-TinySocsOsBcryptHash {
-    param([Parameter(Mandatory)][string]$ToolsDir, [Parameter(Mandatory)][string]$Pass)
-
-    $hashBat = Get-ChildItem $ToolsDir -Filter 'hash*.bat' -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $hashBat) { throw "hash*.bat not found under $ToolsDir" }
-
-    $out = & $hashBat.FullName -p $Pass 2>&1
-    $lines = @($out | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-
-    $hit = ($lines | Where-Object { $_ -match '\$2[aby]\$' } | Select-Object -First 1)
-    if (-not $hit) { $hit = ($lines | Select-Object -Last 1) }
-
-    $h = ([string]$hit).Trim()
-    if ([string]::IsNullOrWhiteSpace($h) -or ($h -notmatch '^\$2')) {
-      throw "Failed to extract bcrypt hash. Output: $($out | Out-String)"
-    }
-    return $h
-  }
-
-  # ---- helper: ensure ProgramData security config exists + is readable (fixes "Access is denied") ----
-  function Ensure-TinySocsSecurityConfigReadable {
-    param(
-      [Parameter(Mandatory)][string]$DestDir,
-      [Parameter(Mandatory)][string]$OpenSearchRootPath
-    )
-
-    # Candidate sources (different OpenSearch layouts)
-    $sources = @(
-      (Join-Path $OpenSearchRootPath "config\opensearch-security"),
-      (Join-Path $OpenSearchRootPath "plugins\opensearch-security\securityconfig"),
-      (Join-Path $OpenSearchRootPath "plugins\opensearch-security\securityconfig\config") # rare, but harmless
-    ) | Where-Object { Test-Path $_ -PathType Container }
-
-    function _FindSourceFile([string]$FileName) {
-      foreach ($s in $sources) {
-        $p = Join-Path $s $FileName
-        if (Test-Path $p -PathType Leaf) { return $p }
-      }
-      return $null
-    }
-
-    # Ensure required YAMLs exist (securityadmin needs these categories)
-    $required = @(
-      "config.yml",
-      "roles.yml",
-      "roles_mapping.yml",
-      "action_groups.yml",
-      "tenants.yml",
-      "nodes_dn.yml",
-      "audit.yml",
-      "allowlist.yml",
-      "internal_users.yml"
-    )
-
-    foreach ($f in $required) {
-      $dst = Join-Path $DestDir $f
-      if (-not (Test-Path $dst -PathType Leaf)) {
-        $src = _FindSourceFile $f
-        if ($src) {
-          try {
-            Copy-Item -Path $src -Destination $dst -Force
-            Write-TinySocsLog "Copied missing security config '$f' into ProgramData."
-          } catch {
-            Write-TinySocsLog -Level "WARN" -Message "Failed to copy '$f' into ProgramData: $($_.Exception.Message)"
-          }
-        } else {
-          # Don't throw here: internal_users may be generated later; others might already exist but be unreadable.
-          Write-TinySocsLog -Level "WARN" -Message "No source found for missing '$f'. securityadmin may fail unless installer lays it down."
-        }
-      }
-    }
-
-    # Clear ReadOnly attribute (can block writes and sometimes confuses later ACL handling)
-    try {
-      Get-ChildItem -Path $DestDir -File -ErrorAction SilentlyContinue |
-        ForEach-Object {
-          try {
-            if ($_.Attributes -band [IO.FileAttributes]::ReadOnly) {
-              $_.Attributes = ($_.Attributes -bxor [IO.FileAttributes]::ReadOnly)
-            }
-          } catch { }
-        }
-    } catch { }
-
-    # Fix ACLs: securityadmin must be able to READ these files (and we must be able to update internal_users.yml)
-    # Ensure SYSTEM + Administrators have full control; remove explicit DENY for these principals if present.
-    try {
-      & icacls $DestDir /inheritance:e /T /C | Out-Null
-
-      # Remove explicit deny ACEs for SYSTEM/Admins if they exist (common cause of "Access is denied")
-      & icacls $DestDir /remove:d "SYSTEM" "BUILTIN\Administrators" /T /C 2>$null | Out-Null
-
-      & icacls $DestDir /grant "SYSTEM:(OI)(CI)F" "BUILTIN\Administrators:(OI)(CI)F" /T /C | Out-Null
-    } catch {
-      Write-TinySocsLog -Level "WARN" -Message "Failed to apply ACL fixes on '$DestDir': $($_.Exception.Message)"
-    }
-
-    # Quick sanity: try opening each file for read (surface real blockers early)
-    foreach ($f in $required) {
-      $p = Join-Path $DestDir $f
-      if (Test-Path $p -PathType Leaf) {
-        try {
-          $fs = [System.IO.File]::Open($p, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-          $fs.Close()
-        } catch {
-          Write-TinySocsLog -Level "WARN" -Message "Security config file still not readable: $p :: $($_.Exception.Message)"
-        }
-      }
-    }
-  }
-
-  # Resolve alias if not provided
-  if ([string]::IsNullOrWhiteSpace($AdminKeystoreAlias)) {
-    if ($keytool) {
-      $AdminKeystoreAlias = Resolve-TinySocsAdminKeystoreAlias -KeytoolExe $keytool -KeystorePath $ks -StoreType $ksType -StorePass $pw
-      Write-TinySocsLog "Discovered admin keystore PrivateKeyEntry alias: $AdminKeystoreAlias"
-    } else {
-      Write-TinySocsLog -Level "WARN" -Message "keytool.exe not available; cannot auto-discover AdminKeystoreAlias. Proceeding without -ksalias (may fail)."
-    }
-  }
 
   $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
   $lastErr  = $null
-  $logPath  = Join-Path $env:TEMP ("tinysocs-securityadmin-sync-" + (Get-Date -Format "yyyyMMdd-HHmmss") + ".log")
 
-  Write-TinySocsLog "Running securityadmin sync (timeout=${TimeoutSeconds}s) against REST 127.0.0.1:$RestPort using ProgramData security config. (log=$logPath)"
-  Write-TinySocsLog "Stores: ksType=$ksType tsType=$tsType alias=$AdminKeystoreAlias restPort=$RestPort transportPort=$TransportPort"
-
-  # IMPORTANT: Fix the ProgramData securityconfig tree BEFORE calling securityadmin (this is what your logs show is failing)
-  Ensure-TinySocsSecurityConfigReadable -DestDir $secDir -OpenSearchRootPath $OpenSearchRoot
+  Write-TinySocsLog "Running securityadmin sync (timeout=${TimeoutSeconds}s) against 127.0.0.1:$HttpPort using ProgramData security config."
 
   while ((Get-Date) -lt $deadline) {
-    # TCP check on REST port (securityadmin speaks HTTP(S) to this)
+    # Cheap TCP check first (avoids false negatives on TLS handshake timing)
     $tcpOk = $false
     try {
       $client = New-Object System.Net.Sockets.TcpClient
-      $iar = $client.BeginConnect("127.0.0.1", $RestPort, $null, $null)
+      $iar = $client.BeginConnect("127.0.0.1", $HttpPort, $null, $null)
       $tcpOk = $iar.AsyncWaitHandle.WaitOne(1500)
       try { $client.EndConnect($iar) } catch { }
       $client.Close()
@@ -6201,126 +4755,380 @@ function Invoke-TinySocsOpenSearchSecurityAdminSync {
     }
 
     try {
-      # If passwords provided, rewrite internal_users.yml deterministically, then push config.
-      if (-not [string]::IsNullOrWhiteSpace($AdminUserPassword) -and -not [string]::IsNullOrWhiteSpace($KibanaUserPassword)) {
-        $toolsDir = Join-Path $OpenSearchRoot 'plugins\opensearch-security\tools'
-        $adminHash  = Get-TinySocsOsBcryptHash -ToolsDir $toolsDir -Pass $AdminUserPassword
-        $kibanaHash = Get-TinySocsOsBcryptHash -ToolsDir $toolsDir -Pass $KibanaUserPassword
+      $out = & $securityTool `
+        -cd $secDir `
+        -icl -nhnv `
+        -h 127.0.0.1 -p $HttpPort `
+        -ks $ks -kspass $pw `
+        -ts $ts -tspass $pw 2>&1
 
-        $internalUsers = Join-Path $secDir 'internal_users.yml'
-
-        # Ensure writability (also re-applies ACL fixes if something else flips them)
-        Ensure-TinySocsSecurityConfigReadable -DestDir $secDir -OpenSearchRootPath $OpenSearchRoot
-
-        if (Get-Command Ensure-TinySocsWritableFile -ErrorAction SilentlyContinue) {
-          try { Ensure-TinySocsWritableFile -Path $internalUsers } catch { }
-        }
-
-        $yml = @"
----
-_meta:
-  type: "internalusers"
-  config_version: 2
-
-${AdminUserName}:
-  hash: "$adminHash"
-  reserved: true
-  backend_roles:
-    - "admin"
-  opendistro_security_roles:
-    - "all_access"
-    - "security_rest_api_access"
-  description: "TinySocs local admin"
-
-${KibanaUserName}:
-  hash: "$kibanaHash"
-  reserved: true
-  backend_roles: []
-  opendistro_security_roles:
-    - "kibana_server"
-  description: "TinySocs Kibana server user"
-"@
-
-        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-        [System.IO.File]::WriteAllText($internalUsers, $yml, $utf8NoBom)
-        Write-TinySocsLog "Wrote internal_users.yml for '$AdminUserName' + '$KibanaUserName' (bcrypt hashes) prior to securityadmin push."
-      }
-
-      # Build args for securityadmin (REST/HTTP(S))
-      $args = @(
-        "-cd", $secDir,
-        "-icl", "-nhnv",
-        "-h", "127.0.0.1", "-p", "$RestPort",
-        "-ks", $ks, "-kspass", $pw, "-kst", $ksType,
-        "-ts", $ts, "-tspass", $pw, "-tst", $tsType
-      )
-      if (-not [string]::IsNullOrWhiteSpace($AdminKeystoreAlias)) { $args += @("-ksalias", $AdminKeystoreAlias) }
-
-      # securityadmin v7 supports -keypass (optional). Try with it first, then without.
-      $variantA = @($args + @("-keypass", $pw))
-      $variantB = @($args)
-
-      $out = $null
-      $txt = $null
-
-      foreach ($tryArgs in @($variantA, $variantB)) {
-        $out = & $securityTool @tryArgs 2>&1
-        $out | Tee-Object -FilePath $logPath -Append | Out-Null
-        $txt = ($out | Out-String)
-
-        if ($txt -match 'Done with success') { break }
-
-        # If we see access denied / file open problems, self-heal and retry once per loop iteration
-        if ($txt -match 'Access is denied' -or $txt -match 'FileNotFoundException') {
-          Write-TinySocsLog -Level "WARN" -Message "securityadmin reported file read failures (likely ACL). Re-applying securityconfig ACL + ensuring files. (log=$logPath)"
-          Ensure-TinySocsSecurityConfigReadable -DestDir $secDir -OpenSearchRootPath $OpenSearchRoot
-          Start-Sleep -Seconds 1
-          continue
-        }
-
-        $keyPassLooksBad =
-          ($tryArgs -eq $variantA) -and (
-            $txt -match 'UnrecoverableKeyException' -or
-            $txt -match 'Cannot recover key' -or
-            $txt -match 'password was incorrect' -or
-            $txt -match 'BadPaddingException'
-          )
-
-        if (-not $keyPassLooksBad) { break }
-
-        Write-TinySocsLog -Level "WARN" -Message "securityadmin suggests keypass mismatch; retrying without -keypass. (log=$logPath)"
-      }
-
+      $txt = ($out | Out-String)
       if ($txt -match 'Done with success') {
         Write-TinySocsLog "securityadmin sync completed successfully."
-
-        # Optional verification: if we have admin creds, confirm auth + health via REST
-        if (-not [string]::IsNullOrWhiteSpace($AdminUserPassword)) {
-          try {
-            $base = "https://127.0.0.1:$RestPort"
-            $null = Invoke-TinySocsOpenSearchApi -Method "GET" -Url "$base/_plugins/_security/authinfo" -User $AdminUserName -Pass $AdminUserPassword -SkipTlsVerify:$true
-            $null = Invoke-TinySocsOpenSearchApi -Method "GET" -Url "$base/_cluster/health"              -User $AdminUserName -Pass $AdminUserPassword -SkipTlsVerify:$true
-            Write-TinySocsLog "securityadmin verification succeeded via REST (authinfo + cluster health)."
-          } catch {
-            Write-TinySocsLog -Level "WARN" -Message "securityadmin push succeeded, but REST verification failed: $($_.Exception.Message)"
-          }
-        }
-
         return $true
       }
 
       $lastErr = $txt.Trim()
-      Write-TinySocsLog -Level "WARN" -Message "securityadmin did not report success; will retry. (log=$logPath) Output: $($lastErr -replace '\s+',' ')"
+      Write-TinySocsLog -Level "WARN" -Message "securityadmin did not report success; will retry. Output: $($lastErr -replace '\s+',' ')"
     } catch {
       $lastErr = $_.Exception.Message
-      Write-TinySocsLog -Level "WARN" -Message "securityadmin invocation failed; will retry. (log=$logPath) Error: $lastErr"
+      Write-TinySocsLog -Level "WARN" -Message "securityadmin invocation failed; will retry: $lastErr"
     }
 
     Start-Sleep -Seconds 3
   }
 
-  Write-TinySocsLog -Level "WARN" -Message "securityadmin sync did not succeed within timeout. (log=$logPath) Last error/output: $lastErr"
+  Write-TinySocsLog -Level "WARN" -Message "securityadmin sync did not succeed within timeout. Last error/output: $lastErr"
   return $false
+}
+
+# -- Local SIEM (OpenSearch via NSSM service) ----------------------------------
+function Install-TinySocsLocalSiem {
+  [CmdletBinding()]
+  param(
+    [string]$SiemUser = "admin",
+    [string]$SiemPass = "",
+    [int]$ApiPort = 9200,
+    [int]$DashboardsPort = 5602,
+    [switch]$NoStart,
+
+    [string]$ClusterName = "tinysocs-local",
+    [string]$NodeName    = "tinysocs-node-1",
+    [switch]$ForceConfig,
+
+    [switch]$TrustLocalCA
+  )
+  Assert-TinySocsAdmin
+  Install-TinySocs
+
+  $null = $DashboardsPort
+
+  function _GetTlsVal {
+    param(
+      [Parameter(Mandatory=$true)] $Obj,
+      [Parameter(Mandatory=$true)] [string[]] $Keys
+    )
+    foreach ($k in $Keys) {
+      try {
+        if ($Obj -is [hashtable] -and $Obj.ContainsKey($k) -and $Obj[$k]) { return [string]$Obj[$k] }
+        $v = $Obj.$k
+        if ($v) { return [string]$v }
+      } catch { }
+    }
+    return $null
+  }
+
+  function _FindFirst {
+    param(
+      [Parameter(Mandatory=$true)] [string] $Dir,
+      [Parameter(Mandatory=$true)] [string[]] $Patterns
+    )
+    foreach ($p in $Patterns) {
+      try {
+        $hit = Get-ChildItem -Path $Dir -File -Recurse -Force -ErrorAction SilentlyContinue |
+          Where-Object { $_.Name -like $p } |
+          Select-Object -First 1
+        if ($hit) { return $hit.FullName }
+      } catch { }
+    }
+    return $null
+  }
+
+  function _TryImportLocalCA {
+    param([Parameter(Mandatory=$true)] [string] $CaCertPath)
+
+    $ext = [IO.Path]::GetExtension($CaCertPath).ToLowerInvariant()
+    if ($ext -notin @(".cer", ".crt")) {
+      Write-TinySocsLog -Level "WARN" -Message "CA cert '$CaCertPath' is not .cer/.crt; skipping Windows trust import."
+      return $false
+    }
+
+    try {
+      $certObj = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($CaCertPath)
+      $thumb   = $certObj.Thumbprint
+
+      try {
+        $alreadyLM = Get-ChildItem -Path "Cert:\LocalMachine\Root" -ErrorAction SilentlyContinue |
+          Where-Object { $_.Thumbprint -eq $thumb } | Select-Object -First 1
+        if (-not $alreadyLM) {
+          Import-Certificate -FilePath $CaCertPath -CertStoreLocation "Cert:\LocalMachine\Root" | Out-Null
+          Write-TinySocsLog "Imported TinySocs local CA into LocalMachine\Root (Thumbprint=$thumb)."
+        }
+      } catch {
+        Write-TinySocsLog -Level "WARN" -Message "Failed importing CA into LocalMachine\Root: $($_.Exception.Message)"
+      }
+
+      try {
+        $alreadyCU = Get-ChildItem -Path "Cert:\CurrentUser\Root" -ErrorAction SilentlyContinue |
+          Where-Object { $_.Thumbprint -eq $thumb } | Select-Object -First 1
+        if (-not $alreadyCU) {
+          Import-Certificate -FilePath $CaCertPath -CertStoreLocation "Cert:\CurrentUser\Root" | Out-Null
+          Write-TinySocsLog "Imported TinySocs local CA into CurrentUser\Root (Thumbprint=$thumb)."
+        }
+      } catch {
+        Write-TinySocsLog -Level "WARN" -Message "Failed importing CA into CurrentUser\Root: $($_.Exception.Message)"
+      }
+
+      $checkLM = Get-ChildItem -Path "Cert:\LocalMachine\Root" -ErrorAction SilentlyContinue |
+        Where-Object { $_.Thumbprint -eq $thumb } | Select-Object -First 1
+      $checkCU = Get-ChildItem -Path "Cert:\CurrentUser\Root" -ErrorAction SilentlyContinue |
+        Where-Object { $_.Thumbprint -eq $thumb } | Select-Object -First 1
+
+      return [bool]($checkLM -or $checkCU)
+    } catch {
+      Write-TinySocsLog -Level "WARN" -Message "Failed loading CA cert for trust import ($CaCertPath): $($_.Exception.Message)"
+      return $false
+    }
+  }
+
+  # ---- HARDEN ROOT GETTERS (prevents Join-Path receiving System.Object[]) ----
+  $installRootVal = (Get-TinySocsInstallRoot | Select-Object -First 1)
+  $dataRootBase   = (Get-TinySocsDataRoot    | Select-Object -First 1)
+
+  $installRoot    = [string]$installRootVal
+  $openSearchRoot = Join-Path -Path $installRoot -ChildPath "OpenSearch"
+
+  $dataRoot       = Join-Path -Path ([string]$dataRootBase) -ChildPath "OpenSearch"
+  $dataPath       = Join-Path -Path $dataRoot -ChildPath "data"
+  $logsPath       = Join-Path -Path $dataRoot -ChildPath "logs"
+  $pdConf         = Join-Path -Path $dataRoot -ChildPath "config"
+  $certsDir       = Join-Path -Path $pdConf  -ChildPath "certs"
+  $nssmPath       = Join-Path -Path $installRoot -ChildPath "bin\nssm.exe"
+  # ---- END HARDEN ROOT GETTERS ----
+
+  $insecureLocalSiem = ($env:TINYSOCS_INSECURE_LOCAL_SIEM -eq 'true')
+
+  Write-TinySocsLog "Local SIEM install starting (OpenSearchRoot=$openSearchRoot, DataRoot=$dataRoot, HttpPort=$ApiPort)."
+
+  New-Item -ItemType Directory -Force -Path $dataPath | Out-Null
+  New-Item -ItemType Directory -Force -Path $logsPath | Out-Null
+  New-Item -ItemType Directory -Force -Path $certsDir | Out-Null
+
+  Ensure-TinySocsOpenSearchProgramDataConfig -OpenSearchRoot $openSearchRoot -ProgramDataConf $pdConf -Force:$ForceConfig
+  Ensure-TinySocsOpenSearchSecurityConfigTree -InstallRoot $installRoot -OpenSearchRoot $openSearchRoot -ProgramDataConf $pdConf -Force:$ForceConfig | Out-Null
+
+  $tls = Ensure-TinySocsLocalCaAndServerCert -CertsDir $certsDir
+  Repair-TinySocsOpenSearchCertAcls -CertsDir $certsDir
+
+  $caCertPath = _GetTlsVal -Obj $tls -Keys @("CaCerPath","CaCertPath","ca","caCert","cacert","CaCert","RootCa","rootCa","ca_path")
+  if (-not $caCertPath) {
+    $caCertPath = _FindFirst -Dir $certsDir -Patterns @("*ca*.crt", "*ca*.cer", "*root*.crt", "*root*.cer", "*ca*.pem", "*root*.pem")
+  }
+
+  try {
+    Set-MachineEnv @{ OPENSEARCH_PATH_CONF = $pdConf }
+    $env:OPENSEARCH_PATH_CONF = $pdConf
+    Write-TinySocsLog "Set OPENSEARCH_PATH_CONF=$pdConf (machine + session) to ensure persistent ProgramData config is always used."
+  } catch {
+    Write-TinySocsLog -Level "WARN" -Message "Failed to set OPENSEARCH_PATH_CONF machine env var: $($_.Exception.Message)"
+  }
+
+  $configFile = Join-Path -Path $pdConf -ChildPath "opensearch.yml"
+  Write-TinySocsOpenSearchConfig -ConfigPath $configFile `
+    -ClusterName $ClusterName `
+    -NodeName    $NodeName `
+    -HttpPort    $ApiPort `
+    -DataPath    $dataPath `
+    -LogsPath    $logsPath `
+    -Force:$ForceConfig
+
+  $initMarker = Join-Path -Path $dataRoot -ChildPath ".tinysocs_security_initialized"
+
+  # --- PATCHED LOGIC: robust existing-data detection ---
+  $dataPresent = $false
+  try { $dataPresent = Test-TinySocsOpenSearchDataPresent -DataPath $dataPath } catch { $dataPresent = $true }
+
+  $hasMarker = $false
+  try { $hasMarker = (Test-Path $initMarker -PathType Leaf) } catch { $hasMarker = $false }
+
+  $allowInit = ((-not $dataPresent) -and (-not $hasMarker))
+  # --- END PATCHED LOGIC ---
+
+  Ensure-TinySocsOpenSearchSecuritySettings -ConfigPath $configFile -TlsPaths $tls -AllowDefaultInitSecurityIndex:$allowInit
+  Assert-TinySocsOpenSearchSecurityConfigPresent -ConfigPath $configFile
+
+  # NEW: enforce OpenSearch keystore _secure storepass entries (prevents “keystore exists but wrong” regressions)
+  try {
+    Ensure-TinySocsOpenSearchKeystoreSecurePasswords `
+      -OpenSearchRoot $openSearchRoot `
+      -ProgramDataConf $pdConf `
+      -CertsDir $certsDir `
+      -StorePass ([string]$tls.StorePassword) | Out-Null
+  } catch {
+    Write-TinySocsLog -Level "WARN" -Message "Failed to enforce OpenSearch keystore _secure entries: $($_.Exception.Message)"
+  }
+
+  if ($insecureLocalSiem) {
+    Write-TinySocsLog -Level "WARN" -Message "TINYSOCS_INSECURE_LOCAL_SIEM=true - disabling OpenSearch security plugin (DEV ONLY)."
+    Disable-TinySocsOpenSearchSecurityPlugin -OpenSearchRoot $openSearchRoot
+  }
+
+  $scheme  = if ($insecureLocalSiem) { "http" } else { "https" }
+  $siemUrl = "${scheme}://127.0.0.1:$ApiPort"
+
+  $wantTrustLocalCA =
+    (-not $insecureLocalSiem) -and (
+      $TrustLocalCA.IsPresent -or
+      ($env:TINYSOCS_TRUST_LOCAL_CA -eq 'true')
+    )
+
+  $trustedLocalCA = $false
+  if ($wantTrustLocalCA -and $caCertPath) {
+    try { $trustedLocalCA = _TryImportLocalCA -CaCertPath $caCertPath } catch { $trustedLocalCA = $false }
+  }
+
+  $siemSslVerify = $false
+  if ($scheme -eq 'https') {
+    $siemSslVerify = [bool]$trustedLocalCA
+    if (-not $siemSslVerify) {
+      Write-TinySocsLog -Level "WARN" -Message "Local SIEM is https but local CA is not trusted; SIEM_SSL_VERIFY will be set to false."
+    }
+  }
+
+  $skipTlsForLocal = ($scheme -eq 'https' -and -not $siemSslVerify)
+
+  if ([string]::IsNullOrWhiteSpace($SiemUser)) { $SiemUser = "admin" }
+
+  $callerProvided = (-not [string]::IsNullOrWhiteSpace($SiemPass) -and $SiemPass -ne "ChangeMe123!")
+
+  if (-not $callerProvided) {
+    try {
+      $existing = Get-TSCredential -Name 'TinySocs/SIEM/Creds'
+      if ($existing) {
+        $j = $existing | ConvertFrom-Json
+        if ($j.user) { $SiemUser = [string]$j.user }
+        if ($j.pass) {
+          $SiemPass = [string]$j.pass
+          Write-TinySocsLog "Reusing existing SIEM/OpenSearch admin password from CredMan (TinySocs/SIEM/Creds)."
+        }
+      }
+    } catch { }
+
+    if ([string]::IsNullOrWhiteSpace($SiemPass) -or $SiemPass -eq "ChangeMe123!") {
+      $dpapiPass = Read-TinySocsSiemAdminPassFromDpapiFile -CertsDir $certsDir
+      if ($dpapiPass) {
+        $SiemPass = $dpapiPass
+        Write-TinySocsLog "Restored SIEM/OpenSearch admin password from DPAPI file (stable across reinstalls)."
+      }
+    }
+  }
+
+  if ([string]::IsNullOrWhiteSpace($SiemPass) -or $SiemPass -eq "ChangeMe123!") {
+    if ($dataPresent -or -not $allowInit) {
+      throw "SIEM/OpenSearch admin password missing, but data appears to already exist. Refusing to generate a new password (would lock you out)."
+    }
+    $SiemPass = New-TinySocsPassword -Length 28
+    Write-TinySocsLog -Level "WARN" -Message "Generated a new strong SIEM/OpenSearch admin password (fresh init)."
+  }
+
+  try { $null = Write-TinySocsSiemAdminPassToDpapiFile -CertsDir $certsDir -AdminPass $SiemPass } catch { }
+
+  Set-TinySocsSiemCredential -SiemUrl $siemUrl -SiemUser $SiemUser -SiemPass $SiemPass -SiemSslVerify:$siemSslVerify -CaCertPath $caCertPath
+
+  try {
+    Set-TinySocsOpenSearchAdminPasswordInConfig -OpenSearchRoot $openSearchRoot -ConfigRoot $pdConf -AdminPassword $SiemPass
+  } catch {
+    Write-TinySocsLog -Level "WARN" -Message "Failed to update internal_users.yml admin hash: $($_.Exception.Message)"
+  }
+
+  $runnerPath = Join-Path -Path $dataRoot -ChildPath "run-opensearch.ps1"
+  Ensure-TinySocsOpenSearchRunner -InstallRoot $installRoot -OpenSearchRoot $openSearchRoot -ProgramDataConf $pdConf -RunnerPath $runnerPath
+
+  $serviceName = "TinySocsOpenSearch"
+  Ensure-TinySocsOpenSearchService `
+    -ServiceName $serviceName `
+    -NssmExe $nssmPath `
+    -Runner $runnerPath `
+    -WorkDir $dataRoot `
+    -LogsDir $logsPath `
+    -HttpPort $ApiPort `
+    -ProgramDataConf $pdConf
+
+  Set-TinySocsOpenSearchAcls -ServiceName $serviceName -DataRoot $dataRoot -LogsPath $logsPath -ConfigPath $pdConf -RunnerPath $runnerPath
+  Repair-TinySocsOpenSearchCertAcls -CertsDir $certsDir
+
+  if (-not $NoStart) {
+    try {
+      # --- PATCH: handle PAUSED explicitly before Start-Service ---
+      try {
+        $svc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+        if ($svc -and $svc.Status -eq 'Paused') {
+          Write-TinySocsLog -Level "WARN" -Message "Local SIEM service '$serviceName' is PAUSED; attempting Resume-Service before Start-Service."
+          try { Resume-Service -Name $serviceName -ErrorAction Stop } catch { }
+        }
+      } catch { }
+      # --- END PATCH ---
+
+      Start-Service -Name $serviceName -ErrorAction Stop
+      Write-TinySocsLog "Local SIEM service '$serviceName' started."
+
+      try { Set-TinySocsOpenSearchAcls -ServiceName $serviceName -DataRoot $dataRoot -LogsPath $logsPath -ConfigPath $pdConf -RunnerPath $runnerPath } catch { }
+      try { Repair-TinySocsOpenSearchCertAcls -CertsDir $certsDir } catch { }
+
+      $ready = Wait-TinySocsLocalSiemReady -Url $siemUrl -TimeoutSeconds 90 -IntervalSeconds 3 -SkipTlsVerify:($skipTlsForLocal)
+      if (-not $ready) {
+        Write-TinySocsLog -Level "WARN" -Message "Local SIEM started but HTTP not responding at $siemUrl; check logs under $logsPath."
+      } else {
+        if ($scheme -eq 'https' -and -not $insecureLocalSiem) {
+
+          try {
+            $adminStores = Ensure-TinySocsOpenSearchAdminKeyStores `
+              -OpenSearchRoot $openSearchRoot `
+              -CertsDir $certsDir `
+              -StorePass ([string]$tls.StorePassword)
+
+            $ok = Invoke-TinySocsOpenSearchSecurityAdminSync `
+              -OpenSearchRoot $openSearchRoot `
+              -ProgramDataConf $pdConf `
+              -AdminStores $adminStores `
+              -HttpPort $ApiPort `
+              -TimeoutSeconds 120
+
+            if (-not $ok) {
+              Write-TinySocsLog -Level "WARN" -Message "securityadmin sync did not succeed; continuing (REST init may still work), but security config may not be applied."
+            }
+          } catch {
+            Write-TinySocsLog -Level "WARN" -Message "securityadmin sync step failed: $($_.Exception.Message)"
+          }
+
+          try {
+            $null = Initialize-TinySocsOpenSearchSecurity -SiemUrl $siemUrl -AdminUser $SiemUser -AdminPass $SiemPass -ServiceUser "tinysocs" -SkipTlsVerify:($skipTlsForLocal)
+            Write-TinySocsLog "OpenSearch security initialized via REST (service user + role + mapping)."
+
+            try {
+              New-Item -ItemType File -Force -Path $initMarker | Out-Null
+              Write-TinySocsLog "Wrote security init marker ($initMarker)."
+            } catch {
+              Write-TinySocsLog -Level "WARN" -Message "Security init succeeded but failed to write marker ($initMarker): $($_.Exception.Message)"
+            }
+          } catch {
+            Write-TinySocsLog -Level "WARN" -Message "OpenSearch REST security initialization failed: $($_.Exception.Message)"
+          }
+        }
+      }
+    } catch {
+      Write-TinySocsLog -Level "WARN" -Message "Failed to start local SIEM service '$serviceName': $($_.Exception.Message)"
+    }
+  } else {
+    Write-TinySocsLog -Level "WARN" -Message "NoStart specified; service '$serviceName' configured but not started."
+  }
+
+  $verifyString = if ([bool]$siemSslVerify) { "true" } else { "false" }
+  $envBlock = @{ SIEM_URL = $siemUrl; SIEM_SSL_VERIFY = $verifyString }
+  if ($caCertPath) { $envBlock["SIEM_CA_CERT"] = $caCertPath }
+  Set-MachineEnv $envBlock
+
+  if ($scheme -eq "http") {
+    Write-TinySocsLog -Level "WARN" -Message "Local SIEM configured at $siemUrl (INSECURE mode: no auth/TLS)."
+  } else {
+    $msg = "Local SIEM configured at $siemUrl (SECURE mode: TLS+auth, local-only bind)."
+    if (-not $siemSslVerify) {
+      $msg += " Note: SSL verify is disabled unless the local CA is trusted or clients use SIEM_CA_CERT."
+      Write-TinySocsLog -Level "WARN" -Message $msg
+    } else {
+      Write-TinySocsLog $msg
+    }
+  }
 }
 
 function Install-TinySocsAgentService {
@@ -6500,13 +5308,7 @@ function Register-TinySocsServices {
   & $n set TinySocsNode AppNoConsole    1                              | Out-Null
   & $n set TinySocsNode AppRestartDelay 2000                           | Out-Null
 
-  $nodeEnvExtra = Format-TinySocsNssmEnvExtra @(
-    ("PORT={0}"            -f $port)
-    ("SIEM_URL={0}"        -f $siem)
-    ("SIEM_SSL_VERIFY={0}" -f $ssl)
-    ("PRIVACY_MODE={0}"    -f $priv)
-  )
-  & $n set TinySocsNode AppEnvironmentExtra $nodeEnvExtra | Out-Null
+  & $n set TinySocsNode AppEnvironmentExtra ("PORT={0};SIEM_URL={1};SIEM_SSL_VERIFY={2};PRIVACY_MODE={3}" -f $port,$siem,$ssl,$priv) | Out-Null
 
   sc.exe failure TinySocsNode reset= 60 actions= restart/2000/restart/2000/""/0 | Out-Null
 
@@ -7274,5 +6076,3 @@ function Uninstall-TinySocs {
 }
 
 Export-ModuleMember -Function * -Alias *
-
-

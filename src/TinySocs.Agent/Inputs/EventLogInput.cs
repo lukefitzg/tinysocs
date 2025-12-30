@@ -17,8 +17,11 @@ namespace TinySocs.Agent.Inputs
     /// - Subscribes to the configured channels in agent-config.yml
     ///   and pushes basic winlog-style events into the queue.
     ///
-    /// This is intentionally minimal: enough to prove that a real
-    /// Windows Event Log pipeline works end-to-end.
+    /// Patch notes:
+    /// - Honour per-channel start_from: now | beginning
+    /// - Tail-prime (now) by setting lastSeen to current newest record_id and emitting nothing.
+    /// - Read newest->older on subsequent passes and break once <= lastSeen.
+    /// - Emit in chronological order (oldest->newest) within each batch.
     /// </summary>
     public sealed class EventLogInput : IInput
     {
@@ -26,6 +29,11 @@ namespace TinySocs.Agent.Inputs
         private readonly AgentConfig _config;
         private readonly IQueueWriter _queueWriter;
         private readonly HashSet<string> _missingChannels = new(StringComparer.OrdinalIgnoreCase);
+
+        // Track last seen EventRecordID per channel so we don't re-read the same
+        // events on every polling iteration. This is an in-memory bookmark only
+        // (resets on agent restart).
+        private readonly Dictionary<string, long?> _lastRecordIds = new(StringComparer.OrdinalIgnoreCase);
 
         public EventLogInput(
             ILogger<EventLogInput> logger,
@@ -49,9 +57,6 @@ namespace TinySocs.Agent.Inputs
                     "EventLogInput requires Windows (Event Log / wevtapi).");
             }
 
-            // For now we do a very simple polling reader per configured channel.
-            // Eventually you can switch this to an event-driven subscription with
-            // EventLogWatcher and bookmarks.
             _logger.LogInformation("EventLogInput starting on Windows.");
 
             // Run the synchronous loop on a background thread so that we can
@@ -83,10 +88,6 @@ namespace TinySocs.Agent.Inputs
 
             _logger.LogInformation("EventLogInput will poll {ChannelCount} channel(s).", evInput.Channels.Count);
 
-            // Very simple polling loop: each iteration reads the most recent events
-            // from each channel and pushes them into the queue.
-            // NOTE: This is deliberately naive – no bookmarks, no duplicate
-            // suppression – because you just need a working spine first.
             while (!stoppingToken.IsCancellationRequested)
             {
                 try
@@ -107,35 +108,165 @@ namespace TinySocs.Agent.Inputs
 
                         try
                         {
-                            using var logReader = new EventLogReader(channelName, PathType.LogName);
-                            EventRecord? record;
-                            int readCount = 0;
-
-                            // Read a small batch each pass so we don't block forever.
-                            while (!stoppingToken.IsCancellationRequested &&
-                                   readCount < 50 &&
-                                   (record = logReader.ReadEvent()) != null)
+                            long? lastSeen;
+                            lock (_lastRecordIds)
                             {
-                                using (record)
+                                _lastRecordIds.TryGetValue(channelName, out lastSeen);
+                            }
+
+                            //
+                            // FIRST PASS FOR THIS CHANNEL: honour start_from.
+                            //
+                            if (lastSeen == null)
+                            {
+                                var startFrom = (ch.StartFrom ?? "now").Trim().ToLowerInvariant();
+
+                                if (startFrom == "beginning")
                                 {
-                                    var ev = MapRecordToAgentEvent(evInput.Name ?? "win-events", channelName, record);
+                                    // Ingest full history from record_id 0 upwards.
+                                    lock (_lastRecordIds)
+                                    {
+                                        _lastRecordIds[channelName] = 0;
+                                    }
 
-                                    // Use a helper that knows how to talk to whatever
-                                    // write method the underlying queue writer actually exposes.
-                                    WriteToQueue(_queueWriter, ev, stoppingToken);
+                                    _logger.LogInformation(
+                                        "Channel {Channel} configured start_from=beginning; initial record_id set to 0.",
+                                        channelName);
 
-                                    readCount++;
+                                    // Continue to normal read path in the same iteration.
+                                    lastSeen = 0;
+                                }
+                                else
+                                {
+                                    // Default (and "now"): prime at current tail – discover newest record_id
+                                    // but do not emit historical events.
+                                    var primeQuery = new EventLogQuery(channelName, PathType.LogName)
+                                    {
+                                        ReverseDirection = true // newest -> older
+                                    };
+
+                                    long primedRecordId = 0;
+
+                                    using (var primeReader = new EventLogReader(primeQuery))
+                                    {
+                                        EventRecord? first = null;
+                                        try
+                                        {
+                                            first = primeReader.ReadEvent();
+                                            if (first != null)
+                                            {
+                                                try
+                                                {
+                                                    primedRecordId = first.RecordId ?? 0;
+                                                }
+                                                catch
+                                                {
+                                                    primedRecordId = 0;
+                                                }
+                                            }
+                                        }
+                                        finally
+                                        {
+                                            first?.Dispose();
+                                        }
+                                    }
+
+                                    lock (_lastRecordIds)
+                                    {
+                                        _lastRecordIds[channelName] = primedRecordId;
+                                    }
+
+                                    _logger.LogInformation(
+                                        "Primed EventLog channel {Channel} at record_id {RecordId} (start_from={StartFrom}).",
+                                        channelName,
+                                        primedRecordId,
+                                        startFrom);
+
+                                    // Do NOT emit anything on the priming pass.
+                                    continue;
                                 }
                             }
 
-                            if (readCount > 0)
+                            //
+                            // SUBSEQUENT PASSES: read newest->older and stop once we hit lastSeen.
+                            //
+                            var query = new EventLogQuery(channelName, PathType.LogName)
                             {
-                                _logger.LogDebug("Read {Count} event(s) from channel {Channel}.", readCount, channelName);
+                                ReverseDirection = true // newest -> older
+                            };
+
+                            using (var logReader = new EventLogReader(query))
+                            {
+                                var newEvents = new List<(AgentEvent Ev, long RecordId)>();
+                                var currentLastSeen = lastSeen ?? 0;
+                                int readCount = 0;
+                                EventRecord? record;
+
+                                while (!stoppingToken.IsCancellationRequested &&
+                                       readCount < 200 &&
+                                       (record = logReader.ReadEvent()) != null)
+                                {
+                                    using (record)
+                                    {
+                                        long? recordId = null;
+                                        try
+                                        {
+                                            recordId = record.RecordId;
+                                        }
+                                        catch
+                                        {
+                                            recordId = null;
+                                        }
+
+                                        if (!recordId.HasValue)
+                                        {
+                                            continue;
+                                        }
+
+                                        // Because we're reading newest->older, as soon as we hit
+                                        // a record_id we've already seen (or older), we can stop.
+                                        if (recordId.Value <= currentLastSeen)
+                                        {
+                                            break;
+                                        }
+
+                                        var ev = MapRecordToAgentEvent(evInput.Name ?? "win-events", channelName, record);
+                                        newEvents.Add((ev, recordId.Value));
+                                        readCount++;
+                                    }
+                                }
+
+                                if (newEvents.Count > 0)
+                                {
+                                    // We collected events newest->older; emit oldest->newest for nicer ordering.
+                                    newEvents.Sort((a, b) => a.RecordId.CompareTo(b.RecordId));
+
+                                    long maxRecordId = currentLastSeen;
+                                    foreach (var (ev, recordId) in newEvents)
+                                    {
+                                        WriteToQueue(_queueWriter, ev, stoppingToken);
+                                        if (recordId > maxRecordId)
+                                        {
+                                            maxRecordId = recordId;
+                                        }
+                                    }
+
+                                    lock (_lastRecordIds)
+                                    {
+                                        _lastRecordIds[channelName] = maxRecordId;
+                                    }
+
+                                    _logger.LogDebug(
+                                        "Read {Count} new event(s) from channel {Channel}. Advanced record_id from {Old} to {New}.",
+                                        newEvents.Count,
+                                        channelName,
+                                        currentLastSeen,
+                                        maxRecordId);
+                                }
                             }
                         }
                         catch (EventLogNotFoundException ex)
                         {
-                            // If this is the first time we've seen this channel fail, log a warning and mark it as missing.
                             if (_missingChannels.Add(channelName))
                             {
                                 _logger.LogWarning(
@@ -151,7 +282,6 @@ namespace TinySocs.Agent.Inputs
                                     channelName);
                             }
 
-                            // Skip further processing for this channel in this iteration.
                             continue;
                         }
                         catch (Exception ex)
@@ -171,7 +301,6 @@ namespace TinySocs.Agent.Inputs
 
                 try
                 {
-                    // Small delay to avoid a tight loop; bookmarks will replace this later.
                     Task.Delay(TimeSpan.FromSeconds(2), stoppingToken).Wait(stoppingToken);
                 }
                 catch (OperationCanceledException)
@@ -225,9 +354,6 @@ namespace TinySocs.Agent.Inputs
 
         private static AgentEvent MapRecordToAgentEvent(string inputName, string channel, EventRecord record)
         {
-            // Defensive timestamp handling:
-            // - Prefer the event's own TimeCreated
-            // - Fall back to "now" if it's null or clearly bogus (year <= 1900)
             DateTime ts;
             try
             {
@@ -245,7 +371,6 @@ namespace TinySocs.Agent.Inputs
                 ts = DateTime.UtcNow;
             }
 
-            // Defensive message formatting: FormatDescription() can throw on some providers.
             string message;
             try
             {

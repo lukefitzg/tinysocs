@@ -5,6 +5,8 @@
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+$script:DETERMINISTIC_VERSION = "0.0.20260101-2235-storepass-resolver"
+
 # ---- Paths / service ----
 $svc         = "TinySocsOpenSearch"
 $nssm        = "C:\Program Files\TinySocs\bin\nssm.exe"
@@ -18,6 +20,16 @@ $keystoreBat = Join-Path $osRoot "bin\opensearch-keystore.bat"
 
 # Canonical TinySocs HTTP port
 $canonicalPort = 9201
+
+# Try to load TinySocs module (preferred: provides Resolve-TinySocsTlsStorepass)
+try {
+  Import-Module "C:\Program Files\TinySocs\modules\TinySocs.Installer.psm1" -Force -ErrorAction Stop
+} catch {
+  # Not fatal; we keep a legacy DPAPI reader below as fallback
+}
+
+# Ensure crypto types available (DPAPI + X509 helpers)
+try { Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue | Out-Null } catch { }
 
 # ---- Helpers ----
 function Ensure-Dir([string]$p) {
@@ -103,7 +115,7 @@ function Read-DpapiStorePass([string]$DpapiPath) {
   try { $raw = (Get-Content -LiteralPath $DpapiPath -Raw -ErrorAction Stop).Trim() } catch {}
 
   # Some builds store base64 text "AQAAANCM..." not raw DPAPI bytes
-  if (-not [string]::IsNullOrWhiteSpace($raw) -and $raw -match '^[A-Za-z0-9+/=]+$') {
+  if (-not [string]::IsNullOrWhiteSpace($raw) -and $raw -match '^[A-Za-z0-9+/=\r\n]+$') {
     $dpapiBytes = [Convert]::FromBase64String($raw)
     $passBytes  = [System.Security.Cryptography.ProtectedData]::Unprotect(
       $dpapiBytes, $null, [System.Security.Cryptography.DataProtectionScope]::LocalMachine
@@ -247,6 +259,8 @@ function Invoke-OpensearchKeystoreAddSecure {
 try {
   $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 
+  Write-Host ("Deterministic bootstrap version: {0}" -f $script:DETERMINISTIC_VERSION)
+
   Write-Host "=== STOPPING SERVICE ==="
   if (Test-Path -LiteralPath $nssm) { & $nssm stop $svc 2>$null | Out-Null }
   Stop-Service $svc -Force -ErrorAction SilentlyContinue
@@ -311,7 +325,31 @@ try {
   Copy-Item -LiteralPath $b.Dpapi -Destination $dpapiDst -Force
 
   Write-Host "=== DECRYPT STOREPASS + VALIDATE PKCS12 ==="
-  $storePass = Normalize-Password (Read-DpapiStorePass -DpapiPath $dpapiDst)
+  $storePass = $null
+
+  if (Get-Command Resolve-TinySocsTlsStorepass -ErrorAction SilentlyContinue) {
+    # Preferred path: canonical resolver + validation helper
+    $storeInfo = Resolve-TinySocsTlsStorepass -ConfDir $pdConf -OpenSearchRoot $osRoot
+
+    if ($storeInfo.Encoding -eq "NONASCII") {
+      throw ("Decrypted storepass decoded as NON-ASCII (len={0}) from {1}" -f $storeInfo.Length, $storeInfo.SourcePath)
+    }
+
+    $storePass = [string]$storeInfo.Password
+    Write-Host ("Decrypted storepass OK (enc={0}, len={1}) from: {2}" -f $storeInfo.Encoding, $storeInfo.Length, $storeInfo.SourcePath)
+  } else {
+    # Fallback: local reader (kept only so this script can still run even if module import fails)
+    $storePass = Normalize-Password (Read-DpapiStorePass -DpapiPath $dpapiDst)
+    if ($null -eq $storePass -or $storePass.Length -lt 1) { throw "Decrypted storePass was empty/null (legacy reader)." }
+
+    # Basic ASCII guard (matches the failure mode you saw)
+    foreach ($ch in $storePass.ToCharArray()) {
+      if ([int][char]$ch -gt 127) { throw "Decrypted storepass contains NON-ASCII characters (legacy reader)." }
+    }
+
+    Write-Host ("Decrypted storepass OK (len={0}) from: {1} (legacy reader)" -f $storePass.Length, $dpapiDst)
+  }
+
   if ($null -eq $storePass -or $storePass.Length -lt 1) { throw "Decrypted storePass was empty/null." }
 
   foreach ($p in @(

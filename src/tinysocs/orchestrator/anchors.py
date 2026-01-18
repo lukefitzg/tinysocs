@@ -1,19 +1,28 @@
 ﻿#!/usr/bin/env python3
 """
-TinySocs â€” Anchors index manager (ensure + prune)
+TinySocs — Anchors index manager (ensure + prune)
 
 What it does
-  â€¢ Ensures alias points to today's daily index: <ALIAS>-YYYY.MM.DD
-  â€¢ Creates index with mapping if missing
-  â€¢ Prunes old daily indices by age (index-level, fast)
-  â€¢ Works with self-signed clusters (SIEM_SSL_VERIFY=false)
+  • Ensures alias points to today's daily index: <ALIAS>-YYYY.MM.DD
+  • Creates index with mapping if missing
+  • Prunes old daily indices by age (index-level, fast)
+  • Works with self-signed clusters (SIEM_SSL_VERIFY=false)
+
+Replica behaviour (noise reduction on single-node TinyBox)
+  • If SIEM_URL host is localhost / 127.0.0.1 / ::1, create indices with:
+      number_of_replicas: 0
+    and best-effort enforce that setting on the current daily index.
+  • Otherwise defaults to replicas=1.
+  • You can override via env:
+      TINYSOCS_ANCHORS_REPLICAS=0|1|2...
 
 Env
-  TINYSOCS_ANCHORS_ALIAS   Alias/prefix (default: tinysocs_anchors)
-  SIEM_URL                 http://127.0.0.1:9200
-  SIEM_USER                admin
-  SIEM_PASS                admin
-  SIEM_SSL_VERIFY          "false"/"0" to disable verify (default: verify enabled)
+  TINYSOCS_ANCHORS_ALIAS      Alias/prefix (default: tinysocs_anchors)
+  SIEM_URL                    http://127.0.0.1:9200
+  SIEM_USER                   admin
+  SIEM_PASS                   admin
+  SIEM_SSL_VERIFY             "false"/"0" to disable verify (default: verify enabled)
+  TINYSOCS_ANCHORS_REPLICAS   Optional override for replica count
 
 CLI
   python -m tinysocs.orchestrator.anchors --ensure --retention-days 30
@@ -29,7 +38,7 @@ import os
 import re
 import sys
 from typing import Any, Dict, List, Tuple
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 from pathlib import Path
 from tinysocs.env import load_dotenv_if_present
@@ -46,7 +55,34 @@ SIEM_USER   = os.getenv("SIEM_USER", "admin")
 SIEM_PASS   = os.getenv("SIEM_PASS", "admin")
 VERIFY_TLS  = str(os.getenv("SIEM_SSL_VERIFY", "true")).strip().lower() not in ("0", "false", "no", "off")
 
-print(f"[anchors] SIEM_URL={SIEM_URL} verify={VERIFY_TLS} user={SIEM_USER}")
+def _is_local_siem(url: str) -> bool:
+    """
+    Treat localhost / loopback SIEM_URL as single-node TinyBox for replica defaults.
+    """
+    try:
+        host = (urlparse(url).hostname or "").strip().lower()
+    except Exception:
+        host = ""
+    return host in ("localhost", "127.0.0.1", "::1")
+
+def _parse_int_env(name: str) -> int | None:
+    v = os.getenv(name)
+    if v is None:
+        return None
+    v = str(v).strip()
+    if v == "":
+        return None
+    try:
+        return int(v)
+    except Exception:
+        return None
+
+DEFAULT_REPLICAS = 0 if _is_local_siem(SIEM_URL) else 1
+ANCHORS_REPLICAS = _parse_int_env("TINYSOCS_ANCHORS_REPLICAS")
+if ANCHORS_REPLICAS is None:
+    ANCHORS_REPLICAS = DEFAULT_REPLICAS
+
+print(f"[anchors] SIEM_URL={SIEM_URL} verify={VERIFY_TLS} user={SIEM_USER} replicas={ANCHORS_REPLICAS}")
 
 try:
     import urllib3  # type: ignore
@@ -59,6 +95,9 @@ def _auth() -> HTTPBasicAuth:
     return HTTPBasicAuth(SIEM_USER, SIEM_PASS)
 
 MAPPING: Dict[str, Any] = {
+    "settings": {
+        "number_of_replicas": ANCHORS_REPLICAS,
+    },
     "mappings": {
         "dynamic": True,
         "properties": {
@@ -113,6 +152,21 @@ def _create_index(name: str) -> None:
     if not (200 <= r.status_code < 300):
         raise RuntimeError(f"create_index failed: HTTP {r.status_code}: {r.text}")
 
+def _ensure_replicas(name: str) -> None:
+    """
+    Best-effort enforce number_of_replicas, so single-node doesn't go yellow
+    even if the index already existed or was created with defaults.
+    """
+    url = urljoin(SIEM_URL.rstrip("/") + "/", f"{name}/_settings")
+    payload = {"index": {"number_of_replicas": ANCHORS_REPLICAS}}
+    try:
+        r = requests.put(url, auth=_auth(), json=payload, verify=VERIFY_TLS, timeout=20)
+        if not (200 <= r.status_code < 300):
+            # Don't hard-fail the whole ensure path for a tuning setting.
+            print(f"[anchors] WARN: set replicas failed for {name}: HTTP {r.status_code}: {(r.text or '').strip()}", file=sys.stderr)
+    except Exception as e:
+        print(f"[anchors] WARN: set replicas failed for {name}: {e}", file=sys.stderr)
+
 def _update_alias_exclusive(target_index: str, current_indices: List[str]) -> None:
     """Atomically move alias to only point to target_index."""
     actions: List[Dict[str, Any]] = []
@@ -148,9 +202,13 @@ def ensure_alias_today() -> Dict[str, Any]:
     existed = _index_exists(idx)
     if not existed:
         _create_index(idx)
+
+    # Best-effort enforce replica setting so single-node doesn't go yellow.
+    _ensure_replicas(idx)
+
     current = _get_alias_indices()
     _update_alias_exclusive(idx, current)
-    return {"alias": ALIAS, "index": idx, "created": (not existed), "switched_from": [x for x in current if x != idx]}
+    return {"alias": ALIAS, "index": idx, "created": (not existed), "switched_from": [x for x in current if x != idx], "replicas": ANCHORS_REPLICAS}
 
 def prune_old_indices(retention_days: int, dry: bool) -> Dict[str, Any]:
     """Delete whole daily indices older than retention_days."""

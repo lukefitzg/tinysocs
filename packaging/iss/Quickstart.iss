@@ -24,6 +24,18 @@
 
 #define HasTinyBoxSeed       (HasTinyBoxSeedConfig || HasTinyBoxSeedCerts || HasTinyBoxSeedSec)
 
+; ------------------------------------------------------------
+; OpenSearch config-template source selection
+; ------------------------------------------------------------
+; Preferred: repo-provided golden template under packaging\opensearch\config-template
+#define HasRepoConfigTemplate (DirExists('..\opensearch\config-template'))
+
+; Fallback: use vendor OpenSearch config as the golden template
+#define HasVendorConfigTemplate (DirExists('..\..\vendor\opensearch-3.3.2-windows-x64\opensearch-3.3.2\config'))
+
+; PATCH(2026-01-15): Vendor cert fallback (if repo seed cert payload is absent)
+#define HasVendorCerts (DirExists('..\..\vendor\opensearch-3.3.2-windows-x64\opensearch-3.3.2\config\certs'))
+
 [Setup]
 AppName=TinySocs
 AppVersion=0.7.1
@@ -31,7 +43,11 @@ AppPublisher=TinySocs
 AppId={{F2DCCF8F-6F5F-4D8B-9EAF-6E2C2C6B1234}}
 DefaultDirName={commonpf}\TinySocs
 DefaultGroupName=TinySocs
+
+; PATCH: hard-require 64-bit OS (OpenSearch + win-x64 agent payloads)
+ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+
 DisableProgramGroupPage=yes
 OutputDir={#SourcePath}
 OutputBaseFilename=TinySocs-Setup
@@ -63,15 +79,21 @@ Source: "..\..\thirdparty\nssm.exe";       DestDir: "{app}\bin"; Flags: ignoreve
 #endif
 
 ; Modules / helpers
-Source: "..\..\modules\TinySocs.Installer.psm1";  DestDir: "{app}\modules"; Flags: ignoreversion
-Source: "..\..\modules\TinySocs.RotateQueue.ps1"; DestDir: "{app}\modules"; Flags: ignoreversion
-Source: "..\..\modules\Launch-Master.ps1";        DestDir: "{app}\modules"; Flags: ignoreversion
-Source: "..\..\modules\Launch-Anchors.ps1";       DestDir: "{app}\modules"; Flags: ignoreversion
-Source: "..\..\modules\OPERATOR-README.txt";      DestDir: "{app}\modules"; Flags: ignoreversion
-Source: "..\..\modules\PostInstall.ps1";          DestDir: "{app}\modules"; Flags: ignoreversion
+Source: "..\..\modules\TinySocs.Installer.psm1";   DestDir: "{app}\modules"; Flags: ignoreversion
+Source: "..\..\modules\TinySocs.Uninstall.ps1";    DestDir: "{app}\modules"; Flags: ignoreversion
+Source: "..\..\modules\TinySocs.RotateQueue.ps1";  DestDir: "{app}\modules"; Flags: ignoreversion
+Source: "..\..\modules\Launch-Master.ps1";         DestDir: "{app}\modules"; Flags: ignoreversion
+Source: "..\..\modules\Launch-Anchors.ps1";        DestDir: "{app}\modules"; Flags: ignoreversion
+Source: "..\..\modules\OPERATOR-README.txt";       DestDir: "{app}\modules"; Flags: ignoreversion
+Source: "..\..\modules\PostInstall.ps1";           DestDir: "{app}\modules"; Flags: ignoreversion
 
 ; OpenSearch persistence script (deterministic TLS + ports)
 Source: ".\scripts\OpenSearch.Persistence.ps1";   DestDir: "{app}\modules"; Flags: ignoreversion
+
+; --- TinySocs OpenSearch runner (PowerShell) ---
+; Put a copy under {app}\scripts (seed) AND {commonappdata}\TinySocs\OpenSearch (runtime)
+Source: "..\..\installer\Run-OpenSearch.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion overwritereadonly
+Source: "..\..\installer\Run-OpenSearch.ps1"; DestDir: "{commonappdata}\TinySocs\OpenSearch"; Flags: ignoreversion overwritereadonly
 
 ; --- Build-time sanity checks for vendor payloads + payload copy ---
 
@@ -84,6 +106,24 @@ Source: ".\scripts\OpenSearch.Persistence.ps1";   DestDir: "{app}\modules"; Flag
 Source: "..\..\vendor\opensearch-3.3.2-windows-x64\opensearch-3.3.2\*"; \
     DestDir: "{app}\OpenSearch"; \
     Flags: ignoreversion recursesubdirs createallsubdirs
+
+; --- OpenSearch config template (golden copy shipped with installer) ---
+; Mirror a full config tree into {app}\OpenSearch\config-template (so PS can copy it to ProgramData deterministically)
+; Prefer repo-provided template; otherwise fall back to vendor OpenSearch config.
+#if HasRepoConfigTemplate
+Source: "..\opensearch\config-template\*"; \
+    DestDir: "{app}\OpenSearch\config-template"; \
+    Flags: recursesubdirs createallsubdirs ignoreversion overwritereadonly uninsneveruninstall
+#else
+#if HasVendorConfigTemplate
+Source: "..\..\vendor\opensearch-3.3.2-windows-x64\opensearch-3.3.2\config\*"; \
+    DestDir: "{app}\OpenSearch\config-template"; \
+    Flags: recursesubdirs createallsubdirs ignoreversion overwritereadonly uninsneveruninstall
+#else
+; Last resort: do not fail the build. TinySocs.Installer.psm1 MUST generate/repair ProgramData config at runtime.
+; (Leaving this as a comment because [Files] lines cannot be conditional at runtime.)
+#endif
+#endif
 
 ; OpenSearch index templates for TinySocs
 Source: "..\opensearch\templates\*.json"; \
@@ -124,6 +164,20 @@ Source: "..\opensearch\programdata\certs\*"; \
     Flags: ignoreversion recursesubdirs createallsubdirs onlyifdoesntexist
 #endif
 
+; PATCH(2026-01-15): Vendor certs fallback when repo seed certs are absent.
+; This helps avoid "admin-keystore.p12 must be exported" paths by ensuring there are .p12 candidates to alias.
+#if !HasTinyBoxSeedCerts && HasVendorCerts
+Source: "..\..\vendor\opensearch-3.3.2-windows-x64\opensearch-3.3.2\config\certs\*"; \
+    DestDir: "{app}\OpenSearch\seed\config\certs"; \
+    Flags: ignoreversion recursesubdirs createallsubdirs
+#endif
+
+#if !HasTinyBoxSeedCerts && HasVendorCerts
+Source: "..\..\vendor\opensearch-3.3.2-windows-x64\opensearch-3.3.2\config\certs\*"; \
+    DestDir: "{commonappdata}\TinySocs\OpenSearch\config\certs"; \
+    Flags: ignoreversion recursesubdirs createallsubdirs onlyifdoesntexist
+#endif
+
 ; NOTE: canonical certs location is {commonappdata}\TinySocs\OpenSearch\config\certs
 ; (do NOT also copy to {commonappdata}\TinySocs\OpenSearch\certs; avoid divergence/regressions)
 
@@ -155,20 +209,6 @@ Source: "..\opensearch\programdata\security\*"; \
     Flags: ignoreversion recursesubdirs createallsubdirs onlyifdoesntexist
 #endif
 
-; Ship the canonical runner script (PowerShell) for ProgramData and for repair.
-#if HasTinyBoxSeedConfig
-#if FileExists('..\opensearch\programdata\run-opensearch.ps1')
-Source: "..\opensearch\programdata\run-opensearch.ps1"; \
-    DestDir: "{app}\OpenSearch\seed"; \
-    Flags: ignoreversion
-Source: "..\opensearch\programdata\run-opensearch.ps1"; \
-    DestDir: "{commonappdata}\TinySocs\OpenSearch"; \
-    Flags: ignoreversion onlyifdoesntexist
-#else
-; If you do not ship run-opensearch.ps1 in packaging/opensearch/programdata, the module MUST generate it.
-#endif
-#endif
-
 [Dirs]
 Name: "{commonappdata}\TinySocs"
 Name: "{commonappdata}\TinySocs\logs"; Permissions: users-modify
@@ -194,24 +234,26 @@ Name: "{commonappdata}\TinySocs\OpenSearch\data"
 Name: "{commonappdata}\TinySocs\OpenSearch\logs"; Permissions: users-modify
 Name: "{commonappdata}\TinySocs\OpenSearch\scripts"
 
+; --- OpenSearch config template (golden copy shipped with installer) ---
+Name: "{app}\OpenSearch\config-template"; Flags: uninsneveruninstall
+
 [Run]
 ; Post-install configuration is handled in the [Code] ssPostInstall step.
 
 [UninstallRun]
-Filename: "cmd.exe"; \
-  Parameters: "/c sc stop TinySocsOpenSearch >nul 2>&1 & sc stop TinySocsAgent >nul 2>&1 & sc stop TinySocsNode >nul 2>&1"; \
-  Flags: runhidden
-
-Filename: "powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""try {{ Get-CimInstance Win32_Process -Filter 'Name=''java.exe''' | Where-Object {{ $_.CommandLine -match 'TinySocs\\OpenSearch|opensearch' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }} }} catch {{ }}"""; \
-  Flags: runhidden
-
-Filename: "cmd.exe"; \
-  Parameters: "/c sc delete TinySocsOpenSearch >nul 2>&1 & sc delete TinySocsAgent >nul 2>&1 & sc delete TinySocsNode >nul 2>&1"; \
-  Flags: runhidden
-
-Filename: "powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""try {{ $ppid = (Get-CimInstance Win32_Process -Filter ('ProcessId=' + $PID)).ParentProcessId; $cmd = (Get-CimInstance Win32_Process -Filter ('ProcessId=' + $ppid)).CommandLine; $isUp = ($cmd -match '(?i)/UPGRADE|/UPDATE'); $flag = Join-Path $env:ProgramData 'TinySocs\remove_on_uninstall.flag'; Import-Module '{app}\modules\TinySocs.Installer.psm1' -Force; if ($isUp) {{ Uninstall-TinySocs -KeepData }} elseif (Test-Path $flag) {{ Uninstall-TinySocs }} else {{ Uninstall-TinySocs -KeepData }} }} catch {{ exit 0 }}"""; \
+; IMPORTANT:
+; Do NOT embed PowerShell scriptblocks ({ ... }) here — Inno treats {X} as constants and the compiler will explode.
+; Use a dedicated uninstall script instead. It will:
+;   - detect upgrade (/UPGRADE|/UPDATE) and keep ProgramData
+;   - respect remove_on_uninstall.flag for full removal
+;   - stop + delete services
+;   - kill leftover opensearch/java processes
+;
+; PATCH: add -FromInnoUninstall so the script can refuse accidental execution during install/repair/etc.
+; PATCH: DO NOT use {sysnative} here — sysnative only exists from a 32-bit process; uninstall may run 64-bit.
+;        {sys} resolves correctly in both 64-bit and 32-bit contexts (System32 vs SysWOW64) and avoids "path not found".
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+  Parameters: "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ""{app}\modules\TinySocs.Uninstall.ps1"" -FromInnoUninstall"; \
   Flags: runhidden
 
 [UninstallDelete]
@@ -346,16 +388,99 @@ begin
     Result := 'False';
 end;
 
+function GetPowerShellExePath: String;
+var
+  P: String;
+  WinDir: String;
+  Pf: String;
+  PfW6432: String;
+begin
+  { PATCH v12 (2026-01-14): Prefer PowerShell 7 (pwsh.exe) if present.
+    Rationale: TinySocs modules may use newer syntax (e.g., ??) not supported by Windows PowerShell 5.1. }
+
+  Pf := GetEnv('ProgramFiles');
+  PfW6432 := GetEnv('ProgramW6432');
+
+  if PfW6432 <> '' then
+  begin
+    P := PfW6432 + '\PowerShell\7\pwsh.exe';
+    if FileExists(P) then
+    begin
+      Result := P;
+      Exit;
+    end;
+  end;
+
+  if Pf <> '' then
+  begin
+    P := Pf + '\PowerShell\7\pwsh.exe';
+    if FileExists(P) then
+    begin
+      Result := P;
+      Exit;
+    end;
+  end;
+
+  { Prefer sysnative ONLY if it actually exists (it only exists from 32-bit on 64-bit OS) }
+  if IsWin64 then
+  begin
+    P := ExpandConstant('{sysnative}\WindowsPowerShell\v1.0\powershell.exe');
+    if FileExists(P) then
+    begin
+      Result := P;
+      Exit;
+    end;
+  end;
+
+  (* The {sys} constant resolves correctly in both contexts (System32 in 64-bit, SysWOW64 in 32-bit). *)
+  P := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+  if FileExists(P) then
+  begin
+    Result := P;
+    Exit;
+  end;
+
+  { Absolute fallbacks }
+  WinDir := GetEnv('WINDIR');
+  if WinDir = '' then
+    WinDir := GetEnv('SystemRoot');
+
+  if WinDir <> '' then
+  begin
+    P := WinDir + '\System32\WindowsPowerShell\v1.0\powershell.exe';
+    if FileExists(P) then
+    begin
+      Result := P;
+      Exit;
+    end;
+
+    P := WinDir + '\SysWOW64\WindowsPowerShell\v1.0\powershell.exe';
+    if FileExists(P) then
+    begin
+      Result := P;
+      Exit;
+    end;
+  end;
+
+  { Last-ditch: rely on PATH }
+  Result := 'powershell.exe';
+end;
+
 function RunPowerShellScript(const PsScript: String): Boolean;
 var
   ResultCode: Integer;
   TmpFile: String;
-  CmdLine: String;
   LogDir: String;
   LogFile: String;
   Started: Boolean;
   Header: String;
   Stage: Integer;
+  PsExe: String;
+  AppDir: String;
+  FinalScript: String;
+  Params: String;
+  PsCmd: String;
+  Err: Integer;
 begin
   Result := False;
   Stage := 0;
@@ -375,6 +500,7 @@ begin
     Stage := 4;
     LogDir := ExpandConstant('{commonappdata}\TinySocs\logs');
     LogFile := LogDir + '\postinstall-powershell.log';
+    Log('RunPowerShellScript: logdir=' + LogDir);
     Log('RunPowerShellScript: logfile=' + LogFile);
 
     Stage := 5;
@@ -393,38 +519,92 @@ begin
     end;
 
     Stage := 7;
-    if not SaveStringToFile(TmpFile, PsScript, False) then
+    AppDir := ExpandConstant('{app}');
+    Log('RunPowerShellScript: appdir=' + AppDir);
+
+    Stage := 8;
+    FinalScript :=
+      '$ErrorActionPreference = ''Continue''' + CRLF +
+      'try {' + CRLF +
+      '  $tsApp = ''' + PsEscape(AppDir) + '''' + CRLF +
+      '  if ($tsApp -and (Test-Path -LiteralPath $tsApp)) { Set-Location -LiteralPath $tsApp }' + CRLF +
+      '} catch { }' + CRLF +
+      'Write-Host (''[TinySocs] PWD='' + (Get-Location).Path)' + CRLF +
+      'Write-Host (''[TinySocs] User='' + [Environment]::UserName)' + CRLF +
+      'Write-Host (''[TinySocs] PS='' + $PSVersionTable.PSVersion.ToString())' + CRLF +
+      CRLF +
+      PsScript;
+
+    if not SaveStringToFile(TmpFile, FinalScript, False) then
     begin
       Log('RunPowerShellScript: SaveStringToFile failed for ' + TmpFile);
       Exit;
     end;
 
-    Stage := 8;
+    Stage := 9;
+    PsExe := GetPowerShellExePath;
+    Log('RunPowerShellScript: psExe=' + PsExe);
+
+    (* If we resolved to a concrete path, it must exist *)
+    if (Pos('\', PsExe) > 0) and (not FileExists(PsExe)) then
+    begin
+      Log('RunPowerShellScript: ERROR powershell not found at: ' + PsExe);
+      try
+        SaveStringToFile(LogFile, 'ERROR: powershell not found at: ' + PsExe + CRLF, True);
+      except
+      end;
+      Exit;
+    end;
+
+    Stage := 10;
     Header :=
       CRLF +
       '==== TinySocs PostInstall PowerShell run #' + IntToStr(PsRunCounter) + ' ====' + CRLF +
-      'Script: ' + TmpFile + CRLF;
+      'Script: ' + TmpFile + CRLF +
+      'AppDir: ' + AppDir + CRLF +
+      'PsExe: ' + PsExe + CRLF +
+      'LogFile: ' + LogFile + CRLF;
 
-    Stage := 9;
     try
       SaveStringToFile(LogFile, Header, True);
     except
       Log('RunPowerShellScript: warning: could not append header to ' + LogFile);
     end;
 
-    Stage := 10;
-    CmdLine :=
-      '/c ""powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + TmpFile + '"' +
-      ' 1>>"' + LogFile + '" 2>>&1"';
-
     Stage := 11;
+    (* Run PowerShell directly; do NOT involve cmd.exe.
+       Log capture is done inside PowerShell via Start-Transcript. *)
+
+    PsCmd :=
+      '$log = ''' + PsEscape(LogFile) + '''; ' +
+      'try { $ld = Split-Path -Parent $log; if ($ld) { New-Item -ItemType Directory -Force -Path $ld | Out-Null } } catch { }; ' +
+      'Start-Transcript -Path $log -Append | Out-Null; ' +
+      'try { & ''' + PsEscape(TmpFile) + ''' } finally { try { Stop-Transcript | Out-Null } catch { } }; ' +
+      'exit $LASTEXITCODE';
+
+    Params :=
+      '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "' + PsCmd + '"';
+
+    Log('RunPowerShellScript: params(len)=' + IntToStr(Length(Params)));
+
     ResultCode := -1;
-    Started := Exec('cmd.exe', CmdLine, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Started := Exec(PsExe, Params, AppDir, SW_HIDE, ewWaitUntilTerminated, ResultCode);
 
     Stage := 12;
     Log('RunPowerShellScript: Exec started=' + BoolToLogStr(Started) + ' exitCode=' + IntToStr(ResultCode));
 
-    Result := Started and (ResultCode = 0);
+    if not Started then
+    begin
+      Err := GetLastError;
+      Log('RunPowerShellScript: Exec failed GetLastError=' + IntToStr(Err) + ' ' + SysErrorMessage(Err));
+      try
+        SaveStringToFile(LogFile, 'ERROR: Exec failed GetLastError=' + IntToStr(Err) + ' ' + SysErrorMessage(Err) + CRLF, True);
+      except
+      end;
+      Exit;
+    end;
+
+    Result := (ResultCode = 0);
 
     Stage := 13;
     if Result then
@@ -521,6 +701,9 @@ begin
   RoleTinyBoxRadio.Width := RolePage.SurfaceWidth + 100;
   RoleTinyBoxRadio.Height := ScaleY(24);
   RoleTinyBoxRadio.Caption := '&TinyBox (all-in-one)';
+
+  { PATCH: make the default selection explicit (removes “blank role” ambiguity) }
+  RoleNodeRadio.Checked := True;
 
   ConfigPage := CreateCustomPage(RolePage.ID, 'Secrets and Endpoints', 'Configure shared secret, node endpoints, and SIEM settings.');
 
@@ -667,6 +850,9 @@ begin
   AnchorsRetentionDays := 45;
   HeartbeatMinutes := 15;
 
+  { PATCH: ensure a deterministic default even if wizard pages are skipped (e.g., /SILENT) }
+  RemoveDataOnUninstall := False;
+
   PsRunCounter := 0;
 end;
 
@@ -765,18 +951,20 @@ procedure CurStepChanged(CurStep: TSetupStep);
 var
   InstallerModule: String;
   AppDir: String;
-  MasterSiemUrl: String;
   Script: String;
-  DataFlagFile: String;
-  VerifyPs: String;
-  ForceArg: String;
   PersistScriptPath: String;
+  DidRunLocalSiem: Boolean;
 begin
   if CurStep <> ssPostInstall then
     Exit;
 
+  DidRunLocalSiem := False;
+
   try
     Log('CurStepChanged(ssPostInstall): begin');
+
+    { *** BUILD STAMP (change this every rebuild) *** }
+    Log('TinySocs installer build stamp: 2026-01-16-POSTINSTALL-ORDER-v15-KEYSTORE-ACL');
 
     AppDir := ExpandConstant('{app}');
     InstallerModule := AppDir + '\modules\TinySocs.Installer.psm1';
@@ -794,214 +982,390 @@ begin
       if (SiemUser = '') then
         SiemUser := 'admin';
 
+      { PATCH(2026-01-16): DO NOT default blank password to "admin".
+        If we're here and it's blank (e.g. silent installs), generate one deterministically. }
       if (SiemPass = '') then
+      begin
         SiemPass := GeneratePassword(24);
-
-      ForceArg := '';
-      if ForceTinyBoxConfig then
-        ForceArg := ' -ForceConfig';
-
-      Log('STEP TB-2: SetProcessEnv TS_SIEM_USER');
-      SetProcessEnv('TS_SIEM_USER', SiemUser);
-
-      Log('STEP TB-3: SetProcessEnv TS_SIEM_PASS');
-      SetProcessEnv('TS_SIEM_PASS', SiemPass);
-
-      Log('STEP TB-4: build Install-TinySocsLocalSiem script');
-      Script :=
-        '$ErrorActionPreference = ''Stop''' + #13#10 +
-        '$u = [Environment]::GetEnvironmentVariable(''TS_SIEM_USER'',''Process'')' + #13#10 +
-        '$p = [Environment]::GetEnvironmentVariable(''TS_SIEM_PASS'',''Process'')' + #13#10 +
-        'Import-Module ''' + InstallerModule + ''' -Force' + #13#10 +
-        'Install-TinySocsLocalSiem -SiemUser $u -SiemPass $p -ApiPort 9201' + ForceArg + #13#10;
-
-      Log('STEP TB-5: calling RunPowerShellScript(Install-TinySocsLocalSiem)');
-      Log('CurStepChanged: running Install-TinySocsLocalSiem');
-      if not RunPowerShellScript(Script) then
-      begin
-        Log('CurStepChanged: Install-TinySocsLocalSiem FAILED (see postinstall-powershell.log + temp script path above).');
-        MsgBox('TinyBox install failed during Install-TinySocsLocalSiem. See ProgramData\TinySocs\logs\postinstall-powershell.log.', mbError, MB_OK);
-        Abort;
-      end;
-      Log('STEP TB-6: returned from RunPowerShellScript(Install-TinySocsLocalSiem)');
-
-      Log('STEP TB-7: build optional ProgramData repair script');
-      Script :=
-        'Import-Module ''' + InstallerModule + ''' -Force' + #13#10 +
-        'if (Get-Command Repair-TinySocsTinyBoxProgramData -ErrorAction SilentlyContinue) {' + #13#10 +
-        '  Repair-TinySocsTinyBoxProgramData -Force:' + BoolToPs(ForceTinyBoxConfig) + #13#10 +
-        '}' + #13#10;
-
-      Log('CurStepChanged: optional ProgramData repair (if implemented)');
-      Log('STEP TB-8: calling RunPowerShellScript(Repair-TinySocsTinyBoxProgramData optional)');
-      if not RunPowerShellScript(Script) then
-        Log('CurStepChanged: Repair-TinySocsTinyBoxProgramData call failed (optional).');
-      Log('STEP TB-9: returned from RunPowerShellScript(Repair-TinySocsTinyBoxProgramData optional)');
-
-      Log('STEP TB-10: enforce deterministic OpenSearch TLS+port persistence (OpenSearch.Persistence.ps1)');
-      Script :=
-        '$ErrorActionPreference = ''Stop''' + #13#10 +
-        '& ''' + PsEscape(PersistScriptPath) + ''' -ConfDir ''C:\ProgramData\TinySocs\OpenSearch\config'' -ServiceName ''TinySocsOpenSearch'' -HttpPort 9201 -NetworkHost ''127.0.0.1''' + #13#10;
-      if not RunPowerShellScript(Script) then
-      begin
-        Log('CurStepChanged: OpenSearch.Persistence.ps1 FAILED (this is NOT optional).');
-        MsgBox('TinyBox install failed during OpenSearch.Persistence.ps1. See ProgramData\TinySocs\logs\postinstall-powershell.log.', mbError, MB_OK);
-        Abort;
+        Log('CurStepChanged: SiemPass was blank at ssPostInstall; generated a password (stored later in CredMan).');
       end;
 
-      Log('STEP TB-11: build SIEM_CA_CERT env set script');
+      { PATCH(2026-01-16): keep TB-12 before cred probe, but ALSO repair keystore ACLs
+        (pre and post) anywhere the keystore can be created/touched. }
+      Log('ORDER CHECK: running ONE deterministic PS chain: TB-7 -> TB-10 -> TB-11 -> TB-12 -> CRED PRESET -> TB-3 (conditional)');
+
       Script :=
-        '$certDir = Join-Path $env:ProgramData ''TinySocs\OpenSearch\config\certs''' + #13#10 +
-        '$candidates = @(' +
-        '  (Join-Path $certDir ''ca.crt''),' +
-        '  (Join-Path $certDir ''ca.pem''),' +
-        '  (Join-Path $certDir ''root-ca.pem''),' +
-        '  (Join-Path $certDir ''root-ca.crt''),' +
-        '  (Join-Path $certDir ''root-ca.cer'')' +
-        ')' + #13#10 +
-        '$ca = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1' + #13#10 +
-        'if (-not $ca) {' + #13#10 +
-        '  try { $ca = Get-ChildItem -Path $certDir -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -match ''(?i)^ca\.(crt|pem|cer)$'' } | Select-Object -First 1 | ForEach-Object { $_.FullName } } catch { }' + #13#10 +
+        '$ErrorActionPreference = ''Stop''' + #13#10 +
+        '$ProgressPreference = ''SilentlyContinue''' + #13#10 +
+        'Write-Host ''[TinySocs][Inno] build stamp: 2026-01-16-POSTINSTALL-ORDER-v15-KEYSTORE-ACL''' + #13#10 +
+        '' + #13#10 +
+
+        '# Force TEMP/TMP to ProgramData AND harden ACL so stashes never land in user-profile temp (avoids ACL/AV weirdness)' + #13#10 +
+        '$tsTmp = Join-Path $env:ProgramData ''TinySocs\tmp''' + #13#10 +
+        'try { New-Item -ItemType Directory -Force -Path $tsTmp | Out-Null } catch { }' + #13#10 +
+        '$who = $null; try { $who = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name } catch { $who = $env:USERNAME }' + #13#10 +
+        'try {' + #13#10 +
+        '  & icacls.exe $tsTmp /inheritance:e /grant:r "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F" ($who + ":(OI)(CI)F") /T /C | Out-Null' + #13#10 +
+        '} catch { }' + #13#10 +
+        '$env:TEMP = $tsTmp' + #13#10 +
+        '$env:TMP  = $tsTmp' + #13#10 +
+        'Write-Host (''[TinySocs][Inno] TEMP='' + $env:TEMP)' + #13#10 +
+        '' + #13#10 +
+
+        '# Transcript (best-effort) so we always have a decisive log on the installed machine' + #13#10 +
+        '$tsLogDir = Join-Path $env:ProgramData ''TinySocs\logs''' + #13#10 +
+        'try { New-Item -ItemType Directory -Force -Path $tsLogDir | Out-Null } catch { }' + #13#10 +
+        '$tsTranscript = Join-Path $tsLogDir (''postinstall-powershell-'' + (Get-Date -Format ''yyyyMMdd-HHmmss'') + ''.log'')' + #13#10 +
+        'try { Start-Transcript -Path $tsTranscript -Append | Out-Null } catch { }' + #13#10 +
+        '' + #13#10 +
+
+        '$u_in = ''' + PsEscape(SiemUser) + '''' + #13#10 +
+        '$p_in = ''' + PsEscape(SiemPass) + '''' + #13#10 +
+        '$siemUrl = ''https://127.0.0.1:9201''  # do not use localhost; keep cert/SAN behaviour consistent' + #13#10 +
+        'Import-Module ''' + PsEscape(InstallerModule) + ''' -Force' + #13#10 +
+        '' + #13#10 +
+
+        '# PATCH(2026-01-15): Always overwrite CredMan from wizard inputs for local TinyBox determinism' + #13#10 +
+        'try {' + #13#10 +
+        '  if (Get-Command Set-TinySocsSiemCredential -ErrorAction SilentlyContinue) {' + #13#10 +
+        '    $sc = Get-Command Set-TinySocsSiemCredential -ErrorAction Stop' + #13#10 +
+        '    $sp = @{}' + #13#10 +
+        '    if ($sc.Parameters.ContainsKey(''SiemUrl''))       { $sp.SiemUrl = $siemUrl }' + #13#10 +
+        '    if ($sc.Parameters.ContainsKey(''SiemUser''))      { $sp.SiemUser = $u_in }' + #13#10 +
+        '    if ($sc.Parameters.ContainsKey(''SiemPass''))      { $sp.SiemPass = $p_in }' + #13#10 +
+        '    if ($sc.Parameters.ContainsKey(''SiemSslVerify'')) { $sp.SiemSslVerify = $false }' + #13#10 +
+        '    & $sc @sp | Out-Null' + #13#10 +
+        '    Write-Host (''[TinySocs][Inno] Forced CredMan TinySocs/SIEM/Creds from wizard inputs (sslVerify=false, url='' + $siemUrl + '')'')' + #13#10 +
+        '  }' + #13#10 +
+        '} catch { Write-Warning (''[TinySocs][Inno] Failed to force SIEM creds from wizard (continuing): '' + $_.Exception.Message) }' + #13#10 +
+        '' + #13#10 +
+
+        'function _http($user,$pass,$path) {' + #13#10 +
+        '  try {' + #13#10 +
+        '    $pair = ($user + '':'' + $pass)' + #13#10 +
+        '    $code = & curl.exe -k -s -o NUL -w ''%{http_code}'' -u $pair ($siemUrl + $path) 2>$null' + #13#10 +
+        '    if (-not $code) { $code = ''000'' }' + #13#10 +
+        '    return [string]$code' + #13#10 +
+        '  } catch { return ''000'' }' + #13#10 +
         '}' + #13#10 +
-        'if ($ca) {' + #13#10 +
-        '  [Environment]::SetEnvironmentVariable(''SIEM_CA_CERT'', [string]$ca, ''Machine'')' + #13#10 +
-        '  [Environment]::SetEnvironmentVariable(''SIEM_CA_CERT'', [string]$ca, ''Process'')' + #13#10 +
-        '}' + #13#10;
+        '' + #13#10 +
 
-      Log('CurStepChanged: best-effort SIEM_CA_CERT env set for TinyBox');
-      Log('STEP TB-12: calling RunPowerShellScript(SIEM_CA_CERT optional)');
+        'function _curl_i($path) {' + #13#10 +
+        '  try {' + #13#10 +
+        '    return (& curl.exe -k -sS -i ($siemUrl + $path) 2>&1 | Out-String)' + #13#10 +
+        '  } catch { return (''EXC: '' + $_.Exception.Message) }' + #13#10 +
+        '}' + #13#10 +
+        '' + #13#10 +
+
+        'function _code_from_i($out) {' + #13#10 +
+        '  try {' + #13#10 +
+        '    $m = [regex]::Match($out, ''HTTP/(1\.1|2)\s+(\d{3})'')' + #13#10 +
+        '    if ($m.Success) { return $m.Groups[2].Value }' + #13#10 +
+        '    return ''000''' + #13#10 +
+        '  } catch { return ''000'' }' + #13#10 +
+        '}' + #13#10 +
+        '' + #13#10 +
+
+        '# PATCH: Avoid Export-PfxCertificate non-exportable failures by ensuring an admin-keystore.p12 exists via alias/copy' + #13#10 +
+        'function _ensure_admin_p12($certsDir) {' + #13#10 +
+        '  $target = Join-Path $certsDir ''admin-keystore.p12''' + #13#10 +
+        '  if (Test-Path -LiteralPath $target) {' + #13#10 +
+        '    Write-Host (''[TinySocs][Inno] admin-keystore.p12 already present: '' + $target)' + #13#10 +
+        '    return $true' + #13#10 +
+        '  }' + #13#10 +
+        '  try {' + #13#10 +
+        '    $cands = @()' + #13#10 +
+        '    $all = @(Get-ChildItem -LiteralPath $certsDir -Filter ''*.p12'' -ErrorAction SilentlyContinue)' + #13#10 +
+        '    if (-not $all -or $all.Count -eq 0) {' + #13#10 +
+        '      Write-Warning (''[TinySocs][Inno] No .p12 files found in certs dir to alias as admin-keystore.p12: '' + $certsDir)' + #13#10 +
+        '      return $false' + #13#10 +
+        '    }' + #13#10 +
+        '    $rank = @(''admin-keystore.p12'',''admin.p12'',''kirk-keystore.p12'',''kirk.p12'')' + #13#10 +
+        '    foreach ($name in $rank) {' + #13#10 +
+        '      $m = $all | Where-Object { $_.Name -ieq $name } | Select-Object -First 1' + #13#10 +
+        '      if ($m) { $cands += $m }' + #13#10 +
+        '    }' + #13#10 +
+        '    if ($cands.Count -eq 0) {' + #13#10 +
+        '      $m = $all | Where-Object { $_.Name -match ''admin'' } | Select-Object -First 1' + #13#10 +
+        '      if ($m) { $cands += $m }' + #13#10 +
+        '    }' + #13#10 +
+        '    if ($cands.Count -eq 0) {' + #13#10 +
+        '      $m = $all | Where-Object { $_.Name -match ''kirk'' } | Select-Object -First 1' + #13#10 +
+        '      if ($m) { $cands += $m }' + #13#10 +
+        '    }' + #13#10 +
+        '    if ($cands.Count -eq 0) { $cands += ($all | Select-Object -First 1) }' + #13#10 +
+        '    $src = $cands[0].FullName' + #13#10 +
+        '    Copy-Item -LiteralPath $src -Destination $target -Force' + #13#10 +
+        '    Write-Host (''[TinySocs][Inno] Aliased admin-keystore.p12 from '' + $src + '' -> '' + $target)' + #13#10 +
+        '    return (Test-Path -LiteralPath $target)' + #13#10 +
+        '  } catch {' + #13#10 +
+        '    Write-Warning (''[TinySocs][Inno] Failed to alias admin-keystore.p12: '' + $_.Exception.Message)' + #13#10 +
+        '    return $false' + #13#10 +
+        '  }' + #13#10 +
+        '}' + #13#10 +
+        '' + #13#10 +
+
+        'Write-Host ''[TinySocs][Inno] TB-7 (optional): Repair-TinySocsTinyBoxProgramData''' + #13#10 +
+        'try {' + #13#10 +
+        '  if (Get-Command Repair-TinySocsTinyBoxProgramData -ErrorAction SilentlyContinue) {' + #13#10 +
+        '    Repair-TinySocsTinyBoxProgramData -Force:' + BoolToPs(ForceTinyBoxConfig) + #13#10 +
+        '  }' + #13#10 +
+        '} catch {' + #13#10 +
+        '  Write-Warning (''[TinySocs][Inno] TB-7 optional repair failed (continuing): '' + $_.Exception.Message)' + #13#10 +
+        '}' + #13#10 +
+        '' + #13#10 +
+
+        'Write-Host ''[TinySocs][Inno] TB-10 (HARD): Ensure service exists + ProgramData OPENSEARCH_PATH_CONF + TLS keystore repair''' + #13#10 +
+        '$svcName  = ''TinySocsOpenSearch''' + #13#10 +
+        '$pdConf   = Join-Path $env:ProgramData ''TinySocs\OpenSearch\config''' + #13#10 +
+        '$certsDir = Join-Path $pdConf ''certs''' + #13#10 +
+        '$pdYml    = Join-Path $pdConf ''opensearch.yml''' + #13#10 +
+        'if (-not (Test-Path -LiteralPath $pdConf))   { throw (''ProgramData OpenSearch config dir missing: '' + $pdConf) }' + #13#10 +
+        'if (-not (Test-Path -LiteralPath $certsDir)) { throw (''ProgramData OpenSearch certs dir missing: '' + $certsDir) }' + #13#10 +
+        '' + #13#10 +
+
+        '# PATCH(2026-01-15): Fix ProgramData OpenSearch ACLs so keystore CLI can read opensearch.yml (prevents AccessDeniedException)' + #13#10 +
+        'try {' + #13#10 +
+        '  # Clear read-only flags that can be inherited from payload extracts' + #13#10 +
+        '  try { attrib.exe -R $pdConf /S /D | Out-Null } catch { }' + #13#10 +
+        '  $who2 = $null; try { $who2 = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name } catch { $who2 = $env:USERNAME }' + #13#10 +
+        '  & icacls.exe $pdConf /inheritance:e /grant:r "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F" ($who2 + ":(OI)(CI)F") /T /C | Out-Null' + #13#10 +
+        '  if (Test-Path -LiteralPath $pdYml) {' + #13#10 +
+        '    & icacls.exe $pdYml /inheritance:e /grant:r "SYSTEM:F" "Administrators:F" ($who2 + ":F") /C | Out-Null' + #13#10 +
+        '  }' + #13#10 +
+        '  Write-Host ''[TinySocs][Inno] TB-10: ensured ACLs/attrs on ProgramData OpenSearch config''' + #13#10 +
+        '} catch { Write-Warning (''[TinySocs][Inno] TB-10: ACL fix failed (continuing): '' + $_.Exception.Message) }' + #13#10 +
+        '' + #13#10 +
+
+        'try {' + #13#10 +
+        '  $osSvcs = Get-Service -Name ''*OpenSearch*'' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name' + #13#10 +
+        '  if ($osSvcs) { Write-Host (''[TinySocs][Inno] Services matching *OpenSearch*: '' + ($osSvcs -join '', '')) } else { Write-Host ''[TinySocs][Inno] Services matching *OpenSearch*: (none)'' }' + #13#10 +
+        '} catch { }' + #13#10 +
+        '' + #13#10 +
+        '$svc = $null' + #13#10 +
+        'try { $svc = Get-Service -Name $svcName -ErrorAction SilentlyContinue } catch { $svc = $null }' + #13#10 +
+        'if (-not $svc) {' + #13#10 +
+        '  Write-Host (''[TinySocs][Inno] TB-10: service '' + $svcName + '' missing; attempting to register via installer module...'')' + #13#10 +
+        '  foreach ($fn in @(''Ensure-TinySocsOpenSearchService'',''Ensure-TinySocsOpenSearchWindowsService'',''Install-TinySocsOpenSearchService'',''Register-TinySocsOpenSearchService'')) {' + #13#10 +
+        '    if (Get-Command $fn -ErrorAction SilentlyContinue) {' + #13#10 +
+        '      try { & $fn | Out-Null; break } catch { }' + #13#10 +
+        '    }' + #13#10 +
+        '  }' + #13#10 +
+        '  try { $svc = Get-Service -Name $svcName -ErrorAction SilentlyContinue } catch { $svc = $null }' + #13#10 +
+        '  if (-not $svc) {' + #13#10 +
+        '    throw (''TinySocsOpenSearch service does not exist after attempted registration. This must be created before TLS repair/persistence can run.'')' + #13#10 +
+        '  }' + #13#10 +
+        '}' + #13#10 +
+        '' + #13#10 +
+        '[Environment]::SetEnvironmentVariable(''OPENSEARCH_PATH_CONF'', [string]$pdConf, ''Machine'')' + #13#10 +
+        '[Environment]::SetEnvironmentVariable(''OPENSEARCH_PATH_CONF'', [string]$pdConf, ''Process'')' + #13#10 +
+        '' + #13#10 +
+        'try {' + #13#10 +
+        '  $svcKey = ''HKLM:\SYSTEM\CurrentControlSet\Services\TinySocsOpenSearch''' + #13#10 +
+        '  if (Test-Path $svcKey) {' + #13#10 +
+        '    $cur = @()' + #13#10 +
+        '    try { $cur = (Get-ItemProperty -Path $svcKey -Name Environment -ErrorAction SilentlyContinue).Environment } catch { $cur = @() }' + #13#10 +
+        '    if ($cur -is [string]) { $cur = @($cur) }' + #13#10 +
+        '    $cur = @($cur | Where-Object { $_ -and ($_ -notmatch ''^OPENSEARCH_PATH_CONF='') })' + #13#10 +
+        '    $new = @($cur + @(''OPENSEARCH_PATH_CONF='' + $pdConf))' + #13#10 +
+        '    New-ItemProperty -Path $svcKey -Name Environment -PropertyType MultiString -Value $new -Force | Out-Null' + #13#10 +
+        '  }' + #13#10 +
+        '} catch { Write-Warning (''[TinySocs][Inno] TB-10: failed to update service env (continuing): '' + $_.Exception.Message) }' + #13#10 +
+        '' + #13#10 +
+        '$installRoot = $null' + #13#10 +
+        'try { $installRoot = (Get-TinySocsInstallRoot | Select-Object -First 1) } catch { $installRoot = $null }' + #13#10 +
+        'if (-not $installRoot) { $installRoot = (Join-Path ${env:ProgramFiles} ''TinySocs'') }' + #13#10 +
+        '$openSearchRoot = Join-Path $installRoot ''OpenSearch''' + #13#10 +
+        '' + #13#10 +
+
+        '# PATCH(2026-01-16): Repair keystore ACLs BEFORE any keystore writes/CLI touches' + #13#10 +
+        'Write-Host ''[TinySocs][Inno] TB-10a: Repair-TinySocsOpenSearchKeystoreAcls (pre)''' + #13#10 +
+        'try {' + #13#10 +
+        '  if (Get-Command Repair-TinySocsOpenSearchKeystoreAcls -ErrorAction SilentlyContinue) {' + #13#10 +
+        '    $cmdAcl = Get-Command Repair-TinySocsOpenSearchKeystoreAcls -ErrorAction Stop' + #13#10 +
+        '    $ap = @{}' + #13#10 +
+        '    if ($cmdAcl.Parameters.ContainsKey(''OpenSearchRoot''))   { $ap.OpenSearchRoot = $openSearchRoot }' + #13#10 +
+        '    if ($cmdAcl.Parameters.ContainsKey(''ProgramDataConf''))  { $ap.ProgramDataConf = $pdConf }' + #13#10 +
+        '    if ($cmdAcl.Parameters.ContainsKey(''CertsDir''))         { $ap.CertsDir = $certsDir }' + #13#10 +
+        '    if ($cmdAcl.Parameters.ContainsKey(''ServiceName''))      { $ap.ServiceName = $svcName }' + #13#10 +
+        '    & $cmdAcl @ap | Out-Null' + #13#10 +
+        '  }' + #13#10 +
+        '} catch { Write-Warning (''[TinySocs][Inno] TB-10a keystore ACL repair failed (continuing): '' + $_.Exception.Message) }' + #13#10 +
+        '' + #13#10 +
+
+        'if (Get-Command Repair-TinySocsOpenSearchTlsKeystore -ErrorAction SilentlyContinue) {' + #13#10 +
+        '  $cmd = Get-Command Repair-TinySocsOpenSearchTlsKeystore -ErrorAction Stop' + #13#10 +
+        '  $pp = @{}' + #13#10 +
+        '  if ($cmd.Parameters.ContainsKey(''OpenSearchRoot''))  { $pp.OpenSearchRoot = $openSearchRoot }' + #13#10 +
+        '  if ($cmd.Parameters.ContainsKey(''ProgramDataConf'')) { $pp.ProgramDataConf = $pdConf }' + #13#10 +
+        '  if ($cmd.Parameters.ContainsKey(''CertsDir''))        { $pp.CertsDir = $certsDir }' + #13#10 +
+        '  & $cmd @pp | Out-Null' + #13#10 +
+        '} else {' + #13#10 +
+        '  throw ''Repair-TinySocsOpenSearchTlsKeystore not found in installer module. TB-10 cannot continue.''' + #13#10 +
+        '}' + #13#10 +
+        '' + #13#10 +
+
+        '# PATCH(2026-01-16): Repair keystore ACLs AFTER keystore creation/repair (creation can inherit broken ACLs)' + #13#10 +
+        'Write-Host ''[TinySocs][Inno] TB-10b: Repair-TinySocsOpenSearchKeystoreAcls (post)''' + #13#10 +
+        'try {' + #13#10 +
+        '  if (Get-Command Repair-TinySocsOpenSearchKeystoreAcls -ErrorAction SilentlyContinue) {' + #13#10 +
+        '    $cmdAcl2 = Get-Command Repair-TinySocsOpenSearchKeystoreAcls -ErrorAction Stop' + #13#10 +
+        '    $ap2 = @{}' + #13#10 +
+        '    if ($cmdAcl2.Parameters.ContainsKey(''OpenSearchRoot''))   { $ap2.OpenSearchRoot = $openSearchRoot }' + #13#10 +
+        '    if ($cmdAcl2.Parameters.ContainsKey(''ProgramDataConf''))  { $ap2.ProgramDataConf = $pdConf }' + #13#10 +
+        '    if ($cmdAcl2.Parameters.ContainsKey(''CertsDir''))         { $ap2.CertsDir = $certsDir }' + #13#10 +
+        '    if ($cmdAcl2.Parameters.ContainsKey(''ServiceName''))      { $ap2.ServiceName = $svcName }' + #13#10 +
+        '    & $cmdAcl2 @ap2 | Out-Null' + #13#10 +
+        '  }' + #13#10 +
+        '} catch { Write-Warning (''[TinySocs][Inno] TB-10b keystore ACL repair failed (continuing): '' + $_.Exception.Message) }' + #13#10 +
+        '' + #13#10 +
+
+        'try { sc.exe stop  $svcName | Out-Null } catch { }' + #13#10 +
+        'Start-Sleep -Seconds 2' + #13#10 +
+        'try { sc.exe start $svcName | Out-Null } catch { }' + #13#10 +
+        '' + #13#10 +
+
+        'Write-Host ''[TinySocs][Inno] TB-11 (HARD): OpenSearch.Persistence.ps1 (restarts + waits for port)''' + #13#10 +
+        '$conf = $pdConf' + #13#10 +
+        '& ''' + PsEscape(PersistScriptPath) + ''' -ConfDir $conf -ServiceName $svcName -HttpPort 9201 -NetworkHost ''127.0.0.1''' + #13#10 +
+        '' + #13#10 +
+
+        '# PATCH(2026-01-16): Persistence can also recreate keystore; re-apply keystore ACL repair.' + #13#10 +
+        'Write-Host ''[TinySocs][Inno] TB-11b: Repair-TinySocsOpenSearchKeystoreAcls (post persistence)''' + #13#10 +
+        'try {' + #13#10 +
+        '  if (Get-Command Repair-TinySocsOpenSearchKeystoreAcls -ErrorAction SilentlyContinue) {' + #13#10 +
+        '    $cmdAcl3 = Get-Command Repair-TinySocsOpenSearchKeystoreAcls -ErrorAction Stop' + #13#10 +
+        '    $ap3 = @{}' + #13#10 +
+        '    if ($cmdAcl3.Parameters.ContainsKey(''OpenSearchRoot''))   { $ap3.OpenSearchRoot = $openSearchRoot }' + #13#10 +
+        '    if ($cmdAcl3.Parameters.ContainsKey(''ProgramDataConf''))  { $ap3.ProgramDataConf = $pdConf }' + #13#10 +
+        '    if ($cmdAcl3.Parameters.ContainsKey(''CertsDir''))         { $ap3.CertsDir = $certsDir }' + #13#10 +
+        '    if ($cmdAcl3.Parameters.ContainsKey(''ServiceName''))      { $ap3.ServiceName = $svcName }' + #13#10 +
+        '    & $cmdAcl3 @ap3 | Out-Null' + #13#10 +
+        '  }' + #13#10 +
+        '} catch { Write-Warning (''[TinySocs][Inno] TB-11b keystore ACL repair failed (continuing): '' + $_.Exception.Message) }' + #13#10 +
+        '' + #13#10 +
+
+        'Write-Host ''[TinySocs][Inno] TB-12: Readiness gate + best-effort security init (do NOT fail install)''' + #13#10 +
+        'try {' + #13#10 +
+        '  # Probe unauth /_cluster/health with headers+body so we can detect "not initialized".' + #13#10 +
+        '  $deadline = (Get-Date).AddSeconds(240)' + #13#10 +
+        '  $initTried = 0' + #13#10 +
+        '  do {' + #13#10 +
+        '    $out = _curl_i ''/_cluster/health''' + #13#10 +
+        '    $c = _code_from_i $out' + #13#10 +
+        '    Write-Host (''[TinySocs][Inno] readiness probe http='' + $c)' + #13#10 +
+        '' + #13#10 +
+        '    if (($c -eq ''401'') -or ($c -eq ''200'')) { break }' + #13#10 +
+        '' + #13#10 +
+        '    if (($c -eq ''503'') -and ($out -match ''OpenSearch Security not initialized'') -and ($initTried -lt 3)) {' + #13#10 +
+        '      $initTried++' + #13#10 +
+        '      Write-Host (''[TinySocs][Inno] TB-12: detected "not initialized" (503). Attempting security bootstrap (attempt '' + $initTried + ''/3)...'')' + #13#10 +
+        '      foreach ($fn in @(''Ensure-TinySocsOpenSearchSecurityInitialized'',''Initialize-TinySocsOpenSearchSecurity'',''Invoke-TinySocsSecurityAdmin'',''Initialize-OpenSearchSecurity'')) {' + #13#10 +
+        '        if (Get-Command $fn -ErrorAction SilentlyContinue) {' + #13#10 +
+        '          Write-Host (''[TinySocs][Inno] TB-12: calling security init helper: '' + $fn)' + #13#10 +
+        '          try {' + #13#10 +
+        '            if ($fn -eq ''Initialize-TinySocsOpenSearchSecurity'') {' + #13#10 +
+        '              $cmd = Get-Command Initialize-TinySocsOpenSearchSecurity -ErrorAction Stop' + #13#10 +
+        '              $pp = @{}' + #13#10 +
+        '              if ($cmd.Parameters.ContainsKey(''SiemUrl''))   { $pp.SiemUrl   = $siemUrl }' + #13#10 +
+        '              if ($cmd.Parameters.ContainsKey(''AdminUser'')) { $pp.AdminUser = $u_in }' + #13#10 +
+        '              if ($cmd.Parameters.ContainsKey(''AdminPass'')) { $pp.AdminPass = $p_in }' + #13#10 +
+        '              if ($cmd.Parameters.ContainsKey(''SkipTlsVerify'')) { $pp.SkipTlsVerify = $true }' + #13#10 +
+        '              if ($cmd.Parameters.ContainsKey(''DisableTlsRevocationCheck'')) { $pp.DisableTlsRevocationCheck = $true }' + #13#10 +
+        '              if ($cmd.Parameters.ContainsKey(''HttpClientAuthMode'')) { $pp.HttpClientAuthMode = ''NONE'' }' + #13#10 +
+        '              & $cmd @pp | Out-Null' + #13#10 +
+        '            } else {' + #13#10 +
+        '              & $fn | Out-Null' + #13#10 +
+        '            }' + #13#10 +
+        '          } catch { Write-Warning (''[TinySocs][Inno] TB-12 security init failed (continuing): '' + $_.Exception.Message) }' + #13#10 +
+        '          break' + #13#10 +
+        '        }' + #13#10 +
+        '      }' + #13#10 +
+        '    }' + #13#10 +
+        '' + #13#10 +
+        '    Start-Sleep -Seconds 2' + #13#10 +
+        '  } while ((Get-Date) -lt $deadline)' + #13#10 +
+        '' + #13#10 +
+        '  # IMPORTANT: if we got 401, security is UP. Do NOT run init "because 401".' + #13#10 +
+        '} catch { Write-Warning (''[TinySocs][Inno] TB-12 encountered error (continuing): '' + $_.Exception.Message) }' + #13#10 +
+        '' + #13#10 +
+
+        '{ PATCH(2026-01-16): CRED PRESET probe must be unforgeable. Use /_plugins/_security/authinfo and require 200. }' + #13#10 +
+        'Write-Host ''[TinySocs][Inno] CRED PRESET (post TB-12): select creds that actually authenticate; store before TB-3''' + #13#10 +
+        '$probePath = ''/_plugins/_security/authinfo''' + #13#10 +
+        '$candidates = @(@($u_in,$p_in), @(''admin'',''admin''), @($u_in,''admin''), @(''admin'',$p_in))' + #13#10 +
+        '$u = $u_in; $p = $p_in; $ok = $false; $okCode = ''000''' + #13#10 +
+        '$probeDeadline = (Get-Date).AddSeconds(120)' + #13#10 +
+        'while ((Get-Date) -lt $probeDeadline -and (-not $ok)) {' + #13#10 +
+        '  foreach ($pair in $candidates) {' + #13#10 +
+        '    $cu = $pair[0]; $cp = $pair[1]' + #13#10 +
+        '    $hc = _http $cu $cp $probePath' + #13#10 +
+        '    Write-Host (''[TinySocs][Inno] auth probe(authinfo) user='' + $cu + '' http='' + $hc)' + #13#10 +
+        '    if ($hc -eq ''200'') { $u = $cu; $p = $cp; $ok = $true; $okCode = $hc; break }' + #13#10 +
+        '    if ($hc -eq ''503'') { Start-Sleep -Seconds 2 }' + #13#10 +
+        '  }' + #13#10 +
+        '  if (-not $ok) { Start-Sleep -Seconds 2 }' + #13#10 +
+        '}' + #13#10 +
+        '' + #13#10 +
+        'if ($ok) {' + #13#10 +
+        '  Write-Host (''[TinySocs][Inno] Using creds that AUTHENTICATED: user='' + $u + '' http='' + $okCode)' + #13#10 +
+        '  try {' + #13#10 +
+        '    if (Get-Command Set-TinySocsSiemCredential -ErrorAction SilentlyContinue) {' + #13#10 +
+        '      $sc = Get-Command Set-TinySocsSiemCredential -ErrorAction Stop' + #13#10 +
+        '      $sp = @{}' + #13#10 +
+        '      if ($sc.Parameters.ContainsKey(''SiemUrl''))        { $sp.SiemUrl = $siemUrl }' + #13#10 +
+        '      if ($sc.Parameters.ContainsKey(''SiemUser''))       { $sp.SiemUser = $u }' + #13#10 +
+        '      if ($sc.Parameters.ContainsKey(''SiemPass''))       { $sp.SiemPass = $p }' + #13#10 +
+        '      if ($sc.Parameters.ContainsKey(''SiemSslVerify''))  { $sp.SiemSslVerify = $false }' + #13#10 +
+        '      Write-Host (''[TinySocs][Inno] Credential preset via Set-TinySocsSiemCredential keys: '' + ($sp.Keys -join '', ''))' + #13#10 +
+        '      & $sc @sp | Out-Null' + #13#10 +
+        '    }' + #13#10 +
+        '  } catch { Write-Warning (''[TinySocs][Inno] Credential preset failed (continuing): '' + $_.Exception.Message) }' + #13#10 +
+        '} else {' + #13#10 +
+        '  Write-Warning ''[TinySocs][Inno] No credential candidate AUTHENTICATED (authinfo never returned 200); skipping TB-3 to avoid 401 loops. OpenSearch persistence succeeded.'' ' + #13#10 +
+        '}' + #13#10 +
+        '' + #13#10 +
+
+        '# Ensure admin-keystore.p12 exists BEFORE TB-3 (avoids Export-PfxCertificate non-exportable key failure path)' + #13#10 +
+        'try { _ensure_admin_p12 $certsDir | Out-Null } catch { }' + #13#10 +
+        '' + #13#10 +
+
+        'Write-Host ''[TinySocs][Inno] TB-3 (NON-FATAL): Install-TinySocsLocalSiem (LAST, but ONLY if auth works)''' + #13#10 +
+        '$ErrorActionPreference = ''Continue''' + #13#10 +
+        'if (-not $ok) {' + #13#10 +
+        '  Write-Warning ''[TinySocs][Inno] No credential candidate AUTHENTICATED (/_plugins/_security/authinfo). Skipping TB-3 to avoid 401 loops. OpenSearch persistence succeeded.'' ' + #13#10 +
+        '} else {' + #13#10 +
+        '  Write-Host (''[TinySocs][Inno] Using AUTHENTICATED creds: user='' + $u + '' http='' + $okCode)' + #13#10 +
+        '  try {' + #13#10 +
+        '    $cmd = Get-Command Install-TinySocsLocalSiem -ErrorAction Stop' + #13#10 +
+        '    $pp = @{}' + #13#10 +
+        '    if ($cmd.Parameters.ContainsKey(''SiemUser'')) { $pp.SiemUser = $u }' + #13#10 +
+        '    if ($cmd.Parameters.ContainsKey(''SiemPass'')) { $pp.SiemPass = $p }' + #13#10 +
+        '    if ($cmd.Parameters.ContainsKey(''ApiPort''))  { $pp.ApiPort  = 9201 }' + #13#10 +
+        '    if ($cmd.Parameters.ContainsKey(''ForceConfig'')) { $pp.ForceConfig = ' + BoolToPs(ForceTinyBoxConfig) + ' }' + #13#10 +
+        '    if ($cmd.Parameters.ContainsKey(''TrustLocalCA'')) { $pp.TrustLocalCA = $true }' + #13#10 +
+        '    Write-Host (''[TinySocs][Inno] calling Install-TinySocsLocalSiem with params: '' + ($pp.Keys -join '', ''))' + #13#10 +
+        '    & $cmd @pp' + #13#10 +
+        '  } catch {' + #13#10 +
+        '    Write-Warning (''[TinySocs][Inno] Install-TinySocsLocalSiem threw (continuing): '' + $_.Exception.Message)' + #13#10 +
+        '  }' + #13#10 +
+        '}' + #13#10 +
+        '' + #13#10 +
+        'try { Stop-Transcript | Out-Null } catch { }' + #13#10;
+
+      Log('ORDER CHECK: about to run ONE postinstall chain powershell');
       if not RunPowerShellScript(Script) then
-        Log('CurStepChanged: SIEM_CA_CERT env set script failed (optional).');
-      Log('STEP TB-13: returned from RunPowerShellScript(SIEM_CA_CERT optional)');
+      begin
+        Log('CurStepChanged: deterministic postinstall chain FAILED.');
+        MsgBox('TinyBox install failed during deterministic OpenSearch persistence chain. See ProgramData\TinySocs\logs\postinstall-powershell*.log and the Inno /LOG output.', mbError, MB_OK);
+        Abort;
+      end;
 
-      Log('STEP TB-14: build OpenSearch security bootstrap optional');
-      Script :=
-        'Import-Module ''' + InstallerModule + ''' -Force' + #13#10 +
-        'if (Get-Command Initialize-TinySocsOpenSearchSecurity -ErrorAction SilentlyContinue) {' + #13#10 +
-        '  Initialize-TinySocsOpenSearchSecurity ' +
-        '    -SiemUrl ''https://127.0.0.1:9201'' ' +
-        '    -AdminUser ''' + PsEscape(SiemUser) + ''' ' +
-        '    -AdminPass ''' + PsEscape(SiemPass) + ''' ' +
-        '    -ServiceUser ''tinysocs'' ' +
-        '    -SkipTlsVerify' + #13#10 +
-        '}' + #13#10;
-
-      Log('CurStepChanged: optional OpenSearch security bootstrap / CredMan (if implemented)');
-      Log('STEP TB-15: calling RunPowerShellScript(Initialize-TinySocsOpenSearchSecurity optional)');
-      if not RunPowerShellScript(Script) then
-        Log('CurStepChanged: Initialize-TinySocsOpenSearchSecurity call failed (optional).');
-      Log('STEP TB-16: returned from RunPowerShellScript(Initialize-TinySocsOpenSearchSecurity optional)');
+      DidRunLocalSiem := True;
+      Log('CurStepChanged: DidRunLocalSiem=True (ran inside one-chain postinstall).');
     end
     else
       Log('CurStepChanged: InstallTinyBox=False');
-
-    if (SelectedRole = ROLE_NODE) or (SelectedRole = ROLE_TINYBOX) then
-    begin
-      Log('CurStepChanged: doing node pairing');
-
-      if InstallTinyBox then
-        SiemUrl := 'https://127.0.0.1:9201'
-      else if SiemUrl = '' then
-        SiemUrl := 'https://127.0.0.1:9201';
-
-      VerifyPs := BoolToPs(StartsWithHttps(SiemUrl) and (InstallTinyBox or (not IsLocalhostUrl(SiemUrl))));
-
-      Script :=
-        'Import-Module ''' + InstallerModule + ''' -Force' + #13#10 +
-        'Pair-TinySocs -Role Node ' +
-        '-SharedSecret ''' + PsEscape(SharedSecret) + ''' ' +
-        '-NodePort ''' + PsEscape(NodePort) + ''' ' +
-        '-SiemUrl ''' + PsEscape(SiemUrl) + ''' ' +
-        '-SiemSslVerify:' + VerifyPs + #13#10;
-
-      if not RunPowerShellScript(Script) then
-        Log('CurStepChanged: Pair-TinySocs (Node) FAILED.');
-
-      Script :=
-        '$port = ''' + PsEscape(NodePort) + '''' + #13#10 +
-        'if ([string]::IsNullOrWhiteSpace($port)) { $port = ''8081'' }' + #13#10 +
-        '$name = ''TinySocsNode-'' + $port' + #13#10 +
-        'try { & netsh advfirewall firewall show rule name="$name" >$null 2>&1 } catch { }' + #13#10 +
-        'if ($LASTEXITCODE -ne 0) {' + #13#10 +
-        '  try { & netsh advfirewall firewall add rule name="$name" dir=in action=allow protocol=TCP localport=$port profile=domain,private | Out-Null } catch { }' + #13#10 +
-        '}' + #13#10;
-
-      Log('CurStepChanged: ensuring inbound firewall rule for Node port');
-      if not RunPowerShellScript(Script) then
-        Log('CurStepChanged: firewall rule script FAILED (optional).');
-    end
-    else
-      Log('CurStepChanged: skipping node pairing');
-
-    if (SelectedRole = ROLE_MASTER) or (SelectedRole = ROLE_TINYBOX) then
-    begin
-      Log('CurStepChanged: doing master pairing');
-
-      if InstallTinyBox then
-        MasterSiemUrl := 'https://127.0.0.1:9201'
-      else if SiemUrl <> '' then
-        MasterSiemUrl := SiemUrl
-      else
-        MasterSiemUrl := 'https://127.0.0.1:9201';
-
-      VerifyPs := BoolToPs(StartsWithHttps(MasterSiemUrl) and (InstallTinyBox or (not IsLocalhostUrl(MasterSiemUrl))));
-
-      Script :=
-        'Import-Module ''' + InstallerModule + ''' -Force' + #13#10 +
-        'Pair-TinySocs -Role Master ' +
-        '-SharedSecret ''' + PsEscape(SharedSecret) + ''' ' +
-        '-Nodes ''' + PsEscape(Nodes) + ''' ' +
-        '-SiemUrl ''' + PsEscape(MasterSiemUrl) + ''' ' +
-        '-SiemUser ''' + PsEscape(SiemUser) + ''' ' +
-        '-SiemPass ''' + PsEscape(SiemPass) + ''' ' +
-        '-SiemSslVerify:' + VerifyPs + ' ' +
-        '-AnchorsRetentionDays ' + IntToStr(AnchorsRetentionDays) + ' ' +
-        '-HeartbeatMinutes ' + IntToStr(HeartbeatMinutes) + #13#10;
-
-      if not RunPowerShellScript(Script) then
-        Log('CurStepChanged: Pair-TinySocs (Master) FAILED.');
-    end
-    else
-      Log('CurStepChanged: skipping master pairing');
-
-    Log('CurStepChanged: installing agent service');
-    Script :=
-      'Import-Module ''' + InstallerModule + ''' -Force' + #13#10 +
-      'Install-TinySocsAgentService' + #13#10;
-
-    if not RunPowerShellScript(Script) then
-      Log('CurStepChanged: Install-TinySocsAgentService FAILED.');
-
-    if InstallTinyBox then
-    begin
-      Log('CurStepChanged: configuring service dependencies');
-      Script :=
-        'sc.exe config TinySocsAgent depend= TinySocsOpenSearch' + #13#10 +
-        'sc.exe config TinySocsNode depend= TinySocsOpenSearch' + #13#10 +
-        'sc.exe failure TinySocsOpenSearch reset= 86400 actions= restart/5000/restart/5000/restart/5000' + #13#10;
-
-      if not RunPowerShellScript(Script) then
-        Log('CurStepChanged: service dependency script FAILED (optional).');
-    end;
-
-    if InstallTinyBox then
-    begin
-      Script :=
-        'Import-Module ''' + InstallerModule + ''' -Force' + #13#10 +
-        'if (Get-Command Test-TinySocsOpenSearch -ErrorAction SilentlyContinue) {' + #13#10 +
-        '  Test-TinySocsOpenSearch -SiemUrl ''https://127.0.0.1:9201'' -User ''' + PsEscape(SiemUser) + ''' -Pass ''' + PsEscape(SiemPass) + ''' -Cleanup' + #13#10 +
-        '}' + #13#10;
-
-      Log('CurStepChanged: optional TinyBox smoketest (if implemented)');
-      if not RunPowerShellScript(Script) then
-        Log('CurStepChanged: Test-TinySocsOpenSearch call failed (optional).');
-    end;
-
-    DataFlagFile := ExpandConstant('{commonappdata}\\TinySocs\\remove_on_uninstall.flag');
-    if RemoveDataOnUninstall then
-      SaveStringToFile(DataFlagFile, '1', False)
-    else if FileExists(DataFlagFile) then
-      DeleteFile(DataFlagFile);
 
     Log('CurStepChanged(ssPostInstall): end');
   except

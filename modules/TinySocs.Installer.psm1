@@ -4206,7 +4206,7 @@ function Ensure-TinySocsOpenSearchSecurityBootstrap {
     index_permissions = @(
       @{
         index_patterns  = @("winlogbeat-*","tinysocs_anchors*","siem_index*","tinysocs-*","logs-*","security-auditlog-*")
-        allowed_actions = @("crud","create_index","indices:data/write/*","indices:data/read/*","indices:admin/get")
+        allowed_actions = @("crud","create_index","indices:data/write/*","indices:data/read/*","indices:admin/get","indices:monitor/*")
       }
     )
   }
@@ -5673,7 +5673,8 @@ function Initialize-TinySocsOpenSearchSecurity {
             "indices:admin/settings/*",
             "indices:admin/template/*",
             "indices:data/write/*",
-            "indices:data/read/*"
+            "indices:data/read/*",
+            "indices:monitor/*"
           )
         }
       )

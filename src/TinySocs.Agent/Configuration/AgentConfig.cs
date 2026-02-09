@@ -79,6 +79,9 @@ public sealed class OutputConfig
     public string IndexPattern { get; set; } = "tinysocs-winlog-{yyyy.MM.dd}";
     public string Pipeline { get; set; } = string.Empty;
 
+    public string User { get; set; } = string.Empty;
+    public string Pass { get; set; } = string.Empty;
+
     public BulkConfig Bulk { get; set; } = new();
     public RetryConfig Retry { get; set; } = new();
 }
@@ -113,5 +116,5 @@ public sealed class TruncateFieldConfig
 public sealed class SiemCredentialsConfig
 {
     public string Source { get; set; } = "credman";            // future: env/file
-    public string Target { get; set; } = "TinySocs/SIEM/Creds";
+    public string Target { get; set; } = "TinySocs/OpenSearch/tinysocs";
 }

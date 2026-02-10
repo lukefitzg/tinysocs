@@ -12121,7 +12121,11 @@ function Wait-TinySocsLocalSiemReady {
     try {
       $args = @("--silent","--show-error","--output","NUL","--write-out","%{http_code}","--connect-timeout","2","--max-time","6","--head")
 
-      if ($SkipTlsVerify.IsPresent) {
+      # ALWAYS use -k for loopback readiness checks. We only need to know
+      # OpenSearch is responding HTTP, not validate the cert chain. Without
+      # -k, curl hangs on self-signed TLS negotiation/revocation checks and
+      # the installer stalls indefinitely.
+      if ($isLoopback -or $SkipTlsVerify.IsPresent) {
         $args = @("-k") + $args
       } elseif ($effectiveDisableRevoke) {
         $args = @("--ssl-no-revoke") + $args

@@ -1,0 +1,44 @@
+{
+  "index_patterns": ["tinysocs-winlog-*"],
+  "priority": 100,
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 0,
+      "auto_expand_replicas": "0-1"
+    },
+    "mappings": {
+      "properties": {
+        "@timestamp": {
+          "type": "date"
+        },
+        "message": {
+          "type": "text"
+        },
+        "event": {
+          "properties": {
+            "id": { "type": "long" },
+            "code": { "type": "long" },
+            "level": { "type": "keyword" },
+            "provider": { "type": "keyword" },
+            "record_id": { "type": "long" }
+          }
+        },
+        "winlog": {
+          "properties": {
+            "channel": { "type": "keyword" },
+            "computer_name": { "type": "keyword" },
+            "provider_name": { "type": "keyword" },
+            "record_id": { "type": "long" }
+          }
+        },
+        "tinysocs": {
+          "properties": {
+            "input_name": { "type": "keyword" },
+            "node_id": { "type": "keyword" }
+          }
+        }
+      }
+    }
+  }
+}

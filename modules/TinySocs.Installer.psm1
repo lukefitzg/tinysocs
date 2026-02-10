@@ -4201,12 +4201,14 @@ function Ensure-TinySocsOpenSearchSecurityBootstrap {
   $roleBody = @{
     cluster_permissions = @(
       "cluster_composite_ops",
-      "cluster:monitor/*"
+      "cluster:monitor/*",
+      "cluster:admin/ingest/pipeline/*",
+      "indices:admin/index_template/*"
     )
     index_permissions = @(
       @{
         index_patterns  = @("winlogbeat-*","tinysocs_anchors*","siem_index*","tinysocs-*","logs-*","security-auditlog-*")
-        allowed_actions = @("crud","create_index","indices:data/write/*","indices:data/read/*","indices:admin/get","indices:monitor/*")
+        allowed_actions = @("crud","create_index","indices:data/write/*","indices:data/read/*","indices:admin/*","indices:monitor/*")
       }
     )
   }
@@ -5657,10 +5659,12 @@ function Initialize-TinySocsOpenSearchSecurity {
 
     $roleObj = @{
       cluster_permissions = @(
+        "cluster_composite_ops",
         "cluster:monitor/*",
         "cluster:admin/ingest/pipeline/*",
         "cluster:admin/opensearch/ism/*",
-        "cluster:admin/index_template/*"
+        "cluster:admin/index_template/*",
+        "indices:admin/index_template/*"
       )
       index_permissions = @(
         @{
@@ -5668,10 +5672,7 @@ function Initialize-TinySocsOpenSearchSecurity {
           allowed_actions = @(
             "crud",
             "create_index",
-            "indices:admin/create",
-            "indices:admin/mapping/*",
-            "indices:admin/settings/*",
-            "indices:admin/template/*",
+            "indices:admin/*",
             "indices:data/write/*",
             "indices:data/read/*",
             "indices:monitor/*"
@@ -10365,6 +10366,17 @@ function Install-TinySocsLocalSiem {
   $envBlock = @{ SIEM_URL = $siemUrl; SIEM_SSL_VERIFY = $verifyString }
   if ($caCertPath) { $envBlock["SIEM_CA_CERT"] = $caCertPath }
   Set-MachineEnv $envBlock
+
+  # --- Stage + bootstrap OpenSearch index templates ---
+  try {
+    $installRoot = "C:\Program Files\TinySocs"
+    $pdTemplates = Join-Path $env:ProgramData "TinySocs\OpenSearch\templates"
+    Ensure-TinySocsOpenSearchTemplatesStaged -InstallRoot $installRoot -ProgramDataTemplatesDir $pdTemplates
+    Invoke-TinySocsOpenSearchTemplatesBootstrap -TemplatesDir $pdTemplates -WaitTimeoutSec 180 | Out-Null
+    Write-TinySocsLog "OpenSearch index templates staged and bootstrapped."
+  } catch {
+    Write-TinySocsLog -Level "WARN" -Message "Failed to bootstrap OpenSearch templates: $($_.Exception.Message)"
+  }
 
   # --- Inject service credentials into agent config.yml ---
   try {

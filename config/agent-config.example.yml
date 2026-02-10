@@ -72,3 +72,15 @@ privacy:
 siem_credentials:
   source: credman
   target: TinySocs/SIEM/Creds
+
+detection:
+  enabled: true
+  rules_file: C:\ProgramData\TinySocs\Collector\rules\rules.yml
+  reload_interval_seconds: 60
+  notification:
+    webhook_url: ""
+    email:
+      smtp_host: ""
+      smtp_port: 587
+      from: ""
+      to: ""

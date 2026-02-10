@@ -927,6 +927,64 @@ function Ensure-TinySocsOpenSearchTemplatesStaged {
   return $ProgramDataTemplatesDir
 }
 
+function Ensure-TinySocsOpenSearchPoliciesStaged {
+  <#
+  .SYNOPSIS
+    Stage ISM policy JSON files from install dir to ProgramData.
+  #>
+  [CmdletBinding()]
+  param(
+    [string]$InstallRoot = "C:\Program Files\TinySocs",
+    [string]$ProgramDataPoliciesDir = $null
+  )
+
+  if (-not $ProgramDataPoliciesDir) {
+    $ProgramDataPoliciesDir = Join-Path $env:ProgramData "TinySocs\OpenSearch\policies"
+  }
+
+  $srcDir = Join-Path $InstallRoot "OpenSearch\policies"
+
+  if (-not (Test-Path -LiteralPath $srcDir -PathType Container)) {
+    Write-TinySocsLog "Policies staging: source dir not found: $srcDir (skipping)" "WARN"
+    return $null
+  }
+
+  $srcFiles = Get-ChildItem -Path $srcDir -Filter *.json -File -ErrorAction SilentlyContinue
+  if (-not $srcFiles -or $srcFiles.Count -eq 0) {
+    Write-TinySocsLog "Policies staging: no *.json files found in: $srcDir (skipping)" "WARN"
+    return $null
+  }
+
+  if (-not (Test-Path -LiteralPath $ProgramDataPoliciesDir -PathType Container)) {
+    New-Item -ItemType Directory -Path $ProgramDataPoliciesDir -Force | Out-Null
+  }
+
+  foreach ($f in $srcFiles) {
+    $dst = Join-Path $ProgramDataPoliciesDir $f.Name
+
+    # Copy deterministically; overwrite if changed
+    $copy = $true
+    if (Test-Path -LiteralPath $dst -PathType Leaf) {
+      try {
+        $srcHash = (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash
+        $dstHash = (Get-FileHash -LiteralPath $dst        -Algorithm SHA256).Hash
+        if ($srcHash -eq $dstHash) { $copy = $false }
+      } catch { $copy = $true }
+    }
+
+    if ($copy) {
+      Copy-Item -LiteralPath $f.FullName -Destination $dst -Force
+    }
+  }
+
+  $dstFiles = Get-ChildItem -Path $ProgramDataPoliciesDir -Filter *.json -File -ErrorAction SilentlyContinue
+  if ($dstFiles -and $dstFiles.Count -gt 0) {
+    Write-TinySocsLog "OpenSearch ISM policies staged to ProgramData: $ProgramDataPoliciesDir (count=$($dstFiles.Count))" "INFO"
+  }
+
+  return $ProgramDataPoliciesDir
+}
+
 function _OsInvoke {
   [CmdletBinding()]
   param(
@@ -3214,6 +3272,16 @@ function Invoke-TinySocsOpenSearchInstallerPersistFix {
   }
   $null = Ensure-TinySocsOpenSearchTemplatesStaged -InstallRoot $InstallRoot -ProgramDataTemplatesDir $pdTemplates
 
+  # 4b) Stage ISM policies into ProgramData (best-effort, not fatal if missing)
+  $pdPolicies = Join-Path $pdConf "policies"
+  if (Get-Command Ensure-TinySocsOpenSearchPoliciesStaged -ErrorAction SilentlyContinue) {
+    try {
+      $null = Ensure-TinySocsOpenSearchPoliciesStaged -InstallRoot $InstallRoot -ProgramDataPoliciesDir $pdPolicies
+    } catch {
+      Write-TinySocsLog -Level "WARN" -Message "ISM policies staging failed (non-fatal): $($_.Exception.Message)"
+    }
+  }
+
   # 5) Ensure LocalMachine mTLS is usable for LocalSystem (CA + admin client cert) BEFORE readiness checks
   if (-not (Get-Command Ensure-TinySocsOpenSearchLocalMachineMtls -ErrorAction SilentlyContinue)) {
     throw "Ensure-TinySocsOpenSearchLocalMachineMtls not found in module; cannot guarantee mTLS for bootstrap."
@@ -3254,6 +3322,20 @@ function Invoke-TinySocsOpenSearchInstallerPersistFix {
     Invoke-TinySocsOpenSearchTemplatesBootstrap -TemplatesDir $pdTemplates -WaitTimeoutSec 180 | Out-Null
   } catch {
     throw "OpenSearch templates bootstrap failed: $($_.Exception.Message)"
+  }
+
+  # 8) Ensure all ISM policies (best-effort, not fatal)
+  if (Get-Command Invoke-TinySocsOpenSearchPoliciesBootstrap -ErrorAction SilentlyContinue) {
+    try {
+      if (Test-Path -LiteralPath $pdPolicies -PathType Container) {
+        Invoke-TinySocsOpenSearchPoliciesBootstrap -PoliciesDir $pdPolicies -WaitTimeoutSec 180 | Out-Null
+        Write-TinySocsLog "OpenSearch ISM policies bootstrap complete" "INFO"
+      } else {
+        Write-TinySocsLog "ISM policies dir not found; skipping policy bootstrap (non-fatal)" "WARN"
+      }
+    } catch {
+      Write-TinySocsLog -Level "WARN" -Message "OpenSearch ISM policies bootstrap failed (non-fatal): $($_.Exception.Message)"
+    }
   }
 
   Write-TinySocsLog "=== OpenSearch installer persist fix complete ===" "INFO"
@@ -11924,7 +12006,14 @@ function Ensure-TinySocsAgentService {
 
   & $NssmPath set $ServiceName DisplayName  $DisplayName | Out-Null
   & $NssmPath set $ServiceName Description  $Description | Out-Null
-  & $NssmPath set $ServiceName AppDirectory $agentRoot   | Out-Null
+
+  # Phase 10: Set working directory to Collector (not bin) so config file can be found
+  $workingDir = "C:\Program Files\TinySocs\Collector"
+  & $NssmPath set $ServiceName AppDirectory $workingDir | Out-Null
+
+  # Phase 10: Set environment variable for config path
+  $configPath = "C:\ProgramData\TinySocs\Collector\agent-config.yml"
+  & $NssmPath set $ServiceName AppEnvironmentExtra "TINYSOCS_AGENT_CONFIG=$configPath" | Out-Null
 
   & $NssmPath set $ServiceName ObjectName "LocalSystem"           | Out-Null
   & $NssmPath set $ServiceName Start "SERVICE_DELAYED_AUTO_START" | Out-Null
@@ -11932,7 +12021,7 @@ function Ensure-TinySocsAgentService {
   & $NssmPath set $ServiceName AppStdout "C:\ProgramData\TinySocs\Collector\logs\TinySocsAgent.out.log" | Out-Null
   & $NssmPath set $ServiceName AppStderr "C:\ProgramData\TinySocs\Collector\logs\TinySocsAgent.err.log" | Out-Null
 
-  Write-TinySocsLog "Service '$ServiceName' ensured via NSSM (TinySocs Agent)."
+  Write-TinySocsLog "Service '$ServiceName' ensured via NSSM (TinySocs Agent). Working dir: $workingDir, Config: $configPath"
 }
 
 function Wait-TinySocsLocalSiemReady {
@@ -13857,6 +13946,608 @@ ${KibanaUserName}:
 
   Write-TinySocsLog -Level "WARN" -Message "securityadmin sync did not succeed within timeout. (log=$logPath) Last error/output: $lastErr"
   return $false
+}
+
+function Invoke-TinySocsOpenSearchPoliciesBootstrap {
+  <#
+  .SYNOPSIS
+    Bootstrap ISM policies from JSON files in packaging/opensearch/policies/.
+  .DESCRIPTION
+    Loads all *.json files from the policies directory and creates/updates
+    ISM policies in OpenSearch using the _plugins/_ism/policies API.
+  #>
+  [CmdletBinding()]
+  param(
+    [string]$PoliciesDir = $null,
+    [int]$WaitTimeoutSec = 90
+  )
+
+  if (-not $PoliciesDir) {
+    # Try to find policies dir relative to module
+    $moduleDir = Split-Path -Parent $PSScriptRoot
+    $candidateDirs = @(
+      (Join-Path $moduleDir "packaging\opensearch\policies"),
+      (Join-Path $PSScriptRoot "..\packaging\opensearch\policies")
+    )
+
+    foreach ($dir in $candidateDirs) {
+      if (Test-Path -LiteralPath $dir -PathType Container) {
+        $PoliciesDir = $dir
+        break
+      }
+    }
+  }
+
+  if (-not $PoliciesDir -or -not (Test-Path -LiteralPath $PoliciesDir -PathType Container)) {
+    Write-Host "[TinySocs][OpenSearch] Policies bootstrap: no policies dir found (skipping)" -ForegroundColor Yellow
+    return
+  }
+
+  $files = Get-ChildItem -Path $PoliciesDir -Filter *.json -File -ErrorAction SilentlyContinue | Sort-Object Name
+  if (-not $files -or $files.Count -eq 0) {
+    Write-Host "[TinySocs][OpenSearch] Policies bootstrap: no *.json files in $PoliciesDir (skipping)" -ForegroundColor Yellow
+    return
+  }
+
+  if (-not (_Wait-OpenSearchReady -TimeoutSec $WaitTimeoutSec)) {
+    throw "OpenSearch not reachable; cannot ensure ISM policies"
+  }
+
+  Write-Host "[TinySocs][OpenSearch] Ensuring ISM policies from $PoliciesDir" -ForegroundColor Cyan
+
+  foreach ($f in $files) {
+    $policyId = [IO.Path]::GetFileNameWithoutExtension($f.Name)
+    $txt = Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8
+
+    $policyBody = $null
+    try { $policyBody = $txt | ConvertFrom-Json -ErrorAction Stop }
+    catch { throw "Invalid JSON policy: $($f.FullName): $($_.Exception.Message)" }
+
+    # Create or update the policy
+    try {
+      $r = _OsInvoke -Method PUT -Path "/_plugins/_ism/policies/$policyId" -Body $policyBody -TimeoutSec 30
+      if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 300) {
+        Write-Host "[TinySocs][OpenSearch] ISM policy ensured: $policyId (from $($f.Name))" -ForegroundColor DarkCyan
+      } else {
+        Write-Host "[TinySocs][OpenSearch] ISM policy PUT failed: $policyId HTTP $($r.StatusCode)" -ForegroundColor Yellow
+      }
+    } catch {
+      Write-Host "[TinySocs][OpenSearch] Failed to create/update ISM policy $policyId : $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+  }
+
+  Write-Host "[TinySocs][OpenSearch] ISM policies bootstrap complete" -ForegroundColor Green
+}
+
+function Test-TinySocsHealth {
+  <#
+  .SYNOPSIS
+    Objective health check for TinySocs installation.
+
+  .DESCRIPTION
+    Tests critical components to determine if TinySocs is alive and functioning:
+    - OpenSearch service running
+    - OpenSearch HTTP responding on 9201
+    - Heartbeat document fresh (< 2 minutes old)
+    - Index template exists (tinysocs-winlog)
+    - Recent log ingestion (< 5 minutes)
+    - @timestamp field mapping is date
+    - Agent service running (secondary check)
+
+  .PARAMETER SiemUrl
+    OpenSearch URL. Default: https://localhost:9201
+
+  .PARAMETER User
+    SIEM username. If not provided, attempts to read from credman.
+
+  .PARAMETER Pass
+    SIEM password. If not provided, attempts to read from credman.
+
+  .EXAMPLE
+    Test-TinySocsHealth
+    Test-TinySocsHealth -SiemUrl "https://localhost:9201" -User "tinysocs" -Pass "secret"
+  #>
+  [CmdletBinding()]
+  param(
+    [string]$SiemUrl = "https://localhost:9201",
+    [string]$User = "",
+    [string]$Pass = ""
+  )
+
+  Write-Host "`n=== TinySocs Health Check ===" -ForegroundColor Cyan
+  Write-Host "SIEM URL: $SiemUrl`n" -ForegroundColor Gray
+
+  $results = @()
+  $allPassed = $true
+
+  # Get credentials if not provided
+  if ([string]::IsNullOrWhiteSpace($User) -or [string]::IsNullOrWhiteSpace($Pass)) {
+    try {
+      $creds = Get-TSSiemCredsCanonical
+      if ($creds) {
+        $User = $creds.User
+        $Pass = $creds.Pass
+      }
+    } catch {
+      Write-Host "Warning: Could not retrieve SIEM credentials from credman" -ForegroundColor Yellow
+    }
+  }
+
+  $auth = @{}
+  if (-not [string]::IsNullOrWhiteSpace($User) -and -not [string]::IsNullOrWhiteSpace($Pass)) {
+    $pair = "${User}:${Pass}"
+    $bytes = [System.Text.Encoding]::ASCII.GetBytes($pair)
+    $base64 = [System.Convert]::ToBase64String($bytes)
+    $auth = @{ Authorization = "Basic $base64" }
+  }
+
+  # --- PRIMARY CHECKS (objective) ---
+
+  # 1. OpenSearch service running
+  try {
+    $svc = Get-Service -Name "TinySocsOpenSearch" -ErrorAction SilentlyContinue
+    if ($svc -and $svc.Status -eq 'Running') {
+      $results += @{ Check = "OpenSearch Service"; Status = "PASS"; Detail = "Running" }
+    } else {
+      $results += @{ Check = "OpenSearch Service"; Status = "FAIL"; Detail = "Not running or not found" }
+      $allPassed = $false
+    }
+  } catch {
+    $results += @{ Check = "OpenSearch Service"; Status = "FAIL"; Detail = $_.Exception.Message }
+    $allPassed = $false
+  }
+
+  # 2. OpenSearch HTTP responding
+  try {
+    $response = Invoke-RestMethod -Uri "$SiemUrl/" -Headers $auth -SkipCertificateCheck -TimeoutSec 10 -ErrorAction Stop
+    if ($response) {
+      $results += @{ Check = "OpenSearch HTTP"; Status = "PASS"; Detail = "Responding on 9201" }
+    } else {
+      $results += @{ Check = "OpenSearch HTTP"; Status = "FAIL"; Detail = "No response" }
+      $allPassed = $false
+    }
+  } catch {
+    $results += @{ Check = "OpenSearch HTTP"; Status = "FAIL"; Detail = $_.Exception.Message }
+    $allPassed = $false
+  }
+
+  # 3. Heartbeat document freshness
+  try {
+    $hbResponse = Invoke-RestMethod -Uri "$SiemUrl/tinysocs-heartbeat/_search" `
+      -Headers $auth -SkipCertificateCheck -TimeoutSec 10 -ErrorAction Stop `
+      -Method POST -ContentType "application/json" -Body '{"size":1,"sort":[{"@timestamp":{"order":"desc"}}]}'
+
+    if ($hbResponse.hits.total.value -gt 0) {
+      $hbDoc = $hbResponse.hits.hits[0]._source
+      $hbTimestamp = [DateTime]::Parse($hbDoc.'@timestamp')
+      $age = (Get-Date).ToUniversalTime() - $hbTimestamp
+      if ($age.TotalMinutes -lt 2) {
+        $results += @{ Check = "Heartbeat Fresh"; Status = "PASS"; Detail = "Age: $([math]::Round($age.TotalSeconds))s" }
+      } else {
+        $results += @{ Check = "Heartbeat Fresh"; Status = "FAIL"; Detail = "Age: $([math]::Round($age.TotalMinutes))m (stale)" }
+        $allPassed = $false
+      }
+    } else {
+      $results += @{ Check = "Heartbeat Fresh"; Status = "WARN"; Detail = "No heartbeat document found" }
+      $allPassed = $false
+    }
+  } catch {
+    $results += @{ Check = "Heartbeat Fresh"; Status = "WARN"; Detail = $_.Exception.Message }
+  }
+
+  # 4. Index template exists (tinysocs-winlog)
+  try {
+    $tmplResponse = Invoke-RestMethod -Uri "$SiemUrl/_index_template/tinysocs-winlog" `
+      -Headers $auth -SkipCertificateCheck -TimeoutSec 10 -ErrorAction Stop
+    if ($tmplResponse.index_templates.Count -gt 0) {
+      $results += @{ Check = "Index Template"; Status = "PASS"; Detail = "tinysocs-winlog exists" }
+    } else {
+      $results += @{ Check = "Index Template"; Status = "FAIL"; Detail = "tinysocs-winlog not found" }
+      $allPassed = $false
+    }
+  } catch {
+    $results += @{ Check = "Index Template"; Status = "FAIL"; Detail = $_.Exception.Message }
+    $allPassed = $false
+  }
+
+  # 5. Recent log ingestion (latest doc < 5 minutes)
+  try {
+    $searchResponse = Invoke-RestMethod -Uri "$SiemUrl/tinysocs-winlog-*/_search" `
+      -Headers $auth -SkipCertificateCheck -TimeoutSec 10 -ErrorAction Stop `
+      -Method POST -ContentType "application/json" -Body '{"size":1,"sort":[{"@timestamp":{"order":"desc"}}],"query":{"range":{"@timestamp":{"gte":"now-5m"}}}}'
+
+    if ($searchResponse.hits.total.value -gt 0) {
+      $results += @{ Check = "Recent Ingestion"; Status = "PASS"; Detail = "$($searchResponse.hits.total.value) docs in last 5m" }
+    } else {
+      $results += @{ Check = "Recent Ingestion"; Status = "WARN"; Detail = "No docs in last 5 minutes" }
+    }
+  } catch {
+    $results += @{ Check = "Recent Ingestion"; Status = "WARN"; Detail = $_.Exception.Message }
+  }
+
+  # 6. @timestamp mapping is date
+  try {
+    $mappingResponse = Invoke-RestMethod -Uri "$SiemUrl/tinysocs-winlog-*/_mapping" `
+      -Headers $auth -SkipCertificateCheck -TimeoutSec 10 -ErrorAction Stop
+
+    $firstIndex = $mappingResponse.PSObject.Properties.Name | Select-Object -First 1
+    if ($firstIndex) {
+      $timestampType = $mappingResponse.$firstIndex.mappings.properties.'@timestamp'.type
+      if ($timestampType -eq 'date') {
+        $results += @{ Check = "@timestamp Mapping"; Status = "PASS"; Detail = "Type is date" }
+      } else {
+        $results += @{ Check = "@timestamp Mapping"; Status = "FAIL"; Detail = "Type is $timestampType (not date)" }
+        $allPassed = $false
+      }
+    } else {
+      $results += @{ Check = "@timestamp Mapping"; Status = "WARN"; Detail = "No indices found" }
+    }
+  } catch {
+    $results += @{ Check = "@timestamp Mapping"; Status = "WARN"; Detail = $_.Exception.Message }
+  }
+
+  # --- SECONDARY CHECKS (supporting) ---
+
+  # Agent service running
+  try {
+    $agentSvc = Get-Service -Name "TinySocsAgent" -ErrorAction SilentlyContinue
+    if ($agentSvc -and $agentSvc.Status -eq 'Running') {
+      $results += @{ Check = "Agent Service"; Status = "PASS"; Detail = "Running" }
+    } else {
+      $results += @{ Check = "Agent Service"; Status = "WARN"; Detail = "Not running or not found" }
+    }
+  } catch {
+    $results += @{ Check = "Agent Service"; Status = "WARN"; Detail = $_.Exception.Message }
+  }
+
+  # Detection: Alert template exists
+  try {
+    $alertTmplResponse = Invoke-RestMethod -Uri "$SiemUrl/_index_template/tinysocs-alerts" `
+      -Headers $auth -SkipCertificateCheck -TimeoutSec 10 -ErrorAction Stop
+    if ($alertTmplResponse.index_templates.Count -gt 0) {
+      $results += @{ Check = "Alert Template"; Status = "PASS"; Detail = "tinysocs-alerts exists" }
+    } else {
+      $results += @{ Check = "Alert Template"; Status = "WARN"; Detail = "tinysocs-alerts not found" }
+    }
+  } catch {
+    $results += @{ Check = "Alert Template"; Status = "WARN"; Detail = $_.Exception.Message }
+  }
+
+  # Detection: Rules file exists
+  try {
+    $rulesPath = "C:\ProgramData\TinySocs\Collector\rules\rules.yml"
+    if (Test-Path -LiteralPath $rulesPath -PathType Leaf) {
+      $rulesContent = Get-Content -LiteralPath $rulesPath -Raw
+      if ($rulesContent -match 'rules:') {
+        $results += @{ Check = "Rules File"; Status = "PASS"; Detail = "rules.yml exists" }
+      } else {
+        $results += @{ Check = "Rules File"; Status = "WARN"; Detail = "rules.yml exists but invalid" }
+      }
+    } else {
+      $results += @{ Check = "Rules File"; Status = "WARN"; Detail = "rules.yml not found" }
+    }
+  } catch {
+    $results += @{ Check = "Rules File"; Status = "WARN"; Detail = $_.Exception.Message }
+  }
+
+  # Display results
+  Write-Host ""
+  foreach ($r in $results) {
+    $color = switch ($r.Status) {
+      "PASS" { "Green" }
+      "WARN" { "Yellow" }
+      "FAIL" { "Red" }
+      default { "Gray" }
+    }
+    $statusPadded = $r.Status.PadRight(6)
+    Write-Host "[$statusPadded] " -ForegroundColor $color -NoNewline
+    Write-Host "$($r.Check.PadRight(25)) " -NoNewline
+    Write-Host $r.Detail -ForegroundColor Gray
+  }
+
+  Write-Host ""
+  if ($allPassed) {
+    Write-Host "Overall Status: HEALTHY" -ForegroundColor Green
+    return $true
+  } else {
+    Write-Host "Overall Status: UNHEALTHY (see failures above)" -ForegroundColor Red
+    return $false
+  }
+}
+
+# -- Phase 10: Detection Engine Deployment ------------------------------------
+
+function Ensure-TinySocsDetectionRulesStaged {
+  <#
+  .SYNOPSIS
+    Stages the Phase 10 detection rules.yml file to packaging/detection/rules.yml
+
+  .DESCRIPTION
+    Creates the rules.yml file with the TS-001 brute force detection rule.
+    This is called during build/packaging to prepare the rules file for deployment.
+  #>
+  [CmdletBinding()]
+  param()
+
+  $repoRoot = Get-TinySocsRepoRoot
+  $rulesDir = Join-Path $repoRoot "packaging\detection"
+  $rulesFile = Join-Path $rulesDir "rules.yml"
+
+  if (-not (Test-Path $rulesDir)) {
+    New-Item -ItemType Directory -Path $rulesDir -Force | Out-Null
+  }
+
+  $rulesContent = @"
+rules:
+  - id: "TS-001"
+    name: "brute_force_logon"
+    description: "Multiple failed logon attempts from the same source"
+    severity: "high"
+    enabled: true
+    type: threshold_by_key
+    condition:
+      event_id: 4625
+      group_by: "winlog.event_data.TargetUserName"
+      threshold: 5
+      window_minutes: 5
+    actions:
+      - write_alert_doc
+      - append_alert_log
+"@
+
+  Set-Content -Path $rulesFile -Value $rulesContent -Encoding UTF8 -NoNewline
+  Write-TinySocsLog "Detection rules staged to $rulesFile"
+}
+
+function Deploy-TinySocsDetectionRules {
+  <#
+  .SYNOPSIS
+    Deploys detection rules to ProgramData\TinySocs\Collector\rules\
+
+  .DESCRIPTION
+    Copies the rules.yml file from the staging area (packaging/detection) to
+    the runtime location where the agent will load them.
+  #>
+  [CmdletBinding()]
+  param()
+
+  $repoRoot = Get-TinySocsRepoRoot
+  $sourceFile = Join-Path $repoRoot "packaging\detection\rules.yml"
+
+  $targetDir = "C:\ProgramData\TinySocs\Collector\rules"
+  $targetFile = Join-Path $targetDir "rules.yml"
+
+  # Ensure target directory exists
+  if (-not (Test-Path $targetDir)) {
+    New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+    Write-TinySocsLog "Created detection rules directory: $targetDir"
+  }
+
+  # Check if source exists; if not, stage it first
+  if (-not (Test-Path $sourceFile -PathType Leaf)) {
+    Write-TinySocsLog -Level "WARN" -Message "Source rules file not found, staging now: $sourceFile"
+    Ensure-TinySocsDetectionRulesStaged
+  }
+
+  if (Test-Path $sourceFile -PathType Leaf) {
+    Copy-Item -Path $sourceFile -Destination $targetFile -Force
+    Write-TinySocsLog "Detection rules deployed to $targetFile"
+  } else {
+    Write-TinySocsLog -Level "ERROR" -Message "Failed to stage or deploy detection rules"
+    throw "Detection rules source file not found: $sourceFile"
+  }
+}
+
+function Update-TinySocsAgentConfigForDetection {
+  <#
+  .SYNOPSIS
+    Ensures agent-config.yml has the detection section with correct values
+
+  .DESCRIPTION
+    Updates the agent config file in ProgramData to include the Phase 10
+    detection configuration section.
+  #>
+  [CmdletBinding()]
+  param(
+    [string]$ConfigPath = "C:\ProgramData\TinySocs\Collector\agent-config.yml"
+  )
+
+  if (-not (Test-Path $ConfigPath -PathType Leaf)) {
+    Write-TinySocsLog -Level "WARN" -Message "Agent config not found at $ConfigPath; cannot add detection section"
+    return
+  }
+
+  $content = Get-Content $ConfigPath -Raw
+
+  # Check if detection section already exists
+  if ($content -match '(?m)^detection:') {
+    Write-TinySocsLog "Detection section already exists in $ConfigPath"
+    return
+  }
+
+  # Append detection section
+  $detectionSection = @"
+
+detection:
+  enabled: true
+  rules_file: C:\ProgramData\TinySocs\Collector\rules\rules.yml
+  reload_interval_seconds: 60
+  notification:
+    webhook_url: ""
+    email:
+      smtp_host: ""
+      smtp_port: 587
+      from: ""
+      to: ""
+"@
+
+  Add-Content -Path $ConfigPath -Value $detectionSection -Encoding UTF8 -NoNewline
+  Write-TinySocsLog "Detection section added to $ConfigPath"
+}
+
+function Deploy-TinySocsAgentBinary {
+  <#
+  .SYNOPSIS
+    Deploys the TinySocs.Agent.exe binary from the build output to Program Files
+
+  .DESCRIPTION
+    Copies the Phase 10 agent binary from the dotnet publish output to the
+    installation directory where NSSM expects it.
+  #>
+  [CmdletBinding()]
+  param()
+
+  $repoRoot = Get-TinySocsRepoRoot
+  $publishDir = Join-Path $repoRoot "src\TinySocs.Agent\bin\Release\net8.0\win-x64\publish"
+  $sourceBinary = Join-Path $publishDir "TinySocs.Agent.exe"
+
+  $installRoot = Get-TinySocsInstallRoot
+  $targetBinary = Join-Path $installRoot "bin\TinySocs.Agent.exe"
+
+  if (-not (Test-Path $sourceBinary -PathType Leaf)) {
+    Write-TinySocsLog -Level "ERROR" -Message "Agent binary not found at $sourceBinary. Run 'dotnet publish' first."
+    throw "Agent binary not found. Build the agent before deploying."
+  }
+
+  # Ensure target directory exists
+  $binDir = Split-Path $targetBinary -Parent
+  if (-not (Test-Path $binDir)) {
+    New-Item -ItemType Directory -Path $binDir -Force | Out-Null
+  }
+
+  # Stop service if running (so we can replace the binary)
+  $service = Get-Service -Name "TinySocsAgent" -ErrorAction SilentlyContinue
+  if ($null -ne $service -and $service.Status -eq 'Running') {
+    Write-TinySocsLog "Stopping TinySocsAgent service to deploy new binary"
+    Stop-Service -Name "TinySocsAgent" -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+  }
+
+  # Copy binary
+  Copy-Item -Path $sourceBinary -Destination $targetBinary -Force
+  Write-TinySocsLog "Agent binary deployed to $targetBinary (size: $((Get-Item $targetBinary).Length) bytes)"
+}
+
+function Install-TinySocsPhase10 {
+  <#
+  .SYNOPSIS
+    Deploys all Phase 10 components: detection engine, rules, templates, policies
+
+  .DESCRIPTION
+    Complete Phase 10 deployment:
+    1. Deploys agent binary with detection engine code
+    2. Stages and deploys detection rules
+    3. Updates agent config with detection section
+    4. Stages and bootstraps OpenSearch templates (alerts, heartbeat)
+    5. Stages and bootstraps ISM policies
+    6. Configures NSSM service for proper working directory and env vars
+    7. Restarts agent service
+  #>
+  [CmdletBinding()]
+  param(
+    [string]$SiemUrl = "https://localhost:9201",
+    [string]$SiemUser,
+    [string]$SiemPass,
+    [switch]$SkipBinaryDeploy,
+    [switch]$SkipServiceRestart
+  )
+
+  Assert-TinySocsAdmin
+  Write-TinySocsLog "=== Starting Phase 10 Deployment ==="
+
+  # 1. Deploy agent binary (unless skipped)
+  if (-not $SkipBinaryDeploy) {
+    Write-TinySocsLog "Step 1: Deploying agent binary with detection engine"
+    Deploy-TinySocsAgentBinary
+  } else {
+    Write-TinySocsLog "Step 1: Skipping agent binary deployment (SkipBinaryDeploy specified)"
+  }
+
+  # 2. Deploy detection rules
+  Write-TinySocsLog "Step 2: Deploying detection rules"
+  Ensure-TinySocsDetectionRulesStaged
+  Deploy-TinySocsDetectionRules
+
+  # 3. Update agent config
+  Write-TinySocsLog "Step 3: Updating agent config for detection"
+  Update-TinySocsAgentConfigForDetection
+
+  # 4. Deploy OpenSearch templates
+  Write-TinySocsLog "Step 4: Staging OpenSearch templates"
+  Ensure-TinySocsOpenSearchTemplatesStaged
+
+  # 5. Deploy ISM policies
+  Write-TinySocsLog "Step 5: Staging ISM policies"
+  Ensure-TinySocsOpenSearchPoliciesStaged
+
+  # 6. Bootstrap templates and policies if credentials provided
+  if ($SiemUser -and $SiemPass) {
+    Write-TinySocsLog "Step 6: Bootstrapping OpenSearch templates"
+    try {
+      Invoke-TinySocsOpenSearchTemplatesBootstrap -SiemUrl $SiemUrl -User $SiemUser -Pass $SiemPass
+    } catch {
+      Write-TinySocsLog -Level "WARN" -Message "Template bootstrap failed: $($_.Exception.Message)"
+    }
+
+    Write-TinySocsLog "Step 7: Bootstrapping ISM policies"
+    try {
+      Invoke-TinySocsOpenSearchPoliciesBootstrap -SiemUrl $SiemUrl -User $SiemUser -Pass $SiemPass
+    } catch {
+      Write-TinySocsLog -Level "WARN" -Message "Policy bootstrap failed: $($_.Exception.Message)"
+    }
+  } else {
+    Write-TinySocsLog -Level "WARN" -Message "Skipping OpenSearch bootstrap (no credentials provided)"
+  }
+
+  # 7. Configure NSSM service
+  Write-TinySocsLog "Step 8: Configuring NSSM service"
+  $installRoot = Get-TinySocsInstallRoot
+  $nssmPath = Join-Path $installRoot "bin\nssm.exe"
+
+  if (Test-Path $nssmPath -PathType Leaf) {
+    $serviceName = "TinySocsAgent"
+    $configPath = "C:\ProgramData\TinySocs\Collector\agent-config.yml"
+    $workingDir = "C:\Program Files\TinySocs\Collector"
+
+    # Set working directory
+    & $nssmPath set $serviceName AppDirectory $workingDir | Out-Null
+    Write-TinySocsLog "NSSM AppDirectory set to $workingDir"
+
+    # Set environment variable for config path
+    & $nssmPath set $serviceName AppEnvironmentExtra "TINYSOCS_AGENT_CONFIG=$configPath" | Out-Null
+    Write-TinySocsLog "NSSM environment variable TINYSOCS_AGENT_CONFIG set to $configPath"
+  } else {
+    Write-TinySocsLog -Level "WARN" -Message "NSSM not found at $nssmPath; skipping service configuration"
+  }
+
+  # 8. Restart agent service
+  if (-not $SkipServiceRestart) {
+    Write-TinySocsLog "Step 9: Restarting TinySocsAgent service"
+    $service = Get-Service -Name "TinySocsAgent" -ErrorAction SilentlyContinue
+    if ($null -ne $service) {
+      try {
+        Restart-Service -Name "TinySocsAgent" -Force -ErrorAction Stop
+        Write-TinySocsLog "TinySocsAgent service restarted successfully"
+      } catch {
+        Write-TinySocsLog -Level "WARN" -Message "Failed to restart service: $($_.Exception.Message)"
+      }
+    } else {
+      Write-TinySocsLog -Level "WARN" -Message "TinySocsAgent service not found; nothing to restart"
+    }
+  } else {
+    Write-TinySocsLog "Step 9: Skipping service restart (SkipServiceRestart specified)"
+  }
+
+  Write-TinySocsLog "=== Phase 10 Deployment Complete ==="
+  Write-Host ""
+  Write-Host "Phase 10 deployment finished!" -ForegroundColor Green
+  Write-Host ""
+  Write-Host "Next steps:" -ForegroundColor Cyan
+  Write-Host "  1. Verify detection engine initialized: Get-Content 'C:\ProgramData\TinySocs\Collector\logs\TinySocsAgent.out.log' -Tail 50 | Select-String 'Detection engine initialized'"
+  Write-Host "  2. Test brute force detection: Generate 5+ failed login attempts within 5 minutes"
+  Write-Host "  3. Check alerts: Get-Content 'C:\ProgramData\TinySocs\Collector\logs\alerts.log'"
+  Write-Host "  4. Run health check: Test-TinySocsHealth"
+  Write-Host ""
 }
 
 Export-ModuleMember -Function * -Alias *

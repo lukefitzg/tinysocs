@@ -4,6 +4,7 @@ using System.Diagnostics.Eventing.Reader;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Xml;
 using Microsoft.Extensions.Logging;
 using TinySocs.Agent.Configuration;
 using TinySocs.Agent.Models;
@@ -421,6 +422,23 @@ namespace TinySocs.Agent.Inputs
                 machineName = null;
             }
 
+            // Extract EventData from XML (generic approach for all events)
+            var eventData = ExtractEventDataFromXml(record);
+
+            var winlogDict = new Dictionary<string, object?>
+            {
+                ["channel"] = channel,
+                ["computer_name"] = machineName,
+                ["provider_name"] = providerName,
+                ["record_id"] = recordId
+            };
+
+            // Only add event_data if we extracted any fields
+            if (eventData != null && eventData.Count > 0)
+            {
+                winlogDict["event_data"] = eventData;
+            }
+
             var body = new Dictionary<string, object?>
             {
                 ["@timestamp"] = ts.ToString("o"),
@@ -433,13 +451,7 @@ namespace TinySocs.Agent.Inputs
                     ["provider"] = providerName,
                     ["record_id"] = recordId
                 },
-                ["winlog"] = new Dictionary<string, object?>
-                {
-                    ["channel"] = channel,
-                    ["computer_name"] = machineName,
-                    ["provider_name"] = providerName,
-                    ["record_id"] = recordId
-                },
+                ["winlog"] = winlogDict,
                 ["tinysocs"] = new Dictionary<string, object?>
                 {
                     ["input_name"] = inputName
@@ -455,6 +467,70 @@ namespace TinySocs.Agent.Inputs
                 OpenSearchIndex = string.Empty, // shipper decides final index from config
                 Body = body
             };
+        }
+
+        /// <summary>
+        /// Extract all EventData properties from the EventRecord XML.
+        /// Returns a dictionary of property name -> string value for all named EventData elements.
+        /// This is a generic approach that works for all event types.
+        /// </summary>
+        private static Dictionary<string, object?>? ExtractEventDataFromXml(EventRecord record)
+        {
+            try
+            {
+                var xml = record.ToXml();
+                if (string.IsNullOrWhiteSpace(xml))
+                {
+                    return null;
+                }
+
+                var doc = new XmlDocument();
+                doc.LoadXml(xml);
+
+                // Find all EventData/Data elements with Name attribute
+                var eventDataNodes = doc.GetElementsByTagName("EventData");
+                if (eventDataNodes.Count == 0)
+                {
+                    return null;
+                }
+
+                var result = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+
+                var eventDataNode = eventDataNodes[0];
+                if (eventDataNode?.ChildNodes == null)
+                {
+                    return null;
+                }
+
+                foreach (XmlNode child in eventDataNode.ChildNodes)
+                {
+                    if (child.NodeType != XmlNodeType.Element)
+                    {
+                        continue;
+                    }
+
+                    var elem = (XmlElement)child;
+
+                    // Extract <Data Name="...">value</Data>
+                    if (elem.Name == "Data" && elem.HasAttribute("Name"))
+                    {
+                        var name = elem.GetAttribute("Name");
+                        var value = elem.InnerText;
+
+                        if (!string.IsNullOrEmpty(name))
+                        {
+                            result[name] = string.IsNullOrEmpty(value) ? null : value;
+                        }
+                    }
+                }
+
+                return result.Count > 0 ? result : null;
+            }
+            catch
+            {
+                // If XML parsing fails, just return null (no event_data field)
+                return null;
+            }
         }
     }
 }

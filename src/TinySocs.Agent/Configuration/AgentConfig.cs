@@ -10,6 +10,7 @@ public sealed class AgentConfig
     public OutputConfig Output { get; set; } = new();
     public PrivacyConfig Privacy { get; set; } = new();
     public SiemCredentialsConfig SiemCredentials { get; set; } = new();
+    public DetectionConfig Detection { get; set; } = new();
 }
 
 public sealed class AgentSection
@@ -114,4 +115,26 @@ public sealed class SiemCredentialsConfig
 {
     public string Source { get; set; } = "credman";            // future: env/file
     public string Target { get; set; } = "TinySocs/SIEM/Creds";
+}
+
+public sealed class DetectionConfig
+{
+    public bool Enabled { get; set; } = true;
+    public string RulesFile { get; set; } = @"C:\ProgramData\TinySocs\Collector\rules\rules.yml";
+    public int ReloadIntervalSeconds { get; set; } = 60;
+    public NotificationConfig Notification { get; set; } = new();
+}
+
+public sealed class NotificationConfig
+{
+    public string? WebhookUrl { get; set; }
+    public EmailConfig? Email { get; set; }
+}
+
+public sealed class EmailConfig
+{
+    public string? SmtpHost { get; set; }
+    public int SmtpPort { get; set; } = 587;
+    public string? From { get; set; }
+    public string? To { get; set; }
 }

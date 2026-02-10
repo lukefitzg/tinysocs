@@ -3885,6 +3885,91 @@ function Ensure-TinySocsAgentConfigReadable {
   Write-TinySocsLog "Agent config ACL/EFS hardening ensured at $cfg"
 }
 
+function Set-TinySocsAgentConfigCredentials {
+  <#
+    Injects user: and pass: into the output: section of the agent config.yml.
+    Writes UTF-8 without BOM and re-applies ACLs via Ensure-TinySocsAgentConfigReadable.
+  #>
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory)][string]$User,
+    [Parameter(Mandatory)][string]$Pass
+  )
+
+  $rootVal = (Get-TinySocsDataRoot | Select-Object -First 1)
+  $root    = [string]$rootVal
+  $cfg     = Join-Path -Path $root -ChildPath "Collector\agent\config.yml"
+
+  if (-not (Test-Path -LiteralPath $cfg -PathType Leaf)) {
+    Write-TinySocsLog -Level "WARN" -Message "Agent config not found at $cfg; cannot inject credentials."
+    return
+  }
+
+  $lines    = [System.IO.File]::ReadAllLines($cfg)
+  $outLines = [System.Collections.Generic.List[string]]::new()
+  $inOutput = $false
+  $insertedUser = $false
+  $insertedPass = $false
+  # Track the index (in $outLines) after which we should insert user/pass
+  # if they weren't found as existing lines. We anchor after pipeline: or ssl_verify:.
+  $insertAfterIdx = -1
+
+  for ($i = 0; $i -lt $lines.Count; $i++) {
+    $line = $lines[$i]
+
+    # Detect top-level YAML keys (no leading whitespace)
+    if ($line -match '^[a-z_]') {
+      if ($line -match '^output\s*:') {
+        $inOutput = $true
+      } elseif ($inOutput) {
+        $inOutput = $false
+      }
+    }
+
+    if ($inOutput) {
+      # Replace existing user:/pass: lines
+      if ($line -match '^\s+user\s*:') {
+        $outLines.Add("  user: $User")
+        $insertedUser = $true
+        continue
+      }
+      if ($line -match '^\s+pass\s*:') {
+        $outLines.Add("  pass: $Pass")
+        $insertedPass = $true
+        continue
+      }
+      # Track last scalar anchor (pipeline: or ssl_verify:) for insertion point
+      if ($line -match '^\s+(pipeline|ssl_verify|index_pattern)\s*:') {
+        $outLines.Add($line)
+        $insertAfterIdx = $outLines.Count - 1
+        continue
+      }
+    }
+
+    $outLines.Add($line)
+  }
+
+  # Insert user/pass after the anchor point if they weren't already present
+  if (-not $insertedUser -or -not $insertedPass) {
+    if ($insertAfterIdx -ge 0) {
+      $toInsert = [System.Collections.Generic.List[string]]::new()
+      if (-not $insertedUser) { $toInsert.Add("  user: $User") }
+      if (-not $insertedPass) { $toInsert.Add("  pass: $Pass") }
+      $outLines.InsertRange($insertAfterIdx + 1, $toInsert)
+    } else {
+      # Fallback: append at end of file (shouldn't happen with well-formed config)
+      if (-not $insertedUser) { $outLines.Add("  user: $User") }
+      if (-not $insertedPass) { $outLines.Add("  pass: $Pass") }
+    }
+  }
+
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllLines($cfg, $outLines.ToArray(), $utf8NoBom)
+  Write-TinySocsLog "Injected user/pass into agent config at $cfg"
+
+  Ensure-TinySocsAgentConfigReadable
+}
+
 function Ensure-SystemReadAcl {
   [CmdletBinding()]
   param([Parameter(Mandatory)][string]$Path)
@@ -4198,12 +4283,14 @@ function Ensure-TinySocsOpenSearchSecurityBootstrap {
   $roleBody = @{
     cluster_permissions = @(
       "cluster_composite_ops",
-      "cluster:monitor/main"
+      "cluster:monitor/*",
+      "cluster:admin/ingest/pipeline/*",
+      "indices:admin/index_template/*"
     )
     index_permissions = @(
       @{
-        index_patterns  = @("winlogbeat-*","tinysocs_anchors*","siem_index*","tinysocs-*")
-        allowed_actions = @("read","search","indices:data/read/*","indices:admin/get")
+        index_patterns  = @("winlogbeat-*","tinysocs_anchors*","siem_index*","tinysocs-*","logs-*","security-auditlog-*")
+        allowed_actions = @("crud","create_index","indices:data/write/*","indices:data/read/*","indices:admin/*","indices:monitor/*")
       }
     )
   }
@@ -5654,10 +5741,12 @@ function Initialize-TinySocsOpenSearchSecurity {
 
     $roleObj = @{
       cluster_permissions = @(
+        "cluster_composite_ops",
         "cluster:monitor/*",
         "cluster:admin/ingest/pipeline/*",
         "cluster:admin/opensearch/ism/*",
-        "cluster:admin/index_template/*"
+        "cluster:admin/index_template/*",
+        "indices:admin/index_template/*"
       )
       index_permissions = @(
         @{
@@ -5665,12 +5754,10 @@ function Initialize-TinySocsOpenSearchSecurity {
           allowed_actions = @(
             "crud",
             "create_index",
-            "indices:admin/create",
-            "indices:admin/mapping/*",
-            "indices:admin/settings/*",
-            "indices:admin/template/*",
+            "indices:admin/*",
             "indices:data/write/*",
-            "indices:data/read/*"
+            "indices:data/read/*",
+            "indices:monitor/*"
           )
         }
       )
@@ -10362,6 +10449,43 @@ function Install-TinySocsLocalSiem {
   if ($caCertPath) { $envBlock["SIEM_CA_CERT"] = $caCertPath }
   Set-MachineEnv $envBlock
 
+  # --- Stage + bootstrap OpenSearch index templates ---
+  try {
+    $installRoot = "C:\Program Files\TinySocs"
+    $pdTemplates = Join-Path $env:ProgramData "TinySocs\OpenSearch\templates"
+    Ensure-TinySocsOpenSearchTemplatesStaged -InstallRoot $installRoot -ProgramDataTemplatesDir $pdTemplates
+    Invoke-TinySocsOpenSearchTemplatesBootstrap -TemplatesDir $pdTemplates -WaitTimeoutSec 180 | Out-Null
+    Write-TinySocsLog "OpenSearch index templates staged and bootstrapped."
+  } catch {
+    Write-TinySocsLog -Level "WARN" -Message "Failed to bootstrap OpenSearch templates: $($_.Exception.Message)"
+  }
+
+  # --- Inject service credentials into agent config.yml ---
+  try {
+    $svcPass = $null
+    $svcCred = Get-TSCredential -Name 'TinySocs/OpenSearch/tinysocs'
+    if ($svcCred) {
+      $svcJ = $svcCred | ConvertFrom-Json
+      if ($svcJ.pass) { $svcPass = [string]$svcJ.pass }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($svcPass)) {
+      Set-TinySocsAgentConfigCredentials -User 'tinysocs' -Pass $svcPass
+      Write-TinySocsLog "Service credentials injected into agent config.yml."
+    } else {
+      Write-TinySocsLog -Level "WARN" -Message "No service password found in CredMan (TinySocs/OpenSearch/tinysocs); agent config credentials not injected."
+    }
+  } catch {
+    Write-TinySocsLog -Level "WARN" -Message "Failed to inject service credentials into agent config: $($_.Exception.Message)"
+  }
+
+  # --- Register + start agent service ---
+  try {
+    Install-TinySocsAgentService
+    Write-TinySocsLog "TinySocs Agent service installed and started."
+  } catch {
+    Write-TinySocsLog -Level "WARN" -Message "Failed to install/start TinySocs Agent service: $($_.Exception.Message)"
+  }
+
   if ($scheme -eq "http") {
     Write-TinySocsLog -Level "WARN" -Message "Local SIEM configured at $siemUrl (INSECURE mode: no auth/TLS)."
   } else {
@@ -12011,17 +12135,35 @@ function Ensure-TinySocsAgentService {
   $workingDir = "C:\Program Files\TinySocs\Collector"
   & $NssmPath set $ServiceName AppDirectory $workingDir | Out-Null
 
-  # Phase 10: Set environment variable for config path
-  $configPath = "C:\ProgramData\TinySocs\Collector\agent-config.yml"
-  & $NssmPath set $ServiceName AppEnvironmentExtra "TINYSOCS_AGENT_CONFIG=$configPath" | Out-Null
-
   & $NssmPath set $ServiceName ObjectName "LocalSystem"           | Out-Null
   & $NssmPath set $ServiceName Start "SERVICE_DELAYED_AUTO_START" | Out-Null
   & $NssmPath set $ServiceName AppExit Default Restart            | Out-Null
   & $NssmPath set $ServiceName AppStdout "C:\ProgramData\TinySocs\Collector\logs\TinySocsAgent.out.log" | Out-Null
   & $NssmPath set $ServiceName AppStderr "C:\ProgramData\TinySocs\Collector\logs\TinySocsAgent.err.log" | Out-Null
 
-  Write-TinySocsLog "Service '$ServiceName' ensured via NSSM (TinySocs Agent). Working dir: $workingDir, Config: $configPath"
+  # Sterile environment: blank all credential env vars so the agent reads creds
+  # from config.yml via CredMan, and set the config path
+  $configPath = "C:\ProgramData\TinySocs\Collector\agent-config.yml"
+  $sterileEnv = @(
+    "TINYSOCS_SIEM_USER=",
+    "TINYSOCS_SIEM_PASS=",
+    "SIEM_USER=",
+    "SIEM_PASS=",
+    "TS_SIEM_USER=",
+    "TS_SIEM_PASS=",
+    "OPENSEARCH_USERNAME=",
+    "OPENSEARCH_PASSWORD=",
+    "TINYSOCS_ALLOW_ENV_CREDS=0",
+    "TINYSOCS_AGENT_CONFIG=$configPath"
+  ) -join "`n"
+  try {
+    & $NssmPath set $ServiceName AppEnvironmentExtra $sterileEnv | Out-Null
+    Write-TinySocsLog "Sterile environment set for agent service '$ServiceName'. Working dir: $workingDir, Config: $configPath"
+  } catch {
+    Write-TinySocsLog -Level "WARN" -Message "Failed to set sterile env for '$ServiceName': $($_.Exception.Message)"
+  }
+
+  Write-TinySocsLog "Service '$ServiceName' ensured via NSSM (TinySocs Agent)."
 }
 
 function Wait-TinySocsLocalSiemReady {
@@ -12064,7 +12206,11 @@ function Wait-TinySocsLocalSiemReady {
     try {
       $args = @("--silent","--show-error","--output","NUL","--write-out","%{http_code}","--connect-timeout","2","--max-time","6","--head")
 
-      if ($SkipTlsVerify.IsPresent) {
+      # ALWAYS use -k for loopback readiness checks. We only need to know
+      # OpenSearch is responding HTTP, not validate the cert chain. Without
+      # -k, curl hangs on self-signed TLS negotiation/revocation checks and
+      # the installer stalls indefinitely.
+      if ($isLoopback -or $SkipTlsVerify.IsPresent) {
         $args = @("-k") + $args
       } elseif ($effectiveDisableRevoke) {
         $args = @("--ssl-no-revoke") + $args

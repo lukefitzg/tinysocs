@@ -338,7 +338,13 @@ namespace TinySocs.Agent.Shipper
                 }
 
                 sb.AppendLine(JsonSerializer.Serialize(action, _jsonOptions));
-                sb.AppendLine(JsonSerializer.Serialize(evt, _jsonOptions));
+
+                // Serialize Body (not the full envelope) as the OpenSearch document.
+                // Body contains @timestamp, message, winlog, event, etc. at the root
+                // level, which is what OpenSearch and dashboards expect.
+                // The envelope fields (ts, input, channel, eventId) are queue-routing
+                // metadata and are not needed in the indexed document.
+                sb.AppendLine(JsonSerializer.Serialize(evt.Body, _jsonOptions));
             }
 
             return sb.ToString();

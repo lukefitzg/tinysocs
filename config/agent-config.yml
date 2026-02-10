@@ -73,7 +73,7 @@ privacy:
 
 siem_credentials:
   source: credman
-  target: TinySocs/SIEM/Creds
+  target: TinySocs/OpenSearch/tinysocs
 
 detection:
   enabled: true

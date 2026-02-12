@@ -14338,7 +14338,11 @@ function Test-TinySocsHealth {
 
     $firstIndex = $mappingResponse.PSObject.Properties.Name | Select-Object -First 1
     if ($firstIndex) {
-      $timestampType = $mappingResponse.$firstIndex.mappings.properties.'@timestamp'.type
+      # Break property chain for PS 5.1 compat (@ in property name fails in deep chains)
+      $indexMapping = $mappingResponse.$firstIndex
+      $props = $indexMapping.mappings.properties
+      $tsField = $props.'@timestamp'
+      $timestampType = $tsField.type
       if ($timestampType -eq 'date') {
         $results += @{ Check = "@timestamp Mapping"; Status = "PASS"; Detail = "Type is date" }
       } else {

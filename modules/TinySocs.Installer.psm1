@@ -14220,6 +14220,12 @@ function Test-TinySocsHealth {
   $results = @()
   $allPassed = $true
 
+  # PS 5.1 compatibility: bypass self-signed cert validation (no -SkipCertificateCheck)
+  $previousCallback = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
+  [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+  try {
+  # (entire function body wrapped in try/finally to restore callback)
+
   # Get credentials if not provided
   if ([string]::IsNullOrWhiteSpace($User) -or [string]::IsNullOrWhiteSpace($Pass)) {
     try {
@@ -14259,7 +14265,7 @@ function Test-TinySocsHealth {
 
   # 2. OpenSearch HTTP responding
   try {
-    $response = Invoke-RestMethod -Uri "$SiemUrl/" -Headers $auth -SkipCertificateCheck -TimeoutSec 10 -ErrorAction Stop
+    $response = Invoke-RestMethod -Uri "$SiemUrl/" -Headers $auth -TimeoutSec 10 -ErrorAction Stop
     if ($response) {
       $results += @{ Check = "OpenSearch HTTP"; Status = "PASS"; Detail = "Responding on 9201" }
     } else {
@@ -14274,12 +14280,12 @@ function Test-TinySocsHealth {
   # 3. Heartbeat document freshness
   try {
     $hbResponse = Invoke-RestMethod -Uri "$SiemUrl/tinysocs-heartbeat/_search" `
-      -Headers $auth -SkipCertificateCheck -TimeoutSec 10 -ErrorAction Stop `
-      -Method POST -ContentType "application/json" -Body '{"size":1,"sort":[{"@timestamp":{"order":"desc"}}]}'
+      -Headers $auth -TimeoutSec 10 -ErrorAction Stop `
+      -Method POST -ContentType "application/json" -Body '{"size":1,"sort":[{"timestamp":{"order":"desc"}}]}'
 
     if ($hbResponse.hits.total.value -gt 0) {
       $hbDoc = $hbResponse.hits.hits[0]._source
-      $hbTimestamp = [DateTime]::Parse($hbDoc.'@timestamp')
+      $hbTimestamp = [DateTime]::Parse($hbDoc.timestamp)
       $age = (Get-Date).ToUniversalTime() - $hbTimestamp
       if ($age.TotalMinutes -lt 2) {
         $results += @{ Check = "Heartbeat Fresh"; Status = "PASS"; Detail = "Age: $([math]::Round($age.TotalSeconds))s" }
@@ -14298,7 +14304,7 @@ function Test-TinySocsHealth {
   # 4. Index template exists (tinysocs-winlog)
   try {
     $tmplResponse = Invoke-RestMethod -Uri "$SiemUrl/_index_template/tinysocs-winlog" `
-      -Headers $auth -SkipCertificateCheck -TimeoutSec 10 -ErrorAction Stop
+      -Headers $auth -TimeoutSec 10 -ErrorAction Stop
     if ($tmplResponse.index_templates.Count -gt 0) {
       $results += @{ Check = "Index Template"; Status = "PASS"; Detail = "tinysocs-winlog exists" }
     } else {
@@ -14313,7 +14319,7 @@ function Test-TinySocsHealth {
   # 5. Recent log ingestion (latest doc < 5 minutes)
   try {
     $searchResponse = Invoke-RestMethod -Uri "$SiemUrl/tinysocs-winlog-*/_search" `
-      -Headers $auth -SkipCertificateCheck -TimeoutSec 10 -ErrorAction Stop `
+      -Headers $auth -TimeoutSec 10 -ErrorAction Stop `
       -Method POST -ContentType "application/json" -Body '{"size":1,"sort":[{"@timestamp":{"order":"desc"}}],"query":{"range":{"@timestamp":{"gte":"now-5m"}}}}'
 
     if ($searchResponse.hits.total.value -gt 0) {
@@ -14328,7 +14334,7 @@ function Test-TinySocsHealth {
   # 6. @timestamp mapping is date
   try {
     $mappingResponse = Invoke-RestMethod -Uri "$SiemUrl/tinysocs-winlog-*/_mapping" `
-      -Headers $auth -SkipCertificateCheck -TimeoutSec 10 -ErrorAction Stop
+      -Headers $auth -TimeoutSec 10 -ErrorAction Stop
 
     $firstIndex = $mappingResponse.PSObject.Properties.Name | Select-Object -First 1
     if ($firstIndex) {
@@ -14363,7 +14369,7 @@ function Test-TinySocsHealth {
   # Detection: Alert template exists
   try {
     $alertTmplResponse = Invoke-RestMethod -Uri "$SiemUrl/_index_template/tinysocs-alerts" `
-      -Headers $auth -SkipCertificateCheck -TimeoutSec 10 -ErrorAction Stop
+      -Headers $auth -TimeoutSec 10 -ErrorAction Stop
     if ($alertTmplResponse.index_templates.Count -gt 0) {
       $results += @{ Check = "Alert Template"; Status = "PASS"; Detail = "tinysocs-alerts exists" }
     } else {
@@ -14408,11 +14414,18 @@ function Test-TinySocsHealth {
   Write-Host ""
   if ($allPassed) {
     Write-Host "Overall Status: HEALTHY" -ForegroundColor Green
-    return $true
+    $healthResult = $true
   } else {
     Write-Host "Overall Status: UNHEALTHY (see failures above)" -ForegroundColor Red
-    return $false
+    $healthResult = $false
   }
+
+  } finally {
+    # Restore original cert validation callback (PS 5.1 compat)
+    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $previousCallback
+  }
+
+  return $healthResult
 }
 
 # -- Phase 10: Detection Engine Deployment ------------------------------------

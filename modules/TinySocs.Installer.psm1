@@ -12145,8 +12145,8 @@ function Ensure-TinySocsAgentService {
   & $NssmPath set $ServiceName DisplayName  $DisplayName | Out-Null
   & $NssmPath set $ServiceName Description  $Description | Out-Null
 
-  # Phase 10: Set working directory to Collector (not bin) so config file can be found
-  $workingDir = "C:\Program Files\TinySocs\Collector"
+  # Phase 10: Set working directory to Collector under ProgramData (not Program Files)
+  $workingDir = "C:\ProgramData\TinySocs\Collector"
   & $NssmPath set $ServiceName AppDirectory $workingDir | Out-Null
 
   & $NssmPath set $ServiceName ObjectName "LocalSystem"           | Out-Null
@@ -12711,7 +12711,7 @@ function Install-TinySocsAgentService {
     return
   }
 
-  if (-not $ConfigPath) { $ConfigPath = "C:\ProgramData\TinySocs\Collector\agent\config.yml" }
+  if (-not $ConfigPath) { $ConfigPath = "C:\ProgramData\TinySocs\Collector\agent-config.yml" }
 
   $dataRoot    = Join-Path (Get-TinySocsDataRoot) "Collector"
   $agentRoot   = Join-Path $dataRoot "agent"

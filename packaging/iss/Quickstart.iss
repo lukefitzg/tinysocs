@@ -142,6 +142,11 @@ Source: "..\opensearch\templates\*.json"; \
     DestDir: "{app}\OpenSearch\templates"; \
     Flags: ignoreversion
 
+; OpenSearch ISM retention policies for TinySocs
+Source: "..\opensearch\policies\*.json"; \
+    DestDir: "{app}\OpenSearch\policies"; \
+    Flags: ignoreversion
+
 ; --- TinyBox runtime seed payload (OPTIONAL at build time) ---
 #if HasTinyBoxSeed
 ; TinyBox ProgramData seed payload present — installer can embed + optionally seed ProgramData.

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using TinySocs.Agent.Models;
 
@@ -71,7 +72,6 @@ namespace TinySocs.Agent.Detection
             var groupKey = ExtractGroupKey(rule.Condition.GroupBy, evt);
             if (string.IsNullOrWhiteSpace(groupKey))
             {
-                // Cannot group without a key
                 return null;
             }
 
@@ -195,10 +195,30 @@ namespace TinySocs.Agent.Detection
                         return null;
                     }
                 }
+                else if (current is JsonElement je && je.ValueKind == JsonValueKind.Object)
+                {
+                    // After queue round-trip, nested objects are JsonElement, not Dictionary
+                    if (je.TryGetProperty(part, out var child))
+                    {
+                        current = child;
+                    }
+                    else
+                    {
+                        return null;
+                    }
+                }
                 else
                 {
                     return null;
                 }
+            }
+
+            // Resolve final value
+            if (current is JsonElement finalJe)
+            {
+                return finalJe.ValueKind == JsonValueKind.String
+                    ? finalJe.GetString()
+                    : finalJe.ToString();
             }
 
             return current?.ToString();

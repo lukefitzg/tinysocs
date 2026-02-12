@@ -58,7 +58,8 @@ namespace TinySocs.Agent.Shipper
         public OpenSearchBulkShipper(
             ILogger<OpenSearchBulkShipper> logger,
             AgentConfig config,
-            IQueueReader queueReader)
+            IQueueReader queueReader,
+            ILoggerFactory loggerFactory)
         {
             _logger = logger;
             _config = config;
@@ -108,12 +109,9 @@ namespace TinySocs.Agent.Shipper
             // Initialize detection engine if enabled
             if (_config.Detection.Enabled)
             {
-                var detectionLogger = Microsoft.Extensions.Logging.Abstractions.NullLoggerFactory.Instance
-                    .CreateLogger<DetectionEngine>();
-                var ruleLoaderLogger = Microsoft.Extensions.Logging.Abstractions.NullLoggerFactory.Instance
-                    .CreateLogger<RuleLoader>();
-                var alertWriterLogger = Microsoft.Extensions.Logging.Abstractions.NullLoggerFactory.Instance
-                    .CreateLogger<AlertWriter>();
+                var detectionLogger = loggerFactory.CreateLogger<DetectionEngine>();
+                var ruleLoaderLogger = loggerFactory.CreateLogger<RuleLoader>();
+                var alertWriterLogger = loggerFactory.CreateLogger<AlertWriter>();
 
                 _detectionEngine = new DetectionEngine(detectionLogger);
                 _ruleLoader = new RuleLoader(ruleLoaderLogger);
@@ -729,6 +727,12 @@ namespace TinySocs.Agent.Shipper
 
         private (string? user, string? pass, string source) TryGetUserPass(object output)
         {
+            // 0) Direct read from strongly-typed config (most reliable)
+            if (!string.IsNullOrWhiteSpace(_config.Output.User) && !string.IsNullOrWhiteSpace(_config.Output.Pass))
+            {
+                return (_config.Output.User, _config.Output.Pass, "config");
+            }
+
             // 1) Env vars (explicit override)
             var envUser = GetEnvFirst("TINYSOCS_SIEM_USER", "SIEM_USER", "OPENSEARCH_USERNAME");
             var envPass = GetEnvFirst("TINYSOCS_SIEM_PASS", "SIEM_PASS", "OPENSEARCH_PASSWORD");
@@ -737,7 +741,7 @@ namespace TinySocs.Agent.Shipper
                 return (envUser, envPass, "env");
             }
 
-            // 2) Flat properties on output (common)
+            // 2) Flat properties on output via reflection (fallback)
             var user =
                 GetStringProp(output, "Username") ??
                 GetStringProp(output, "User") ??

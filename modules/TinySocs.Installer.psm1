@@ -14406,11 +14406,11 @@ function Test-TinySocsHealth {
 function Ensure-TinySocsDetectionRulesStaged {
   <#
   .SYNOPSIS
-    Stages the Phase 10 detection rules.yml file to packaging/detection/rules.yml
+    Verifies the detection rules.yml file exists in packaging/detection/rules.yml
 
   .DESCRIPTION
-    Creates the rules.yml file with the TS-001 brute force detection rule.
-    This is called during build/packaging to prepare the rules file for deployment.
+    The canonical rules.yml lives in the repo at packaging/detection/rules.yml.
+    This function verifies it is present and logs a warning if missing.
   #>
   [CmdletBinding()]
   param()
@@ -14419,30 +14419,11 @@ function Ensure-TinySocsDetectionRulesStaged {
   $rulesDir = Join-Path $repoRoot "packaging\detection"
   $rulesFile = Join-Path $rulesDir "rules.yml"
 
-  if (-not (Test-Path $rulesDir)) {
-    New-Item -ItemType Directory -Path $rulesDir -Force | Out-Null
+  if (Test-Path $rulesFile -PathType Leaf) {
+    Write-TinySocsLog "Detection rules already staged at $rulesFile"
+  } else {
+    Write-TinySocsLog -Level "WARN" -Message "Detection rules file not found at $rulesFile. Ensure packaging/detection/rules.yml is checked in."
   }
-
-  $rulesContent = @"
-rules:
-  - id: "TS-001"
-    name: "brute_force_logon"
-    description: "Multiple failed logon attempts from the same source"
-    severity: "high"
-    enabled: true
-    type: threshold_by_key
-    condition:
-      event_id: 4625
-      group_by: "winlog.event_data.TargetUserName"
-      threshold: 5
-      window_minutes: 5
-    actions:
-      - write_alert_doc
-      - append_alert_log
-"@
-
-  Set-Content -Path $rulesFile -Value $rulesContent -Encoding UTF8 -NoNewline
-  Write-TinySocsLog "Detection rules staged to $rulesFile"
 }
 
 function Deploy-TinySocsDetectionRules {

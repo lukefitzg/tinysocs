@@ -67,10 +67,22 @@ Source: "..\..\src\TinySocs.Agent\bin\Release\net8.0\win-x64\publish\TinySocs.Ag
     Flags: ignoreversion
 
 ; TinySocs collector agent config template → ProgramData
+; Primary location: Collector\agent-config.yml (matches NSSM TINYSOCS_AGENT_CONFIG)
 ; (Do not overwrite on upgrade; operator may have edited it)
+Source: "..\..\config\agent-config.yml"; \
+    DestDir: "{commonappdata}\TinySocs\Collector"; \
+    Flags: ignoreversion onlyifdoesntexist
+
+; Legacy location: Collector\agent\config.yml (kept for backwards compatibility)
 Source: "..\..\config\agent-config.yml"; \
     DestDir: "{commonappdata}\TinySocs\Collector\agent"; \
     DestName: "config.yml"; \
+    Flags: ignoreversion onlyifdoesntexist
+
+; Detection rules → ProgramData\TinySocs\Collector\rules\rules.yml
+; (matches DetectionConfig.RulesFile default; do not overwrite operator edits)
+Source: "..\..\packaging\detection\rules.yml"; \
+    DestDir: "{commonappdata}\TinySocs\Collector\rules"; \
     Flags: ignoreversion onlyifdoesntexist
 
 ; NSSM is optional — include only if present at build time
@@ -223,6 +235,7 @@ Name: "{commonappdata}\TinySocs\Collector"
 Name: "{commonappdata}\TinySocs\Collector\agent"
 Name: "{commonappdata}\TinySocs\Collector\agent\queue"
 Name: "{commonappdata}\TinySocs\Collector\agent\bookmarks"
+Name: "{commonappdata}\TinySocs\Collector\rules"
 Name: "{commonappdata}\TinySocs\Collector\logs"; Permissions: users-modify
 
 ; TinyBox (OpenSearch) runtime directories under ProgramData

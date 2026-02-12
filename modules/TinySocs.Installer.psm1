@@ -3887,7 +3887,9 @@ function Ensure-TinySocsAgentConfigReadable {
 
 function Set-TinySocsAgentConfigCredentials {
   <#
-    Injects user: and pass: into the output: section of the agent config.yml.
+    Injects user: and pass: into the output: section of agent-config.yml.
+    Values are always YAML double-quoted to prevent issues with special
+    characters (!, #, %, etc.) that have meaning in bare YAML scalars.
     Writes UTF-8 without BOM and re-applies ACLs via Ensure-TinySocsAgentConfigReadable.
   #>
   [CmdletBinding()]
@@ -3898,12 +3900,24 @@ function Set-TinySocsAgentConfigCredentials {
 
   $rootVal = (Get-TinySocsDataRoot | Select-Object -First 1)
   $root    = [string]$rootVal
-  $cfg     = Join-Path -Path $root -ChildPath "Collector\agent\config.yml"
+  # Must match the path NSSM sets in TINYSOCS_AGENT_CONFIG (Collector\agent-config.yml)
+  $cfg     = Join-Path -Path $root -ChildPath "Collector\agent-config.yml"
 
   if (-not (Test-Path -LiteralPath $cfg -PathType Leaf)) {
-    Write-TinySocsLog -Level "WARN" -Message "Agent config not found at $cfg; cannot inject credentials."
-    return
+    # Fallback: try the legacy path for backwards compatibility
+    $legacyCfg = Join-Path -Path $root -ChildPath "Collector\agent\config.yml"
+    if (Test-Path -LiteralPath $legacyCfg -PathType Leaf) {
+      $cfg = $legacyCfg
+      Write-TinySocsLog -Level "WARN" -Message "Primary config not found; falling back to legacy path $cfg"
+    } else {
+      Write-TinySocsLog -Level "WARN" -Message "Agent config not found at $cfg; cannot inject credentials."
+      return
+    }
   }
+
+  # Escape backslashes and double-quotes inside values for YAML double-quoted strings
+  $safeUser = $User -replace '\\', '\\' -replace '"', '\"'
+  $safePass = $Pass -replace '\\', '\\' -replace '"', '\"'
 
   $lines    = [System.IO.File]::ReadAllLines($cfg)
   $outLines = [System.Collections.Generic.List[string]]::new()
@@ -3927,14 +3941,14 @@ function Set-TinySocsAgentConfigCredentials {
     }
 
     if ($inOutput) {
-      # Replace existing user:/pass: lines
+      # Replace existing user:/pass: lines (always double-quote values)
       if ($line -match '^\s+user\s*:') {
-        $outLines.Add("  user: $User")
+        $outLines.Add("  user: `"$safeUser`"")
         $insertedUser = $true
         continue
       }
       if ($line -match '^\s+pass\s*:') {
-        $outLines.Add("  pass: $Pass")
+        $outLines.Add("  pass: `"$safePass`"")
         $insertedPass = $true
         continue
       }
@@ -3953,13 +3967,13 @@ function Set-TinySocsAgentConfigCredentials {
   if (-not $insertedUser -or -not $insertedPass) {
     if ($insertAfterIdx -ge 0) {
       $toInsert = [System.Collections.Generic.List[string]]::new()
-      if (-not $insertedUser) { $toInsert.Add("  user: $User") }
-      if (-not $insertedPass) { $toInsert.Add("  pass: $Pass") }
+      if (-not $insertedUser) { $toInsert.Add("  user: `"$safeUser`"") }
+      if (-not $insertedPass) { $toInsert.Add("  pass: `"$safePass`"") }
       $outLines.InsertRange($insertAfterIdx + 1, $toInsert)
     } else {
       # Fallback: append at end of file (shouldn't happen with well-formed config)
-      if (-not $insertedUser) { $outLines.Add("  user: $User") }
-      if (-not $insertedPass) { $outLines.Add("  pass: $Pass") }
+      if (-not $insertedUser) { $outLines.Add("  user: `"$safeUser`"") }
+      if (-not $insertedPass) { $outLines.Add("  pass: `"$safePass`"") }
     }
   }
 

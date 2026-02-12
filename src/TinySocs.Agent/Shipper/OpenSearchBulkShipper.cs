@@ -152,6 +152,9 @@ namespace TinySocs.Agent.Shipper
                 output.Bulk.BatchSizeBytes,
                 output.Bulk.FlushIntervalMs);
 
+            // Startup connection self-test
+            await TestOpenSearchConnectionAsync(output, stoppingToken).ConfigureAwait(false);
+
             if (_debugBulk)
             {
                 _logger.LogWarning("TINYSOCS_DEBUG_BULK is enabled. Will log one bulk payload sample (first 2 lines) once per process start.");
@@ -301,6 +304,72 @@ namespace TinySocs.Agent.Shipper
             }
 
             _logger.LogInformation("OpenSearchBulkShipper loop exiting.");
+        }
+
+        /// <summary>
+        /// Startup self-test: hit GET {url} and log the result.
+        /// Logs auth details and response so we can diagnose 401s quickly.
+        /// </summary>
+        private async Task TestOpenSearchConnectionAsync(OutputConfig output, CancellationToken ct)
+        {
+            try
+            {
+                // Log auth diagnostic
+                var authHeader = _httpClient.DefaultRequestHeaders.Authorization;
+                if (authHeader != null)
+                {
+                    // Decode to show user (not password) for diagnostics
+                    try
+                    {
+                        var decoded = Encoding.UTF8.GetString(Convert.FromBase64String(authHeader.Parameter ?? ""));
+                        var colonIdx = decoded.IndexOf(':');
+                        var diagUser = colonIdx > 0 ? decoded.Substring(0, colonIdx) : "(no-colon)";
+                        var passLen = colonIdx > 0 ? decoded.Length - colonIdx - 1 : 0;
+                        var passPrefix = colonIdx > 0 && passLen > 3 ? decoded.Substring(colonIdx + 1, 3) + "..." : "(short)";
+                        _logger.LogInformation(
+                            "Auth header present: scheme={Scheme}, user={User}, pass_len={PassLen}, pass_prefix={PassPrefix}",
+                            authHeader.Scheme, diagUser, passLen, passPrefix);
+                    }
+                    catch
+                    {
+                        _logger.LogInformation("Auth header present: scheme={Scheme}, parameter_len={Len}",
+                            authHeader.Scheme, authHeader.Parameter?.Length ?? 0);
+                    }
+                }
+                else
+                {
+                    _logger.LogWarning("No Authorization header set on HttpClient. All requests will be unauthenticated.");
+                }
+
+                // Test connectivity with GET /
+                var baseUri = new Uri(output.Url);
+                using var response = await _httpClient.GetAsync(baseUri, ct).ConfigureAwait(false);
+                var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    _logger.LogInformation(
+                        "OpenSearch connection test OK: {StatusCode}. Cluster responding at {Url}",
+                        (int)response.StatusCode, output.Url);
+                }
+                else
+                {
+                    _logger.LogError(
+                        "OpenSearch connection test FAILED: {StatusCode} {Reason}. Body: {Body}. " +
+                        "Check credentials in config file ({ConfigHint}) and verify the user exists in OpenSearch.",
+                        (int)response.StatusCode,
+                        response.ReasonPhrase,
+                        Truncate(body, 2048),
+                        "output.user / output.pass");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex,
+                    "OpenSearch connection test FAILED with exception. URL={Url}. " +
+                    "Check network connectivity, TLS settings (ssl_verify={SslVerify}), and credentials.",
+                    output.Url, output.SslVerify);
+            }
         }
 
         private string BuildBulkPayload(IReadOnlyList<AgentEvent> batch, string indexName)
@@ -713,11 +782,13 @@ namespace TinySocs.Agent.Shipper
                 var token = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{user}:{pass}"));
                 httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", token);
 
+                var passPrefix = pass.Length > 3 ? pass.Substring(0, 3) + "..." : "***";
                 _logger.LogInformation(
-                    "OpenSearch auth configured (pre-emptive Basic). source={Source}, user={User}, pass_len={PassLen}",
+                    "OpenSearch auth configured (pre-emptive Basic). source={Source}, user={User}, pass_len={PassLen}, pass_prefix={PassPrefix}",
                     source,
                     user,
-                    pass.Length);
+                    pass.Length,
+                    passPrefix);
             }
             catch (Exception ex)
             {

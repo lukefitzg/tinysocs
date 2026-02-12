@@ -14221,10 +14221,21 @@ function Test-TinySocsHealth {
   $allPassed = $true
 
   # PS 5.1 compatibility: bypass self-signed cert validation (no -SkipCertificateCheck)
-  $previousCallback = [System.Net.ServicePointManager]::ServerCertificateValidationCallback
-  [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
-  try {
-  # (entire function body wrapped in try/finally to restore callback)
+  # NOTE: We intentionally do NOT restore the callback — PS 5.1 fails the first HTTPS
+  # request after setting a new callback, so restoring it each call causes perpetual failures.
+  # The cert bypass is harmless for the session lifetime (self-signed local OpenSearch).
+  if (-not [System.Net.ServicePointManager]::ServerCertificateValidationCallback) {
+    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = `
+      [System.Net.Security.RemoteCertificateValidationCallback]{ param($sender,$cert,$chain,$errors) return $true }
+  }
+  [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+
+  # PS 5.1 compat: Invoke-RestMethod sometimes returns raw strings instead of parsed
+  # objects depending on Content-Type. This helper ensures we always get a PSObject.
+  function _EnsureJson($obj) {
+    if ($obj -is [string]) { return ($obj | ConvertFrom-Json) }
+    return $obj
+  }
 
   # Get credentials if not provided
   if ([string]::IsNullOrWhiteSpace($User) -or [string]::IsNullOrWhiteSpace($Pass)) {
@@ -14263,25 +14274,11 @@ function Test-TinySocsHealth {
     $allPassed = $false
   }
 
-  # 2. OpenSearch HTTP responding
+  # 2. Heartbeat document freshness (run BEFORE HTTP root check to prime PS 5.1 TLS)
   try {
-    $response = Invoke-RestMethod -Uri "$SiemUrl/" -Headers $auth -TimeoutSec 10 -ErrorAction Stop
-    if ($response) {
-      $results += @{ Check = "OpenSearch HTTP"; Status = "PASS"; Detail = "Responding on 9201" }
-    } else {
-      $results += @{ Check = "OpenSearch HTTP"; Status = "FAIL"; Detail = "No response" }
-      $allPassed = $false
-    }
-  } catch {
-    $results += @{ Check = "OpenSearch HTTP"; Status = "FAIL"; Detail = $_.Exception.Message }
-    $allPassed = $false
-  }
-
-  # 3. Heartbeat document freshness
-  try {
-    $hbResponse = Invoke-RestMethod -Uri "$SiemUrl/tinysocs-heartbeat/_search" `
+    $hbResponse = _EnsureJson (Invoke-RestMethod -Uri "$SiemUrl/tinysocs-heartbeat/_search" `
       -Headers $auth -TimeoutSec 10 -ErrorAction Stop `
-      -Method POST -ContentType "application/json" -Body '{"size":1,"sort":[{"timestamp":{"order":"desc"}}]}'
+      -Method POST -ContentType "application/json" -Body '{"size":1,"sort":[{"timestamp":{"order":"desc"}}]}')
 
     if ($hbResponse.hits.total.value -gt 0) {
       $hbDoc = $hbResponse.hits.hits[0]._source
@@ -14301,10 +14298,24 @@ function Test-TinySocsHealth {
     $results += @{ Check = "Heartbeat Fresh"; Status = "WARN"; Detail = $_.Exception.Message }
   }
 
+  # 3. OpenSearch HTTP responding (after heartbeat primes TLS connection)
+  try {
+    $response = _EnsureJson (Invoke-RestMethod -Uri "$SiemUrl/" -Headers $auth -TimeoutSec 10 -ErrorAction Stop)
+    if ($response) {
+      $results += @{ Check = "OpenSearch HTTP"; Status = "PASS"; Detail = "Responding on 9201" }
+    } else {
+      $results += @{ Check = "OpenSearch HTTP"; Status = "FAIL"; Detail = "No response" }
+      $allPassed = $false
+    }
+  } catch {
+    $results += @{ Check = "OpenSearch HTTP"; Status = "FAIL"; Detail = $_.Exception.Message }
+    $allPassed = $false
+  }
+
   # 4. Index template exists (tinysocs-winlog)
   try {
-    $tmplResponse = Invoke-RestMethod -Uri "$SiemUrl/_index_template/tinysocs-winlog" `
-      -Headers $auth -TimeoutSec 10 -ErrorAction Stop
+    $tmplResponse = _EnsureJson (Invoke-RestMethod -Uri "$SiemUrl/_index_template/tinysocs-winlog" `
+      -Headers $auth -TimeoutSec 10 -ErrorAction Stop)
     if ($tmplResponse.index_templates.Count -gt 0) {
       $results += @{ Check = "Index Template"; Status = "PASS"; Detail = "tinysocs-winlog exists" }
     } else {
@@ -14318,9 +14329,9 @@ function Test-TinySocsHealth {
 
   # 5. Recent log ingestion (latest doc < 5 minutes)
   try {
-    $searchResponse = Invoke-RestMethod -Uri "$SiemUrl/tinysocs-winlog-*/_search" `
+    $searchResponse = _EnsureJson (Invoke-RestMethod -Uri "$SiemUrl/tinysocs-winlog-*/_search" `
       -Headers $auth -TimeoutSec 10 -ErrorAction Stop `
-      -Method POST -ContentType "application/json" -Body '{"size":1,"sort":[{"@timestamp":{"order":"desc"}}],"query":{"range":{"@timestamp":{"gte":"now-5m"}}}}'
+      -Method POST -ContentType "application/json" -Body '{"size":1,"sort":[{"@timestamp":{"order":"desc"}}],"query":{"range":{"@timestamp":{"gte":"now-5m"}}}}')
 
     if ($searchResponse.hits.total.value -gt 0) {
       $results += @{ Check = "Recent Ingestion"; Status = "PASS"; Detail = "$($searchResponse.hits.total.value) docs in last 5m" }
@@ -14332,25 +14343,30 @@ function Test-TinySocsHealth {
   }
 
   # 6. @timestamp mapping is date
+  # Use field-specific mapping API to avoid full mapping response which contains
+  # duplicate keys (Engine Version/Engine version) that break PS 5.1 ConvertFrom-Json
   try {
-    $mappingResponse = Invoke-RestMethod -Uri "$SiemUrl/tinysocs-winlog-*/_mapping" `
+    $fieldMapRaw = Invoke-RestMethod -Uri "$SiemUrl/tinysocs-winlog-*/_mapping/field/%40timestamp" `
       -Headers $auth -TimeoutSec 10 -ErrorAction Stop
-
-    $firstIndex = $mappingResponse.PSObject.Properties.Name | Select-Object -First 1
-    if ($firstIndex) {
-      # Break property chain for PS 5.1 compat (@ in property name fails in deep chains)
-      $indexMapping = $mappingResponse.$firstIndex
-      $props = $indexMapping.mappings.properties
-      $tsField = $props.'@timestamp'
-      $timestampType = $tsField.type
-      if ($timestampType -eq 'date') {
-        $results += @{ Check = "@timestamp Mapping"; Status = "PASS"; Detail = "Type is date" }
-      } else {
-        $results += @{ Check = "@timestamp Mapping"; Status = "FAIL"; Detail = "Type is $timestampType (not date)" }
-        $allPassed = $false
-      }
+    $timestampType = $null
+    if ($fieldMapRaw -is [string]) {
+      # PS 5.1 sometimes returns string — regex extract
+      if ($fieldMapRaw -match '"type"\s*:\s*"([^"]+)"') { $timestampType = $Matches[1] }
     } else {
-      $results += @{ Check = "@timestamp Mapping"; Status = "WARN"; Detail = "No indices found" }
+      # PSCustomObject: navigate {index}.mappings.@timestamp.mapping.@timestamp.type
+      $idxProp = $fieldMapRaw.PSObject.Properties | Select-Object -First 1
+      if ($idxProp) {
+        $tsMapping = $idxProp.Value.mappings.'@timestamp'.mapping.'@timestamp'
+        if ($tsMapping) { $timestampType = $tsMapping.type }
+      }
+    }
+    if ($timestampType -eq 'date') {
+      $results += @{ Check = "@timestamp Mapping"; Status = "PASS"; Detail = "Type is date" }
+    } elseif ($timestampType) {
+      $results += @{ Check = "@timestamp Mapping"; Status = "FAIL"; Detail = "Type is $timestampType (not date)" }
+      $allPassed = $false
+    } else {
+      $results += @{ Check = "@timestamp Mapping"; Status = "WARN"; Detail = "No indices or field not found" }
     }
   } catch {
     $results += @{ Check = "@timestamp Mapping"; Status = "WARN"; Detail = $_.Exception.Message }
@@ -14372,8 +14388,8 @@ function Test-TinySocsHealth {
 
   # Detection: Alert template exists
   try {
-    $alertTmplResponse = Invoke-RestMethod -Uri "$SiemUrl/_index_template/tinysocs-alerts" `
-      -Headers $auth -TimeoutSec 10 -ErrorAction Stop
+    $alertTmplResponse = _EnsureJson (Invoke-RestMethod -Uri "$SiemUrl/_index_template/tinysocs-alerts" `
+      -Headers $auth -TimeoutSec 10 -ErrorAction Stop)
     if ($alertTmplResponse.index_templates.Count -gt 0) {
       $results += @{ Check = "Alert Template"; Status = "PASS"; Detail = "tinysocs-alerts exists" }
     } else {
@@ -14418,18 +14434,11 @@ function Test-TinySocsHealth {
   Write-Host ""
   if ($allPassed) {
     Write-Host "Overall Status: HEALTHY" -ForegroundColor Green
-    $healthResult = $true
+    return $true
   } else {
     Write-Host "Overall Status: UNHEALTHY (see failures above)" -ForegroundColor Red
-    $healthResult = $false
+    return $false
   }
-
-  } finally {
-    # Restore original cert validation callback (PS 5.1 compat)
-    [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $previousCallback
-  }
-
-  return $healthResult
 }
 
 # -- Phase 10: Detection Engine Deployment ------------------------------------

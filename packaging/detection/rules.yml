@@ -1,0 +1,173 @@
+# TinySocs Agent Detection Rules (C# engine format)
+# Schema: DetectionRule / RuleCondition (src/TinySocs.Agent/Detection/DetectionRule.cs)
+# Naming: underscore_case (YamlDotNet UnderscoredNamingConvention)
+#
+# Rule types:
+#   threshold_by_key  -  Count matching events per group_by key within window_minutes.
+#                        Fire alert when count >= threshold.
+#
+# Condition fields:
+#   event_id       - Windows Event ID to match (integer)
+#   channel        - Event Log channel name (optional; case-insensitive)
+#   group_by       - Dot-path into AgentEvent.Body for grouping key
+#   threshold      - Minimum event count to trigger alert
+#   window_minutes - Sliding window duration (default 5)
+
+rules:
+  # ── Authentication ──────────────────────────────────────────────────
+
+  - id: "TS-001"
+    name: "brute_force_logon"
+    description: "Multiple failed logon attempts (4625) from the same user"
+    severity: "high"
+    enabled: true
+    type: threshold_by_key
+    condition:
+      event_id: 4625
+      channel: Security
+      group_by: "winlog.event_data.TargetUserName"
+      threshold: 5
+      window_minutes: 5
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  - id: "TS-002"
+    name: "brute_force_logon_by_ip"
+    description: "Multiple failed logon attempts (4625) from the same source IP"
+    severity: "high"
+    enabled: true
+    type: threshold_by_key
+    condition:
+      event_id: 4625
+      channel: Security
+      group_by: "winlog.event_data.IpAddress"
+      threshold: 10
+      window_minutes: 5
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  # ── Identity ────────────────────────────────────────────────────────
+
+  - id: "TS-010"
+    name: "local_account_created"
+    description: "New local user account created (4720)"
+    severity: "high"
+    enabled: true
+    type: threshold_by_key
+    condition:
+      event_id: 4720
+      channel: Security
+      group_by: "winlog.event_data.TargetUserName"
+      threshold: 1
+      window_minutes: 5
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  # ── Persistence ─────────────────────────────────────────────────────
+
+  - id: "TS-020"
+    name: "scheduled_task_created"
+    description: "Scheduled task created (4698)"
+    severity: "medium"
+    enabled: true
+    type: threshold_by_key
+    condition:
+      event_id: 4698
+      channel: Security
+      group_by: "winlog.event_data.SubjectUserName"
+      threshold: 1
+      window_minutes: 5
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  # ── PowerShell ──────────────────────────────────────────────────────
+
+  - id: "TS-030"
+    name: "powershell_scriptblock_burst"
+    description: "High volume of PowerShell ScriptBlock events (4104)"
+    severity: "medium"
+    enabled: true
+    type: threshold_by_key
+    condition:
+      event_id: 4104
+      channel: "Microsoft-Windows-PowerShell/Operational"
+      group_by: "winlog.computer_name"
+      threshold: 10
+      window_minutes: 5
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  # ── Process Creation (Windows Security 4688) ────────────────────────
+
+  - id: "TS-040"
+    name: "process_creation_burst"
+    description: "Burst of process creation events (4688) from same user"
+    severity: "low"
+    enabled: true
+    type: threshold_by_key
+    condition:
+      event_id: 4688
+      channel: Security
+      group_by: "winlog.event_data.SubjectUserName"
+      threshold: 20
+      window_minutes: 5
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  # ── Sysmon (if present) ─────────────────────────────────────────────
+
+  - id: "TS-050"
+    name: "sysmon_process_creation_burst"
+    description: "Burst of Sysmon process creation events (ID 1)"
+    severity: "low"
+    enabled: true
+    type: threshold_by_key
+    condition:
+      event_id: 1
+      channel: "Microsoft-Windows-Sysmon/Operational"
+      group_by: "winlog.computer_name"
+      threshold: 20
+      window_minutes: 5
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  # ── Lab / low-threshold variants ────────────────────────────────────
+
+  - id: "TS-001-lab"
+    name: "brute_force_logon_lab"
+    description: "Failed logon attempts (4625) - lab threshold (2 events)"
+    severity: "medium"
+    enabled: true
+    type: threshold_by_key
+    condition:
+      event_id: 4625
+      channel: Security
+      group_by: "winlog.event_data.TargetUserName"
+      threshold: 2
+      window_minutes: 10
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  - id: "TS-030-lab"
+    name: "powershell_scriptblock_lab"
+    description: "PowerShell ScriptBlock events (4104) - lab threshold"
+    severity: "medium"
+    enabled: true
+    type: threshold_by_key
+    condition:
+      event_id: 4104
+      channel: "Microsoft-Windows-PowerShell/Operational"
+      group_by: "winlog.computer_name"
+      threshold: 2
+      window_minutes: 10
+    actions:
+      - write_alert_doc
+      - append_alert_log

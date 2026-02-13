@@ -1,0 +1,35 @@
+{
+  "policy": {
+    "description": "TinySocs alerts index retention: delete indices older than 90 days",
+    "default_state": "open",
+    "states": [
+      {
+        "name": "open",
+        "actions": [],
+        "transitions": [
+          {
+            "state_name": "delete",
+            "conditions": {
+              "min_index_age": "90d"
+            }
+          }
+        ]
+      },
+      {
+        "name": "delete",
+        "actions": [
+          {
+            "delete": {}
+          }
+        ],
+        "transitions": []
+      }
+    ],
+    "ism_template": [
+      {
+        "index_patterns": ["tinysocs-alerts-*"],
+        "priority": 100
+      }
+    ]
+  }
+}

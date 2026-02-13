@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Reflection;
@@ -11,6 +12,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using TinySocs.Agent.Configuration;
 using TinySocs.Agent.Models;
+using TinySocs.Agent.Detection;
 
 namespace TinySocs.Agent.Shipper
 {
@@ -41,10 +43,23 @@ namespace TinySocs.Agent.Shipper
         // CredMan fallback (best-effort)
         private readonly string? _credManTarget;
 
+        // Heartbeat tracking
+        private readonly DateTime _startTime;
+        private DateTime _lastHeartbeatTime;
+        private DateTime _lastShipTime;
+        private int _totalEventsShipped;
+
+        // Detection engine
+        private readonly DetectionEngine? _detectionEngine;
+        private readonly AlertWriter? _alertWriter;
+        private readonly RuleLoader? _ruleLoader;
+        private DateTime _lastRuleReloadTime;
+
         public OpenSearchBulkShipper(
             ILogger<OpenSearchBulkShipper> logger,
             AgentConfig config,
-            IQueueReader queueReader)
+            IQueueReader queueReader,
+            ILoggerFactory loggerFactory)
         {
             _logger = logger;
             _config = config;
@@ -84,6 +99,43 @@ namespace TinySocs.Agent.Shipper
 
             _debugBulk = IsTruthyEnv("TINYSOCS_DEBUG_BULK");
             _bulkSampleLogged = false;
+
+            // Initialize heartbeat tracking
+            _startTime = DateTime.UtcNow;
+            _lastHeartbeatTime = DateTime.MinValue;
+            _lastShipTime = DateTime.MinValue;
+            _totalEventsShipped = 0;
+
+            // Initialize detection engine if enabled
+            if (_config.Detection.Enabled)
+            {
+                var detectionLogger = loggerFactory.CreateLogger<DetectionEngine>();
+                var ruleLoaderLogger = loggerFactory.CreateLogger<RuleLoader>();
+                var alertWriterLogger = loggerFactory.CreateLogger<AlertWriter>();
+
+                _detectionEngine = new DetectionEngine(detectionLogger);
+                _ruleLoader = new RuleLoader(ruleLoaderLogger);
+
+                var alertLogPath = Path.Combine(
+                    Path.GetDirectoryName(_config.Agent.LogFile) ?? @"C:\ProgramData\TinySocs\Collector\logs",
+                    "alerts.log");
+
+                _alertWriter = new AlertWriter(alertWriterLogger, _httpClient, _bulkUri, alertLogPath);
+
+                // Load rules initially
+                LoadRules();
+                _lastRuleReloadTime = DateTime.UtcNow;
+
+                _logger.LogInformation("Detection engine initialized. Rules file: {RulesFile}", _config.Detection.RulesFile);
+            }
+            else
+            {
+                _detectionEngine = null;
+                _alertWriter = null;
+                _ruleLoader = null;
+                _lastRuleReloadTime = DateTime.MinValue;
+                _logger.LogInformation("Detection engine disabled.");
+            }
         }
 
         public async Task RunAsync(CancellationToken stoppingToken)
@@ -100,6 +152,9 @@ namespace TinySocs.Agent.Shipper
                 output.Bulk.BatchSizeBytes,
                 output.Bulk.FlushIntervalMs);
 
+            // Startup connection self-test
+            await TestOpenSearchConnectionAsync(output, stoppingToken).ConfigureAwait(false);
+
             if (_debugBulk)
             {
                 _logger.LogWarning("TINYSOCS_DEBUG_BULK is enabled. Will log one bulk payload sample (first 2 lines) once per process start.");
@@ -109,6 +164,12 @@ namespace TinySocs.Agent.Shipper
 
             while (!stoppingToken.IsCancellationRequested)
             {
+                // Write heartbeat every 60 seconds
+                await TryWriteHeartbeatAsync(stoppingToken).ConfigureAwait(false);
+
+                // Reload rules periodically
+                TryReloadRules();
+
                 IReadOnlyList<AgentEvent> batch;
 
                 try
@@ -141,6 +202,25 @@ namespace TinySocs.Agent.Shipper
                     // Nothing to ship, wait a bit and try again.
                     await DelayWithTokenAsync(output.Bulk.FlushIntervalMs, stoppingToken).ConfigureAwait(false);
                     continue;
+                }
+
+                // **DETECTION PIPELINE**: Evaluate events before shipping
+                if (_detectionEngine != null && _alertWriter != null)
+                {
+                    var allAlerts = new List<AlertDocument>();
+                    foreach (var evt in batch)
+                    {
+                        var alerts = _detectionEngine.EvaluateEvent(evt);
+                        if (alerts.Count > 0)
+                        {
+                            allAlerts.AddRange(alerts);
+                        }
+                    }
+
+                    if (allAlerts.Count > 0)
+                    {
+                        await _alertWriter.WriteAlertsAsync(allAlerts, stoppingToken).ConfigureAwait(false);
+                    }
                 }
 
                 var indexName = ResolveIndexName(output.IndexPattern, DateTimeOffset.UtcNow);
@@ -199,6 +279,11 @@ namespace TinySocs.Agent.Shipper
                     failureCount = 0;
 
                     await _queueReader.AcknowledgeAsync(batch.Count, stoppingToken).ConfigureAwait(false);
+
+                    // Update heartbeat tracking
+                    _lastShipTime = DateTime.UtcNow;
+                    _totalEventsShipped += batch.Count;
+
                     _logger.LogInformation(
                         "Successfully shipped {Count} event(s) to OpenSearch index {Index}.",
                         batch.Count,
@@ -219,6 +304,72 @@ namespace TinySocs.Agent.Shipper
             }
 
             _logger.LogInformation("OpenSearchBulkShipper loop exiting.");
+        }
+
+        /// <summary>
+        /// Startup self-test: hit GET {url} and log the result.
+        /// Logs auth details and response so we can diagnose 401s quickly.
+        /// </summary>
+        private async Task TestOpenSearchConnectionAsync(OutputConfig output, CancellationToken ct)
+        {
+            try
+            {
+                // Log auth diagnostic
+                var authHeader = _httpClient.DefaultRequestHeaders.Authorization;
+                if (authHeader != null)
+                {
+                    // Decode to show user (not password) for diagnostics
+                    try
+                    {
+                        var decoded = Encoding.UTF8.GetString(Convert.FromBase64String(authHeader.Parameter ?? ""));
+                        var colonIdx = decoded.IndexOf(':');
+                        var diagUser = colonIdx > 0 ? decoded.Substring(0, colonIdx) : "(no-colon)";
+                        var passLen = colonIdx > 0 ? decoded.Length - colonIdx - 1 : 0;
+                        var passPrefix = colonIdx > 0 && passLen > 3 ? decoded.Substring(colonIdx + 1, 3) + "..." : "(short)";
+                        _logger.LogInformation(
+                            "Auth header present: scheme={Scheme}, user={User}, pass_len={PassLen}, pass_prefix={PassPrefix}",
+                            authHeader.Scheme, diagUser, passLen, passPrefix);
+                    }
+                    catch
+                    {
+                        _logger.LogInformation("Auth header present: scheme={Scheme}, parameter_len={Len}",
+                            authHeader.Scheme, authHeader.Parameter?.Length ?? 0);
+                    }
+                }
+                else
+                {
+                    _logger.LogWarning("No Authorization header set on HttpClient. All requests will be unauthenticated.");
+                }
+
+                // Test connectivity with GET /
+                var baseUri = new Uri(output.Url);
+                using var response = await _httpClient.GetAsync(baseUri, ct).ConfigureAwait(false);
+                var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    _logger.LogInformation(
+                        "OpenSearch connection test OK: {StatusCode}. Cluster responding at {Url}",
+                        (int)response.StatusCode, output.Url);
+                }
+                else
+                {
+                    _logger.LogError(
+                        "OpenSearch connection test FAILED: {StatusCode} {Reason}. Body: {Body}. " +
+                        "Check credentials in config file ({ConfigHint}) and verify the user exists in OpenSearch.",
+                        (int)response.StatusCode,
+                        response.ReasonPhrase,
+                        Truncate(body, 2048),
+                        "output.user / output.pass");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex,
+                    "OpenSearch connection test FAILED with exception. URL={Url}. " +
+                    "Check network connectivity, TLS settings (ssl_verify={SslVerify}), and credentials.",
+                    output.Url, output.SslVerify);
+            }
         }
 
         private string BuildBulkPayload(IReadOnlyList<AgentEvent> batch, string indexName)
@@ -254,7 +405,13 @@ namespace TinySocs.Agent.Shipper
                 }
 
                 sb.AppendLine(JsonSerializer.Serialize(action, _jsonOptions));
-                sb.AppendLine(JsonSerializer.Serialize(evt, _jsonOptions));
+
+                // Serialize Body (not the full envelope) as the OpenSearch document.
+                // Body contains @timestamp, message, winlog, event, etc. at the root
+                // level, which is what OpenSearch and dashboards expect.
+                // The envelope fields (ts, input, channel, eventId) are queue-routing
+                // metadata and are not needed in the indexed document.
+                sb.AppendLine(JsonSerializer.Serialize(evt.Body, _jsonOptions));
             }
 
             return sb.ToString();
@@ -625,11 +782,13 @@ namespace TinySocs.Agent.Shipper
                 var token = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{user}:{pass}"));
                 httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", token);
 
+                var passPrefix = pass.Length > 3 ? pass.Substring(0, 3) + "..." : "***";
                 _logger.LogInformation(
-                    "OpenSearch auth configured (pre-emptive Basic). source={Source}, user={User}, pass_len={PassLen}",
+                    "OpenSearch auth configured (pre-emptive Basic). source={Source}, user={User}, pass_len={PassLen}, pass_prefix={PassPrefix}",
                     source,
                     user,
-                    pass.Length);
+                    pass.Length,
+                    passPrefix);
             }
             catch (Exception ex)
             {
@@ -639,6 +798,12 @@ namespace TinySocs.Agent.Shipper
 
         private (string? user, string? pass, string source) TryGetUserPass(object output)
         {
+            // 0) Direct read from strongly-typed config (most reliable)
+            if (!string.IsNullOrWhiteSpace(_config.Output.User) && !string.IsNullOrWhiteSpace(_config.Output.Pass))
+            {
+                return (_config.Output.User, _config.Output.Pass, "config");
+            }
+
             // 1) Env vars (explicit override)
             var envUser = GetEnvFirst("TINYSOCS_SIEM_USER", "SIEM_USER", "OPENSEARCH_USERNAME");
             var envPass = GetEnvFirst("TINYSOCS_SIEM_PASS", "SIEM_PASS", "OPENSEARCH_PASSWORD");
@@ -647,7 +812,7 @@ namespace TinySocs.Agent.Shipper
                 return (envUser, envPass, "env");
             }
 
-            // 2) Flat properties on output (common)
+            // 2) Flat properties on output via reflection (fallback)
             var user =
                 GetStringProp(output, "Username") ??
                 GetStringProp(output, "User") ??
@@ -876,6 +1041,157 @@ namespace TinySocs.Agent.Shipper
 
             // Accept if >= 80% printable ASCII-ish.
             return total > 0 && (printable * 100 / total) >= 80;
+        }
+
+        /// <summary>
+        /// Write a heartbeat document to tinysocs-heartbeat index every 60 seconds.
+        /// Uses upsert with a fixed document ID so we only have one heartbeat doc per agent.
+        /// </summary>
+        private async Task TryWriteHeartbeatAsync(CancellationToken stoppingToken)
+        {
+            try
+            {
+                var now = DateTime.UtcNow;
+
+                // Only write every 60 seconds
+                if ((now - _lastHeartbeatTime).TotalSeconds < 60)
+                {
+                    return;
+                }
+
+                _lastHeartbeatTime = now;
+
+                var hostname = Environment.MachineName;
+                var uptimeSeconds = (long)(now - _startTime).TotalSeconds;
+
+                // Get queue stats if the reader supports it
+                long queueFileCount = 0;
+                long queueTotalBytes = 0;
+
+                try
+                {
+                    var readerType = _queueReader.GetType();
+                    var statsMethod = readerType.GetMethod("GetQueueStats");
+                    if (statsMethod != null)
+                    {
+                        var stats = statsMethod.Invoke(_queueReader, null) as dynamic;
+                        if (stats != null)
+                        {
+                            queueFileCount = stats.FileCount ?? 0;
+                            queueTotalBytes = stats.TotalBytes ?? 0;
+                        }
+                    }
+                }
+                catch
+                {
+                    // If we can't get queue stats, just use zeros
+                }
+
+                var heartbeatDoc = new
+                {
+                    timestamp = now.ToString("o"),
+                    agent = new
+                    {
+                        version = GetAgentVersion(),
+                        hostname = hostname,
+                        node_id = _config.Agent.NodeId,
+                        uptime_seconds = uptimeSeconds
+                    },
+                    queue = new
+                    {
+                        file_count = queueFileCount,
+                        total_bytes = queueTotalBytes,
+                        last_ship_time = _lastShipTime == DateTime.MinValue ? (string?)null : _lastShipTime.ToString("o"),
+                        total_events_shipped = _totalEventsShipped
+                    }
+                };
+
+                // Use a deterministic document ID so we only have one heartbeat doc
+                var docId = $"{hostname}-{_config.Agent.NodeId}";
+
+                var action = new
+                {
+                    index = new
+                    {
+                        _index = "tinysocs-heartbeat",
+                        _id = docId
+                    }
+                };
+
+                var ndjson = JsonSerializer.Serialize(action, _jsonOptions) + "\n" +
+                             JsonSerializer.Serialize(heartbeatDoc, _jsonOptions) + "\n";
+
+                var content = new StringContent(ndjson, Encoding.UTF8, "application/x-ndjson");
+
+                using var response = await _httpClient.PostAsync(_bulkUri, content, stoppingToken)
+                    .ConfigureAwait(false);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    _logger.LogDebug(
+                        "Heartbeat write failed with status {StatusCode}",
+                        (int)response.StatusCode);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected on shutdown
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Failed to write heartbeat (non-fatal)");
+            }
+        }
+
+        private static string GetAgentVersion()
+        {
+            try
+            {
+                var assembly = typeof(OpenSearchBulkShipper).Assembly;
+                var version = assembly.GetName().Version;
+                return version?.ToString() ?? "unknown";
+            }
+            catch
+            {
+                return "unknown";
+            }
+        }
+
+        private void LoadRules()
+        {
+            if (_ruleLoader == null || _detectionEngine == null)
+            {
+                return;
+            }
+
+            try
+            {
+                var rules = _ruleLoader.LoadRules(_config.Detection.RulesFile);
+                _detectionEngine.UpdateRules(rules);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to load detection rules");
+            }
+        }
+
+        private void TryReloadRules()
+        {
+            if (_ruleLoader == null || _detectionEngine == null)
+            {
+                return;
+            }
+
+            var now = DateTime.UtcNow;
+            var reloadInterval = _config.Detection.ReloadIntervalSeconds;
+
+            if ((now - _lastRuleReloadTime).TotalSeconds < reloadInterval)
+            {
+                return;
+            }
+
+            _lastRuleReloadTime = now;
+            LoadRules();
         }
     }
 }

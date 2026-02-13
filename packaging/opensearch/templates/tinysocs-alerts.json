@@ -1,0 +1,39 @@
+{
+  "index_patterns": ["tinysocs-alerts-*"],
+  "priority": 100,
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 0,
+      "auto_expand_replicas": "0-1",
+      "plugins.index_state_management.policy_id": "tinysocs-alerts-retention"
+    },
+    "mappings": {
+      "properties": {
+        "timestamp": {
+          "type": "date"
+        },
+        "alert": {
+          "properties": {
+            "id": { "type": "keyword" },
+            "rule_id": { "type": "keyword" },
+            "rule_name": { "type": "keyword" },
+            "severity": { "type": "keyword" },
+            "description": { "type": "text" },
+            "event_count": { "type": "integer" },
+            "first_seen": { "type": "date" },
+            "last_seen": { "type": "date" },
+            "window_start": { "type": "date" }
+          }
+        },
+        "source": {
+          "type": "object",
+          "dynamic": true
+        },
+        "matched_events": {
+          "type": "integer"
+        }
+      }
+    }
+  }
+}

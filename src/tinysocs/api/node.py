@@ -90,6 +90,15 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() not in ("0", "false", "no", "off")
 
 
+def _get_siem_auth():
+    """Return (user, pass) tuple for OpenSearch Basic Auth, or None if unset."""
+    user = os.getenv("SIEM_USER", "")
+    pw = os.getenv("SIEM_PASS", "")
+    if user:
+        return (user, pw)
+    return None
+
+
 def _get_siem_base_url() -> str:
     """
     Decide which base URL to use when talking to the SIEM / OpenSearch.
@@ -151,7 +160,7 @@ def _os_search(index_pattern: str, body: dict, size: int = 20) -> list[dict[str,
     )
 
     try:
-        resp = requests.post(url, json=payload, timeout=10, verify=verify)
+        resp = requests.post(url, json=payload, timeout=10, verify=verify, auth=_get_siem_auth())
         resp.raise_for_status()
         try:
             text_preview = resp.text[:500]

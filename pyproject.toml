@@ -18,6 +18,7 @@ dependencies = [
   "fastapi>=0.111",
   "uvicorn[standard]>=0.30",
   "opensearch-py>=2.5",
+  "anthropic>=0.39",
 ]
 
 [project.optional-dependencies]

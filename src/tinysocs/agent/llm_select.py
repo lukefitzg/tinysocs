@@ -26,6 +26,7 @@ except Exception:
 def _import_summarizers():
     openai_fn = None
     ollama_fn = None
+    claude_fn = None
 
     # OpenAI+tools
     try:
@@ -49,9 +50,16 @@ def _import_summarizers():
         except Exception:
             ollama_fn = None
 
-    return openai_fn, ollama_fn
+    # Claude (Anthropic)
+    try:
+        from tinysocs.agent.llm_claude import summarize_findings as _s_claude
+        claude_fn = _s_claude
+    except Exception:
+        claude_fn = None
 
-summarize_openai_tools, summarize_ollama = _import_summarizers()
+    return openai_fn, ollama_fn, claude_fn
+
+summarize_openai_tools, summarize_ollama, summarize_claude = _import_summarizers()
 
 MODE = os.getenv("LLM_MODE", "openai").strip().lower()
 
@@ -193,29 +201,26 @@ def summarize(arg: Union[None, Dict[str, Any], List[Dict[str, Any]]] = None, *,
 
     # Pick engine function by MODE, tolerate missing engines.
     engine_fn = None
+    engine_label = MODE
     if MODE == "openai":
         engine_fn = summarize_openai_tools
     elif MODE == "ollama":
         engine_fn = summarize_ollama
+    elif MODE == "claude":
+        engine_fn = summarize_claude
 
     try:
         if mode == "abstract":
             converted = _abstract_to_findings(payload)
             if engine_fn is None:
                 return _minimal_local_summary(payload)
-            if MODE == "openai":
-                print("[DEBUG] Using OpenAI+tools summarizer (compat, abstract->raw)")
-            else:
-                print("[DEBUG] Using Ollama summarizer (compat, abstract->raw)")
+            print(f"[DEBUG] Using {engine_label} summarizer (compat, abstract->raw)")
             return engine_fn(converted)  # type: ignore[misc]
         else:
             raw_findings = payload.get("evidences") or payload.get("findings") or []
             if engine_fn is None:
                 return _minimal_local_summary(payload)
-            if MODE == "openai":
-                print("[DEBUG] Using OpenAI+tools summarizer")
-            else:
-                print("[DEBUG] Using Ollama summarizer")
+            print(f"[DEBUG] Using {engine_label} summarizer")
             return engine_fn(raw_findings)  # type: ignore[misc]
     except Exception:
         # Engine rejected input or failed — return a safe minimal summary

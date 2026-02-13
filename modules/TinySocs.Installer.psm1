@@ -12879,6 +12879,102 @@ function Register-TinySocsServices {
   Write-Host "[TinySocs] Service installed/updated and started."
 }
 
+# -- Phase 11: LLM Assistant service registration via NSSM ---------------------
+
+function Ensure-TinySocsAssistantService {
+  <#
+  .SYNOPSIS
+    Registers and starts the TinySocsAssistant Windows service via NSSM.
+
+  .DESCRIPTION
+    The assistant runs the PyInstaller-bundled TinySocs-Quickstart.exe as a
+    Windows service. NSSM loads environment variables from assistant.env.
+    Ports 8081 (node API) and 8090 (bot API) bind to localhost only.
+
+  .PARAMETER InstallRoot
+    Path to TinySocs install dir (default: C:\Program Files\TinySocs).
+
+  .PARAMETER EnvFile
+    Path to the assistant.env environment file.
+  #>
+  [CmdletBinding()]
+  param(
+    [string]$InstallRoot = "C:\Program Files\TinySocs",
+    [string]$EnvFile     = ""
+  )
+
+  $ServiceName = "TinySocsAssistant"
+  $nssm = Join-Path $InstallRoot "bin\nssm.exe"
+  $exe  = Join-Path $InstallRoot "Assistant\TinySocs-Quickstart.exe"
+  $appDir = Join-Path $env:ProgramData "TinySocs\Assistant"
+
+  if (-not (Test-Path $nssm)) {
+    Write-Warning "[TinySocs] nssm.exe not found at $nssm; skipping assistant service."
+    return
+  }
+  if (-not (Test-Path $exe)) {
+    Write-Warning "[TinySocs] TinySocs-Quickstart.exe not found at $exe; skipping assistant service."
+    return
+  }
+
+  # Ensure runtime data directory
+  if (-not (Test-Path $appDir)) {
+    New-Item -ItemType Directory -Force -Path $appDir | Out-Null
+  }
+
+  # Resolve env file
+  if ([string]::IsNullOrWhiteSpace($EnvFile)) {
+    $EnvFile = Join-Path $appDir "assistant.env"
+  }
+
+  # Build environment extras from .env file
+  $envExtras = @()
+  if (Test-Path $EnvFile) {
+    foreach ($line in (Get-Content $EnvFile)) {
+      $trimmed = $line.Trim()
+      if ($trimmed -and -not $trimmed.StartsWith("#") -and $trimmed -match "^[A-Z_]+=") {
+        $envExtras += $trimmed
+      }
+    }
+    Write-Host "[TinySocs] Loaded $($envExtras.Count) env vars from $EnvFile"
+  } else {
+    Write-Warning "[TinySocs] assistant.env not found at $EnvFile; service will start with defaults."
+  }
+
+  # Remove existing service if present (upgrade path)
+  try {
+    $existingSvc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if ($existingSvc) {
+      & $nssm stop $ServiceName 2>$null | Out-Null
+      & $nssm remove $ServiceName confirm 2>$null | Out-Null
+      Start-Sleep -Seconds 1
+    }
+  } catch { }
+
+  # Install via NSSM
+  & $nssm install $ServiceName $exe | Out-Null
+  & $nssm set $ServiceName AppDirectory    $appDir                                   | Out-Null
+  & $nssm set $ServiceName Start           SERVICE_AUTO_START                        | Out-Null
+  & $nssm set $ServiceName AppStdout       "$appDir\TinySocsAssistant.out.log"       | Out-Null
+  & $nssm set $ServiceName AppStderr       "$appDir\TinySocsAssistant.err.log"       | Out-Null
+  & $nssm set $ServiceName AppNoConsole    1                                          | Out-Null
+  & $nssm set $ServiceName AppRestartDelay 3000                                       | Out-Null
+
+  # Set environment variables from assistant.env
+  if ($envExtras.Count -gt 0) {
+    $formatted = Format-TinySocsNssmEnvExtra $envExtras
+    & $nssm set $ServiceName AppEnvironmentExtra $formatted | Out-Null
+  }
+
+  # Configure service recovery
+  sc.exe failure $ServiceName reset= 60 actions= restart/3000/restart/5000/""/0 | Out-Null
+
+  # Start the service
+  try { & $nssm start $ServiceName | Out-Null } catch { }
+
+  Write-Host "[TinySocs] Assistant service ($ServiceName) installed and started."
+}
+
 # -- Scheduled task helpers (PowerShell ScheduledTasks API) ---------------------
 function Ensure-TaskFolder {
   param([string]$FolderPath = "\TinySocs")
@@ -14416,6 +14512,71 @@ function Test-TinySocsHealth {
     $results += @{ Check = "Rules File"; Status = "WARN"; Detail = $_.Exception.Message }
   }
 
+  # --- Phase 11: LLM Assistant checks ---
+
+  # Assistant service running
+  try {
+    $assistSvc = Get-Service -Name "TinySocsAssistant" -ErrorAction SilentlyContinue
+    if ($assistSvc -and $assistSvc.Status -eq 'Running') {
+      $results += @{ Check = "Assistant Service"; Status = "PASS"; Detail = "Running" }
+    } elseif ($assistSvc) {
+      $results += @{ Check = "Assistant Service"; Status = "WARN"; Detail = "Status: $($assistSvc.Status)" }
+    } else {
+      $results += @{ Check = "Assistant Service"; Status = "WARN"; Detail = "Not installed" }
+    }
+  } catch {
+    $results += @{ Check = "Assistant Service"; Status = "WARN"; Detail = $_.Exception.Message }
+  }
+
+  # Assistant API responding (http://localhost:8081/meta — node API, unauthenticated)
+  try {
+    $assistSvc2 = Get-Service -Name "TinySocsAssistant" -ErrorAction SilentlyContinue
+    if ($assistSvc2 -and $assistSvc2.Status -eq 'Running') {
+      try {
+        $metaResponse = Invoke-RestMethod -Uri "http://localhost:8081/meta" -TimeoutSec 5 -ErrorAction Stop
+        if ($metaResponse) {
+          $results += @{ Check = "Assistant API"; Status = "PASS"; Detail = "Responding on 8081" }
+        } else {
+          $results += @{ Check = "Assistant API"; Status = "WARN"; Detail = "Empty response" }
+        }
+      } catch {
+        $results += @{ Check = "Assistant API"; Status = "WARN"; Detail = "Not responding: $($_.Exception.Message)" }
+      }
+    } else {
+      $results += @{ Check = "Assistant API"; Status = "WARN"; Detail = "Service not running; skipped" }
+    }
+  } catch {
+    $results += @{ Check = "Assistant API"; Status = "WARN"; Detail = $_.Exception.Message }
+  }
+
+  # Webhook configured (info-level, not a failure if empty)
+  try {
+    $agentConfigPath = "C:\ProgramData\TinySocs\Collector\agent-config.yml"
+    if (Test-Path -LiteralPath $agentConfigPath -PathType Leaf) {
+      $agentConfigContent = Get-Content -LiteralPath $agentConfigPath -Raw
+      $webhookUrl = $null
+      if ($agentConfigContent -match 'webhook_url:\s+"([^"]+)"') {
+        $webhookUrl = $Matches[1]
+      } elseif ($agentConfigContent -match "webhook_url:\s+'([^']+)'") {
+        $webhookUrl = $Matches[1]
+      } elseif ($agentConfigContent -match 'webhook_url:\s+(\S+)') {
+        $candidate = $Matches[1]
+        if ($candidate -ne '""' -and $candidate -ne "''" -and $candidate.Length -gt 2) {
+          $webhookUrl = $candidate
+        }
+      }
+      if (-not [string]::IsNullOrWhiteSpace($webhookUrl)) {
+        $results += @{ Check = "Webhook"; Status = "INFO"; Detail = "Configured ($webhookUrl)" }
+      } else {
+        $results += @{ Check = "Webhook"; Status = "INFO"; Detail = "Not configured" }
+      }
+    } else {
+      $results += @{ Check = "Webhook"; Status = "INFO"; Detail = "agent-config.yml not found" }
+    }
+  } catch {
+    $results += @{ Check = "Webhook"; Status = "INFO"; Detail = $_.Exception.Message }
+  }
+
   # Display results
   Write-Host ""
   foreach ($r in $results) {
@@ -14423,6 +14584,7 @@ function Test-TinySocsHealth {
       "PASS" { "Green" }
       "WARN" { "Yellow" }
       "FAIL" { "Red" }
+      "INFO" { "Cyan" }
       default { "Gray" }
     }
     $statusPadded = $r.Status.PadRight(6)

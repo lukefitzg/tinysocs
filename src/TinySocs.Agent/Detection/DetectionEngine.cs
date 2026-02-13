@@ -19,11 +19,18 @@ namespace TinySocs.Agent.Detection
         // In-memory sliding windows: ruleId -> groupKey -> list of event timestamps
         private readonly Dictionary<string, Dictionary<string, List<EventOccurrence>>> _windows;
 
+        // Pruning: track last prune pass to avoid pruning every single event
+        private DateTime _lastPruneTime;
+        private int _evaluationsSincePrune;
+        private const int PruneEveryNEvaluations = 500;
+
         public DetectionEngine(ILogger<DetectionEngine> logger)
         {
             _logger = logger;
             _rules = new List<DetectionRule>();
             _windows = new Dictionary<string, Dictionary<string, List<EventOccurrence>>>();
+            _lastPruneTime = DateTime.UtcNow;
+            _evaluationsSincePrune = 0;
         }
 
         public void UpdateRules(List<DetectionRule> rules)
@@ -39,6 +46,14 @@ namespace TinySocs.Agent.Detection
         public List<AlertDocument> EvaluateEvent(AgentEvent evt)
         {
             var alerts = new List<AlertDocument>();
+
+            // Periodic window pruning to prevent unbounded memory growth
+            _evaluationsSincePrune++;
+            if (_evaluationsSincePrune >= PruneEveryNEvaluations)
+            {
+                PruneExpiredWindows();
+                _evaluationsSincePrune = 0;
+            }
 
             foreach (var rule in _rules)
             {
@@ -59,6 +74,81 @@ namespace TinySocs.Agent.Detection
             }
 
             return alerts;
+        }
+
+        /// <summary>
+        /// Prune expired windows across all rules to prevent unbounded memory growth.
+        /// Removes event occurrences older than each rule's window_minutes.
+        /// Removes empty group keys and rule entries entirely.
+        /// </summary>
+        private void PruneExpiredWindows()
+        {
+            var now = DateTime.UtcNow;
+            int totalPruned = 0;
+            int keysRemoved = 0;
+
+            // Build a lookup of rule window durations for fast access
+            var ruleWindowMinutes = new Dictionary<string, int>();
+            foreach (var rule in _rules)
+            {
+                ruleWindowMinutes[rule.Id] = rule.Condition.WindowMinutes;
+            }
+
+            var emptyRuleIds = new List<string>();
+
+            foreach (var ruleEntry in _windows)
+            {
+                var ruleId = ruleEntry.Key;
+                var groupWindows = ruleEntry.Value;
+
+                // Use the rule's configured window, or default to 10 minutes for unknown rules
+                var windowMinutes = ruleWindowMinutes.ContainsKey(ruleId) ? ruleWindowMinutes[ruleId] : 10;
+                var cutoff = now.AddMinutes(-windowMinutes);
+
+                var emptyKeys = new List<string>();
+
+                foreach (var groupEntry in groupWindows)
+                {
+                    var occurrences = groupEntry.Value;
+                    var before = occurrences.Count;
+                    occurrences.RemoveAll(e => e.Timestamp < cutoff);
+                    totalPruned += before - occurrences.Count;
+
+                    if (occurrences.Count == 0)
+                    {
+                        emptyKeys.Add(groupEntry.Key);
+                    }
+                }
+
+                foreach (var key in emptyKeys)
+                {
+                    groupWindows.Remove(key);
+                    keysRemoved++;
+                }
+
+                if (groupWindows.Count == 0)
+                {
+                    emptyRuleIds.Add(ruleId);
+                }
+            }
+
+            foreach (var ruleId in emptyRuleIds)
+            {
+                _windows.Remove(ruleId);
+            }
+
+            // Log periodically for observability
+            var totalWindows = 0;
+            foreach (var ruleEntry in _windows)
+            {
+                totalWindows += ruleEntry.Value.Count;
+            }
+
+            _logger.LogDebug(
+                "Window prune: removed {Pruned} expired events, {KeysRemoved} empty keys. Active windows: {WindowCount} across {RuleCount} rules.",
+                totalPruned, keysRemoved, totalWindows, _windows.Count);
+
+            _lastPruneTime = now;
         }
 
         private AlertDocument? EvaluateThresholdByKey(DetectionRule rule, AgentEvent evt)

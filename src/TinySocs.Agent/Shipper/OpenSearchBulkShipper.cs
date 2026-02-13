@@ -120,7 +120,7 @@ namespace TinySocs.Agent.Shipper
                     Path.GetDirectoryName(_config.Agent.LogFile) ?? @"C:\ProgramData\TinySocs\Collector\logs",
                     "alerts.log");
 
-                _alertWriter = new AlertWriter(alertWriterLogger, _httpClient, _bulkUri, alertLogPath);
+                _alertWriter = new AlertWriter(alertWriterLogger, _httpClient, _bulkUri, alertLogPath, _config.Detection.Notification);
 
                 // Load rules initially
                 LoadRules();

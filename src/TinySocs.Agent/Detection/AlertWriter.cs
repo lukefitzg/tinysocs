@@ -1,12 +1,15 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
+using System.Net.Mail;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
+using TinySocs.Agent.Configuration;
 
 namespace TinySocs.Agent.Detection
 {
@@ -14,6 +17,8 @@ namespace TinySocs.Agent.Detection
     /// Writes alerts to:
     /// 1. OpenSearch (tinysocs-alerts-* index with deterministic ID)
     /// 2. Local log file (alerts.log)
+    /// 3. Webhook (Slack-compatible JSON POST) — if configured
+    /// 4. Email (SMTP) — if configured
     /// </summary>
     public sealed class AlertWriter
     {
@@ -24,17 +29,29 @@ namespace TinySocs.Agent.Detection
         private readonly JsonSerializerOptions _jsonOptions;
         private readonly HashSet<string> _writtenAlertIds; // Track written alerts to prevent duplicates
 
+        // Notification config
+        private readonly NotificationConfig _notification;
+
+        // Webhook: dedicated HttpClient with short timeout (fire-and-forget)
+        private readonly HttpClient? _webhookClient;
+
+        // Email: rate limiter — max 1 email per rule per 5 minutes
+        private readonly ConcurrentDictionary<string, DateTime> _lastEmailPerRule;
+
         public AlertWriter(
             ILogger<AlertWriter> logger,
             HttpClient httpClient,
             Uri bulkUri,
-            string alertLogPath)
+            string alertLogPath,
+            NotificationConfig? notification = null)
         {
             _logger = logger;
             _httpClient = httpClient;
             _bulkUri = bulkUri;
             _alertLogPath = alertLogPath;
+            _notification = notification ?? new NotificationConfig();
             _writtenAlertIds = new HashSet<string>();
+            _lastEmailPerRule = new ConcurrentDictionary<string, DateTime>();
 
             _jsonOptions = new JsonSerializerOptions
             {
@@ -55,6 +72,24 @@ namespace TinySocs.Agent.Detection
                     _logger.LogWarning(ex, "Failed to create alert log directory: {Dir}", logDir);
                 }
             }
+
+            // Create a dedicated webhook HttpClient with 5s timeout
+            if (!string.IsNullOrWhiteSpace(_notification.WebhookUrl))
+            {
+                _webhookClient = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+                _logger.LogInformation("Webhook notifications enabled: {Url}", _notification.WebhookUrl);
+            }
+
+            // Log email config status
+            if (!string.IsNullOrWhiteSpace(_notification.Email?.SmtpHost))
+            {
+                _logger.LogInformation(
+                    "Email notifications enabled: host={Host}, port={Port}, from={From}, to={To}",
+                    _notification.Email.SmtpHost,
+                    _notification.Email.SmtpPort,
+                    _notification.Email.From,
+                    _notification.Email.To);
+            }
         }
 
         public async Task WriteAlertsAsync(List<AlertDocument> alerts, CancellationToken cancellationToken)
@@ -74,6 +109,10 @@ namespace TinySocs.Agent.Detection
 
                 await WriteAlertToIndexAsync(alert, cancellationToken).ConfigureAwait(false);
                 WriteAlertToLogFile(alert);
+
+                // Fire-and-forget notification channels (don't block pipeline)
+                _ = TrySendWebhookAsync(alert);
+                _ = TrySendEmailAsync(alert);
 
                 _writtenAlertIds.Add(alert.Alert.Id);
 
@@ -199,6 +238,163 @@ namespace TinySocs.Agent.Detection
             }
 
             return $"[{timestamp}] [{severity}] [{ruleId}] {description} (count={count}, {key}, window={windowStart})";
+        }
+
+        // ---------------------------------------------------------------
+        // M0: Webhook notifications (Slack-compatible JSON POST)
+        // ---------------------------------------------------------------
+
+        private async Task TrySendWebhookAsync(AlertDocument alert)
+        {
+            if (_webhookClient == null || string.IsNullOrWhiteSpace(_notification.WebhookUrl))
+            {
+                return;
+            }
+
+            try
+            {
+                var severity = alert.Alert.Severity.ToUpperInvariant();
+                var emoji = severity switch
+                {
+                    "HIGH" => "\U0001f534",
+                    "CRITICAL" => "\U0001f6a8",
+                    "MEDIUM" => "\U0001f7e0",
+                    _ => "\U0001f7e1"
+                };
+
+                var text = $"{emoji} *[TinySocs] [{severity}] {alert.Alert.RuleName}*\n" +
+                           $"{alert.Alert.Description}\n" +
+                           $"Events: {alert.Alert.EventCount} | Window: {alert.Alert.WindowStart}";
+
+                var payload = JsonSerializer.Serialize(new { text });
+                var content = new StringContent(payload, Encoding.UTF8, "application/json");
+
+                var response = await _webhookClient.PostAsync(_notification.WebhookUrl, content).ConfigureAwait(false);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    _logger.LogDebug("Webhook sent for alert {AlertId}", alert.Alert.Id);
+                }
+                else
+                {
+                    _logger.LogWarning(
+                        "Webhook POST failed for alert {AlertId}: HTTP {StatusCode}",
+                        alert.Alert.Id, (int)response.StatusCode);
+                }
+            }
+            catch (TaskCanceledException)
+            {
+                _logger.LogWarning("Webhook timed out for alert {AlertId}", alert.Alert.Id);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Webhook failed for alert {AlertId}", alert.Alert.Id);
+            }
+        }
+
+        // ---------------------------------------------------------------
+        // M1: Email notifications (SMTP)
+        // ---------------------------------------------------------------
+
+        private async Task TrySendEmailAsync(AlertDocument alert)
+        {
+            var email = _notification.Email;
+            if (email == null ||
+                string.IsNullOrWhiteSpace(email.SmtpHost) ||
+                string.IsNullOrWhiteSpace(email.From) ||
+                string.IsNullOrWhiteSpace(email.To))
+            {
+                return;
+            }
+
+            // Rate limit: max 1 email per rule per 5 minutes
+            var ruleId = alert.Alert.RuleId;
+            var now = DateTime.UtcNow;
+            if (_lastEmailPerRule.TryGetValue(ruleId, out var lastSent) &&
+                (now - lastSent).TotalMinutes < 5)
+            {
+                _logger.LogDebug(
+                    "Email rate-limited for rule {RuleId} (last sent {Ago}s ago)",
+                    ruleId, (int)(now - lastSent).TotalSeconds);
+                return;
+            }
+
+            try
+            {
+                var severity = alert.Alert.Severity.ToUpperInvariant();
+                var subject = $"[TinySocs] [{severity}] {alert.Alert.RuleName} \u2014 {alert.Alert.Description}";
+
+                // Truncate subject to reasonable length
+                if (subject.Length > 200)
+                {
+                    subject = subject.Substring(0, 197) + "...";
+                }
+
+                var body = BuildEmailBody(alert);
+
+                using var message = new MailMessage(email.From, email.To, subject, body);
+                message.IsBodyHtml = true;
+
+                using var smtp = new SmtpClient(email.SmtpHost, email.SmtpPort);
+                smtp.EnableSsl = email.SmtpPort == 587 || email.SmtpPort == 465;
+                smtp.Timeout = 10_000; // 10s timeout
+
+                await Task.Run(() => smtp.Send(message)).ConfigureAwait(false);
+
+                _lastEmailPerRule[ruleId] = now;
+                _logger.LogDebug("Email sent for alert {AlertId} to {To}", alert.Alert.Id, email.To);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Email failed for alert {AlertId}", alert.Alert.Id);
+            }
+        }
+
+        private static string BuildEmailBody(AlertDocument alert)
+        {
+            var severity = alert.Alert.Severity.ToUpperInvariant();
+            var badgeColor = severity switch
+            {
+                "HIGH" => "#dc3545",
+                "CRITICAL" => "#721c24",
+                "MEDIUM" => "#fd7e14",
+                _ => "#ffc107"
+            };
+
+            var sourceInfo = "";
+            if (alert.Source != null && alert.Source.Count > 0)
+            {
+                var sb = new StringBuilder();
+                foreach (var kvp in alert.Source)
+                {
+                    sb.Append($"<tr><td style=\"padding:4px 8px;font-weight:bold;\">{EscapeHtml(kvp.Key)}</td>" +
+                              $"<td style=\"padding:4px 8px;\">{EscapeHtml(kvp.Value?.ToString() ?? "")}</td></tr>");
+                }
+                sourceInfo = $"<table style=\"border-collapse:collapse;margin-top:8px;\">{sb}</table>";
+            }
+
+            return $@"
+<div style=""font-family:sans-serif;max-width:600px;"">
+  <h2 style=""margin-bottom:4px;"">TinySocs Alert</h2>
+  <span style=""display:inline-block;padding:2px 8px;border-radius:4px;color:#fff;background:{badgeColor};font-weight:bold;"">{severity}</span>
+  <h3 style=""margin-top:12px;"">{EscapeHtml(alert.Alert.RuleName)}</h3>
+  <p>{EscapeHtml(alert.Alert.Description)}</p>
+  <table style=""border-collapse:collapse;"">
+    <tr><td style=""padding:4px 8px;font-weight:bold;"">Rule ID</td><td style=""padding:4px 8px;"">{EscapeHtml(alert.Alert.RuleId)}</td></tr>
+    <tr><td style=""padding:4px 8px;font-weight:bold;"">Event Count</td><td style=""padding:4px 8px;"">{alert.Alert.EventCount}</td></tr>
+    <tr><td style=""padding:4px 8px;font-weight:bold;"">First Seen</td><td style=""padding:4px 8px;"">{EscapeHtml(alert.Alert.FirstSeen ?? "")}</td></tr>
+    <tr><td style=""padding:4px 8px;font-weight:bold;"">Last Seen</td><td style=""padding:4px 8px;"">{EscapeHtml(alert.Alert.LastSeen ?? "")}</td></tr>
+    <tr><td style=""padding:4px 8px;font-weight:bold;"">Window Start</td><td style=""padding:4px 8px;"">{EscapeHtml(alert.Alert.WindowStart)}</td></tr>
+  </table>
+  {sourceInfo}
+  <p style=""margin-top:16px;color:#666;font-size:12px;"">Alert ID: {EscapeHtml(alert.Alert.Id)}</p>
+</div>";
+        }
+
+        private static string EscapeHtml(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return "";
+            return text.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace("\"", "&quot;");
         }
     }
 }

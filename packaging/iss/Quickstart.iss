@@ -90,6 +90,18 @@ Source: "..\..\packaging\detection\rules.yml"; \
 Source: "..\..\thirdparty\nssm.exe";       DestDir: "{app}\bin"; Flags: ignoreversion
 #endif
 
+; TinySocs LLM Assistant (PyInstaller bundle — optional at build time)
+#if FileExists('..\..\dist\TinySocs-Quickstart\TinySocs-Quickstart.exe')
+Source: "..\..\dist\TinySocs-Quickstart\*"; \
+    DestDir: "{app}\Assistant"; \
+    Flags: ignoreversion recursesubdirs createallsubdirs
+#endif
+
+; Assistant environment template → ProgramData (do not overwrite operator edits)
+Source: "..\..\config\assistant.env"; \
+    DestDir: "{commonappdata}\TinySocs\Assistant"; \
+    Flags: ignoreversion onlyifdoesntexist
+
 ; Modules / helpers
 Source: "..\..\modules\TinySocs.Installer.psm1";   DestDir: "{app}\modules"; Flags: ignoreversion
 Source: "..\..\modules\TinySocs.Uninstall.ps1";    DestDir: "{app}\modules"; Flags: ignoreversion
@@ -242,6 +254,10 @@ Name: "{commonappdata}\TinySocs\Collector\agent\queue"
 Name: "{commonappdata}\TinySocs\Collector\agent\bookmarks"
 Name: "{commonappdata}\TinySocs\Collector\rules"
 Name: "{commonappdata}\TinySocs\Collector\logs"; Permissions: users-modify
+
+; TinySocs LLM Assistant runtime directories
+Name: "{commonappdata}\TinySocs\Assistant"
+Name: "{commonappdata}\TinySocs\Assistant\logs"; Permissions: users-modify
 
 ; TinyBox (OpenSearch) runtime directories under ProgramData
 Name: "{commonappdata}\TinySocs\OpenSearch"
@@ -1384,6 +1400,44 @@ begin
     end
     else
       Log('CurStepChanged: InstallTinyBox=False');
+
+    { ---- Phase 11: Register LLM Assistant service (if bundle was deployed) ---- }
+    Log('CurStepChanged: Phase 11 — checking for Assistant bundle');
+    if FileExists(ExpandConstant('{app}\Assistant\TinySocs-Quickstart.exe')) then
+    begin
+      Log('CurStepChanged: Assistant bundle found. Registering TinySocsAssistant service.');
+
+      Script :=
+        '$ErrorActionPreference = ''Continue''' + CRLF +
+        'Import-Module ''' + PsEscape(InstallerModule) + ''' -Force' + CRLF +
+        '' + CRLF +
+        '# Inject SIEM credentials into assistant.env from wizard inputs' + CRLF +
+        '$envFile = Join-Path $env:ProgramData ''TinySocs\Assistant\assistant.env''' + CRLF +
+        'if (Test-Path $envFile) {' + CRLF +
+        '  $content = Get-Content $envFile -Raw' + CRLF +
+        '  $content = $content -replace ''(?m)^SIEM_URL=.*$'', (''SIEM_URL='' + ''' + PsEscape(SiemUrl) + ''')' + CRLF +
+        '  $content = $content -replace ''(?m)^SIEM_USER=.*$'', (''SIEM_USER='' + ''' + PsEscape(SiemUser) + ''')' + CRLF +
+        '  $content = $content -replace ''(?m)^SIEM_PASS=.*$'', (''SIEM_PASS='' + ''' + PsEscape(SiemPass) + ''')' + CRLF +
+        '  $content = $content -replace ''(?m)^MASTER_SHARED_SECRET=.*$'', (''MASTER_SHARED_SECRET='' + ''' + PsEscape(SharedSecret) + ''')' + CRLF +
+        '  $content = $content -replace ''(?m)^BOT_SHARED_SECRET=.*$'', (''BOT_SHARED_SECRET='' + ''' + PsEscape(SharedSecret) + ''')' + CRLF +
+        '  Set-Content -Path $envFile -Value $content -Force' + CRLF +
+        '  Write-Host ''[TinySocs][Inno] assistant.env updated with SIEM credentials''' + CRLF +
+        '}' + CRLF +
+        '' + CRLF +
+        '# Register assistant service' + CRLF +
+        'if (Get-Command Ensure-TinySocsAssistantService -ErrorAction SilentlyContinue) {' + CRLF +
+        '  Ensure-TinySocsAssistantService -InstallRoot ''' + PsEscape(AppDir) + '''' + CRLF +
+        '} else {' + CRLF +
+        '  Write-Warning ''[TinySocs][Inno] Ensure-TinySocsAssistantService not found in module; skipping assistant service.''' + CRLF +
+        '}' + CRLF;
+
+      if not RunPowerShellScript(Script) then
+        Log('CurStepChanged: Assistant service registration failed (non-fatal).')
+      else
+        Log('CurStepChanged: Assistant service registered successfully.');
+    end
+    else
+      Log('CurStepChanged: Assistant bundle not found; skipping TinySocsAssistant registration.');
 
     Log('CurStepChanged(ssPostInstall): end');
   except

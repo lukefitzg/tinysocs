@@ -80,7 +80,14 @@ detection:
   rules_file: C:\ProgramData\TinySocs\Collector\rules\rules.yml
   reload_interval_seconds: 60
   notification:
+    # Webhook: Slack-compatible JSON POST (fires on every alert)
+    # Payload: { "text": "[severity] rule_name — description (count=N)" }
+    # Leave empty to disable. No retry on failure.
     webhook_url: ""
+
+    # Email: SMTP alert notifications (rate-limited: max 1 per rule per 5 minutes)
+    # Subject: [TinySocs] [SEVERITY] Rule Name — description
+    # Uses STARTTLS on port 587 by default. Leave smtp_host empty to disable.
     email:
       smtp_host: ""
       smtp_port: 587

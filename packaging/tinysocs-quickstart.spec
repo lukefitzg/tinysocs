@@ -25,6 +25,11 @@ except Exception: pass
 # must-haves for runtime
 hiddenimports += ["fastapi","uvicorn","pydantic","yaml","httpx","starlette","anyio","sniffio","h11","idna","certifi"]
 
+# LLM backends (optional — tolerate missing)
+for _pkg in ("anthropic", "openai"):
+    try: hiddenimports += collect_submodules(_pkg)
+    except Exception: pass
+
 a = Analysis(
     [SCRIPT],
     pathex=[REPO, SRC_DIR],

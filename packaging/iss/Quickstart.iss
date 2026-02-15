@@ -159,6 +159,11 @@ Source: "..\opensearch\policies\*.json"; \
     DestDir: "{app}\OpenSearch\policies"; \
     Flags: ignoreversion
 
+; Phase 12: OpenSearch Dashboard saved objects (NDJSON)
+Source: "..\opensearch\dashboards\tinysocs-dashboards.ndjson"; \
+    DestDir: "{app}\OpenSearch\dashboards"; \
+    Flags: ignoreversion
+
 ; --- TinyBox runtime seed payload (OPTIONAL at build time) ---
 #if HasTinyBoxSeed
 ; TinyBox ProgramData seed payload present — installer can embed + optionally seed ProgramData.
@@ -308,26 +313,31 @@ const
 
 var
   RolePage: TWizardPage;
-  ConfigPage: TWizardPage;
-  SchedulePage: TWizardPage;
+  SecurityPage: TWizardPage;
+  LlmPage: TWizardPage;
+  NotifPage: TWizardPage;
 
   RoleNodeRadio: TRadioButton;
   RoleMasterRadio: TRadioButton;
   RoleTinyBoxRadio: TRadioButton;
 
-  RemoveDataCheck: TNewCheckBox;
-
   SharedSecretEdit: TNewEdit;
-  NodePortEdit: TNewEdit;
-  NodesEdit: TNewEdit;
-  SiemUrlEdit: TNewEdit;
-  SiemUserEdit: TNewEdit;
   SiemPassEdit: TNewEdit;
-  TinyBoxCheck: TNewCheckBox;
-  ResetTinyBoxConfigCheck: TNewCheckBox;
 
-  HeartbeatEdit: TNewEdit;
-  RetentionEdit: TNewEdit;
+  LlmModeRadioOpenAI: TRadioButton;
+  LlmModeRadioAnthropic: TRadioButton;
+  LlmModeRadioOllama: TRadioButton;
+  LlmModeRadioNone: TRadioButton;
+  LlmApiKeyEdit: TNewEdit;
+  LlmApiKeyLabel: TNewStaticText;
+  OllamaUrlEdit: TNewEdit;
+  OllamaUrlLabel: TNewStaticText;
+
+  WebhookUrlEdit: TNewEdit;
+  EmailEnableCheck: TNewCheckBox;
+  SmtpHostEdit: TNewEdit;
+  EmailFromEdit: TNewEdit;
+  EmailToEdit: TNewEdit;
 
   SelectedRole: Integer;
   InstallTinyBox: Boolean;
@@ -342,6 +352,17 @@ var
   SiemPass: String;
   HeartbeatMinutes: Integer;
   AnchorsRetentionDays: Integer;
+
+  LlmMode: String;
+  LlmApiKey: String;
+  OllamaUrl: String;
+
+  WebhookUrl: String;
+  SmtpHost: String;
+  SmtpPort: String;
+  EmailFrom: String;
+  EmailTo: String;
+  EmailEnabled: Boolean;
 
   PsRunCounter: Integer;
 
@@ -662,38 +683,39 @@ function GeneratePassword(Len: Integer): String;
 var
   Alphabet: String;
   Seed: String;
-  SeedVal: Integer;
   I: Integer;
   Idx: Integer;
-  Ch: Char;
+  Hi, Lo: Integer;
 begin
   Alphabet :=
-    'ABCDEFGHJKLMNPQRSTUVWXYZ' +
-    'abcdefghijkmnopqrstuvwxyz' +
-    '23456789' +
-    '!@#$%^&*_-+=';
+    'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
 
   Seed :=
-    GetDateTimeString('yyyymmddhhnnsszzz', '', '') + '|' +
+    GetDateTimeString('yyyymmddhhnnsszzz', '-', ':') + '|' +
     GetEnv('COMPUTERNAME') + '|' +
-    GetEnv('USERNAME') + '|' +
-    IntToStr(Len);
+    GetEnv('USERNAME');
 
-  SeedVal := 0;
+  { Simple hash: sum of char codes (no overflow risk) }
+  Hi := 0;
+  Lo := 0;
   for I := 1 to Length(Seed) do
   begin
-    Ch := Seed[I];
-    SeedVal := (SeedVal * 131 + Ord(Ch)) and $7FFFFFFF;
+    Lo := Lo + Ord(Seed[I]);
+    if Lo > 30000 then
+    begin
+      Hi := Hi + 1;
+      Lo := Lo - 30000;
+    end;
   end;
-
-  if SeedVal = 0 then
-    SeedVal := 1;
+  if Lo = 0 then Lo := 42;
 
   Result := '';
   for I := 1 to Len do
   begin
-    SeedVal := (SeedVal * 1103515245 + 12345) and $7FFFFFFF;
-    Idx := (SeedVal mod Length(Alphabet)) + 1;
+    { LCG with small multiplier to avoid overflow }
+    Lo := (Lo * 421 + 1663) mod 29989;
+    Hi := (Hi * 353 + I) mod 29989;
+    Idx := ((Lo + Hi) mod Length(Alphabet)) + 1;
     Result := Result + Copy(Alphabet, Idx, 1);
   end;
 end;
@@ -701,192 +723,270 @@ end;
 procedure InitializeWizard;
 var
   L: TNewStaticText;
-  FlagPath: String;
+  DescLabel: TNewStaticText;
 begin
-  RolePage := CreateCustomPage(wpSelectDir, 'TinySocs Role', '');
+  { ---- Page 1: Role ---- }
+  RolePage := CreateCustomPage(wpSelectDir, 'TinySocs Role', 'Select what this machine will do.');
 
   L := TNewStaticText.Create(RolePage.Surface);
   L.Parent := RolePage.Surface;
   L.Left := 0;
   L.Top := 0;
   L.Width := RolePage.SurfaceWidth;
-  L.Caption := 'Select this machine''s TinySocs role.';
-
-  RoleNodeRadio := TRadioButton.Create(RolePage.Surface);
-  RoleNodeRadio.Parent := RolePage.Surface;
-  RoleNodeRadio.Left := 0;
-  RoleNodeRadio.Top := L.Top + 158;
-  RoleNodeRadio.Width := RolePage.SurfaceWidth + 100;
-  RoleNodeRadio.Height := ScaleY(24);
-  RoleNodeRadio.Caption := '&Node';
-
-  RoleMasterRadio := TRadioButton.Create(RolePage.Surface);
-  RoleMasterRadio.Parent := RolePage.Surface;
-  RoleMasterRadio.Left := 0;
-  RoleMasterRadio.Top := RoleNodeRadio.Top + 130;
-  RoleMasterRadio.Width := RolePage.SurfaceWidth + 100;
-  RoleMasterRadio.Height := ScaleY(24);
-  RoleMasterRadio.Caption := '&Master';
+  L.Caption := 'Choose the role for this machine:';
 
   RoleTinyBoxRadio := TRadioButton.Create(RolePage.Surface);
   RoleTinyBoxRadio.Parent := RolePage.Surface;
   RoleTinyBoxRadio.Left := 0;
-  RoleTinyBoxRadio.Top := RoleMasterRadio.Top + 130;
-  RoleTinyBoxRadio.Width := RolePage.SurfaceWidth + 100;
-  RoleTinyBoxRadio.Height := ScaleY(24);
-  RoleTinyBoxRadio.Caption := '&TinyBox (all-in-one)';
+  RoleTinyBoxRadio.Top := ScaleY(28);
+  RoleTinyBoxRadio.Width := RolePage.SurfaceWidth;
+  RoleTinyBoxRadio.Height := ScaleY(20);
+  RoleTinyBoxRadio.Caption := '&TinyBox (recommended)';
+  RoleTinyBoxRadio.Checked := True;
 
-  { PATCH: make the default selection explicit (removes “blank role” ambiguity) }
-  RoleNodeRadio.Checked := True;
+  DescLabel := TNewStaticText.Create(RolePage.Surface);
+  DescLabel.Parent := RolePage.Surface;
+  DescLabel.Left := ScaleX(20);
+  DescLabel.Top := RoleTinyBoxRadio.Top + ScaleY(20);
+  DescLabel.Width := RolePage.SurfaceWidth - ScaleX(20);
+  DescLabel.Caption := 'All-in-one: collector + SIEM datastore + LLM assistant on this machine.';
+  DescLabel.Font.Color := $666666;
 
-  ConfigPage := CreateCustomPage(RolePage.ID, 'Secrets and Endpoints', 'Configure shared secret, node endpoints, and SIEM settings.');
+  RoleNodeRadio := TRadioButton.Create(RolePage.Surface);
+  RoleNodeRadio.Parent := RolePage.Surface;
+  RoleNodeRadio.Left := 0;
+  RoleNodeRadio.Top := DescLabel.Top + ScaleY(32);
+  RoleNodeRadio.Width := RolePage.SurfaceWidth;
+  RoleNodeRadio.Height := ScaleY(20);
+  RoleNodeRadio.Caption := '&Node';
 
-  L := TNewStaticText.Create(ConfigPage.Surface);
-  L.Parent := ConfigPage.Surface;
+  DescLabel := TNewStaticText.Create(RolePage.Surface);
+  DescLabel.Parent := RolePage.Surface;
+  DescLabel.Left := ScaleX(20);
+  DescLabel.Top := RoleNodeRadio.Top + ScaleY(20);
+  DescLabel.Width := RolePage.SurfaceWidth - ScaleX(20);
+  DescLabel.Caption := 'Collect Windows events and ship them to a remote SIEM.';
+  DescLabel.Font.Color := $666666;
+
+  RoleMasterRadio := TRadioButton.Create(RolePage.Surface);
+  RoleMasterRadio.Parent := RolePage.Surface;
+  RoleMasterRadio.Left := 0;
+  RoleMasterRadio.Top := DescLabel.Top + ScaleY(32);
+  RoleMasterRadio.Width := RolePage.SurfaceWidth;
+  RoleMasterRadio.Height := ScaleY(20);
+  RoleMasterRadio.Caption := '&Master';
+
+  DescLabel := TNewStaticText.Create(RolePage.Surface);
+  DescLabel.Parent := RolePage.Surface;
+  DescLabel.Left := ScaleX(20);
+  DescLabel.Top := RoleMasterRadio.Top + ScaleY(20);
+  DescLabel.Width := RolePage.SurfaceWidth - ScaleX(20);
+  DescLabel.Caption := 'Orchestrate nodes and run the LLM assistant (no local SIEM).';
+  DescLabel.Font.Color := $666666;
+
+  { ---- Page 2: Security ---- }
+  SecurityPage := CreateCustomPage(RolePage.ID, 'Security', 'Set your shared secret and SIEM password.');
+
+  L := TNewStaticText.Create(SecurityPage.Surface);
+  L.Parent := SecurityPage.Surface;
   L.Left := 0;
-  L.Top := 8;
-  L.Caption := '&Shared secret (used between Master and Nodes):';
+  L.Top := ScaleY(4);
+  L.Width := SecurityPage.SurfaceWidth;
+  L.Caption := 'Shared secret (authenticates all TinySocs components):';
 
-  SharedSecretEdit := TNewEdit.Create(ConfigPage.Surface);
-  SharedSecretEdit.Parent := ConfigPage.Surface;
+  SharedSecretEdit := TNewEdit.Create(SecurityPage.Surface);
+  SharedSecretEdit.Parent := SecurityPage.Surface;
   SharedSecretEdit.Left := 0;
-  SharedSecretEdit.Top := L.Top + 32;
-  SharedSecretEdit.Width := ConfigPage.SurfaceWidth;
+  SharedSecretEdit.Top := L.Top + ScaleY(18);
+  SharedSecretEdit.Width := SecurityPage.SurfaceWidth;
   SharedSecretEdit.PasswordChar := '*';
 
-  L := TNewStaticText.Create(ConfigPage.Surface);
-  L.Parent := ConfigPage.Surface;
+  L := TNewStaticText.Create(SecurityPage.Surface);
+  L.Parent := SecurityPage.Surface;
   L.Left := 0;
-  L.Top := SharedSecretEdit.Top + 60;
-  L.Caption := '&Node port:';
+  L.Top := SharedSecretEdit.Top + ScaleY(36);
+  L.Width := SecurityPage.SurfaceWidth;
+  L.Caption := 'SIEM password (leave blank to auto-generate a strong one):';
 
-  NodePortEdit := TNewEdit.Create(ConfigPage.Surface);
-  NodePortEdit.Parent := ConfigPage.Surface;
-  NodePortEdit.Left := 0;
-  NodePortEdit.Top := L.Top + 32;
-  NodePortEdit.Width := 80;
-  NodePortEdit.Text := '8081';
-
-  L := TNewStaticText.Create(ConfigPage.Surface);
-  L.Parent := ConfigPage.Surface;
-  L.Left := 0;
-  L.Top := NodePortEdit.Top + 60;
-  L.Caption := 'Node URL(s) for Master (comma-separated):';
-
-  NodesEdit := TNewEdit.Create(ConfigPage.Surface);
-  NodesEdit.Parent := ConfigPage.Surface;
-  NodesEdit.Left := 0;
-  NodesEdit.Top := L.Top + 32;
-  NodesEdit.Width := ConfigPage.SurfaceWidth;
-  NodesEdit.Text := 'http://127.0.0.1:8081';
-
-  L := TNewStaticText.Create(ConfigPage.Surface);
-  L.Parent := ConfigPage.Surface;
-  L.Left := 0;
-  L.Top := NodesEdit.Top + 60;
-  L.Caption := 'SIEM URL (TinyBox local is https://127.0.0.1:9201):';
-
-  SiemUrlEdit := TNewEdit.Create(ConfigPage.Surface);
-  SiemUrlEdit.Parent := ConfigPage.Surface;
-  SiemUrlEdit.Left := 0;
-  SiemUrlEdit.Top := L.Top + 32;
-  SiemUrlEdit.Width := ConfigPage.SurfaceWidth;
-  SiemUrlEdit.Text := 'https://127.0.0.1:9201';
-
-  L := TNewStaticText.Create(ConfigPage.Surface);
-  L.Parent := ConfigPage.Surface;
-  L.Left := 0;
-  L.Top := SiemUrlEdit.Top + 60;
-  L.Caption := 'SIEM user (TinyBox local admin user):';
-
-  SiemUserEdit := TNewEdit.Create(ConfigPage.Surface);
-  SiemUserEdit.Parent := ConfigPage.Surface;
-  SiemUserEdit.Left := 0;
-  SiemUserEdit.Top := L.Top + 32;
-  SiemUserEdit.Width := ConfigPage.SurfaceWidth;
-  SiemUserEdit.Text := 'admin';
-
-  L := TNewStaticText.Create(ConfigPage.Surface);
-  L.Parent := ConfigPage.Surface;
-  L.Left := 0;
-  L.Top := SiemUserEdit.Top + 60;
-  L.Caption := 'SIEM password (TinyBox local admin password):';
-
-  SiemPassEdit := TNewEdit.Create(ConfigPage.Surface);
-  SiemPassEdit.Parent := ConfigPage.Surface;
+  SiemPassEdit := TNewEdit.Create(SecurityPage.Surface);
+  SiemPassEdit.Parent := SecurityPage.Surface;
   SiemPassEdit.Left := 0;
-  SiemPassEdit.Top := L.Top + 32;
-  SiemPassEdit.Width := ConfigPage.SurfaceWidth;
+  SiemPassEdit.Top := L.Top + ScaleY(18);
+  SiemPassEdit.Width := SecurityPage.SurfaceWidth;
   SiemPassEdit.PasswordChar := '*';
 
-  TinyBoxCheck := TNewCheckBox.Create(ConfigPage.Surface);
-  TinyBoxCheck.Parent := ConfigPage.Surface;
-  TinyBoxCheck.Left := 0;
-  TinyBoxCheck.Top := SiemPassEdit.Top + 36;
-  TinyBoxCheck.Width := ConfigPage.SurfaceWidth + 150;
-  TinyBoxCheck.Height := ScaleY(24);
-  TinyBoxCheck.Caption := 'Install &TinySocs local datastore (TinyBox SIEM) on this machine';
-  TinyBoxCheck.Checked := False;
-
-  ResetTinyBoxConfigCheck := TNewCheckBox.Create(ConfigPage.Surface);
-  ResetTinyBoxConfigCheck.Parent := ConfigPage.Surface;
-  ResetTinyBoxConfigCheck.Left := 0;
-  ResetTinyBoxConfigCheck.Top := TinyBoxCheck.Top + 34;
-  ResetTinyBoxConfigCheck.Width := ConfigPage.SurfaceWidth + 150;
-  ResetTinyBoxConfigCheck.Height := ScaleY(24);
-  ResetTinyBoxConfigCheck.Caption := 'Reset TinyBox ProgramData config (re-seed from installer payload)';
-  ResetTinyBoxConfigCheck.Checked := False;
-
-  SchedulePage := CreateCustomPage(ConfigPage.ID, 'Schedules and Retention', 'Configure TinySocs heartbeat and anchor retention.');
-
-  L := TNewStaticText.Create(SchedulePage.Surface);
-  L.Parent := SchedulePage.Surface;
+  L := TNewStaticText.Create(SecurityPage.Surface);
+  L.Parent := SecurityPage.Surface;
   L.Left := 0;
-  L.Top := 8;
-  L.Caption := 'Heartbeat interval (minutes):';
+  L.Top := SiemPassEdit.Top + ScaleY(28);
+  L.Width := SecurityPage.SurfaceWidth;
+  L.WordWrap := True;
+  L.AutoSize := True;
+  L.Caption := 'The SIEM password is for the local OpenSearch datastore (admin user).'
+    + ' If left blank, a strong password will be generated and stored in Windows'
+    + ' Credential Manager.';
 
-  HeartbeatEdit := TNewEdit.Create(SchedulePage.Surface);
-  HeartbeatEdit.Parent := SchedulePage.Surface;
-  HeartbeatEdit.Left := 0;
-  HeartbeatEdit.Top := L.Top + 32;
-  HeartbeatEdit.Width := 80;
-  HeartbeatEdit.Text := '15';
+  { ---- Page 3: LLM Provider ---- }
+  LlmPage := CreateCustomPage(SecurityPage.ID, 'LLM Provider', 'Choose an AI provider for the TinySocs assistant.');
 
-  L := TNewStaticText.Create(SchedulePage.Surface);
-  L.Parent := SchedulePage.Surface;
+  L := TNewStaticText.Create(LlmPage.Surface);
+  L.Parent := LlmPage.Surface;
   L.Left := 0;
-  L.Top := HeartbeatEdit.Top + 60;
-  L.Caption := 'Anchor retention (days):';
+  L.Top := 0;
+  L.Width := LlmPage.SurfaceWidth;
+  L.Caption := 'The assistant uses an LLM to analyze alerts and suggest actions.';
 
-  RetentionEdit := TNewEdit.Create(SchedulePage.Surface);
-  RetentionEdit.Parent := SchedulePage.Surface;
-  RetentionEdit.Left := 0;
-  RetentionEdit.Top := L.Top + 32;
-  RetentionEdit.Width := 80;
-  RetentionEdit.Text := '45';
+  LlmModeRadioOpenAI := TRadioButton.Create(LlmPage.Surface);
+  LlmModeRadioOpenAI.Parent := LlmPage.Surface;
+  LlmModeRadioOpenAI.Left := 0;
+  LlmModeRadioOpenAI.Top := ScaleY(28);
+  LlmModeRadioOpenAI.Width := LlmPage.SurfaceWidth;
+  LlmModeRadioOpenAI.Height := ScaleY(20);
+  LlmModeRadioOpenAI.Caption := '&OpenAI (GPT-4o-mini)';
 
-  RemoveDataCheck := TNewCheckBox.Create(SchedulePage.Surface);
-  RemoveDataCheck.Parent := SchedulePage.Surface;
-  RemoveDataCheck.Left := 0;
-  RemoveDataCheck.Top := RetentionEdit.Top + 60;
-  RemoveDataCheck.Width := SchedulePage.SurfaceWidth + 150;
-  RemoveDataCheck.Height := ScaleY(24);
-  RemoveDataCheck.Caption := 'Remove all TinySocs data (logs, ledger, config) when uninstalling';
-  RemoveDataCheck.Checked := False;
+  LlmModeRadioAnthropic := TRadioButton.Create(LlmPage.Surface);
+  LlmModeRadioAnthropic.Parent := LlmPage.Surface;
+  LlmModeRadioAnthropic.Left := 0;
+  LlmModeRadioAnthropic.Top := LlmModeRadioOpenAI.Top + ScaleY(26);
+  LlmModeRadioAnthropic.Width := LlmPage.SurfaceWidth;
+  LlmModeRadioAnthropic.Height := ScaleY(20);
+  LlmModeRadioAnthropic.Caption := '&Anthropic (Claude)';
 
-  FlagPath := ExpandConstant('{commonappdata}\TinySocs\remove_on_uninstall.flag');
-  if FileExists(FlagPath) then
-    RemoveDataCheck.Checked := True;
+  LlmModeRadioOllama := TRadioButton.Create(LlmPage.Surface);
+  LlmModeRadioOllama.Parent := LlmPage.Surface;
+  LlmModeRadioOllama.Left := 0;
+  LlmModeRadioOllama.Top := LlmModeRadioAnthropic.Top + ScaleY(26);
+  LlmModeRadioOllama.Width := LlmPage.SurfaceWidth;
+  LlmModeRadioOllama.Height := ScaleY(20);
+  LlmModeRadioOllama.Caption := 'O&llama (local, no API key needed)';
 
-  SelectedRole := ROLE_NODE;
-  InstallTinyBox := False;
+  LlmModeRadioNone := TRadioButton.Create(LlmPage.Surface);
+  LlmModeRadioNone.Parent := LlmPage.Surface;
+  LlmModeRadioNone.Left := 0;
+  LlmModeRadioNone.Top := LlmModeRadioOllama.Top + ScaleY(26);
+  LlmModeRadioNone.Width := LlmPage.SurfaceWidth;
+  LlmModeRadioNone.Height := ScaleY(20);
+  LlmModeRadioNone.Caption := '&None (skip LLM setup for now)';
+  LlmModeRadioNone.Checked := True;
+
+  LlmApiKeyLabel := TNewStaticText.Create(LlmPage.Surface);
+  LlmApiKeyLabel.Parent := LlmPage.Surface;
+  LlmApiKeyLabel.Left := 0;
+  LlmApiKeyLabel.Top := LlmModeRadioNone.Top + ScaleY(36);
+  LlmApiKeyLabel.Width := LlmPage.SurfaceWidth;
+  LlmApiKeyLabel.Caption := 'API key:';
+
+  LlmApiKeyEdit := TNewEdit.Create(LlmPage.Surface);
+  LlmApiKeyEdit.Parent := LlmPage.Surface;
+  LlmApiKeyEdit.Left := 0;
+  LlmApiKeyEdit.Top := LlmApiKeyLabel.Top + ScaleY(18);
+  LlmApiKeyEdit.Width := LlmPage.SurfaceWidth;
+  LlmApiKeyEdit.PasswordChar := '*';
+  LlmApiKeyEdit.Text := '';
+
+  OllamaUrlLabel := TNewStaticText.Create(LlmPage.Surface);
+  OllamaUrlLabel.Parent := LlmPage.Surface;
+  OllamaUrlLabel.Left := 0;
+  OllamaUrlLabel.Top := LlmApiKeyEdit.Top + ScaleY(32);
+  OllamaUrlLabel.Width := LlmPage.SurfaceWidth;
+  OllamaUrlLabel.Caption := 'Ollama URL (default: http://localhost:11434):';
+
+  OllamaUrlEdit := TNewEdit.Create(LlmPage.Surface);
+  OllamaUrlEdit.Parent := LlmPage.Surface;
+  OllamaUrlEdit.Left := 0;
+  OllamaUrlEdit.Top := OllamaUrlLabel.Top + ScaleY(18);
+  OllamaUrlEdit.Width := LlmPage.SurfaceWidth;
+  OllamaUrlEdit.Text := 'http://localhost:11434';
+
+  { ---- Page 4: Notifications (merged webhook + email) ---- }
+  NotifPage := CreateCustomPage(LlmPage.ID, 'Notifications', 'Configure alert notifications (all optional).');
+
+  L := TNewStaticText.Create(NotifPage.Surface);
+  L.Parent := NotifPage.Surface;
+  L.Left := 0;
+  L.Top := ScaleY(4);
+  L.Width := NotifPage.SurfaceWidth;
+  L.Caption := 'Webhook URL (Slack/Teams -- leave empty to skip):';
+
+  WebhookUrlEdit := TNewEdit.Create(NotifPage.Surface);
+  WebhookUrlEdit.Parent := NotifPage.Surface;
+  WebhookUrlEdit.Left := 0;
+  WebhookUrlEdit.Top := L.Top + ScaleY(18);
+  WebhookUrlEdit.Width := NotifPage.SurfaceWidth;
+  WebhookUrlEdit.Text := '';
+
+  EmailEnableCheck := TNewCheckBox.Create(NotifPage.Surface);
+  EmailEnableCheck.Parent := NotifPage.Surface;
+  EmailEnableCheck.Left := 0;
+  EmailEnableCheck.Top := WebhookUrlEdit.Top + ScaleY(36);
+  EmailEnableCheck.Width := NotifPage.SurfaceWidth;
+  EmailEnableCheck.Height := ScaleY(20);
+  EmailEnableCheck.Caption := '&Enable email alert notifications';
+  EmailEnableCheck.Checked := False;
+
+  L := TNewStaticText.Create(NotifPage.Surface);
+  L.Parent := NotifPage.Surface;
+  L.Left := 0;
+  L.Top := EmailEnableCheck.Top + ScaleY(28);
+  L.Width := NotifPage.SurfaceWidth;
+  L.Caption := 'SMTP host:';
+
+  SmtpHostEdit := TNewEdit.Create(NotifPage.Surface);
+  SmtpHostEdit.Parent := NotifPage.Surface;
+  SmtpHostEdit.Left := 0;
+  SmtpHostEdit.Top := L.Top + ScaleY(18);
+  SmtpHostEdit.Width := NotifPage.SurfaceWidth;
+  SmtpHostEdit.Text := '';
+
+  L := TNewStaticText.Create(NotifPage.Surface);
+  L.Parent := NotifPage.Surface;
+  L.Left := 0;
+  L.Top := SmtpHostEdit.Top + ScaleY(30);
+  L.Width := NotifPage.SurfaceWidth;
+  L.Caption := 'From address:';
+
+  EmailFromEdit := TNewEdit.Create(NotifPage.Surface);
+  EmailFromEdit.Parent := NotifPage.Surface;
+  EmailFromEdit.Left := 0;
+  EmailFromEdit.Top := L.Top + ScaleY(18);
+  EmailFromEdit.Width := NotifPage.SurfaceWidth;
+  EmailFromEdit.Text := '';
+
+  L := TNewStaticText.Create(NotifPage.Surface);
+  L.Parent := NotifPage.Surface;
+  L.Left := 0;
+  L.Top := EmailFromEdit.Top + ScaleY(30);
+  L.Width := NotifPage.SurfaceWidth;
+  L.Caption := 'To address:';
+
+  EmailToEdit := TNewEdit.Create(NotifPage.Surface);
+  EmailToEdit.Parent := NotifPage.Surface;
+  EmailToEdit.Left := 0;
+  EmailToEdit.Top := L.Top + ScaleY(18);
+  EmailToEdit.Width := NotifPage.SurfaceWidth;
+  EmailToEdit.Text := '';
+
+  { ---- Smart defaults ---- }
+  SelectedRole := ROLE_TINYBOX;
+  InstallTinyBox := True;
   ForceTinyBoxConfig := False;
   AnchorsRetentionDays := 45;
   HeartbeatMinutes := 15;
-
-  { PATCH: ensure a deterministic default even if wizard pages are skipped (e.g., /SILENT) }
   RemoveDataOnUninstall := False;
-
+  NodePort := '8081';
+  Nodes := 'http://127.0.0.1:8081';
+  SiemUrl := 'https://127.0.0.1:9201';
+  SiemUser := 'admin';
+  SiemPass := '';
+  LlmMode := 'none';
+  LlmApiKey := '';
+  OllamaUrl := 'http://localhost:11434';
+  WebhookUrl := '';
+  SmtpHost := '';
+  SmtpPort := '587';
+  EmailFrom := '';
+  EmailTo := '';
+  EmailEnabled := False;
   PsRunCounter := 0;
 end;
 
@@ -901,22 +1001,35 @@ begin
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
-var
-  TmpInt: Integer;
 begin
   Result := True;
 
   if CurPageID = RolePage.ID then
   begin
     SelectedRole := GetSelectedRole;
-    if (SelectedRole < ROLE_NODE) or (SelectedRole > ROLE_TINYBOX) then
+    InstallTinyBox := (SelectedRole = ROLE_TINYBOX);
+    ForceTinyBoxConfig := False;
+
+    { Smart defaults based on role }
+    NodePort := '8081';
+    SiemUser := 'admin';
+    if InstallTinyBox then
     begin
-      MsgBox('Please select a TinySocs role for this machine.', mbError, MB_OK);
-      Result := False;
-      Exit;
+      SiemUrl := 'https://127.0.0.1:9201';
+      Nodes := 'http://127.0.0.1:8081';
+    end
+    else if SelectedRole = ROLE_MASTER then
+    begin
+      SiemUrl := 'https://127.0.0.1:9201';
+      Nodes := 'http://127.0.0.1:8081';
+    end
+    else
+    begin
+      SiemUrl := 'https://127.0.0.1:9201';
+      Nodes := '';
     end;
   end
-  else if CurPageID = ConfigPage.ID then
+  else if CurPageID = SecurityPage.ID then
   begin
     SharedSecret := Trim(SharedSecretEdit.Text);
     if SharedSecret = '' then
@@ -926,58 +1039,65 @@ begin
       Exit;
     end;
 
-    NodePort := Trim(NodePortEdit.Text);
-    if NodePort = '' then
-      NodePort := '8081';
+    SiemPass := Trim(SiemPassEdit.Text);
 
-    Nodes := Trim(NodesEdit.Text);
-    if (Nodes = '') and ((SelectedRole = ROLE_MASTER) or (SelectedRole = ROLE_TINYBOX)) then
-      Nodes := 'http://127.0.0.1:' + NodePort;
-
-    SiemUrl := Trim(SiemUrlEdit.Text);
-    SiemUser := Trim(SiemUserEdit.Text);
-    SiemPass := SiemPassEdit.Text;
-
-    InstallTinyBox := TinyBoxCheck.Checked or (SelectedRole = ROLE_TINYBOX);
-    ForceTinyBoxConfig := ResetTinyBoxConfigCheck.Checked and InstallTinyBox;
-
-    if InstallTinyBox then
-      SiemUrl := 'https://127.0.0.1:9201'
-    else if SiemUrl = '' then
-      SiemUrl := 'https://127.0.0.1:9201';
-
+    { Auto-generate SIEM password if blank and TinyBox role }
     if InstallTinyBox then
     begin
-      if SiemUser = '' then
-        SiemUser := 'admin';
-
       if SiemPass = '' then
       begin
         SiemPass := GeneratePassword(24);
         MsgBox(
-          'TinyBox password was blank, so one was generated.'#13#10#13#10 +
-          'User: ' + SiemUser + #13#10 +
-          'Password: ' + SiemPass + #13#10#13#10 +
-          'It will also be stored in Windows Credential Manager as TinySocs/SIEM/Creds.',
+          'SIEM password was blank, so a strong one was generated.' + CRLF + CRLF +
+          'User: admin' + CRLF +
+          'Password: ' + SiemPass + CRLF + CRLF +
+          'It will be stored securely in Windows Credential Manager.',
           mbInformation,
           MB_OK
         );
       end;
     end;
   end
-  else if CurPageID = SchedulePage.ID then
+  else if CurPageID = LlmPage.ID then
   begin
-    TmpInt := StrToIntDef(Trim(HeartbeatEdit.Text), 15);
-    if TmpInt <= 0 then
-      TmpInt := 15;
-    HeartbeatMinutes := TmpInt;
+    if LlmModeRadioOpenAI.Checked then
+      LlmMode := 'openai'
+    else if LlmModeRadioAnthropic.Checked then
+      LlmMode := 'anthropic'
+    else if LlmModeRadioOllama.Checked then
+      LlmMode := 'ollama'
+    else
+      LlmMode := 'none';
 
-    TmpInt := StrToIntDef(Trim(RetentionEdit.Text), 45);
-    if TmpInt <= 0 then
-      TmpInt := 45;
-    AnchorsRetentionDays := TmpInt;
+    LlmApiKey := Trim(LlmApiKeyEdit.Text);
+    OllamaUrl := Trim(OllamaUrlEdit.Text);
+    if OllamaUrl = '' then
+      OllamaUrl := 'http://localhost:11434';
 
-    RemoveDataOnUninstall := RemoveDataCheck.Checked;
+    { Validate: if OpenAI or Anthropic selected, API key should be provided }
+    if ((LlmMode = 'openai') or (LlmMode = 'anthropic')) and (LlmApiKey = '') then
+    begin
+      if MsgBox(
+        'You selected ' + LlmMode + ' but did not provide an API key.'#13#10 +
+        'The assistant will not work without it.'#13#10#13#10 +
+        'Continue anyway? You can add the key later in assistant.env.',
+        mbConfirmation,
+        MB_YESNO
+      ) = IDNO then
+      begin
+        Result := False;
+        Exit;
+      end;
+    end;
+  end
+  else if CurPageID = NotifPage.ID then
+  begin
+    WebhookUrl := Trim(WebhookUrlEdit.Text);
+    EmailEnabled := EmailEnableCheck.Checked;
+    SmtpHost := Trim(SmtpHostEdit.Text);
+    SmtpPort := '587';
+    EmailFrom := Trim(EmailFromEdit.Text);
+    EmailTo := Trim(EmailToEdit.Text);
   end;
 end;
 
@@ -998,7 +1118,7 @@ begin
     Log('CurStepChanged(ssPostInstall): begin');
 
     { *** BUILD STAMP (change this every rebuild) *** }
-    Log('TinySocs installer build stamp: 2026-01-16-POSTINSTALL-ORDER-v15-KEYSTORE-ACL');
+    Log('TinySocs installer build stamp: 2026-02-14-v16-GENPASS-OVERFLOW-FIX');
 
     AppDir := ExpandConstant('{app}');
     InstallerModule := AppDir + '\modules\TinySocs.Installer.psm1';
@@ -1031,7 +1151,7 @@ begin
       Script :=
         '$ErrorActionPreference = ''Stop''' + #13#10 +
         '$ProgressPreference = ''SilentlyContinue''' + #13#10 +
-        'Write-Host ''[TinySocs][Inno] build stamp: 2026-01-16-POSTINSTALL-ORDER-v15-KEYSTORE-ACL''' + #13#10 +
+        'Write-Host ''[TinySocs][Inno] build stamp: 2026-02-14-v16-GENPASS-OVERFLOW-FIX''' + #13#10 +
         '' + #13#10 +
 
         '# Force TEMP/TMP to ProgramData AND harden ACL so stashes never land in user-profile temp (avoids ACL/AV weirdness)' + #13#10 +
@@ -1200,9 +1320,10 @@ begin
         '    $cur = @()' + #13#10 +
         '    try { $cur = (Get-ItemProperty -Path $svcKey -Name Environment -ErrorAction SilentlyContinue).Environment } catch { $cur = @() }' + #13#10 +
         '    if ($cur -is [string]) { $cur = @($cur) }' + #13#10 +
-        '    $cur = @($cur | Where-Object { $_ -and ($_ -notmatch ''^OPENSEARCH_PATH_CONF='') })' + #13#10 +
-        '    $new = @($cur + @(''OPENSEARCH_PATH_CONF='' + $pdConf))' + #13#10 +
+        '    $cur = @($cur | Where-Object { $_ -and ($_ -notmatch ''^OPENSEARCH_PATH_CONF='') -and ($_ -notmatch ''^OPENSEARCH_INITIAL_ADMIN_PASSWORD='') })' + #13#10 +
+        '    $new = @($cur + @(''OPENSEARCH_PATH_CONF='' + $pdConf) + @(''OPENSEARCH_INITIAL_ADMIN_PASSWORD=' + PsEscape(SiemPass) + '''))' + #13#10 +
         '    New-ItemProperty -Path $svcKey -Name Environment -PropertyType MultiString -Value $new -Force | Out-Null' + #13#10 +
+        '    Write-Host ''[TinySocs][Inno] TB-10: Set OPENSEARCH_PATH_CONF + OPENSEARCH_INITIAL_ADMIN_PASSWORD in service env''' + #13#10 +
         '  }' + #13#10 +
         '} catch { Write-Warning (''[TinySocs][Inno] TB-10: failed to update service env (continuing): '' + $_.Exception.Message) }' + #13#10 +
         '' + #13#10 +
@@ -1227,15 +1348,19 @@ begin
         '} catch { Write-Warning (''[TinySocs][Inno] TB-10a keystore ACL repair failed (continuing): '' + $_.Exception.Message) }' + #13#10 +
         '' + #13#10 +
 
-        'if (Get-Command Repair-TinySocsOpenSearchTlsKeystore -ErrorAction SilentlyContinue) {' + #13#10 +
-        '  $cmd = Get-Command Repair-TinySocsOpenSearchTlsKeystore -ErrorAction Stop' + #13#10 +
-        '  $pp = @{}' + #13#10 +
-        '  if ($cmd.Parameters.ContainsKey(''OpenSearchRoot''))  { $pp.OpenSearchRoot = $openSearchRoot }' + #13#10 +
-        '  if ($cmd.Parameters.ContainsKey(''ProgramDataConf'')) { $pp.ProgramDataConf = $pdConf }' + #13#10 +
-        '  if ($cmd.Parameters.ContainsKey(''CertsDir''))        { $pp.CertsDir = $certsDir }' + #13#10 +
-        '  & $cmd @pp | Out-Null' + #13#10 +
-        '} else {' + #13#10 +
-        '  throw ''Repair-TinySocsOpenSearchTlsKeystore not found in installer module. TB-10 cannot continue.''' + #13#10 +
+        'try {' + #13#10 +
+        '  if (Get-Command Repair-TinySocsOpenSearchTlsKeystore -ErrorAction SilentlyContinue) {' + #13#10 +
+        '    $cmd = Get-Command Repair-TinySocsOpenSearchTlsKeystore -ErrorAction Stop' + #13#10 +
+        '    $pp = @{}' + #13#10 +
+        '    if ($cmd.Parameters.ContainsKey(''OpenSearchRoot''))  { $pp.OpenSearchRoot = $openSearchRoot }' + #13#10 +
+        '    if ($cmd.Parameters.ContainsKey(''ProgramDataConf'')) { $pp.ProgramDataConf = $pdConf }' + #13#10 +
+        '    if ($cmd.Parameters.ContainsKey(''CertsDir''))        { $pp.CertsDir = $certsDir }' + #13#10 +
+        '    & $cmd @pp | Out-Null' + #13#10 +
+        '  } else {' + #13#10 +
+        '    Write-Warning ''[TinySocs][Inno] TB-10: Repair-TinySocsOpenSearchTlsKeystore not found (will be handled by persistence script).''' + #13#10 +
+        '  }' + #13#10 +
+        '} catch {' + #13#10 +
+        '  Write-Warning (''[TinySocs][Inno] TB-10: TLS keystore repair skipped (fresh install; persistence script will handle): '' + $_.Exception.Message)' + #13#10 +
         '}' + #13#10 +
         '' + #13#10 +
 
@@ -1253,6 +1378,93 @@ begin
         '  }' + #13#10 +
         '} catch { Write-Warning (''[TinySocs][Inno] TB-10b keystore ACL repair failed (continuing): '' + $_.Exception.Message) }' + #13#10 +
         '' + #13#10 +
+
+        '# TB-10c: Bootstrap TLS certs + DPAPI storepass (MUST run before persistence script)' + CRLF +
+        'Write-Host ''[TinySocs][Inno] TB-10c: Ensure-TinySocsLocalCaAndServerCert (TLS bootstrap)''' + CRLF +
+        'try {' + CRLF +
+        '  if (Get-Command Ensure-TinySocsLocalCaAndServerCert -ErrorAction SilentlyContinue) {' + CRLF +
+        '    Ensure-TinySocsLocalCaAndServerCert -CertsDir $certsDir' + CRLF +
+        '    Write-Host ''[TinySocs][Inno] TB-10c: TLS certs bootstrapped OK''' + CRLF +
+        '  } else {' + CRLF +
+        '    Write-Warning ''[TinySocs][Inno] TB-10c: Ensure-TinySocsLocalCaAndServerCert not found in module; persistence script will need pre-existing certs.''' + CRLF +
+        '  }' + CRLF +
+        '} catch {' + CRLF +
+        '  Write-Warning (''[TinySocs][Inno] TB-10c: TLS cert bootstrap failed (persistence script may still recover): '' + $_.Exception.Message)' + CRLF +
+        '}' + CRLF +
+        '' + CRLF +
+
+        '# TB-10d: Seed ProgramData config from vendor config (opensearch.yml, jvm.options, etc.)' + CRLF +
+        'Write-Host ''[TinySocs][Inno] TB-10d: Seed ProgramData OpenSearch config from vendor''' + CRLF +
+        '$vendorCfg = Join-Path $openSearchRoot ''config''' + CRLF +
+        'if (Test-Path -LiteralPath $vendorCfg -PathType Container) {' + CRLF +
+        '  $essentials = @(''opensearch.yml'',''jvm.options'',''log4j2.properties'')' + CRLF +
+        '  foreach ($f in $essentials) {' + CRLF +
+        '    $src = Join-Path $vendorCfg $f' + CRLF +
+        '    $dst = Join-Path $pdConf $f' + CRLF +
+        '    if ((Test-Path -LiteralPath $src -PathType Leaf) -and (-not (Test-Path -LiteralPath $dst -PathType Leaf))) {' + CRLF +
+        '      Copy-Item -LiteralPath $src -Destination $dst -Force' + CRLF +
+        '      Write-Host (''[TinySocs][Inno] TB-10d: Seeded '' + $f + '' into ProgramData config'')' + CRLF +
+        '    }' + CRLF +
+        '  }' + CRLF +
+        '  # Also seed jvm.options.d directory' + CRLF +
+        '  $srcD = Join-Path $vendorCfg ''jvm.options.d''' + CRLF +
+        '  $dstD = Join-Path $pdConf ''jvm.options.d''' + CRLF +
+        '  if ((Test-Path -LiteralPath $srcD -PathType Container) -and (-not (Test-Path -LiteralPath $dstD -PathType Container))) {' + CRLF +
+        '    Copy-Item -LiteralPath $srcD -Destination $dstD -Recurse -Force' + CRLF +
+        '    Write-Host ''[TinySocs][Inno] TB-10d: Seeded jvm.options.d into ProgramData config''' + CRLF +
+        '  }' + CRLF +
+        '  # Also seed opensearch-security directory' + CRLF +
+        '  foreach ($secName in @(''opensearch-security'',''security'')) {' + CRLF +
+        '    $srcS = Join-Path $vendorCfg $secName' + CRLF +
+        '    $dstS = Join-Path $pdConf $secName' + CRLF +
+        '    if ((Test-Path -LiteralPath $srcS -PathType Container) -and (-not (Test-Path -LiteralPath $dstS -PathType Container))) {' + CRLF +
+        '      Copy-Item -LiteralPath $srcS -Destination $dstS -Recurse -Force' + CRLF +
+        '      Write-Host (''[TinySocs][Inno] TB-10d: Seeded '' + $secName + '' into ProgramData config'')' + CRLF +
+        '    }' + CRLF +
+        '  }' + CRLF +
+        '} else {' + CRLF +
+        '  Write-Warning (''[TinySocs][Inno] TB-10d: Vendor config not found at: '' + $vendorCfg)' + CRLF +
+        '}' + CRLF +
+        '' + CRLF +
+
+        '# TB-10e: Bootstrap opensearch.yml with TLS + single-node settings' + CRLF +
+        'Write-Host ''[TinySocs][Inno] TB-10e: Ensure-TinySocsOpenSearchDeterministicBootstrap''' + CRLF +
+        'try {' + CRLF +
+        '  if (Get-Command Ensure-TinySocsOpenSearchDeterministicBootstrap -ErrorAction SilentlyContinue) {' + CRLF +
+        '    Ensure-TinySocsOpenSearchDeterministicBootstrap `' + CRLF +
+        '      -OpenSearchRoot $openSearchRoot `' + CRLF +
+        '      -ProgramDataConf $pdConf `' + CRLF +
+        '      -CertsDir $certsDir `' + CRLF +
+        '      -HttpPort 9201 `' + CRLF +
+        '      -AllowDefaultInitSecurityIndex $true' + CRLF +
+        '    Write-Host ''[TinySocs][Inno] TB-10e: OpenSearch deterministic bootstrap OK''' + CRLF +
+        '  } else {' + CRLF +
+        '    Write-Warning ''[TinySocs][Inno] TB-10e: Ensure-TinySocsOpenSearchDeterministicBootstrap not found in module''' + CRLF +
+        '  }' + CRLF +
+        '} catch {' + CRLF +
+        '  Write-Warning (''[TinySocs][Inno] TB-10e: deterministic bootstrap failed: '' + $_.Exception.Message)' + CRLF +
+        '}' + CRLF +
+        '' + CRLF +
+
+        '# Also ensure discovery.type and node settings for single-node TinyBox' + CRLF +
+        '$pdYml = Join-Path $pdConf ''opensearch.yml''' + CRLF +
+        'if (Test-Path -LiteralPath $pdYml -PathType Leaf) {' + CRLF +
+        '  $ymlRaw = Get-Content -LiteralPath $pdYml -Raw' + CRLF +
+        '  $needsWrite = $false' + CRLF +
+        '  if ($ymlRaw -notmatch ''(?m)^\s*discovery\.type\s*:'') {' + CRLF +
+        '    $ymlRaw = $ymlRaw.TrimEnd() + "`r`ndiscovery.type: single-node`r`n"' + CRLF +
+        '    $needsWrite = $true' + CRLF +
+        '  }' + CRLF +
+        '  if ($ymlRaw -notmatch ''(?m)^\s*network\.host\s*:'') {' + CRLF +
+        '    $ymlRaw = $ymlRaw.TrimEnd() + "`r`nnetwork.host: 127.0.0.1`r`n"' + CRLF +
+        '    $needsWrite = $true' + CRLF +
+        '  }' + CRLF +
+        '  if ($needsWrite) {' + CRLF +
+        '    [System.IO.File]::WriteAllText($pdYml, $ymlRaw, (New-Object System.Text.UTF8Encoding($false)))' + CRLF +
+        '    Write-Host ''[TinySocs][Inno] TB-10e: Added discovery.type/network.host to opensearch.yml''' + CRLF +
+        '  }' + CRLF +
+        '}' + CRLF +
+        '' + CRLF +
 
         'try { sc.exe stop  $svcName | Out-Null } catch { }' + #13#10 +
         'Start-Sleep -Seconds 2' + #13#10 +
@@ -1420,11 +1632,37 @@ begin
         '  $content = $content -replace ''(?m)^SIEM_PASS=.*$'', (''SIEM_PASS='' + ''' + PsEscape(SiemPass) + ''')' + CRLF +
         '  $content = $content -replace ''(?m)^MASTER_SHARED_SECRET=.*$'', (''MASTER_SHARED_SECRET='' + ''' + PsEscape(SharedSecret) + ''')' + CRLF +
         '  $content = $content -replace ''(?m)^BOT_SHARED_SECRET=.*$'', (''BOT_SHARED_SECRET='' + ''' + PsEscape(SharedSecret) + ''')' + CRLF +
+        '  $content = $content -replace ''(?m)^LLM_MODE=.*$'', (''LLM_MODE='' + ''' + PsEscape(LlmMode) + ''')' + CRLF +
+        '  $content = $content -replace ''(?m)^OPENAI_API_KEY=.*$'', (''OPENAI_API_KEY='' + ''' + PsEscape(LlmApiKey) + ''')' + CRLF +
+        '  $content = $content -replace ''(?m)^ANTHROPIC_API_KEY=.*$'', (''ANTHROPIC_API_KEY='' + ''' + PsEscape(LlmApiKey) + ''')' + CRLF +
+        '  $content = $content -replace ''(?m)^OFFLINE_LLM_URL=.*$'', (''OFFLINE_LLM_URL='' + ''' + PsEscape(OllamaUrl) + ''')' + CRLF +
         '  Set-Content -Path $envFile -Value $content -Force' + CRLF +
-        '  Write-Host ''[TinySocs][Inno] assistant.env updated with SIEM credentials''' + CRLF +
+        '  Write-Host ''[TinySocs][Inno] assistant.env updated with SIEM + LLM credentials''' + CRLF +
         '}' + CRLF +
         '' + CRLF +
-        '# Register assistant service' + CRLF +
+        '# Reconcile SIEM_PASS with CredMan (Phase 10 credential probe may have' + CRLF +
+        '# discovered a different working password than the wizard provided).' + CRLF +
+        '# CredMan is the source of truth after OpenSearch first-boot.' + CRLF +
+        'try {' + CRLF +
+        '  $cmCreds = Get-TSSiemCredsCanonical' + CRLF +
+        '  if ($cmCreds -and -not [string]::IsNullOrWhiteSpace($cmCreds.Pass)) {' + CRLF +
+        '    $cmPass = $cmCreds.Pass' + CRLF +
+        '    $cmUser = $cmCreds.User; if (-not $cmUser) { $cmUser = ''admin'' }' + CRLF +
+        '    $cmUrl  = $cmCreds.Url;  if (-not $cmUrl)  { $cmUrl  = ''' + PsEscape(SiemUrl) + ''' }' + CRLF +
+        '    if (Test-Path $envFile) {' + CRLF +
+        '      $c2 = Get-Content $envFile -Raw' + CRLF +
+        '      $c2 = $c2 -replace ''(?m)^SIEM_PASS=.*$'', (''SIEM_PASS='' + $cmPass)' + CRLF +
+        '      $c2 = $c2 -replace ''(?m)^SIEM_USER=.*$'', (''SIEM_USER='' + $cmUser)' + CRLF +
+        '      $c2 = $c2 -replace ''(?m)^SIEM_URL=.*$'',  (''SIEM_URL=''  + $cmUrl)' + CRLF +
+        '      Set-Content -Path $envFile -Value $c2 -Force' + CRLF +
+        '      Write-Host (''[TinySocs][Inno] assistant.env reconciled with CredMan (user='' + $cmUser + '')'')' + CRLF +
+        '    }' + CRLF +
+        '  }' + CRLF +
+        '} catch {' + CRLF +
+        '  Write-Host (''[TinySocs][Inno] CredMan reconciliation skipped: '' + $_.Exception.Message)' + CRLF +
+        '}' + CRLF +
+        '' + CRLF +
+        '# Register assistant service (reads assistant.env and bakes into NSSM registry)' + CRLF +
         'if (Get-Command Ensure-TinySocsAssistantService -ErrorAction SilentlyContinue) {' + CRLF +
         '  Ensure-TinySocsAssistantService -InstallRoot ''' + PsEscape(AppDir) + '''' + CRLF +
         '} else {' + CRLF +
@@ -1438,6 +1676,70 @@ begin
     end
     else
       Log('CurStepChanged: Assistant bundle not found; skipping TinySocsAssistant registration.');
+
+    { ---- Phase 12: Import OpenSearch Dashboards (if TinyBox was installed) ---- }
+    if InstallTinyBox then
+    begin
+      Log('CurStepChanged: Phase 12 — importing dashboards');
+      Script :=
+        '$ErrorActionPreference = ''Continue''' + CRLF +
+        'Import-Module ''' + PsEscape(InstallerModule) + ''' -Force' + CRLF +
+        '' + CRLF +
+        '$ndjson = Join-Path ''' + PsEscape(AppDir) + ''' ''OpenSearch\dashboards\tinysocs-dashboards.ndjson''' + CRLF +
+        'if (Test-Path $ndjson) {' + CRLF +
+        '  Import-TinySocsDashboards `' + CRLF +
+        '    -DashboardsUrl ''https://localhost:5602'' `' + CRLF +
+        '    -NdjsonPath $ndjson `' + CRLF +
+        '    -SiemUser ''' + PsEscape(SiemUser) + ''' `' + CRLF +
+        '    -SiemPass ''' + PsEscape(SiemPass) + '''' + CRLF +
+        '} else {' + CRLF +
+        '  Write-Warning ''[TinySocs][Inno] Dashboard NDJSON not found; skipping import.''' + CRLF +
+        '}' + CRLF;
+
+      if not RunPowerShellScript(Script) then
+        Log('CurStepChanged: Dashboard import failed (non-fatal).')
+      else
+        Log('CurStepChanged: Dashboards imported successfully.');
+    end;
+
+    { ---- Phase 12: Write notification config to agent-config.yml ---- }
+    if (WebhookUrl <> '') or ((EmailEnabled) and (SmtpHost <> '')) then
+    begin
+      Log('CurStepChanged: Phase 12 — writing notification config');
+      Script :=
+        '$ErrorActionPreference = ''Continue''' + CRLF +
+        'Import-Module ''' + PsEscape(InstallerModule) + ''' -Force' + CRLF +
+        '' + CRLF +
+        '$configPath = Join-Path $env:ProgramData ''TinySocs\Collector\agent-config.yml''' + CRLF +
+        'if (-not (Test-Path $configPath)) {' + CRLF +
+        '  $configPath = Join-Path $env:ProgramData ''TinySocs\Collector\agent\config.yml''' + CRLF +
+        '}' + CRLF +
+        '' + CRLF +
+        'if (Test-Path $configPath) {' + CRLF;
+
+      if WebhookUrl <> '' then
+        Script := Script +
+          '  Set-TinySocsYamlScalar -Path $configPath -Key ''webhook_url'' -Value ''' + PsEscape(WebhookUrl) + '''' + CRLF +
+          '  Write-Host ''[TinySocs][Inno] Set webhook_url in agent-config.yml''' + CRLF;
+
+      if (EmailEnabled) and (SmtpHost <> '') then
+        Script := Script +
+          '  Set-TinySocsYamlScalar -Path $configPath -Key ''smtp_host'' -Value ''' + PsEscape(SmtpHost) + '''' + CRLF +
+          '  Set-TinySocsYamlScalar -Path $configPath -Key ''smtp_port'' -Value ''' + PsEscape(SmtpPort) + '''' + CRLF +
+          '  Set-TinySocsYamlScalar -Path $configPath -Key ''email_from'' -Value ''' + PsEscape(EmailFrom) + '''' + CRLF +
+          '  Set-TinySocsYamlScalar -Path $configPath -Key ''email_to'' -Value ''' + PsEscape(EmailTo) + '''' + CRLF +
+          '  Write-Host ''[TinySocs][Inno] Set email notification config in agent-config.yml''' + CRLF;
+
+      Script := Script +
+        '} else {' + CRLF +
+        '  Write-Warning ''[TinySocs][Inno] agent-config.yml not found; cannot write notification config.''' + CRLF +
+        '}' + CRLF;
+
+      if not RunPowerShellScript(Script) then
+        Log('CurStepChanged: Notification config write failed (non-fatal).')
+      else
+        Log('CurStepChanged: Notification config written successfully.');
+    end;
 
     Log('CurStepChanged(ssPostInstall): end');
   except

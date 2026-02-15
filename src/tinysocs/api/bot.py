@@ -305,7 +305,7 @@ class AckBody(BaseModel):
     tldr: Optional[str] = Field(None, description="Short description/summary")
     who: Optional[str] = Field(None, description="Human display name (optional)")
 
-ALLOWED_ACTIONS = {"block_ip", "disable_user", "isolate_host", "open_ticket"}
+ALLOWED_ACTIONS = {"block_ip", "disable_user", "isolate_host", "open_ticket", "ack_incident"}
 
 class ExecBody(BaseModel):
     action: str = Field(..., description=f"One of: {', '.join(sorted(ALLOWED_ACTIONS))}")
@@ -355,7 +355,41 @@ def _guard_params(action: str, params: Dict[str, Any]) -> None:
         raise HTTPException(status_code=400, detail="unsupported action")
 
 # ---------- App ----------
-app = FastAPI(title="TinySocs Bot Bridge", version="0.1.4")
+app = FastAPI(title="TinySocs Bot Bridge", version="0.2.0")
+
+# ---------- Phase 12: Mount built-in operator dashboard ----------
+try:
+    from tinysocs.api.dashboard import dashboard_app
+    app.mount("/dashboard", dashboard_app)
+except ImportError:
+    pass
+
+# ---------- Action executor integration (Phase 12) ----------
+try:
+    from tinysocs.actions.executor import (
+        stage_action as _executor_stage,
+        approve_action as _executor_approve,
+        get_action as _executor_get,
+        list_actions as _executor_list,
+    )
+    _HAS_EXECUTOR = True
+except ImportError:
+    _HAS_EXECUTOR = False
+
+class ApproveBody(BaseModel):
+    action_id: str = Field(..., description="ID of the staged action to approve")
+    approved_by: Optional[str] = Field("operator", description="Who is approving")
+
+class ActionStatusResponse(BaseModel):
+    action_id: str
+    action: str
+    status: str
+    params: Dict[str, Any] = Field(default_factory=dict)
+    dry_run: bool = True
+    staged_at: Optional[str] = None
+    approved_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    result: Optional[Dict[str, Any]] = None
 
 @app.post("/bot/ack", dependencies=[Depends(verify_hmac)])
 def bot_ack(body: AckBody = Body(...)) -> Dict[str, Any]:
@@ -387,7 +421,58 @@ def bot_exec(body: ExecBody = Body(...)) -> Dict[str, Any]:
     }
     qpath = _stage_entry(entry)
     ledger_res = _post_ledger(entry)
-    return {"queued": True, "ledger": ledger_res, "node": NODE_URL, "path": str(qpath)}
+
+    # Also stage in executor for approval workflow (Phase 12)
+    executor_id = None
+    if _HAS_EXECUTOR:
+        try:
+            rec = _executor_stage(
+                action=body.action,
+                params=body.params,
+                who=body.who,
+                dry_run=True if body.dry_run is None else bool(body.dry_run),
+            )
+            executor_id = rec.get("action_id")
+        except Exception as e:
+            print(f"[bot] WARN: executor stage failed: {e}")
+
+    return {"queued": True, "ledger": ledger_res, "node": NODE_URL, "path": str(qpath), "action_id": executor_id}
+
+# ---- Action Approval (Phase 12) ----
+@app.post("/bot/approve", dependencies=[Depends(verify_hmac)])
+def bot_approve(body: ApproveBody = Body(...)) -> Dict[str, Any]:
+    if not _HAS_EXECUTOR:
+        raise HTTPException(status_code=501, detail="Action executor not available")
+    try:
+        record = _executor_approve(body.action_id, approved_by=body.approved_by or "operator")
+        return {
+            "action_id": record["action_id"],
+            "status": record["status"],
+            "result": record.get("result"),
+            "dry_run": record.get("dry_run", True),
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+# ---- Action Status (Phase 12) ----
+@app.get("/bot/actions/{action_id}/status", dependencies=[Depends(verify_hmac)])
+def bot_action_status(action_id: str) -> ActionStatusResponse:
+    if not _HAS_EXECUTOR:
+        raise HTTPException(status_code=501, detail="Action executor not available")
+    record = _executor_get(action_id)
+    if not record:
+        raise HTTPException(status_code=404, detail=f"Action {action_id} not found")
+    return ActionStatusResponse(
+        action_id=record["action_id"],
+        action=record["action"],
+        status=record["status"],
+        params=record.get("params", {}),
+        dry_run=record.get("dry_run", True),
+        staged_at=record.get("staged_at"),
+        approved_at=record.get("approved_at"),
+        completed_at=record.get("completed_at"),
+        result=record.get("result"),
+    )
 
 # ---- Actions Review (read-only): newest-first listing with filters ----------
 @app.get("/bot/actions", response_model=ActionsResponse, dependencies=[Depends(verify_hmac)])

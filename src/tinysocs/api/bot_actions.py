@@ -9,7 +9,7 @@ from typing import Any, Dict, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from tinysocs.agent.actions_queue import write_action
+from tinysocs.agent.actions_queue import stage_actions
 
 router = APIRouter(prefix="/bot", tags=["bot"])
 
@@ -58,6 +58,43 @@ def verify_hmac(request: Request) -> None:
             return
 
     raise HTTPException(status_code=401, detail="bad signature")
+
+
+def write_action(
+    action: str,
+    params: Dict[str, Any],
+    actor: str = "system",
+    dry_run: bool = True,
+) -> Dict[str, Any]:
+    """Write an action to both the legacy JSONL queue and the new executor."""
+    import time
+    import uuid
+
+    action_id = str(uuid.uuid4())[:12]
+    ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    entry = {
+        "action_id": action_id,
+        "timestamp": ts,
+        "action": action,
+        "params": params,
+        "who": actor,
+        "dry_run": dry_run,
+        "status": "staged",
+    }
+
+    # Write to legacy JSONL queue
+    stage_actions([entry])
+
+    # Also stage in executor for approval workflow (Phase 12)
+    try:
+        from tinysocs.actions.executor import stage_action
+        stage_action(action=action, params=params, who=actor, dry_run=dry_run)
+    except ImportError:
+        pass
+
+    return entry
+
 
 # --- Models ---
 class ExecBody(BaseModel):

@@ -1,14 +1,94 @@
 # TinySocs
 
-Local, self-powered SIEM assistant. Wraps Elastic/OpenSearch and uses an LLM (OpenAI or local via Ollama) to query, analyze, and summarize security events.
+A lightweight, privacy-first, federated SIEM assistant. Wraps OpenSearch and uses an LLM (Claude, OpenAI, or local Ollama) to query, analyze, and summarize security events — then recommends and executes response actions with operator approval.
 
-## Setup (Windows)
-1. Clone the repo
-2. Create a Python venv: `python -m venv .venv && source .venv/Scripts/activate`
-3. Install deps: `pip install -r requirements.txt`
-4. Copy `.env.example` to `.env` and fill values
-5. Run: `python agent/main.py`
+## Architecture
 
-## Env toggles
-- `LLM_MODE=openai` (cloud) or `LLM_MODE=ollama` (local)
-- `SIEM_BACKEND=elastic | opensearch`
+```
+ Windows Events                    OpenSearch         OpenSearch Dashboards
+      |                                |                      |
+  TinySocs Agent  -->  Bulk API  -->  SIEM  <--  Dashboards UI (port 5602)
+      |                                |
+  Detection Engine                 Alert Indices
+      |                                |
+  LLM Assistant   <--  query  <--  tinysocs-alerts-*
+      |                            tinysocs-winlog-*
+  Action Staging  -->  Operator Approval  -->  Execution
+      |
+  Notifications (Webhook / Email)
+```
+
+**Components**:
+- **TinySocs Agent** (C#) — Collects Windows events, ships to OpenSearch, runs detection rules
+- **Detection Engine** — YAML-based rules with threshold grouping, enrichment, and alerting
+- **LLM Assistant** (Python) — Analyzes alerts via Claude/OpenAI/Ollama, recommends actions
+- **Bot Bridge** (FastAPI) — Stages actions, manages approval workflow, executes with audit trail
+- **OpenSearch Dashboards** — Pre-built dashboards for alerts, rules, fleet health, and event exploration
+- **Daily Summary** — Automated email digest of alert activity
+
+## Quick Start
+
+### Windows Installer
+
+1. Download `TinySocs-Setup.exe`
+2. Run as Administrator, select **TinyBox** role
+3. Follow the wizard (configure secrets, notifications)
+4. Verify: `Test-TinySocsHealth` (expect 12/12 PASS)
+5. Open dashboards: `https://localhost:5602`
+
+See the full [Getting Started Guide](docs/getting-started.md).
+
+### Development Setup
+
+```bash
+git clone <repo>
+cd tinysocs
+python -m venv .venv && source .venv/bin/activate  # or .venv\Scripts\activate on Windows
+pip install -e ".[dev]"
+cp .env.example .env  # fill in values
+docker compose up -d  # start OpenSearch + Dashboards
+python -m tinysocs.api.node  # start node API (port 8081)
+python -m tinysocs.api.bot   # start bot API (port 8090)
+```
+
+## Configuration
+
+| Setting | Location | Purpose |
+|---------|----------|---------|
+| Agent config | `C:\ProgramData\TinySocs\Collector\agent-config.yml` | Event collection, detection, notifications |
+| Detection rules | `C:\ProgramData\TinySocs\Collector\rules\rules.yml` | YAML detection rules |
+| Assistant env | `C:\ProgramData\TinySocs\Assistant\assistant.env` | LLM API keys, SIEM credentials |
+| Docker env | `.env` | OpenSearch credentials for dev |
+
+## Key Features
+
+- **Detection Engine**: YAML-based rules with KQL queries, threshold grouping, rDNS enrichment
+- **Multi-LLM Support**: Claude (Anthropic), GPT-4o (OpenAI), local models (Ollama)
+- **Action Execution**: `block_ip`, `disable_user`, `isolate_host` with dry-run and audit trail
+- **Operator Dashboards**: Alert timeline, detection rules, fleet health, event explorer
+- **Notifications**: Slack/Teams webhooks, SMTP email alerts
+- **Daily Summaries**: Automated HTML email digests with alert trends
+- **Privacy-First**: Field redaction, hashing, truncation; data stays on-prem
+- **Federated**: Multi-node architecture with HMAC-authenticated evidence ledger
+
+## Documentation
+
+- [Getting Started](docs/getting-started.md) — Install and verify in <15 minutes
+- [Operator Runbook](docs/operator-runbook.md) — Day-to-day operations reference
+- [Troubleshooting](docs/troubleshooting.md) — Common issues and fixes
+
+## Env Toggles
+
+| Variable | Values | Default |
+|----------|--------|---------|
+| `LLM_MODE` | `claude`, `openai`, `ollama` | `claude` |
+| `SIEM_BACKEND` | `opensearch` | `opensearch` |
+| `SIEM_URL` | URL | `https://localhost:9201` |
+| `BOT_PORT` | port | `8090` |
+| `NODE_PORT` | port | `8081` |
+
+See `.env.example` for the full list.
+
+## License
+
+MIT

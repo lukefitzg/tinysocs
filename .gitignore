@@ -126,6 +126,9 @@ src/tinysocs/agent/detections/rules/*
 # Ignore OpenSearch/Beats/vendor bundles if extracted accidentally
 OpenSearch/
 OpenSearch/*
+# But keep packaging/opensearch/** (dashboards, templates, policies)
+!packaging/opensearch/
+!packaging/opensearch/**
 winlogbeat-*/
 beats-*/
 opensearch-*/

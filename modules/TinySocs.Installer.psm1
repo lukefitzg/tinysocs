@@ -14879,6 +14879,151 @@ function Install-TinySocsPhase10 {
   Write-Host ""
 }
 
+# ---- Phase 12: Dashboard import -----------------------------------------------
+function Import-TinySocsDashboards {
+  <#
+    .SYNOPSIS
+      Import TinySocs saved objects (dashboards, visualizations, index patterns)
+      into OpenSearch Dashboards via the Saved Objects API.
+
+    .PARAMETER DashboardsUrl
+      Base URL for OpenSearch Dashboards (default: http://localhost:5601 inside
+      the container, or https://localhost:5602 externally).
+
+    .PARAMETER NdjsonPath
+      Path to the NDJSON export file.
+
+    .PARAMETER SiemUser
+      Admin username for authentication.
+
+    .PARAMETER SiemPass
+      Admin password for authentication.
+  #>
+  [CmdletBinding()]
+  param(
+    [string]$DashboardsUrl = "https://localhost:5602",
+    [string]$NdjsonPath,
+    [string]$SiemUser = "admin",
+    [string]$SiemPass = "admin"
+  )
+
+  if (-not $NdjsonPath) {
+    # Auto-discover from install root
+    $installRoot = $null
+    try { $installRoot = (Get-TinySocsInstallRoot | Select-Object -First 1) } catch { }
+    if (-not $installRoot) { $installRoot = Join-Path ${env:ProgramFiles} "TinySocs" }
+    $NdjsonPath = Join-Path $installRoot "OpenSearch\dashboards\tinysocs-dashboards.ndjson"
+  }
+
+  if (-not (Test-Path -LiteralPath $NdjsonPath -PathType Leaf)) {
+    Write-Warning "[TinySocs] Dashboard NDJSON not found: $NdjsonPath"
+    return $false
+  }
+
+  $url = "$($DashboardsUrl.TrimEnd('/'))/_dashboards/api/saved_objects/_import?overwrite=true"
+
+  # Build multipart/form-data using curl (avoids .NET TLS issues on PS 5.1)
+  $pair = "${SiemUser}:${SiemPass}"
+  $maxAttempts = 5
+  $attempt = 0
+  $success = $false
+
+  while ($attempt -lt $maxAttempts -and -not $success) {
+    $attempt++
+    try {
+      $result = & curl.exe -k -sS -u $pair `
+        -X POST $url `
+        -H "osd-xsrf: true" `
+        -F "file=@$NdjsonPath" `
+        2>&1 | Out-String
+
+      if ($result -match '"success"\s*:\s*true') {
+        Write-Host "[TinySocs] Dashboards imported successfully (attempt $attempt)" -ForegroundColor Green
+        $success = $true
+      } elseif ($result -match '"statusCode"\s*:\s*503') {
+        Write-Host "[TinySocs] Dashboards not ready (503), retrying ($attempt/$maxAttempts)..." -ForegroundColor Yellow
+        Start-Sleep -Seconds 5
+      } else {
+        Write-Warning "[TinySocs] Dashboard import returned: $($result.Substring(0, [Math]::Min(500, $result.Length)))"
+        Start-Sleep -Seconds 3
+      }
+    } catch {
+      Write-Warning "[TinySocs] Dashboard import failed (attempt $attempt): $($_.Exception.Message)"
+      Start-Sleep -Seconds 3
+    }
+  }
+
+  return $success
+}
+
+# ---- Phase 12: Daily summary scheduled task -----------------------------------
+function Register-TinySocsDailySummaryTask {
+  <#
+    .SYNOPSIS
+      Register a Windows Scheduled Task that runs the daily summary report at 07:00.
+
+    .PARAMETER To
+      Email recipient for the daily summary.
+
+    .PARAMETER PythonPath
+      Path to python.exe. Auto-detected from venv or PATH if not specified.
+  #>
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory)][string]$To,
+    [string]$PythonPath
+  )
+
+  $taskName = "TinySocs\DailySummary"
+
+  if (-not $PythonPath) {
+    # Try to find python from known locations
+    $candidates = @(
+      (Join-Path ${env:ProgramFiles} "TinySocs\Assistant\python.exe"),
+      (Join-Path ${env:ProgramFiles} "TinySocs\.venv\Scripts\python.exe"),
+      "python.exe"
+    )
+    foreach ($c in $candidates) {
+      if (Get-Command $c -ErrorAction SilentlyContinue) {
+        $PythonPath = $c
+        break
+      }
+    }
+    if (-not $PythonPath) { $PythonPath = "python.exe" }
+  }
+
+  $action = New-ScheduledTaskAction `
+    -Execute $PythonPath `
+    -Argument "-m tinysocs.reporting.daily_summary --to `"$To`""
+
+  $trigger = New-ScheduledTaskTrigger -Daily -At "07:00"
+
+  $settings = New-ScheduledTaskSettingsSet `
+    -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries `
+    -StartWhenAvailable
+
+  try {
+    # Remove existing task if present
+    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+
+    Register-ScheduledTask `
+      -TaskName $taskName `
+      -Action $action `
+      -Trigger $trigger `
+      -Settings $settings `
+      -User "SYSTEM" `
+      -RunLevel Highest `
+      -Description "TinySocs daily alert summary report" | Out-Null
+
+    Write-Host "[TinySocs] Registered scheduled task: $taskName (daily at 07:00 -> $To)" -ForegroundColor Green
+    return $true
+  } catch {
+    Write-Warning "[TinySocs] Failed to register daily summary task: $($_.Exception.Message)"
+    return $false
+  }
+}
+
 Export-ModuleMember -Function * -Alias *
 
 

@@ -334,6 +334,8 @@ var
   OllamaUrlLabel: TNewStaticText;
 
   WebhookUrlEdit: TNewEdit;
+  TestWebhookBtn: TNewButton;
+  WebhookTestLabel: TNewStaticText;
   EmailEnableCheck: TNewCheckBox;
   SmtpHostEdit: TNewEdit;
   EmailFromEdit: TNewEdit;
@@ -915,10 +917,26 @@ begin
   WebhookUrlEdit.Width := NotifPage.SurfaceWidth;
   WebhookUrlEdit.Text := '';
 
+  TestWebhookBtn := TNewButton.Create(NotifPage.Surface);
+  TestWebhookBtn.Parent := NotifPage.Surface;
+  TestWebhookBtn.Left := 0;
+  TestWebhookBtn.Top := WebhookUrlEdit.Top + ScaleY(28);
+  TestWebhookBtn.Width := ScaleX(110);
+  TestWebhookBtn.Height := ScaleY(25);
+  TestWebhookBtn.Caption := '&Test Webhook';
+  TestWebhookBtn.OnClick := @TestWebhookBtnClick;
+
+  WebhookTestLabel := TNewStaticText.Create(NotifPage.Surface);
+  WebhookTestLabel.Parent := NotifPage.Surface;
+  WebhookTestLabel.Left := TestWebhookBtn.Left + TestWebhookBtn.Width + ScaleX(10);
+  WebhookTestLabel.Top := TestWebhookBtn.Top + ScaleY(4);
+  WebhookTestLabel.Width := NotifPage.SurfaceWidth - TestWebhookBtn.Width - ScaleX(10);
+  WebhookTestLabel.Caption := '';
+
   EmailEnableCheck := TNewCheckBox.Create(NotifPage.Surface);
   EmailEnableCheck.Parent := NotifPage.Surface;
   EmailEnableCheck.Left := 0;
-  EmailEnableCheck.Top := WebhookUrlEdit.Top + ScaleY(36);
+  EmailEnableCheck.Top := TestWebhookBtn.Top + ScaleY(36);
   EmailEnableCheck.Width := NotifPage.SurfaceWidth;
   EmailEnableCheck.Height := ScaleY(20);
   EmailEnableCheck.Caption := '&Enable email alert notifications';
@@ -988,6 +1006,56 @@ begin
   EmailTo := '';
   EmailEnabled := False;
   PsRunCounter := 0;
+end;
+
+procedure TestWebhookBtnClick(Sender: TObject);
+var
+  Url: String;
+  PsExe: String;
+  PsCmd: String;
+  ResultCode: Integer;
+begin
+  Url := Trim(WebhookUrlEdit.Text);
+  if Url = '' then
+  begin
+    WebhookTestLabel.Caption := 'Enter a webhook URL first.';
+    WebhookTestLabel.Font.Color := clRed;
+    Exit;
+  end;
+
+  WebhookTestLabel.Caption := 'Sending test...';
+  WebhookTestLabel.Font.Color := clWindowText;
+  WizardForm.Refresh;
+
+  PsExe := GetPowerShellExePath;
+  PsCmd :=
+    '-NoProfile -ExecutionPolicy Bypass -Command "' +
+    'try { ' +
+    '$body = @{text=''TinySocs test webhook -- if you see this, notifications are working.''} | ConvertTo-Json -Compress; ' +
+    '[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; ' +
+    '$r = Invoke-RestMethod -Uri '''' + PsEscape(Url) + ''''' +
+    ' -Method Post -ContentType ''application/json'' -Body $body -TimeoutSec 10; ' +
+    'exit 0 ' +
+    '} catch { exit 1 }"';
+
+  if Exec(PsExe, PsCmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  begin
+    if ResultCode = 0 then
+    begin
+      WebhookTestLabel.Caption := 'Success -- test message sent.';
+      WebhookTestLabel.Font.Color := clGreen;
+    end
+    else
+    begin
+      WebhookTestLabel.Caption := 'Failed (HTTP error or unreachable). Check URL.';
+      WebhookTestLabel.Font.Color := clRed;
+    end;
+  end
+  else
+  begin
+    WebhookTestLabel.Caption := 'Could not run PowerShell.';
+    WebhookTestLabel.Font.Color := clRed;
+  end;
 end;
 
 function GetSelectedRole: Integer;

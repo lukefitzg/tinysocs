@@ -720,6 +720,30 @@ begin
   end;
 end;
 
+procedure UpdateLlmFieldVisibility;
+var
+  ShowApiKey, ShowOllama: Boolean;
+begin
+  ShowApiKey := LlmModeRadioOpenAI.Checked or LlmModeRadioAnthropic.Checked;
+  ShowOllama := LlmModeRadioOllama.Checked;
+
+  LlmApiKeyLabel.Visible := ShowApiKey;
+  LlmApiKeyEdit.Visible := ShowApiKey;
+  OllamaUrlLabel.Visible := ShowOllama;
+  OllamaUrlEdit.Visible := ShowOllama;
+
+  { Update API key label to match selected provider }
+  if LlmModeRadioOpenAI.Checked then
+    LlmApiKeyLabel.Caption := 'OpenAI API key:'
+  else if LlmModeRadioAnthropic.Checked then
+    LlmApiKeyLabel.Caption := 'Anthropic API key:';
+end;
+
+procedure LlmRadioClick(Sender: TObject);
+begin
+  UpdateLlmFieldVisibility;
+end;
+
 procedure InitializeWizard;
 var
   L: TNewStaticText;
@@ -897,6 +921,18 @@ begin
   OllamaUrlEdit.Top := OllamaUrlLabel.Top + ScaleY(18);
   OllamaUrlEdit.Width := LlmPage.SurfaceWidth;
   OllamaUrlEdit.Text := 'http://localhost:11434';
+
+  { Wire up radio button click handlers to toggle field visibility }
+  LlmModeRadioOpenAI.OnClick := @LlmRadioClick;
+  LlmModeRadioAnthropic.OnClick := @LlmRadioClick;
+  LlmModeRadioOllama.OnClick := @LlmRadioClick;
+  LlmModeRadioNone.OnClick := @LlmRadioClick;
+
+  { Set initial visibility (None is checked by default, so hide both) }
+  LlmApiKeyLabel.Visible := False;
+  LlmApiKeyEdit.Visible := False;
+  OllamaUrlLabel.Visible := False;
+  OllamaUrlEdit.Visible := False;
 
   { ---- Page 4: Notifications (merged webhook + email) ---- }
   NotifPage := CreateCustomPage(LlmPage.ID, 'Notifications', 'Configure alert notifications (all optional).');
@@ -1118,7 +1154,7 @@ begin
     Log('CurStepChanged(ssPostInstall): begin');
 
     { *** BUILD STAMP (change this every rebuild) *** }
-    Log('TinySocs installer build stamp: 2026-02-14-v16-GENPASS-OVERFLOW-FIX');
+    Log('TinySocs installer build stamp: 2026-02-16-v17-WEBHOOK-LLM-FIELDS-EXPLORER');
 
     AppDir := ExpandConstant('{app}');
     InstallerModule := AppDir + '\modules\TinySocs.Installer.psm1';
@@ -1151,7 +1187,7 @@ begin
       Script :=
         '$ErrorActionPreference = ''Stop''' + #13#10 +
         '$ProgressPreference = ''SilentlyContinue''' + #13#10 +
-        'Write-Host ''[TinySocs][Inno] build stamp: 2026-02-14-v16-GENPASS-OVERFLOW-FIX''' + #13#10 +
+        'Write-Host ''[TinySocs][Inno] build stamp: 2026-02-16-v17-WEBHOOK-LLM-FIELDS-EXPLORER''' + #13#10 +
         '' + #13#10 +
 
         '# Force TEMP/TMP to ProgramData AND harden ACL so stashes never land in user-profile temp (avoids ACL/AV weirdness)' + #13#10 +
@@ -1636,8 +1672,12 @@ begin
         '  $content = $content -replace ''(?m)^OPENAI_API_KEY=.*$'', (''OPENAI_API_KEY='' + ''' + PsEscape(LlmApiKey) + ''')' + CRLF +
         '  $content = $content -replace ''(?m)^ANTHROPIC_API_KEY=.*$'', (''ANTHROPIC_API_KEY='' + ''' + PsEscape(LlmApiKey) + ''')' + CRLF +
         '  $content = $content -replace ''(?m)^OFFLINE_LLM_URL=.*$'', (''OFFLINE_LLM_URL='' + ''' + PsEscape(OllamaUrl) + ''')' + CRLF +
+        '  $content = $content -replace ''(?m)^WEBHOOK_URL=.*$'', (''WEBHOOK_URL='' + ''' + PsEscape(WebhookUrl) + ''')' + CRLF +
+        '  if (''' + PsEscape(WebhookUrl) + ''' -ne '''') {' + CRLF +
+        '    $content = $content -replace ''(?m)^WEBHOOK_ENABLED=.*$'', ''WEBHOOK_ENABLED=1''' + CRLF +
+        '  }' + CRLF +
         '  Set-Content -Path $envFile -Value $content -Force' + CRLF +
-        '  Write-Host ''[TinySocs][Inno] assistant.env updated with SIEM + LLM credentials''' + CRLF +
+        '  Write-Host ''[TinySocs][Inno] assistant.env updated with SIEM + LLM + webhook credentials''' + CRLF +
         '}' + CRLF +
         '' + CRLF +
         '# Reconcile SIEM_PASS with CredMan (Phase 10 credential probe may have' + CRLF +
@@ -1741,6 +1781,21 @@ begin
         Log('CurStepChanged: Notification config written successfully.');
     end;
 
+    { ---- Phase 12: Register daily summary scheduled task ---- }
+    if (EmailEnabled) and (EmailTo <> '') then
+    begin
+      Log('CurStepChanged: Phase 12 — registering daily summary scheduled task');
+      Script :=
+        '$ErrorActionPreference = ''Continue''' + CRLF +
+        'Import-Module ''' + PsEscape(InstallerModule) + ''' -Force' + CRLF +
+        'Register-TinySocsDailySummaryTask -To ''' + PsEscape(EmailTo) + '''' + CRLF;
+
+      if not RunPowerShellScript(Script) then
+        Log('CurStepChanged: Daily summary task registration failed (non-fatal).')
+      else
+        Log('CurStepChanged: Daily summary scheduled task registered successfully.');
+    end;
+
     Log('CurStepChanged(ssPostInstall): end');
   except
     Log('CurStepChanged: exception: ' + GetExceptionMessage);
@@ -1752,6 +1807,7 @@ procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   DataRoot: String;
   FlagPath: String;
+  ResultCode: Integer;
 begin
   if CurUninstallStep <> usPostUninstall then
     Exit;
@@ -1764,6 +1820,13 @@ begin
 
   DataRoot := ExpandConstant('{commonappdata}\TinySocs');
   FlagPath := DataRoot + '\remove_on_uninstall.flag';
+
+  { Remove daily summary scheduled task }
+  try
+    Exec('schtasks.exe', '/Delete /TN "TinySocs\DailySummary" /F', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  except
+    Log('CurUninstallStepChanged: failed to remove DailySummary task (may not exist).');
+  end;
 
   if FileExists(FlagPath) then
   begin

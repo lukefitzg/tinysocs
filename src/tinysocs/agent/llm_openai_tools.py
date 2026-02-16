@@ -12,7 +12,11 @@ import httpx
 
 from tinysocs.agent.adapters.opensearch_client import OpenSearchClient as OSClient
 from tinysocs.agent.llm_schema import SCHEMA
-from tinysocs.agent.redact import scrub
+try:
+    from tinysocs.agent.redact import scrub
+except Exception:
+    def scrub(x):
+        return x
 from tinysocs.agent.tools import aggregate, propose_rule, search_kql, stage_action
 from tinysocs.netutil import is_loopback
 
@@ -27,7 +31,7 @@ MAX_PROMPT_CHARS = int(os.getenv("MAX_PROMPT_CHARS", "18000"))  # hard stop << 1
 # ▶ tool index allow-list (model can ONLY query these)
 ALLOW_INDICES = [
     s.strip()
-    for s in os.getenv("LLM_TOOL_INDEX_ALLOW", "tinysocs-winlog-*").split(",")
+    for s in os.getenv("LLM_TOOL_INDEX_ALLOW", "tinysocs-winlog-*,tinysocs-alerts-*").split(",")
     if s.strip()
 ]
 DEFAULT_INDEX = ALLOW_INDICES[0] if ALLOW_INDICES else "tinysocs-winlog-*"

@@ -37,7 +37,7 @@ MAX_PROMPT_CHARS = int(os.getenv("MAX_PROMPT_CHARS", "18000"))
 
 ALLOW_INDICES = [
     s.strip()
-    for s in os.getenv("LLM_TOOL_INDEX_ALLOW", "tinysocs-winlog-*").split(",")
+    for s in os.getenv("LLM_TOOL_INDEX_ALLOW", "tinysocs-winlog-*,tinysocs-alerts-*").split(",")
     if s.strip()
 ]
 DEFAULT_INDEX = ALLOW_INDICES[0] if ALLOW_INDICES else "tinysocs-winlog-*"

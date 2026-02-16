@@ -571,7 +571,7 @@ def bot_diag_ledger_shapes(sample: Dict[str, Any] = Body(default=None)) -> Dict[
 def meta():
     from datetime import datetime, timezone
     return {
-        "bot_id": os.getenv("BOT_ID", f"bot-{PORT}"),
+        "bot_id": os.getenv("BOT_ID", f"bot-{os.getenv('BOT_PORT', '8090')}"),
         "queue": str(_effective_queue_path()),
         "capabilities": ["exec-staging","actions-review"],
         "time_utc": datetime.now(timezone.utc).isoformat()

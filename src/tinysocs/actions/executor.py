@@ -1,24 +1,24 @@
 # tinysocs/actions/executor.py
 """
-Action Execution Engine
+Guided Response Engine
 
-Reads approved actions from the queue, validates, dispatches to handlers,
-and maintains an audit trail. Actions default to dry_run=True and require
-explicit operator approval via the /bot/approve API before execution.
+Manages operator-facing response recommendations. TinySocs detects and advises
+but never executes invasive actions on hosts or networks. The operator reviews
+recommendations, acknowledges or dismisses them, and manually carries out any
+remediation steps using the provided runbook guidance.
 
-States: staged -> approved -> executing -> completed | failed
+States: staged -> acknowledged  (operator will handle it)
+        staged -> dismissed     (false positive / not applicable)
 """
 
 from __future__ import annotations
 
 import json
 import os
-import time
-import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 # ---------------------------------------------------------------------------
 # Audit log path
@@ -30,7 +30,7 @@ _AUDIT_DIR = Path(os.getenv(
 AUDIT_LOG_PATH = _AUDIT_DIR / "actions_audit.jsonl"
 
 # ---------------------------------------------------------------------------
-# In-memory action store (backed by JSONL queue file)
+# In-memory action store
 # ---------------------------------------------------------------------------
 _actions: Dict[str, Dict[str, Any]] = {}
 
@@ -47,18 +47,62 @@ def _write_audit(entry: Dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Handler registry
+# Runbook templates — step-by-step guidance for each recommendation type
 # ---------------------------------------------------------------------------
-_handlers: Dict[str, Callable[[Dict[str, Any], bool], Dict[str, Any]]] = {}
+_RUNBOOKS: Dict[str, List[str]] = {
+    "block_ip": [
+        "Verify the IP {ip} is genuinely malicious (check threat intel, VirusTotal, AbuseIPDB)",
+        "Open Windows Firewall (wf.msc) or your network firewall admin console",
+        "Create an inbound deny rule for {ip}",
+        "Create an outbound deny rule for {ip}",
+        "Monitor for continued connection attempts from {ip} in Event Explorer",
+        "Document the block in your incident log with the reason: {reason}",
+    ],
+    "isolate_host": [
+        "Confirm the host {host} is compromised (review alert details and matched events)",
+        "Notify the user of {host} that their machine is under investigation",
+        "Disconnect {host} from the network (unplug cable or disable Wi-Fi adapter)",
+        "If remote: use Windows Firewall to block all outbound except SIEM — run:",
+        '  netsh advfirewall firewall add rule name="TinySocs-Isolate-AllowSIEM" dir=out action=allow remoteip=<SIEM_IP>',
+        '  netsh advfirewall firewall add rule name="TinySocs-Isolate-DenyAll" dir=out action=block remoteip=any',
+        "Begin forensic triage on {host} (collect logs, memory dump, check persistence)",
+        "Document isolation in your incident log: {reason}",
+    ],
+    "disable_user": [
+        "Verify the user account '{user}' is genuinely compromised",
+        "Check if '{user}' is a service account — disabling it may cause outages",
+        "Disable the account: net user {user} /active:no",
+        "Force logoff any active sessions for '{user}'",
+        "Reset the password for '{user}' before re-enabling",
+        "Review recent activity for '{user}' in Event Explorer (winlog.event_id:4624 AND winlog.TargetUserName:{user})",
+        "Document the action in your incident log: {reason}",
+    ],
+    "open_ticket": [
+        "Create a ticket in your ITSM/ticketing system",
+        "Include the alert details: {reason}",
+        "Assign to the appropriate team for investigation",
+        "Link this TinySocs alert ID for reference",
+    ],
+}
+
+_DEFAULT_RUNBOOK = [
+    "Review the alert details and matched events in the dashboard",
+    "Assess the severity and determine if this requires immediate action",
+    "Follow your organisation's incident response playbook",
+    "Document your findings and actions taken",
+]
 
 
-def register_handler(action_name: str, handler: Callable[[Dict[str, Any], bool], Dict[str, Any]]) -> None:
-    """Register an action handler function.
-
-    Handler signature: handler(params: dict, dry_run: bool) -> dict
-    Must return {"success": bool, "detail": str, ...}
-    """
-    _handlers[action_name] = handler
+def _build_runbook(action: str, params: Dict[str, Any]) -> List[str]:
+    """Generate runbook steps for a given action type, interpolating parameters."""
+    template = _RUNBOOKS.get(action, _DEFAULT_RUNBOOK)
+    steps = []
+    for step in template:
+        try:
+            steps.append(step.format(**params))
+        except (KeyError, IndexError):
+            steps.append(step)
+    return steps
 
 
 # ---------------------------------------------------------------------------
@@ -70,33 +114,33 @@ def stage_action(
     who: Optional[str] = None,
     dry_run: bool = True,
 ) -> Dict[str, Any]:
-    """Stage an action for operator review.
+    """Stage a guided response recommendation for operator review.
 
-    Returns the full action record including its generated action_id.
+    Returns the full record including its generated action_id and runbook steps.
     """
     action_id = str(uuid.uuid4())[:12]
+    runbook = _build_runbook(action, params)
     record = {
         "action_id": action_id,
         "action": action,
         "params": params,
         "who": who or "system",
-        "dry_run": dry_run,
         "status": "staged",
+        "runbook": runbook,
         "staged_at": _now(),
-        "approved_at": None,
-        "approved_by": None,
-        "completed_at": None,
-        "result": None,
+        "resolved_at": None,
+        "resolved_by": None,
+        "resolution": None,
     }
     _actions[action_id] = record
 
     _write_audit({
-        "event": "action_staged",
+        "event": "response_staged",
         "action_id": action_id,
         "action": action,
         "params": params,
         "who": who,
-        "dry_run": dry_run,
+        "runbook_steps": len(runbook),
         "timestamp": _now(),
     })
 
@@ -104,9 +148,10 @@ def stage_action(
 
 
 def approve_action(action_id: str, approved_by: str = "operator") -> Dict[str, Any]:
-    """Move an action from staged to approved, then execute it.
+    """Acknowledge a staged recommendation — operator will handle it manually.
 
-    Returns the updated action record after execution attempt.
+    This does NOT execute anything. It records the operator's acknowledgement
+    and provides the runbook steps for manual remediation.
     """
     record = _actions.get(action_id)
     if not record:
@@ -115,74 +160,43 @@ def approve_action(action_id: str, approved_by: str = "operator") -> Dict[str, A
     if record["status"] != "staged":
         raise ValueError(f"Action {action_id} is '{record['status']}', not 'staged'")
 
-    record["status"] = "approved"
-    record["approved_at"] = _now()
-    record["approved_by"] = approved_by
+    record["status"] = "acknowledged"
+    record["resolved_at"] = _now()
+    record["resolved_by"] = approved_by
+    record["resolution"] = "Operator acknowledged — manual remediation in progress"
 
     _write_audit({
-        "event": "action_approved",
+        "event": "response_acknowledged",
         "action_id": action_id,
-        "approved_by": approved_by,
+        "resolved_by": approved_by,
         "timestamp": _now(),
     })
 
-    # Execute immediately after approval
-    return execute_action(action_id)
+    return record
 
 
-def execute_action(action_id: str) -> Dict[str, Any]:
-    """Execute an approved action via its registered handler."""
+def reject_action(action_id: str, rejected_by: str = "operator", reason: str = "") -> Dict[str, Any]:
+    """Dismiss a staged recommendation — false positive or not applicable.
+
+    Returns the updated record.
+    """
     record = _actions.get(action_id)
     if not record:
         raise ValueError(f"Action {action_id} not found")
 
-    if record["status"] not in ("approved",):
-        raise ValueError(f"Action {action_id} is '{record['status']}', expected 'approved'")
+    if record["status"] != "staged":
+        raise ValueError(f"Action {action_id} is '{record['status']}', not 'staged'")
 
-    handler = _handlers.get(record["action"])
-    if not handler:
-        record["status"] = "failed"
-        record["completed_at"] = _now()
-        record["result"] = {"success": False, "detail": f"No handler for action '{record['action']}'"}
-        _write_audit({
-            "event": "action_failed",
-            "action_id": action_id,
-            "reason": "no_handler",
-            "timestamp": _now(),
-        })
-        return record
-
-    record["status"] = "executing"
-    _write_audit({
-        "event": "action_executing",
-        "action_id": action_id,
-        "dry_run": record["dry_run"],
-        "timestamp": _now(),
-    })
-
-    try:
-        result = handler(record["params"], record["dry_run"])
-        record["result"] = result
-        record["status"] = "completed" if result.get("success") else "failed"
-    except Exception as exc:
-        record["result"] = {
-            "success": False,
-            "detail": f"{type(exc).__name__}: {exc}",
-            "traceback": traceback.format_exc(),
-        }
-        record["status"] = "failed"
-
-    record["completed_at"] = _now()
+    record["status"] = "dismissed"
+    record["resolved_at"] = _now()
+    record["resolved_by"] = rejected_by
+    record["resolution"] = f"Dismissed by {rejected_by}" + (f": {reason}" if reason else "")
 
     _write_audit({
-        "event": f"action_{record['status']}",
+        "event": "response_dismissed",
         "action_id": action_id,
-        "action": record["action"],
-        "params": record["params"],
-        "dry_run": record["dry_run"],
-        "result": record["result"],
-        "who": record["who"],
-        "approved_by": record.get("approved_by"),
+        "resolved_by": rejected_by,
+        "reason": reason,
         "timestamp": _now(),
     })
 
@@ -190,7 +204,7 @@ def execute_action(action_id: str) -> Dict[str, Any]:
 
 
 def get_action(action_id: str) -> Optional[Dict[str, Any]]:
-    """Retrieve a single action by ID."""
+    """Retrieve a single recommendation by ID."""
     return _actions.get(action_id)
 
 
@@ -199,7 +213,7 @@ def list_actions(
     action: Optional[str] = None,
     limit: int = 50,
 ) -> List[Dict[str, Any]]:
-    """List actions, optionally filtered by status or action type. Newest first."""
+    """List recommendations, optionally filtered by status or type. Newest first."""
     items = list(_actions.values())
 
     if status:
@@ -210,30 +224,3 @@ def list_actions(
     # Sort by staged_at descending
     items.sort(key=lambda a: a.get("staged_at", ""), reverse=True)
     return items[:limit]
-
-
-# ---------------------------------------------------------------------------
-# Bootstrap: register built-in handlers
-# ---------------------------------------------------------------------------
-def _register_builtin_handlers() -> None:
-    """Auto-register the built-in action handlers."""
-    try:
-        from tinysocs.actions.handlers.block_ip import handle_block_ip
-        register_handler("block_ip", handle_block_ip)
-    except ImportError:
-        pass
-
-    try:
-        from tinysocs.actions.handlers.disable_user import handle_disable_user
-        register_handler("disable_user", handle_disable_user)
-    except ImportError:
-        pass
-
-    try:
-        from tinysocs.actions.handlers.isolate_host import handle_isolate_host
-        register_handler("isolate_host", handle_isolate_host)
-    except ImportError:
-        pass
-
-
-_register_builtin_handlers()

@@ -12,20 +12,222 @@ Browse: http://localhost:8090/dashboard
 
 from __future__ import annotations
 
+import json
 import os
 import traceback
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, Query
+from fastapi import Body, FastAPI, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 
 dashboard_app = FastAPI(title="TinySocs Dashboard", docs_url=None, redoc_url=None)
 
 # ---------------------------------------------------------------------------
+# In-memory chat sessions: session_id -> list of Anthropic message dicts
+# Persisted to a JSON file so conversations survive restarts / page refreshes.
+# ---------------------------------------------------------------------------
+_chat_sessions: Dict[str, List[Dict[str, Any]]] = {}
+_CHAT_SESSION_FILE: Optional[Path] = None
+
+# ---------------------------------------------------------------------------
+# Alert state tracking: alert_id -> {status, tags, notes, updated_at, ...}
+# Persisted to a JSON file so state survives restarts.
+# ---------------------------------------------------------------------------
+_alert_states: Dict[str, Dict[str, Any]] = {}
+_ALERT_STATE_FILE: Optional[Path] = None
+
+
+def _init_alert_state_file() -> Path:
+    """Determine and load the alert state persistence file."""
+    global _alert_states, _ALERT_STATE_FILE
+    if _ALERT_STATE_FILE is not None:
+        return _ALERT_STATE_FILE
+    candidates = [
+        Path(os.getenv("ProgramData", "C:\\ProgramData")) / "TinySocs" / "Assistant" / "alert_states.json",
+        Path("/var/lib/tinysocs/alert_states.json"),
+        Path.cwd() / "alert_states.json",
+    ]
+    for p in candidates:
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            _ALERT_STATE_FILE = p
+            if p.is_file():
+                _alert_states = json.loads(p.read_text(encoding="utf-8"))
+            return p
+        except Exception:
+            continue
+    _ALERT_STATE_FILE = candidates[-1]
+    return _ALERT_STATE_FILE
+
+
+def _save_alert_states() -> None:
+    """Persist alert states to disk."""
+    try:
+        path = _init_alert_state_file()
+        path.write_text(json.dumps(_alert_states, indent=2, default=str), encoding="utf-8")
+    except Exception:
+        pass  # Non-fatal — state is still in memory
+
+
+def _init_chat_session_file() -> Path:
+    """Determine and load the chat session persistence file."""
+    global _chat_sessions, _CHAT_SESSION_FILE
+    if _CHAT_SESSION_FILE is not None:
+        return _CHAT_SESSION_FILE
+    candidates = [
+        Path(os.getenv("ProgramData", "C:\\ProgramData")) / "TinySocs" / "Assistant" / "chat_sessions.json",
+        Path("/var/lib/tinysocs/chat_sessions.json"),
+        Path.cwd() / "chat_sessions.json",
+    ]
+    for p in candidates:
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            _CHAT_SESSION_FILE = p
+            if p.is_file():
+                _chat_sessions.update(json.loads(p.read_text(encoding="utf-8")))
+            return p
+        except Exception:
+            continue
+    _CHAT_SESSION_FILE = candidates[-1]
+    return _CHAT_SESSION_FILE
+
+
+def _save_chat_sessions() -> None:
+    """Persist chat sessions to disk (keeps only last 5 sessions, 20 msgs each)."""
+    try:
+        path = _init_chat_session_file()
+        # Only persist last 5 sessions to keep file small
+        keys = list(_chat_sessions.keys())[-5:]
+        trimmed = {k: _chat_sessions[k][-20:] for k in keys if k in _chat_sessions}
+        path.write_text(json.dumps(trimmed, indent=2, default=str), encoding="utf-8")
+    except Exception:
+        pass  # Non-fatal
+
+
+# ---------------------------------------------------------------------------
+# Env bootstrap: load assistant.env if env vars are missing
+# ---------------------------------------------------------------------------
+def _load_assistant_env() -> None:
+    """Load SIEM credentials from assistant.env when not already in environment."""
+    if os.getenv("SIEM_PASS"):
+        return  # Already set (e.g. by bot.py dotenv or NSSM)
+    candidates = [
+        Path(os.getenv("ProgramData", "C:\\ProgramData")) / "TinySocs" / "Assistant" / "assistant.env",
+        Path(os.getenv("ProgramFiles", "C:\\Program Files")) / "TinySocs" / "Assistant" / "assistant.env",
+        Path("/var/lib/tinysocs/assistant.env"),  # Linux fallback
+    ]
+    for p in candidates:
+        if p.is_file():
+            try:
+                for line in p.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, _, v = line.partition("=")
+                    k, v = k.strip(), v.strip().strip('"').strip("'")
+                    if k and k not in os.environ:
+                        os.environ[k] = v
+            except Exception:
+                pass
+            break
+
+_load_assistant_env()
+
+
+# ---------------------------------------------------------------------------
+# TLS CA cert resolution
+# ---------------------------------------------------------------------------
+_ca_pem_cache: Optional[str] = None
+
+
+def _ensure_pem(cert_path: Path) -> str:
+    """Return a PEM file path for the given cert. Converts DER->PEM if needed."""
+    raw = cert_path.read_bytes()
+    if raw[:27] == b"-----BEGIN CERTIFICATE-----":
+        print(f"[dashboard] CA cert: already PEM -> {cert_path}")
+        return str(cert_path)
+
+    # DER-encoded: convert to PEM
+    import base64, tempfile
+    print(f"[dashboard] CA cert: DER detected ({len(raw)} bytes, first4={raw[:4].hex()}), converting to PEM")
+    b64 = base64.encodebytes(raw).decode("ascii")
+    pem = f"-----BEGIN CERTIFICATE-----\n{b64}-----END CERTIFICATE-----\n"
+    # Try to write next to the original
+    pem_path = cert_path.parent / "ca-converted.pem"
+    try:
+        pem_path.write_text(pem, encoding="ascii")
+        print(f"[dashboard] CA cert: DER->PEM converted -> {pem_path}")
+        return str(pem_path)
+    except Exception as exc:
+        print(f"[dashboard] CA cert: write to {pem_path} failed: {exc}")
+        fd, tmp = tempfile.mkstemp(suffix=".pem", prefix="tinysocs-ca-")
+        os.write(fd, pem.encode("ascii"))
+        os.close(fd)
+        print(f"[dashboard] CA cert: DER->PEM converted -> {tmp} (temp)")
+        return tmp
+
+
+def _resolve_ca_cert() -> Any:
+    """Find the TinyBox CA certificate for OpenSearch TLS verification.
+
+    Returns a path to a PEM file (str), True for system bundle, or False to skip.
+    Converts DER-encoded certs to PEM automatically.
+    """
+    global _ca_pem_cache
+    if _ca_pem_cache is not None:
+        return _ca_pem_cache
+
+    # 1. Explicit env override
+    explicit = os.getenv("SIEM_CA_CERT", "")
+    if explicit and Path(explicit).is_file():
+        print(f"[dashboard] CA cert: SIEM_CA_CERT={explicit}")
+        _ca_pem_cache = _ensure_pem(Path(explicit))
+        return _ca_pem_cache
+
+    verify_str = os.getenv("SIEM_SSL_VERIFY", "").lower()
+    if verify_str in ("true", "1", "yes"):
+        print("[dashboard] CA cert: using system bundle (SIEM_SSL_VERIFY=true)")
+        _ca_pem_cache = True  # type: ignore[assignment]
+        return True
+
+    # 2. Auto-discover TinyBox CA cert
+    pd = os.getenv("ProgramData", "C:\\ProgramData")
+    candidates = [
+        Path(pd) / "TinySocs" / "OpenSearch" / "config" / "root-ca.pem",
+        Path(pd) / "TinySocs" / "OpenSearch" / "config" / "certs" / "ca.pem",
+        Path(pd) / "TinySocs" / "OpenSearch" / "config" / "certs" / "ca.cer",
+    ]
+    for cert_path in candidates:
+        if not cert_path.is_file():
+            continue
+        print(f"[dashboard] CA cert: found {cert_path}")
+        _ca_pem_cache = _ensure_pem(cert_path)
+        return _ca_pem_cache
+
+    # 3. No cert found — disable verification with a warning
+    print(f"[dashboard] CA cert: NO cert found (SIEM_SSL_VERIFY={verify_str!r}); verify=False")
+    _ca_pem_cache = False  # type: ignore[assignment]
+    return False
+
+
+# ---------------------------------------------------------------------------
 # OpenSearch helper (reuse same pattern as daily_summary)
 # ---------------------------------------------------------------------------
+import time as _time
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+
+# Thread pool for running blocking OpenSearch queries without blocking uvicorn
+_os_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="os-query")
+
+# Connection failure cache: avoid hammering a down SIEM with long timeouts
+_siem_fail_cache: Dict[str, Any] = {"error": None, "until": 0.0}
+_SIEM_FAIL_CACHE_SECS = 30  # cache a connection failure for 30 seconds
+
+
 def _os_query(index: str, body: Dict[str, Any], size: int = 0) -> Dict[str, Any]:
     import requests as _req
     try:
@@ -34,53 +236,80 @@ def _os_query(index: str, body: Dict[str, Any], size: int = 0) -> Dict[str, Any]
     except Exception:
         pass
 
+    # Fast fail if we recently couldn't connect
+    now = _time.time()
+    if _siem_fail_cache["error"] and now < _siem_fail_cache["until"]:
+        raise ConnectionError(_siem_fail_cache["error"])
+
     url = os.getenv("SIEM_URL", "https://localhost:9201")
     user = os.getenv("SIEM_USER", "admin")
     passwd = os.getenv("SIEM_PASS", "admin")
-    verify_str = os.getenv("SIEM_SSL_VERIFY", "false").lower()
-    # Default to no-verify for local TinyBox (self-signed certs)
-    verify = verify_str not in ("false", "0", "no", "")
+    verify = _resolve_ca_cert()
 
     body["size"] = size
-    resp = _req.post(
-        f"{url.rstrip('/')}/{index}/_search",
-        json=body,
-        auth=(user, passwd),
-        verify=verify,
-        timeout=15,
-    )
-    resp.raise_for_status()
-    return resp.json()
+    try:
+        resp = _req.post(
+            f"{url.rstrip('/')}/{index}/_search",
+            json=body,
+            auth=(user, passwd),
+            verify=verify,
+            timeout=(5, 15),  # (connect_timeout, read_timeout)
+        )
+        resp.raise_for_status()
+        # Connection succeeded — clear any cached failure
+        _siem_fail_cache["error"] = None
+        _siem_fail_cache["until"] = 0.0
+        return resp.json()
+    except (_req.exceptions.ConnectionError, _req.exceptions.Timeout, OSError) as exc:
+        # Cache this failure so parallel requests fail fast
+        _siem_fail_cache["error"] = str(exc)[:200]
+        _siem_fail_cache["until"] = _time.time() + _SIEM_FAIL_CACHE_SECS
+        raise
 
 
 def _safe_query(index: str, body: Dict[str, Any], size: int = 0) -> Dict[str, Any]:
-    """Query with graceful error handling."""
+    """Query with graceful error handling (synchronous wrapper)."""
     try:
         return _os_query(index, body, size)
     except Exception as exc:
-        # Friendly error for operators — hide Python tracebacks
-        err_type = type(exc).__name__
-        err_str = str(exc)
-        # Log the real error for diagnostics
-        print(f"[dashboard] query error on {index}: {err_type}: {err_str[:200]}")
-        if "SSL" in err_type or "SSL" in err_str:
-            friendly = "SIEM SSL error"
-        elif "Connection" in err_type or "ConnectionError" in err_str:
-            friendly = "SIEM not connected"
-        elif "401" in err_str or "403" in err_str:
-            friendly = "SIEM authentication failed"
-        elif "Timeout" in err_type:
-            friendly = "SIEM request timed out"
-        else:
-            friendly = f"SIEM query failed ({err_type})"
-        return {"error": friendly, "hits": {"total": {"value": 0}, "hits": []}, "aggregations": {}}
+        return _format_query_error(index, exc)
+
+
+async def _safe_query_async(index: str, body: Dict[str, Any], size: int = 0) -> Dict[str, Any]:
+    """Query with graceful error handling (async — runs in thread pool)."""
+    loop = asyncio.get_event_loop()
+    try:
+        return await loop.run_in_executor(_os_executor, _os_query, index, body, size)
+    except Exception as exc:
+        return _format_query_error(index, exc)
+
+
+def _format_query_error(index: str, exc: Exception) -> Dict[str, Any]:
+    """Format a query exception into a friendly error dict."""
+    err_type = type(exc).__name__
+    err_str = str(exc)
+    print(f"[dashboard] query error on {index}: {err_type}: {err_str[:500]}")
+    tb = traceback.format_exc()
+    for line in tb.strip().splitlines()[-5:]:
+        print(f"[dashboard]   {line}")
+    if "SSL" in err_type or "SSL" in err_str:
+        friendly = f"SIEM SSL error: {err_str[:120]}"
+    elif "Connection" in err_type or "ConnectionError" in err_str:
+        friendly = "SIEM not connected — check that OpenSearch is running"
+    elif "401" in err_str or "403" in err_str:
+        friendly = "SIEM authentication failed"
+    elif "Timeout" in err_type:
+        friendly = "SIEM request timed out"
+    else:
+        friendly = f"SIEM query failed ({err_type}): {err_str[:120]}"
+    return {"error": friendly, "hits": {"total": {"value": 0}, "hits": []}, "aggregations": {}}
 
 
 # ---------------------------------------------------------------------------
 # Data API endpoints (no auth — local operator tool)
 # ---------------------------------------------------------------------------
 @dashboard_app.get("/api/alerts/timeline")
-def api_alert_timeline(hours: int = Query(24, ge=1, le=720)):
+async def api_alert_timeline(hours: int = Query(24, ge=1, le=720)):
     """Alert counts bucketed by hour and severity."""
     body = {
         "query": {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}},
@@ -93,7 +322,7 @@ def api_alert_timeline(hours: int = Query(24, ge=1, le=720)):
             }
         },
     }
-    resp = _safe_query("tinysocs-alerts-*", body)
+    resp = await _safe_query_async("tinysocs-alerts-*", body)
     buckets = resp.get("aggregations", {}).get("timeline", {}).get("buckets", [])
     return {
         "hours": hours,
@@ -113,14 +342,14 @@ def api_alert_timeline(hours: int = Query(24, ge=1, le=720)):
 
 
 @dashboard_app.get("/api/alerts/summary")
-def api_alert_summary(hours: int = Query(24, ge=1, le=720)):
+async def api_alert_summary(hours: int = Query(24, ge=1, le=720)):
     """Summary stats: total, by severity, top rules, top hosts."""
     # Total + severity
     body_sev = {
         "query": {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}},
         "aggs": {"by_severity": {"terms": {"field": "alert.severity", "size": 10}}},
     }
-    resp_sev = _safe_query("tinysocs-alerts-*", body_sev)
+    resp_sev = await _safe_query_async("tinysocs-alerts-*", body_sev)
 
     total_hit = resp_sev.get("hits", {}).get("total", {})
     total = total_hit.get("value", 0) if isinstance(total_hit, dict) else int(total_hit)
@@ -134,7 +363,7 @@ def api_alert_summary(hours: int = Query(24, ge=1, le=720)):
         "query": {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}},
         "aggs": {"by_rule": {"terms": {"field": "alert.rule_id", "size": 10, "order": {"_count": "desc"}}}},
     }
-    resp_rules = _safe_query("tinysocs-alerts-*", body_rules)
+    resp_rules = await _safe_query_async("tinysocs-alerts-*", body_rules)
     top_rules = [
         {"rule": b["key"], "count": b["doc_count"]}
         for b in resp_rules.get("aggregations", {}).get("by_rule", {}).get("buckets", [])
@@ -145,7 +374,7 @@ def api_alert_summary(hours: int = Query(24, ge=1, le=720)):
         "query": {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}},
         "aggs": {"by_host": {"terms": {"field": "source.computer_name.keyword", "size": 10, "order": {"_count": "desc"}}}},
     }
-    resp_hosts = _safe_query("tinysocs-alerts-*", body_hosts)
+    resp_hosts = await _safe_query_async("tinysocs-alerts-*", body_hosts)
     top_hosts = [
         {"host": b["key"], "count": b["doc_count"]}
         for b in resp_hosts.get("aggregations", {}).get("by_host", {}).get("buckets", [])
@@ -161,9 +390,610 @@ def api_alert_summary(hours: int = Query(24, ge=1, le=720)):
     }
 
 
+@dashboard_app.get("/api/detections/fired")
+async def api_detections_fired(
+    hours: int = Query(24, ge=1, le=720),
+    limit: int = Query(30, ge=1, le=200),
+):
+    """Fetch individual fired detections with full details."""
+    body = {
+        "query": {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}},
+        "sort": [{"timestamp": {"order": "desc"}}],
+    }
+    resp = await _safe_query_async("tinysocs-alerts-*", body, size=limit)
+    hits = resp.get("hits", {}).get("hits", [])
+    detections = []
+    for h in hits:
+        src = h.get("_source", {})
+        alert = src.get("alert", {})
+        detections.append({
+            "id": h.get("_id", ""),
+            "alert_id": alert.get("id", ""),
+            "rule_id": alert.get("rule_id", ""),
+            "rule_name": alert.get("rule_name", ""),
+            "severity": alert.get("severity", ""),
+            "description": alert.get("description", ""),
+            "event_count": alert.get("event_count", 0),
+            "first_seen": alert.get("first_seen", ""),
+            "last_seen": alert.get("last_seen", ""),
+            "timestamp": src.get("timestamp", ""),
+            "host": src.get("source", {}).get("computer_name", ""),
+            "matched_events": src.get("matched_events", 0),
+        })
+    total_hit = resp.get("hits", {}).get("total", 0)
+    total = total_hit.get("value", 0) if isinstance(total_hit, dict) else int(total_hit)
+
+    # Merge in alert states (acknowledge/dismiss/tags)
+    _init_alert_state_file()
+    for det in detections:
+        state = _alert_states.get(det["id"], {})
+        det["status"] = state.get("status", "new")
+        det["tags"] = state.get("tags", [])
+        det["notes"] = state.get("notes", "")
+
+    return {"detections": detections, "total": total, "error": resp.get("error")}
+
+
+@dashboard_app.post("/api/detections/{alert_id}/status")
+def api_detection_status(alert_id: str, body: Dict[str, Any] = Body(...)):
+    """Update the status of a detection: new, acknowledged, dismissed."""
+    _init_alert_state_file()
+    status = body.get("status", "")
+    if status not in ("new", "acknowledged", "dismissed"):
+        return JSONResponse(status_code=400, content={"ok": False, "error": "Invalid status"})
+
+    if alert_id not in _alert_states:
+        _alert_states[alert_id] = {"tags": [], "notes": ""}
+    _alert_states[alert_id]["status"] = status
+    _alert_states[alert_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _save_alert_states()
+    return {"ok": True, "alert_id": alert_id, "status": status}
+
+
+@dashboard_app.post("/api/detections/{alert_id}/tags")
+def api_detection_tags(alert_id: str, body: Dict[str, Any] = Body(...)):
+    """Set tags on a detection. Body: {"tags": ["investigating", "false-positive"]}"""
+    _init_alert_state_file()
+    tags = body.get("tags", [])
+    if not isinstance(tags, list):
+        return JSONResponse(status_code=400, content={"ok": False, "error": "tags must be a list"})
+
+    if alert_id not in _alert_states:
+        _alert_states[alert_id] = {"status": "new", "notes": ""}
+    _alert_states[alert_id]["tags"] = [str(t).strip() for t in tags if str(t).strip()]
+    _alert_states[alert_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _save_alert_states()
+    return {"ok": True, "alert_id": alert_id, "tags": _alert_states[alert_id]["tags"]}
+
+
+@dashboard_app.post("/api/alerts/purge")
+def api_alerts_purge(body: Dict[str, Any] = Body(...)):
+    """Delete alerts older than the specified number of days from OpenSearch.
+
+    Also purges corresponding alert states from the local state file.
+    Body: {"older_than_days": 30}
+    """
+    import requests as _req
+    try:
+        import urllib3 as _u3
+        _u3.disable_warnings(_u3.exceptions.InsecureRequestWarning)
+    except Exception:
+        pass
+
+    days = int(body.get("older_than_days", 30))
+    if days < 1:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "older_than_days must be >= 1"})
+
+    url = os.getenv("SIEM_URL", "https://localhost:9201")
+    user = os.getenv("SIEM_USER", "admin")
+    passwd = os.getenv("SIEM_PASS", "admin")
+    verify = _resolve_ca_cert()
+
+    delete_body = {
+        "query": {"range": {"timestamp": {"lt": f"now-{days}d"}}}
+    }
+    try:
+        resp = _req.post(
+            f"{url.rstrip('/')}/tinysocs-alerts-*/_delete_by_query",
+            json=delete_body,
+            auth=(user, passwd),
+            verify=verify,
+            timeout=30,
+        )
+        resp.raise_for_status()
+        result = resp.json()
+        deleted = result.get("deleted", 0)
+
+        # Also purge old alert states from local file
+        _init_alert_state_file()
+        stale_keys = [
+            k for k, v in _alert_states.items()
+            if v.get("status") == "dismissed"
+        ]
+        # Only remove dismissed states (keep acknowledged/new as they may still matter)
+        for k in stale_keys:
+            _alert_states.pop(k, None)
+        _save_alert_states()
+
+        # Also purge chat sessions to keep things clean
+        _chat_sessions.clear()
+        _save_chat_sessions()
+
+        return {"ok": True, "deleted_alerts": deleted, "purged_states": len(stale_keys), "purged_chats": True}
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)[:200]})
+
+
+@dashboard_app.get("/api/alerts/retention")
+def api_alerts_retention():
+    """Get current alert retention config and stats."""
+    retention_days = int(os.getenv("ALERT_RETENTION_DAYS", "90"))
+    _init_alert_state_file()
+    total_states = len(_alert_states)
+    by_status = {}
+    for v in _alert_states.values():
+        s = v.get("status", "new")
+        by_status[s] = by_status.get(s, 0) + 1
+    return {
+        "retention_days": retention_days,
+        "tracked_alerts": total_states,
+        "by_status": by_status,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Alert Rules management — custom rules stored as JSON, built-in rules read from YAML
+# ---------------------------------------------------------------------------
+_custom_rules: List[Dict[str, Any]] = []
+_CUSTOM_RULES_FILE: Optional[Path] = None
+
+_RULE_REQUIRED_FIELDS = {"id", "description", "kql", "severity"}
+_RULE_ALL_FIELDS = {
+    "id", "description", "index", "time_field", "kql", "group_by",
+    "threshold", "severity", "category", "enabled", "source",
+}
+_SEVERITY_OPTIONS = ("low", "medium", "high", "critical", "info")
+_CATEGORY_OPTIONS = (
+    "auth", "powershell", "endpoint", "identity", "persistence",
+    "lateral", "network", "cloud", "custom",
+)
+
+
+def _init_custom_rules_file() -> Path:
+    """Determine and load the custom rules persistence file."""
+    global _custom_rules, _CUSTOM_RULES_FILE
+    if _CUSTOM_RULES_FILE is not None:
+        return _CUSTOM_RULES_FILE
+    candidates = [
+        Path(os.getenv("ProgramData", "C:\\ProgramData")) / "TinySocs" / "custom_rules.json",
+        Path("/var/lib/tinysocs/custom_rules.json"),
+        Path.cwd() / "custom_rules.json",
+    ]
+    for p in candidates:
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            _CUSTOM_RULES_FILE = p
+            if p.is_file():
+                _custom_rules = json.loads(p.read_text(encoding="utf-8"))
+            return p
+        except Exception:
+            continue
+    _CUSTOM_RULES_FILE = candidates[-1]
+    return _CUSTOM_RULES_FILE
+
+
+def _save_custom_rules() -> None:
+    """Persist custom rules to disk and notify the detection registry."""
+    try:
+        path = _init_custom_rules_file()
+        path.write_text(json.dumps(_custom_rules, indent=2, default=str), encoding="utf-8")
+    except Exception:
+        pass
+    # Reload the detection registry so the engine picks up changes
+    try:
+        from tinysocs.agent.detections.registry import reload_rules
+        reload_rules()
+    except Exception:
+        pass
+
+
+def _validate_kql(kql: str, index: str = "tinysocs-winlog-*") -> Dict[str, Any]:
+    """Test a KQL query against OpenSearch.
+
+    Returns {"valid": True/False, "error": str|None, "hits": int, "warning": str|None}.
+    """
+    try:
+        body = {
+            "query": {"query_string": {"query": kql}},
+            "size": 0,
+            "track_total_hits": True,
+        }
+        resp = _safe_query(index, body, size=0)
+        if resp.get("error"):
+            return {"valid": False, "error": resp["error"], "hits": 0, "warning": None}
+        total_hit = resp.get("hits", {}).get("total", 0)
+        hits = total_hit.get("value", 0) if isinstance(total_hit, dict) else int(total_hit)
+        warning = None
+        if hits == 0:
+            warning = f"Query is valid but matched 0 events in '{index}'. The rule will never fire unless matching data arrives."
+        return {"valid": True, "error": None, "hits": hits, "warning": warning}
+    except Exception as exc:
+        return {"valid": False, "error": str(exc), "hits": 0, "warning": None}
+
+
+def _load_builtin_rules() -> List[Dict[str, Any]]:
+    """Load built-in rules from the packaged rules.yaml (read-only)."""
+    try:
+        import yaml
+        from importlib import resources as _res
+        pkg = "tinysocs.agent.detections"
+        text = _res.files(pkg).joinpath("rules.yaml").read_text(encoding="utf-8")
+        raw = yaml.safe_load(text) or []
+        for r in raw:
+            r.setdefault("source", "built-in")
+            r.setdefault("enabled", True)
+        return raw
+    except Exception:
+        return []
+
+
+@dashboard_app.get("/api/rules")
+def api_rules_list():
+    """List all detection rules (built-in + custom)."""
+    builtin = _load_builtin_rules()
+    _init_custom_rules_file()
+    combined = []
+    for r in builtin:
+        combined.append({**r, "source": "built-in", "editable": False})
+    for r in _custom_rules:
+        combined.append({**r, "source": r.get("source", "custom"), "editable": True})
+    return {"rules": combined, "count": len(combined)}
+
+
+@dashboard_app.post("/api/rules")
+def api_rules_create(body: Dict[str, Any] = Body(...)):
+    """Create a single custom detection rule."""
+    _init_custom_rules_file()
+    rule = body.get("rule", body)
+
+    # Validate required fields
+    missing = _RULE_REQUIRED_FIELDS - set(rule.keys())
+    if missing:
+        return JSONResponse(status_code=400, content={"error": f"Missing required fields: {', '.join(sorted(missing))}"})
+
+    rule_id = str(rule["id"]).strip()
+    if not rule_id:
+        return JSONResponse(status_code=400, content={"error": "Rule ID cannot be empty"})
+
+    # Check for duplicate ID
+    existing_ids = {r["id"] for r in _custom_rules}
+    builtin_ids = {r["id"] for r in _load_builtin_rules()}
+    if rule_id in existing_ids:
+        return JSONResponse(status_code=409, content={"error": f"Custom rule '{rule_id}' already exists"})
+    if rule_id in builtin_ids:
+        return JSONResponse(status_code=409, content={"error": f"Rule ID '{rule_id}' conflicts with a built-in rule"})
+
+    # Validate KQL against OpenSearch (skip if explicitly requested)
+    kql = str(rule["kql"]).strip()
+    idx = str(rule.get("index", "tinysocs-winlog-*")).strip()
+    kql_warning = None
+    if not body.get("skip_validation"):
+        vr = _validate_kql(kql, idx)
+        if not vr["valid"]:
+            return JSONResponse(status_code=422, content={
+                "error": f"KQL validation failed: {vr['error']}",
+                "hint": "Fix the query syntax and try again.",
+            })
+        kql_warning = vr.get("warning")
+
+    # Normalise and store
+    clean = {
+        "id": rule_id,
+        "description": str(rule.get("description", "")).strip(),
+        "index": idx,
+        "time_field": str(rule.get("time_field", "@timestamp")).strip(),
+        "kql": kql,
+        "group_by": rule.get("group_by") if isinstance(rule.get("group_by"), list) else ["host.name"],
+        "threshold": int(rule.get("threshold", 1)),
+        "severity": str(rule.get("severity", "medium")).lower(),
+        "category": str(rule.get("category", "custom")).lower(),
+        "enabled": bool(rule.get("enabled", True)),
+        "source": "custom",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _custom_rules.append(clean)
+    _save_custom_rules()
+    result: Dict[str, Any] = {"ok": True, "rule": clean}
+    if kql_warning:
+        result["warning"] = kql_warning
+    return result
+
+
+@dashboard_app.post("/api/rules/upload")
+def api_rules_upload(body: Dict[str, Any] = Body(...)):
+    """Upload a rule pack (YAML or JSON content as a string).
+
+    Body: {"content": "<yaml or json string>", "format": "yaml"|"json"}
+    """
+    _init_custom_rules_file()
+    content = body.get("content", "")
+    fmt = body.get("format", "yaml").lower()
+
+    if not content:
+        return JSONResponse(status_code=400, content={"error": "No content provided"})
+
+    try:
+        if fmt == "yaml":
+            import yaml
+            rules = yaml.safe_load(content)
+        else:
+            rules = json.loads(content)
+    except Exception as exc:
+        return JSONResponse(status_code=400, content={"error": f"Parse error: {exc}"})
+
+    if not isinstance(rules, list):
+        return JSONResponse(status_code=400, content={"error": "Expected a list of rule objects"})
+
+    existing_ids = {r["id"] for r in _custom_rules}
+    builtin_ids = {r["id"] for r in _load_builtin_rules()}
+    added = []
+    skipped = []
+
+    for rule in rules:
+        if not isinstance(rule, dict) or not rule.get("id"):
+            skipped.append({"reason": "missing id", "rule": str(rule)[:80]})
+            continue
+        rid = str(rule["id"]).strip()
+        if rid in existing_ids or rid in builtin_ids:
+            skipped.append({"reason": "duplicate", "id": rid})
+            continue
+        # Validate minimum fields
+        if not rule.get("kql"):
+            skipped.append({"reason": "missing kql", "id": rid})
+            continue
+
+        clean = {
+            "id": rid,
+            "description": str(rule.get("description", "")).strip(),
+            "index": str(rule.get("index", "tinysocs-winlog-*")).strip(),
+            "time_field": str(rule.get("time_field", "@timestamp")).strip(),
+            "kql": str(rule["kql"]).strip(),
+            "group_by": rule.get("group_by") if isinstance(rule.get("group_by"), list) else ["host.name"],
+            "threshold": int(rule.get("threshold", 1)),
+            "severity": str(rule.get("severity", "medium")).lower(),
+            "category": str(rule.get("category", "custom")).lower(),
+            "enabled": bool(rule.get("enabled", True)),
+            "source": body.get("pack_name", "uploaded-pack"),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        _custom_rules.append(clean)
+        existing_ids.add(rid)
+        added.append(rid)
+
+    _save_custom_rules()
+    return {"ok": True, "added": len(added), "skipped": len(skipped), "added_ids": added, "skipped_details": skipped}
+
+
+@dashboard_app.put("/api/rules/{rule_id}")
+def api_rules_update(rule_id: str, body: Dict[str, Any] = Body(...)):
+    """Update a custom rule (cannot update built-in rules)."""
+    _init_custom_rules_file()
+    for i, r in enumerate(_custom_rules):
+        if r["id"] == rule_id:
+            updates = body.get("rule", body)
+            # Validate KQL if it's being changed
+            if "kql" in updates and not body.get("skip_validation"):
+                new_kql = str(updates["kql"]).strip()
+                idx = str(updates.get("index", r.get("index", "tinysocs-winlog-*"))).strip()
+                vr = _validate_kql(new_kql, idx)
+                if not vr["valid"]:
+                    return JSONResponse(status_code=422, content={
+                        "error": f"KQL validation failed: {vr['error']}",
+                        "hint": "Fix the query syntax and try again.",
+                    })
+            for k in ("description", "kql", "index", "time_field", "severity", "category", "threshold", "group_by", "enabled"):
+                if k in updates:
+                    _custom_rules[i][k] = updates[k]
+            _custom_rules[i]["updated_at"] = datetime.now(timezone.utc).isoformat()
+            _save_custom_rules()
+            return {"ok": True, "rule": _custom_rules[i]}
+    return JSONResponse(status_code=404, content={"error": f"Custom rule '{rule_id}' not found (built-in rules cannot be edited)"})
+
+
+@dashboard_app.delete("/api/rules/{rule_id}")
+def api_rules_delete(rule_id: str):
+    """Delete a custom rule (cannot delete built-in rules)."""
+    _init_custom_rules_file()
+    for i, r in enumerate(_custom_rules):
+        if r["id"] == rule_id:
+            removed = _custom_rules.pop(i)
+            _save_custom_rules()
+            return {"ok": True, "deleted": removed["id"]}
+    return JSONResponse(status_code=404, content={"error": f"Custom rule '{rule_id}' not found (built-in rules cannot be deleted)"})
+
+
+@dashboard_app.post("/api/rules/{rule_id}/toggle")
+def api_rules_toggle(rule_id: str):
+    """Toggle a custom rule's enabled state."""
+    _init_custom_rules_file()
+    for i, r in enumerate(_custom_rules):
+        if r["id"] == rule_id:
+            _custom_rules[i]["enabled"] = not r.get("enabled", True)
+            _save_custom_rules()
+            return {"ok": True, "id": rule_id, "enabled": _custom_rules[i]["enabled"]}
+    return JSONResponse(status_code=404, content={"error": f"Custom rule '{rule_id}' not found"})
+
+
+@dashboard_app.post("/api/rules/validate")
+def api_rules_validate(body: Dict[str, Any] = Body(...)):
+    """Validate a KQL query against OpenSearch without saving anything."""
+    kql = str(body.get("kql", "")).strip()
+    index = str(body.get("index", "tinysocs-winlog-*")).strip()
+    if not kql:
+        return JSONResponse(status_code=400, content={"error": "No KQL query provided"})
+    return _validate_kql(kql, index)
+
+
+@dashboard_app.get("/api/host/timeline")
+async def api_host_timeline(
+    hostname: str = Query(..., description="Host to query"),
+    hours: int = Query(24, ge=1, le=720),
+):
+    """Event count over time for a specific host, bucketed with channel breakdown."""
+    # Determine interval based on time range
+    if hours <= 6:
+        interval = "5m"
+    elif hours <= 48:
+        interval = "1h"
+    else:
+        interval = "6h"
+
+    body = {
+        "query": {
+            "bool": {
+                "must": [
+                    {"term": {"winlog.computer_name": hostname}},
+                    {"range": {"@timestamp": {"gte": f"now-{hours}h", "lte": "now"}}},
+                ]
+            }
+        },
+        "aggs": {
+            "over_time": {
+                "date_histogram": {
+                    "field": "@timestamp",
+                    "fixed_interval": interval,
+                    "min_doc_count": 0,
+                    "extended_bounds": {
+                        "min": f"now-{hours}h",
+                        "max": "now",
+                    },
+                },
+                "aggs": {
+                    "by_channel": {
+                        "terms": {"field": "winlog.channel", "size": 10},
+                    }
+                },
+            }
+        },
+    }
+    resp = await _safe_query_async("tinysocs-winlog-*", body)
+
+    # Collect all channels seen across all buckets
+    all_channels: set = set()
+    raw_buckets = resp.get("aggregations", {}).get("over_time", {}).get("buckets", [])
+    for b in raw_buckets:
+        for ch in b.get("by_channel", {}).get("buckets", []):
+            all_channels.add(ch["key"])
+
+    buckets = []
+    for b in raw_buckets:
+        channel_counts = {
+            ch["key"]: ch["doc_count"]
+            for ch in b.get("by_channel", {}).get("buckets", [])
+        }
+        buckets.append({
+            "time": b.get("key_as_string", ""),
+            "count": b.get("doc_count", 0),
+            "channels": channel_counts,
+        })
+    return {"hostname": hostname, "hours": hours, "interval": interval, "buckets": buckets, "channels": sorted(all_channels), "error": resp.get("error")}
+
+
+def _llm_is_configured() -> Dict[str, Any]:
+    """Check whether an LLM backend is configured and return status info."""
+    mode = os.getenv("LLM_MODE", "openai").strip().lower()
+    if mode in ("offline", "disabled", "none", ""):
+        return {"configured": False, "mode": mode, "reason": "LLM is disabled. Set LLM_MODE in Settings to enable AI features."}
+    if mode in ("anthropic", "claude"):
+        key = os.getenv("ANTHROPIC_API_KEY", "")
+        if not key:
+            return {"configured": False, "mode": mode, "reason": "Anthropic API key not set. Add it in Settings."}
+        return {"configured": True, "mode": mode}
+    if mode == "openai":
+        key = os.getenv("OPENAI_API_KEY", "")
+        if not key:
+            return {"configured": False, "mode": mode, "reason": "OpenAI API key not set. Add it in Settings."}
+        return {"configured": True, "mode": mode}
+    if mode == "ollama":
+        return {"configured": True, "mode": mode}
+    return {"configured": False, "mode": mode, "reason": f"Unknown LLM_MODE '{mode}'. Use 'openai', 'anthropic', or 'ollama'."}
+
+
+@dashboard_app.get("/api/llm/status")
+def api_llm_status():
+    """Check whether an LLM backend is available for AI features."""
+    return _llm_is_configured()
+
+
+@dashboard_app.post("/api/detections/summarize")
+def api_detection_summarize(body: Dict[str, Any] = Body(...)):
+    """Generate an LLM summary for a specific fired detection."""
+    alert_data = body.get("alert", {})
+    if not alert_data:
+        return JSONResponse(status_code=400, content={"error": "No alert data provided"})
+
+    # Check LLM availability first
+    llm_status = _llm_is_configured()
+    if not llm_status["configured"]:
+        return {"summary": llm_status["reason"], "error": True, "not_configured": True}
+
+    llm_mode = os.getenv("LLM_MODE", "openai").strip().lower()
+
+    # Build a focused prompt from the alert fields
+    prompt = (
+        f"Summarize this security detection concisely (3-5 sentences). "
+        f"Explain what likely happened, assess the risk level, and recommend next steps.\n\n"
+        f"Rule: {alert_data.get('rule_name', '') or alert_data.get('rule_id', 'Unknown')}\n"
+        f"Rule ID: {alert_data.get('rule_id', '')}\n"
+        f"Severity: {alert_data.get('severity', 'Unknown')}\n"
+        f"Host: {alert_data.get('host', 'Unknown')}\n"
+        f"Description: {alert_data.get('description', 'No description')}\n"
+        f"Event Count: {alert_data.get('event_count', 0)}\n"
+        f"Matched Events: {alert_data.get('matched_events', 0)}\n"
+        f"First Seen: {alert_data.get('first_seen', 'N/A')}\n"
+        f"Last Seen: {alert_data.get('last_seen', 'N/A')}\n"
+        f"Timestamp: {alert_data.get('timestamp', 'N/A')}"
+    )
+
+    system_text = (
+        "You are TinySocs Assistant. Summarise this security detection in plain, "
+        "non-technical language. The user may not be a security expert.\n\n"
+        "Write 2-3 short sentences: what happened in simple terms, how worried they "
+        "should be (low/medium/high), and one clear next step.\n"
+        "Do NOT list Event IDs, technical field names, or long bullet lists.\n"
+        "Keep the entire summary under 80 words.\n\n"
+        "You have tools to look up related events if it helps, but keep your answer brief.\n"
+        "INDICES: tinysocs-alerts-* (field: 'timestamp'), tinysocs-winlog-* (field: '@timestamp')."
+    )
+
+    # Use a unique ephemeral session to avoid conflicts
+    session_id = f"sum-{uuid.uuid4().hex[:8]}"
+    ephemeral_messages: List[Dict[str, Any]] = []
+
+    try:
+        if llm_mode in ("anthropic", "claude"):
+            result = _chat_anthropic(prompt, session_id, ephemeral_messages, system_text, _chat_call_tool)
+        elif llm_mode == "openai":
+            result = _chat_openai(prompt, session_id, ephemeral_messages, system_text, _chat_call_tool)
+        elif llm_mode == "ollama":
+            result = _chat_ollama(prompt, session_id, ephemeral_messages, system_text)
+        else:
+            return {"summary": "LLM not configured. Set LLM_MODE in Settings.", "error": True}
+    except Exception as exc:
+        return {"summary": f"LLM error: {type(exc).__name__}: {exc}", "error": True}
+    finally:
+        # Clean up ephemeral session
+        _chat_sessions.pop(session_id, None)
+
+    if result.get("error"):
+        return {"summary": f"LLM error: {result['error']}", "error": True}
+
+    return {"summary": result.get("reply", "No summary available."), "error": False}
+
+
 @dashboard_app.get("/api/fleet/health")
-def api_fleet_health():
-    """Fleet status: hosts, last seen, event counts."""
+async def api_fleet_health():
+    """Fleet status: hosts, last seen, event counts, plus metadata."""
     body = {
         "query": {"range": {"@timestamp": {"gte": "now-24h", "lte": "now"}}},
         "aggs": {
@@ -171,57 +1001,1230 @@ def api_fleet_health():
                 "terms": {"field": "winlog.computer_name", "size": 50},
                 "aggs": {
                     "last_seen": {"max": {"field": "@timestamp"}},
+                    "first_seen": {"min": {"field": "@timestamp"}},
                     "event_count": {"value_count": {"field": "@timestamp"}},
+                    "top_channels": {"terms": {"field": "winlog.channel", "size": 5}},
+                    "top_event_ids": {"terms": {"field": "winlog.event_id", "size": 5}},
                 },
             }
         },
     }
-    resp = _safe_query("tinysocs-winlog-*", body)
+    # Run winlog + alerts queries in parallel via thread pool
+    alert_body = {
+        "query": {"range": {"timestamp": {"gte": "now-24h", "lte": "now"}}},
+        "size": 100,
+        "sort": [{"timestamp": {"order": "desc"}}],
+        "aggs": {
+            "by_host": {
+                "terms": {"field": "source.computer_name.keyword", "size": 50},
+                "aggs": {
+                    "by_severity": {"terms": {"field": "alert.severity", "size": 5}},
+                },
+            }
+        },
+    }
+    resp, alert_resp = await asyncio.gather(
+        _safe_query_async("tinysocs-winlog-*", body),
+        _safe_query_async("tinysocs-alerts-*", alert_body),
+    )
+    alert_counts: Dict[str, int] = {}
+    alert_severities: Dict[str, Dict[str, int]] = {}
+    for ab in alert_resp.get("aggregations", {}).get("by_host", {}).get("buckets", []):
+        hname = ab["key"]
+        alert_counts[hname] = ab["doc_count"]
+        alert_severities[hname] = {
+            s["key"]: s["doc_count"]
+            for s in ab.get("by_severity", {}).get("buckets", [])
+        }
+
+    # Get recent detection names per host from the raw alert hits
+    host_detections: Dict[str, List[str]] = {}
+    for h in alert_resp.get("hits", {}).get("hits", []):
+        src = h.get("_source", {})
+        hname = src.get("source", {}).get("computer_name", "")
+        rule = src.get("alert", {}).get("rule_name", "") or src.get("alert", {}).get("rule_id", "")
+        if hname and rule and rule not in host_detections.get(hname, []):
+            host_detections.setdefault(hname, []).append(rule)
+
+    # Query heartbeat index for agent metadata (version, uptime, queue)
+    heartbeat_data: Dict[str, Dict[str, Any]] = {}
+    try:
+        hb_body: Dict[str, Any] = {"query": {"match_all": {}}, "size": 50}
+        hb_resp = await _safe_query_async("tinysocs-heartbeat", hb_body, size=50)
+        for h in hb_resp.get("hits", {}).get("hits", []):
+            src = h.get("_source", {})
+            agent = src.get("agent", {})
+            queue = src.get("queue", {})
+            hname = agent.get("hostname", "")
+            if hname:
+                uptime_sec = agent.get("uptime_seconds", 0)
+                uptime_str = ""
+                if uptime_sec:
+                    days, rem = divmod(int(uptime_sec), 86400)
+                    hours_v, rem = divmod(rem, 3600)
+                    mins_v = rem // 60
+                    if days:
+                        uptime_str = f"{days}d {hours_v}h {mins_v}m"
+                    elif hours_v:
+                        uptime_str = f"{hours_v}h {mins_v}m"
+                    else:
+                        uptime_str = f"{mins_v}m"
+                heartbeat_data[hname] = {
+                    "agent_version": agent.get("version", ""),
+                    "node_id": agent.get("node_id", ""),
+                    "uptime": uptime_str,
+                    "events_shipped": queue.get("total_events_shipped", 0),
+                    "queue_files": queue.get("file_count", 0),
+                    "queue_bytes": queue.get("total_bytes", 0),
+                    "last_ship_time": queue.get("last_ship_time", ""),
+                    "heartbeat_ts": src.get("timestamp", ""),
+                }
+    except Exception:
+        pass  # Heartbeat index may not exist yet
+
     hosts = []
     for b in resp.get("aggregations", {}).get("by_host", {}).get("buckets", []):
+        hostname = b["key"]
+        top_channels = [
+            {"channel": ch["key"], "count": ch["doc_count"]}
+            for ch in b.get("top_channels", {}).get("buckets", [])
+        ]
+        top_events = [
+            {"event_id": str(ev["key"]), "count": ev["doc_count"]}
+            for ev in b.get("top_event_ids", {}).get("buckets", [])
+        ]
+        hb = heartbeat_data.get(hostname, {})
         hosts.append({
-            "hostname": b["key"],
+            "hostname": hostname,
             "event_count": b.get("event_count", {}).get("value", b["doc_count"]),
             "last_seen": b.get("last_seen", {}).get("value_as_string", ""),
+            "first_seen": b.get("first_seen", {}).get("value_as_string", ""),
+            "alert_count": alert_counts.get(hostname, 0),
+            "alert_severities": alert_severities.get(hostname, {}),
+            "active_detections": host_detections.get(hostname, [])[:5],
+            "top_channels": top_channels,
+            "top_event_ids": top_events,
+            "agent_version": hb.get("agent_version", ""),
+            "uptime": hb.get("uptime", ""),
+            "events_shipped": hb.get("events_shipped", 0),
+            "queue_files": hb.get("queue_files", 0),
+            "last_ship_time": hb.get("last_ship_time", ""),
+            "heartbeat_ts": hb.get("heartbeat_ts", ""),
         })
     return {"hosts": hosts, "error": resp.get("error")}
 
 
+@dashboard_app.get("/api/indices")
+def api_indices():
+    """Discover available indices and their field mappings."""
+    import requests as _req
+    try:
+        import urllib3 as _u3
+        _u3.disable_warnings(_u3.exceptions.InsecureRequestWarning)
+    except Exception:
+        pass
+
+    url = os.getenv("SIEM_URL", "https://localhost:9201")
+    user = os.getenv("SIEM_USER", "admin")
+    passwd = os.getenv("SIEM_PASS", "admin")
+    verify = _resolve_ca_cert()
+
+    indices_info: List[Dict[str, Any]] = []
+    # Known index patterns
+    known_patterns = ["tinysocs-winlog-*", "tinysocs-alerts-*"]
+
+    for pattern in known_patterns:
+        try:
+            resp = _req.get(
+                f"{url.rstrip('/')}/{pattern}/_mapping",
+                auth=(user, passwd),
+                verify=verify,
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                mapping_data = resp.json()
+                # Collect all field names across concrete indices
+                all_fields: Dict[str, str] = {}
+                for idx_name, idx_data in mapping_data.items():
+                    props = idx_data.get("mappings", {}).get("properties", {})
+                    _flatten_mapping(props, "", all_fields)
+
+                ts_field = "timestamp" if "alerts" in pattern else "@timestamp"
+                indices_info.append({
+                    "pattern": pattern,
+                    "concrete_indices": list(mapping_data.keys())[:10],
+                    "ts_field": ts_field,
+                    "fields": dict(sorted(all_fields.items())),
+                    "field_count": len(all_fields),
+                })
+            elif resp.status_code == 404:
+                indices_info.append({
+                    "pattern": pattern,
+                    "concrete_indices": [],
+                    "ts_field": "timestamp" if "alerts" in pattern else "@timestamp",
+                    "fields": {},
+                    "field_count": 0,
+                    "note": "No matching indices found",
+                })
+        except Exception as exc:
+            indices_info.append({
+                "pattern": pattern,
+                "error": f"{type(exc).__name__}: {str(exc)[:200]}",
+            })
+
+    return {"indices": indices_info}
+
+
+def _flatten_mapping(
+    properties: Dict[str, Any], prefix: str, result: Dict[str, str]
+) -> None:
+    """Recursively flatten an OpenSearch mapping into dotted field names."""
+    for field_name, field_meta in properties.items():
+        full = f"{prefix}{field_name}" if not prefix else f"{prefix}.{field_name}"
+        ftype = field_meta.get("type", "object")
+        # Don't add 'object' placeholder types — only leaf types
+        if ftype != "object":
+            result[full] = ftype
+        # Recurse into sub-properties
+        sub_props = field_meta.get("properties")
+        if sub_props:
+            _flatten_mapping(sub_props, full, result)
+
+
 @dashboard_app.get("/api/events/recent")
-def api_events_recent(
+async def api_events_recent(
     limit: int = Query(50, ge=1, le=500),
     q: str = Query("", description="KQL filter"),
+    index: str = Query("tinysocs-winlog-*", description="Index pattern"),
+    time_range: str = Query("", description="Time range: 5m, 15m, 1h, 6h, 24h, 7d"),
 ):
-    """Recent events from tinysocs-winlog-*."""
-    query: Dict[str, Any] = {"match_all": {}} if not q else {"query_string": {"query": q}}
+    """Recent events from the specified index."""
+    # Validate index pattern (allow known patterns only)
+    allowed = ["tinysocs-winlog-*", "tinysocs-alerts-*"]
+    if index not in allowed:
+        index = "tinysocs-winlog-*"
+
+    ts_field = _chat_ts_field(index)
+
+    # Build query: combine text filter + optional time range
+    text_q: Dict[str, Any] = {"match_all": {}} if not q else _chat_build_query(q, index)
+    range_q: Optional[Dict[str, Any]] = None
+    if time_range:
+        tr_map = {"5m": "now-5m", "15m": "now-15m", "1h": "now-1h",
+                  "6h": "now-6h", "24h": "now-24h", "7d": "now-7d"}
+        gte_val = tr_map.get(time_range, "")
+        if gte_val:
+            range_q = {"range": {ts_field: {"gte": gte_val, "lte": "now"}}}
+
+    if range_q and q:
+        query = {"bool": {"must": [text_q, range_q]}}
+    elif range_q:
+        query = range_q
+    else:
+        query = text_q
+
     body: Dict[str, Any] = {
         "query": query,
-        "sort": [{"@timestamp": {"order": "desc"}}],
+        "sort": [{ts_field: {"order": "desc"}}],
     }
-    resp = _safe_query("tinysocs-winlog-*", body, size=limit)
+    resp = await _safe_query_async(index, body, size=limit)
     hits = resp.get("hits", {}).get("hits", [])
     events = []
     for h in hits:
         src = h.get("_source", {})
-        events.append({
-            "timestamp": src.get("@timestamp", ""),
-            "channel": (src.get("winlog", {}) or {}).get("channel", ""),
-            "event_id": (src.get("winlog", {}) or {}).get("event_id", src.get("event", {}).get("code", "")),
-            "message": (src.get("message", "") or "")[:300],
-            "host": (src.get("winlog", {}) or {}).get("computer_name", (src.get("agent", {}) or {}).get("hostname", "")),
-        })
-    return {"events": events, "total": len(events), "error": resp.get("error")}
+        if "alerts" in index:
+            alert = src.get("alert", {})
+            events.append({
+                "timestamp": src.get("timestamp", ""),
+                "host": src.get("source", {}).get("computer_name", ""),
+                "channel": alert.get("rule_id", ""),
+                "event_id": alert.get("severity", ""),
+                "message": (alert.get("description", "") or alert.get("rule_name", ""))[:300],
+            })
+        else:
+            events.append({
+                "timestamp": src.get("@timestamp", ""),
+                "channel": (src.get("winlog", {}) or {}).get("channel", ""),
+                "event_id": (src.get("winlog", {}) or {}).get("event_id", src.get("event", {}).get("code", "")),
+                "message": (src.get("message", "") or "")[:300],
+                "host": (src.get("winlog", {}) or {}).get("computer_name", (src.get("agent", {}) or {}).get("hostname", "")),
+            })
+    return {"events": events, "total": len(events), "index": index, "error": resp.get("error")}
 
 
 @dashboard_app.get("/api/actions")
 def api_actions():
-    """List staged/approved/completed actions from executor."""
+    """List guided response recommendations."""
     try:
         from tinysocs.actions.executor import list_actions
         items = list_actions(limit=50)
         return {"actions": items}
     except Exception as exc:
         return {"actions": [], "error": str(exc)}
+
+
+@dashboard_app.post("/api/actions/{action_id}/approve")
+def api_action_approve(action_id: str):
+    """Acknowledge a recommendation — operator will handle it manually."""
+    try:
+        from tinysocs.actions.executor import approve_action
+        record = approve_action(action_id, approved_by="dashboard-operator")
+        return {"ok": True, "action": record}
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
+
+
+@dashboard_app.post("/api/actions/test")
+def api_action_create_test():
+    """Create a sample staged action for testing the approve/deny workflow."""
+    try:
+        from tinysocs.actions.executor import stage_action
+
+        # Query for the most recent alert to base the action on
+        body = {
+            "query": {"range": {"timestamp": {"gte": "now-7d", "lte": "now"}}},
+            "sort": [{"timestamp": {"order": "desc"}}],
+        }
+        resp = _safe_query("tinysocs-alerts-*", body, size=1)
+        hits = resp.get("hits", {}).get("hits", [])
+
+        if hits:
+            src = hits[0].get("_source", {})
+            alert = src.get("alert", {})
+            host = src.get("source", {}).get("computer_name", "unknown-host")
+            rule_name = alert.get("rule_name", alert.get("rule_id", "unknown-rule"))
+            severity = alert.get("severity", "medium")
+            params = {
+                "ip": "10.0.0.99",
+                "reason": f"Triggered by {rule_name} ({severity}) on {host}",
+                "host": host,
+                "rule": rule_name,
+            }
+            action_type = "block_ip" if severity in ("critical", "high") else "isolate_host"
+        else:
+            params = {
+                "ip": "192.168.1.42",
+                "reason": "Test action — suspicious outbound traffic to known C2",
+                "host": "WORKSTATION-01",
+                "rule": "test_rule",
+            }
+            action_type = "block_ip"
+
+        record = stage_action(
+            action=action_type,
+            params=params,
+            who="dashboard-test",
+            dry_run=True,
+        )
+        return {"ok": True, "action": record, "message": f"Test action staged: {action_type}"}
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
+
+
+@dashboard_app.post("/api/actions/{action_id}/reject")
+def api_action_reject(action_id: str):
+    """Dismiss a recommendation — false positive or not applicable."""
+    try:
+        from tinysocs.actions.executor import reject_action
+        record = reject_action(action_id, rejected_by="dashboard-operator")
+        return {"ok": True, "action": record}
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
+
+
+# ---------------------------------------------------------------------------
+# Dashboard-local tool dispatcher for LLM chat
+# Uses the dashboard's _os_query() (requests-based) instead of the opensearchpy
+# SDK client, which can fail on TLS with self-signed DER certs on Windows.
+# ---------------------------------------------------------------------------
+_CHAT_ALLOW_INDICES = ["tinysocs-winlog-*", "tinysocs-alerts-*"]
+
+# Tool definitions in Anthropic format (local copy — avoids importing llm_claude.py
+# which transitively pulls in opensearchpy and may fail)
+_CHAT_TOOLS_ANTHROPIC = [
+    {
+        "name": "search_kql",
+        "description": "Search SIEM with KQL over a given index",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "index": {"type": "string", "description": "Index pattern to search"},
+                "kql": {"type": "string", "description": "KQL query string"},
+                "size": {"type": "integer", "description": "Max results", "default": 100},
+            },
+            "required": ["index", "kql"],
+        },
+    },
+    {
+        "name": "aggregate",
+        "description": "Run an Elasticsearch/OpenSearch DSL aggregation",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "index": {"type": "string", "description": "Index pattern"},
+                "dsl": {"type": "object", "description": "DSL aggregation body"},
+            },
+            "required": ["index", "dsl"],
+        },
+    },
+    {
+        "name": "propose_rule",
+        "description": "Suggest a detection rule (design only; does not install)",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "rule_id": {"type": "string"},
+                "query": {"type": "string"},
+                "schedule": {"type": "string", "default": "15m"},
+            },
+            "required": ["rule_id", "query"],
+        },
+    },
+    {
+        "name": "stage_action",
+        "description": "Recommend a guided response action for the operator. Does NOT execute anything — generates a runbook for the operator to follow manually.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["block_ip", "disable_user", "isolate_host", "open_ticket"],
+                    "description": "Type of response to recommend",
+                },
+                "params": {
+                    "type": "object",
+                    "description": "Parameters like ip, host, user, reason",
+                },
+            },
+            "required": ["action", "params"],
+        },
+    },
+]
+
+# Same tools in OpenAI function-calling format
+_CHAT_TOOLS_OPENAI = [
+    {
+        "type": "function",
+        "function": {
+            "name": t["name"],
+            "description": t["description"],
+            "parameters": t["input_schema"],
+        },
+    }
+    for t in _CHAT_TOOLS_ANTHROPIC
+]
+
+
+def _chat_index_allowed(idx: str) -> bool:
+    from fnmatch import fnmatch
+    return any(fnmatch(idx or "", pat) for pat in _CHAT_ALLOW_INDICES)
+
+
+def _chat_call_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    """Execute a tool call using the dashboard's own SIEM connection."""
+    args = dict(args or {})
+    default_index = _CHAT_ALLOW_INDICES[0]
+
+    # Sanitize index for search/aggregate tools
+    if name in ("search_kql", "aggregate"):
+        idx = args.get("index") or default_index
+        if not _chat_index_allowed(idx):
+            args["index"] = default_index
+
+    try:
+        if name == "search_kql":
+            return _chat_tool_search_kql(args)
+        if name == "aggregate":
+            return _chat_tool_aggregate(args)
+        if name == "propose_rule":
+            return {
+                "ok": True,
+                "proposal": {
+                    "id": args.get("rule_id", ""),
+                    "query": args.get("query", ""),
+                    "schedule": args.get("schedule", "15m"),
+                    "note": "Design-only; not installed",
+                },
+            }
+        if name == "stage_action":
+            return {
+                "ok": True,
+                "staged": True,
+                "action": args.get("action", ""),
+                "params": args.get("params", {}),
+                "note": "Recommendation staged for operator review. TinySocs does not execute actions — the operator will follow the runbook steps manually.",
+            }
+        return {"error": f"unknown tool {name}"}
+    except Exception as e:
+        return {"error": str(e), "tool": name}
+
+
+def _chat_ts_field(index: str) -> str:
+    """Return the correct timestamp field name for the given index pattern.
+
+    tinysocs-alerts-* uses 'timestamp', everything else uses '@timestamp'.
+    """
+    return "timestamp" if "alerts" in (index or "") else "@timestamp"
+
+
+def _chat_build_query(kql: str, index: str = "") -> Dict[str, Any]:
+    """Convert a KQL-like string into an OpenSearch DSL query.
+
+    Handles:
+      @timestamp >= now()-1d                  →  range filter
+      field:value AND @timestamp >= now-1d    →  bool(must=[query_string, range])
+      @timestamp >= '2026-02-16T...' AND ...  →  bool(must=[query_string, range])
+      *                                       →  match_all
+      field:value                             →  query_string
+    """
+    import re
+    kql = (kql or "*").strip()
+    ts_field = _chat_ts_field(index)
+
+    # Fix common field-name mistakes from LLMs — expand short names to nested paths.
+    _ALERT_ALIASES = {
+        "rule_id:": "alert.rule_id:",
+        "rule_name:": "alert.rule_name:",
+        "severity:": "alert.severity:",
+        "description:": "alert.description:",
+        "event_count:": "alert.event_count:",
+    }
+    _WINLOG_ALIASES = {
+        "event_id:": "winlog.event_id:",
+        "channel:": "winlog.channel:",
+    }
+    # computer_name alias depends on the index
+    is_alert_idx = "alert" in index.lower() if index else False
+    if is_alert_idx:
+        aliases = {**_ALERT_ALIASES, "computer_name:": "source.computer_name:"}
+    else:
+        aliases = {**_WINLOG_ALIASES, "computer_name:": "winlog.computer_name:"}
+    for short, full in aliases.items():
+        # Only replace bare short names that aren't already prefixed
+        # e.g. replace "rule_id:" but not "alert.rule_id:"
+        if short in kql and full not in kql:
+            kql = kql.replace(short, full)
+
+    if kql in ("*", ""):
+        return {"match_all": {}}
+
+    # Pattern to match timestamp range clauses anywhere in the KQL:
+    #   @timestamp >= now-1d
+    #   timestamp >= now()-7d
+    #   @timestamp >= '2026-02-16T16:25:03'
+    #   @timestamp <= '2026-02-16T16:35:03'
+    ts_clause_re = re.compile(
+        r"""(?:AND\s+)?@?timestamp\s*(>=?|<=?)\s*['"]*"""
+        r"""(now(?:\(\))?(?:[/\-+]\w+)*|[\dT:.Z\-]+)['"]*"""
+        r"""(?:\s+AND)?""",
+        re.IGNORECASE,
+    )
+
+    range_filters: Dict[str, Any] = {}
+    remaining_kql = kql
+
+    for m in ts_clause_re.finditer(kql):
+        op = m.group(1)
+        val = m.group(2).replace("()", "")
+        if val.lower() in ("today", "now/d"):
+            val = "now/d"
+        # Map operator to range DSL key
+        if op == ">=":
+            range_filters["gte"] = val
+        elif op == ">":
+            range_filters["gt"] = val
+        elif op == "<=":
+            range_filters["lte"] = val
+        elif op == "<":
+            range_filters["lt"] = val
+        # Remove the matched clause from the remaining KQL
+        remaining_kql = remaining_kql.replace(m.group(0), "")
+
+    # Clean up leftover AND/whitespace from removal
+    remaining_kql = re.sub(r'^\s*AND\s+', '', remaining_kql.strip(), flags=re.IGNORECASE)
+    remaining_kql = re.sub(r'\s+AND\s*$', '', remaining_kql.strip(), flags=re.IGNORECASE)
+    remaining_kql = re.sub(r'\s+AND\s+AND\s+', ' AND ', remaining_kql.strip(), flags=re.IGNORECASE)
+    remaining_kql = remaining_kql.strip()
+
+    # Build the query parts
+    parts: list = []
+
+    if range_filters:
+        parts.append({"range": {ts_field: range_filters}})
+
+    if remaining_kql and remaining_kql != "*":
+        parts.append({"query_string": {"query": remaining_kql, "default_operator": "AND"}})
+
+    if not parts:
+        return {"match_all": {}}
+    if len(parts) == 1:
+        return parts[0]
+    return {"bool": {"must": parts}}
+
+
+def _chat_tool_search_kql(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Search SIEM using the dashboard's requests-based _safe_query()."""
+    index = args.get("index", "tinysocs-winlog-*")
+    kql = args.get("kql", "*")
+    size = min(int(args.get("size", 100)), 500)
+    ts_field = _chat_ts_field(index)
+
+    query = _chat_build_query(kql, index)
+
+    if size == 0:
+        # Count-only query
+        body: Dict[str, Any] = {"query": query, "track_total_hits": True}
+        resp = _safe_query(index, body, size=0)
+        if resp.get("error"):
+            return {"ok": False, "error": resp["error"], "index": index}
+        total_hit = resp.get("hits", {}).get("total", 0)
+        total = total_hit.get("value", 0) if isinstance(total_hit, dict) else int(total_hit)
+        return {"ok": True, "total": total, "index": index}
+
+    # Doc fetch — use the right timestamp field for sorting
+    body = {"query": query, "sort": [{ts_field: {"order": "desc"}}]}
+    resp = _safe_query(index, body, size=size)
+    if resp.get("error"):
+        return {"ok": False, "error": resp["error"], "index": index}
+    hits = resp.get("hits", {}).get("hits", [])
+    docs = [h.get("_source", {}) for h in hits]
+    total_hit = resp.get("hits", {}).get("total", 0)
+    total = total_hit.get("value", 0) if isinstance(total_hit, dict) else int(total_hit)
+    return {"ok": True, "hits": docs[:size], "count": len(docs), "total": total, "index": index}
+
+
+def _chat_tool_aggregate(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Run aggregation using the dashboard's requests-based connection."""
+    index = args.get("index", "tinysocs-winlog-*")
+    dsl = args.get("dsl") or {}
+    ts_field = _chat_ts_field(index)
+
+    # If no aggs provided, build a sensible default: count docs in last 24h
+    if not dsl or not dsl.get("aggs"):
+        dsl = {
+            "query": {"range": {ts_field: {"gte": "now-24h", "lte": "now"}}},
+            "aggs": {
+                "total_count": {"value_count": {"field": ts_field}},
+            },
+        }
+
+    # Use _safe_query which handles errors gracefully
+    resp = _safe_query(index, dsl, size=0)
+    if resp.get("error"):
+        return {"ok": False, "error": resp["error"], "index": index}
+    aggs = resp.get("aggregations", {})
+    total_hit = resp.get("hits", {}).get("total", 0)
+    total = total_hit.get("value", 0) if isinstance(total_hit, dict) else int(total_hit)
+    return {"ok": True, "total": total, "aggregations": aggs, "index": index}
+
+
+@dashboard_app.get("/api/chat/sessions")
+def api_chat_sessions():
+    """List available chat sessions with preview of last message."""
+    _init_chat_session_file()
+    sessions = []
+    for sid, msgs in _chat_sessions.items():
+        if not msgs:
+            continue
+        last_msg = msgs[-1].get("content", "") if msgs else ""
+        if isinstance(last_msg, list):
+            last_msg = " ".join(b.get("text", "") for b in last_msg if isinstance(b, dict))
+        sessions.append({
+            "session_id": sid,
+            "message_count": len(msgs),
+            "preview": (last_msg[:80] + "...") if len(last_msg) > 80 else last_msg,
+        })
+    return {"sessions": sessions}
+
+
+@dashboard_app.get("/api/chat/history")
+def api_chat_history(session_id: str = Query(...)):
+    """Retrieve chat history for a specific session (user + assistant messages only)."""
+    _init_chat_session_file()
+    msgs = _chat_sessions.get(session_id, [])
+    display = []
+    for m in msgs:
+        role = m.get("role", "")
+        if role not in ("user", "assistant"):
+            continue
+        content = m.get("content", "")
+        if isinstance(content, list):
+            content = " ".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
+        if content:
+            display.append({"role": role, "content": content})
+    return {"session_id": session_id, "messages": display}
+
+
+@dashboard_app.post("/api/chat")
+def api_chat(body: Dict[str, Any] = Body(...)):
+    """Chat with the TinySocs assistant (multi-LLM with tool-calling).
+
+    Routes to Anthropic Claude or OpenAI based on LLM_MODE env var.
+    Falls back to a simple offline response when no API key is configured.
+    """
+    _init_chat_session_file()  # Ensure sessions are loaded from disk
+    user_message = (body.get("message") or "").strip()
+    session_id = body.get("session_id") or str(uuid.uuid4())[:12]
+
+    if not user_message:
+        return JSONResponse(status_code=400, content={"error": "Empty message"})
+
+    llm_mode = os.getenv("LLM_MODE", "openai").strip().lower()
+
+    system_text = (
+        "You are TinySocs Assistant — a friendly, helpful security guide.\n"
+        "Your users may NOT be technical. Explain things in plain, simple language.\n"
+        "Avoid jargon. Never list Event IDs or tell users to 'check logs' themselves — "
+        "YOU do the searching and summarise what you find in everyday words.\n\n"
+
+        "PERSONALITY:\n"
+        "- Warm, reassuring, conversational. Not robotic or overly formal.\n"
+        "- Keep responses SHORT — 2-4 short paragraphs max. Use bullet points sparingly.\n"
+        "- When investigating, DO the work: search logs, read results, then explain findings.\n"
+        "- Don't dump raw data or technical field names at the user.\n"
+        "- If you find nothing, say so simply and offer to broaden the search.\n"
+        "- End with a simple question like 'Want me to dig deeper?' — not a numbered action list.\n\n"
+
+        "BE PROACTIVE:\n"
+        "- When asked about an alert, AUTOMATICALLY search related logs (broaden time by ±30 minutes).\n"
+        "- Don't just describe the alert metadata — look up what actually happened.\n"
+        "- If a narrow search returns nothing, immediately try a broader search before responding.\n"
+        "- Combine alert data + winlog data to tell the full story.\n\n"
+
+        "ADVISORY ONLY:\n"
+        "TinySocs advises but NEVER executes actions on hosts or networks. When you recommend "
+        "a response (stage_action), it creates a guided response with step-by-step instructions "
+        "for the operator. You advise — the human decides and acts.\n\n"
+
+        "TOOL REFERENCE (internal — do not expose to user):\n"
+        "- tinysocs-alerts-*: timestamp field 'timestamp'.\n"
+        "  IMPORTANT: All alert fields are NESTED — you MUST use the full path:\n"
+        "    alert.rule_id, alert.rule_name, alert.severity, alert.description,\n"
+        "    alert.event_count, source.computer_name\n"
+        "  WRONG: rule_id:\"TS-030\"  CORRECT: alert.rule_id:\"TS-030\"\n"
+        "  WRONG: severity:\"high\"   CORRECT: alert.severity:\"high\"\n"
+        "  WRONG: computer_name:X    CORRECT: source.computer_name:X\n\n"
+        "- tinysocs-winlog-*: timestamp field '@timestamp'.\n"
+        "  IMPORTANT: Winlog fields are NESTED — you MUST use the full path:\n"
+        "    winlog.event_id, winlog.channel, winlog.computer_name, message\n"
+        "  WRONG: computer_name:X    CORRECT: winlog.computer_name:X\n"
+        "  WRONG: event_id:4625      CORRECT: winlog.event_id:4625\n\n"
+        "- Time expressions: now-1d, now-7d, now-1h, now-30m.\n"
+        "- Always use 'timestamp' for alerts, '@timestamp' for winlog.\n"
+        "- Do not retry a tool if it already returned data (even if 0 results)."
+    )
+
+    # Get or create session (trim to last 20 messages to control context size)
+    if session_id not in _chat_sessions:
+        _chat_sessions[session_id] = []
+    messages = _chat_sessions[session_id]
+    if len(messages) > 20:
+        _chat_sessions[session_id] = messages[-20:]
+        messages = _chat_sessions[session_id]
+
+    # Route to the appropriate LLM backend (use dashboard-local tool dispatcher)
+    if llm_mode in ("anthropic", "claude"):
+        result = _chat_anthropic(user_message, session_id, messages, system_text, _chat_call_tool)
+    elif llm_mode == "openai":
+        result = _chat_openai(user_message, session_id, messages, system_text, _chat_call_tool)
+    elif llm_mode == "ollama":
+        result = _chat_ollama(user_message, session_id, messages, system_text)
+    else:
+        # Offline / disabled — graceful message
+        messages.append({"role": "user", "content": user_message})
+        reply = (
+            "The AI assistant is not currently configured. "
+            "To enable it, open Settings (gear icon) and set an LLM provider:\n\n"
+            "- OpenAI: set LLM_MODE to 'openai' and add your API key\n"
+            "- Anthropic: set LLM_MODE to 'anthropic' and add your API key\n"
+            "- Ollama: set LLM_MODE to 'ollama' (requires Ollama installed separately)\n\n"
+            "All dashboard data panels work without AI."
+        )
+        messages.append({"role": "assistant", "content": reply})
+        result = {"reply": reply, "session_id": session_id, "tool_calls": []}
+
+    # Persist chat sessions to disk so conversations survive restarts
+    _save_chat_sessions()
+    return result
+
+
+def _chat_anthropic(
+    user_message: str,
+    session_id: str,
+    messages: List[Dict[str, Any]],
+    system_text: str,
+    call_tool,
+) -> Dict[str, Any]:
+    """Anthropic Claude chat with tool-calling."""
+    try:
+        import anthropic
+    except ImportError as exc:
+        return {"error": f"Chat unavailable (anthropic): {exc}", "session_id": session_id}
+
+    _TOOLS = _CHAT_TOOLS_ANTHROPIC
+
+    # Read API key and model fresh from env (use `or` so empty string falls back)
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    model = os.getenv("ANTHROPIC_MODEL") or "claude-sonnet-4-20250514"
+
+    if not api_key:
+        return {
+            "error": "ANTHROPIC_API_KEY not set. Configure it in Settings (gear icon).",
+            "session_id": session_id,
+        }
+
+    messages.append({"role": "user", "content": user_message})
+    client = anthropic.Anthropic(api_key=api_key)
+    tool_calls_made: List[Dict[str, Any]] = []
+
+    try:
+        for _round in range(6):  # max 3 tool rounds + 1 final
+            response = client.messages.create(
+                model=model,
+                max_tokens=2048,
+                system=system_text,
+                messages=messages,
+                tools=_TOOLS,
+                temperature=0.2,
+            )
+
+            tool_uses = [b for b in response.content if b.type == "tool_use"]
+            text_blocks = [b for b in response.content if b.type == "text"]
+
+            if not tool_uses:
+                assistant_text = "".join(b.text for b in text_blocks).strip()
+                if not assistant_text:
+                    assistant_text = "(No response from assistant)"
+                messages.append({"role": "assistant", "content": assistant_text})
+                return {
+                    "reply": assistant_text,
+                    "session_id": session_id,
+                    "tool_calls": tool_calls_made,
+                }
+
+            messages.append({"role": "assistant", "content": response.content})
+
+            tool_results = []
+            for tu in tool_uses:
+                result = call_tool(tu.name, tu.input)
+                result_json = json.dumps(result)
+                if len(result_json) > 8000:
+                    result_json = result_json[:8000] + '..."}'
+                tool_calls_made.append({
+                    "tool": tu.name,
+                    "input": tu.input,
+                    "output_preview": result_json[:300],
+                })
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": tu.id,
+                    "content": result_json,
+                })
+
+            messages.append({"role": "user", "content": tool_results})
+
+        return {
+            "reply": "I ran out of tool-call rounds. Try a more specific question.",
+            "session_id": session_id,
+            "tool_calls": tool_calls_made,
+        }
+
+    except Exception as exc:
+        if messages and messages[-1].get("role") == "user":
+            messages.pop()
+        return {"error": f"Chat error: {type(exc).__name__}: {exc}", "session_id": session_id}
+
+
+def _chat_openai(
+    user_message: str,
+    session_id: str,
+    messages: List[Dict[str, Any]],
+    system_text: str,
+    call_tool,
+) -> Dict[str, Any]:
+    """OpenAI chat with tool-calling (using httpx like the summarizer)."""
+    try:
+        import httpx
+    except ImportError as exc:
+        return {"error": f"Chat unavailable (openai): {exc}", "session_id": session_id}
+
+    _OAI_TOOLS = _CHAT_TOOLS_OPENAI
+
+    # Read API key and model fresh from env (use `or` so empty string falls back)
+    _OAI_KEY = os.getenv("OPENAI_API_KEY", "")
+    _OAI_MODEL = os.getenv("OPENAI_MODEL") or "gpt-4o-mini"
+
+    if not _OAI_KEY:
+        return {
+            "error": "OPENAI_API_KEY not set. Configure it in Settings (gear icon).",
+            "session_id": session_id,
+        }
+
+    # OpenAI uses a different message format; maintain a parallel history
+    # We store messages in Anthropic-like format in _chat_sessions but convert here
+    oai_messages = [{"role": "system", "content": system_text}]
+    # Convert existing session history to OpenAI format
+    for m in messages:
+        role = m.get("role", "user")
+        content = m.get("content", "")
+        if role in ("user", "assistant") and isinstance(content, str):
+            oai_messages.append({"role": role, "content": content})
+        # Skip tool_result messages from Anthropic format (they don't carry over between backends)
+
+    oai_messages.append({"role": "user", "content": user_message})
+    messages.append({"role": "user", "content": user_message})
+
+    headers = {"Authorization": f"Bearer {_OAI_KEY}", "Content-Type": "application/json"}
+    tool_calls_made: List[Dict[str, Any]] = []
+
+    try:
+        with httpx.Client(timeout=90) as http:
+            for _round in range(6):
+                body_req: Dict[str, Any] = {
+                    "model": _OAI_MODEL,
+                    "messages": oai_messages,
+                    "tools": _OAI_TOOLS,
+                    "tool_choice": "auto",
+                    "temperature": 0.2,
+                }
+
+                resp = http.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    json=body_req,
+                    headers=headers,
+                )
+                if resp.status_code >= 400:
+                    err_text = resp.text[:400]
+                    if messages and messages[-1].get("role") == "user":
+                        messages.pop()
+                    return {
+                        "error": f"OpenAI API error (HTTP {resp.status_code}): {err_text}",
+                        "session_id": session_id,
+                    }
+
+                choice = resp.json()["choices"][0]["message"]
+                oai_messages.append(choice)
+
+                tool_calls = choice.get("tool_calls") or []
+                if not tool_calls:
+                    assistant_text = (choice.get("content") or "").strip()
+                    if not assistant_text:
+                        assistant_text = "(No response from assistant)"
+                    messages.append({"role": "assistant", "content": assistant_text})
+                    return {
+                        "reply": assistant_text,
+                        "session_id": session_id,
+                        "tool_calls": tool_calls_made,
+                    }
+
+                # Execute tools
+                for tc in tool_calls:
+                    name = tc["function"]["name"]
+                    try:
+                        args = json.loads(tc["function"]["arguments"] or "{}")
+                    except Exception:
+                        args = {}
+                    result = call_tool(name, args)
+                    result_json = json.dumps(result)
+                    if len(result_json) > 8000:
+                        result_json = result_json[:8000] + '..."}'
+                    tool_calls_made.append({
+                        "tool": name,
+                        "input": args,
+                        "output_preview": result_json[:300],
+                    })
+                    oai_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": result_json,
+                    })
+
+            # Ran out of rounds
+            messages.append({"role": "assistant", "content": "(Ran out of tool-call rounds)"})
+            return {
+                "reply": "I ran out of tool-call rounds. Try a more specific question.",
+                "session_id": session_id,
+                "tool_calls": tool_calls_made,
+            }
+
+    except Exception as exc:
+        if messages and messages[-1].get("role") == "user":
+            messages.pop()
+        return {"error": f"Chat error: {type(exc).__name__}: {exc}", "session_id": session_id}
+
+
+def _chat_ollama(
+    user_message: str,
+    session_id: str,
+    messages: List[Dict[str, Any]],
+    system_text: str,
+) -> Dict[str, Any]:
+    """Ollama chat (no tool-calling, simple request-response)."""
+    try:
+        import httpx
+    except ImportError as exc:
+        return {"error": f"Chat unavailable (ollama): {exc}", "session_id": session_id}
+
+    ollama_url = os.getenv("OFFLINE_LLM_URL") or "http://localhost:11434"
+    ollama_model = os.getenv("OFFLINE_LLM_MODEL") or "qwen2.5:0.5b-instruct"
+
+    messages.append({"role": "user", "content": user_message})
+
+    # Build a simple prompt from the conversation history
+    prompt_parts = [system_text + "\n"]
+    for m in messages:
+        role = m.get("role", "user")
+        content = m.get("content", "")
+        if isinstance(content, str):
+            prompt_parts.append(f"{role}: {content}")
+    prompt = "\n".join(prompt_parts)
+    # Trim to avoid overwhelming small models
+    if len(prompt) > 8000:
+        prompt = prompt[-8000:]
+
+    try:
+        with httpx.Client(timeout=120) as http:
+            resp = http.post(
+                f"{ollama_url.rstrip('/')}/api/generate",
+                json={
+                    "model": ollama_model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"temperature": 0.3, "num_predict": 512, "num_ctx": 2048},
+                },
+            )
+            if resp.status_code >= 400:
+                if messages and messages[-1].get("role") == "user":
+                    messages.pop()
+                return {
+                    "error": f"Ollama error (HTTP {resp.status_code}): {resp.text[:300]}",
+                    "session_id": session_id,
+                }
+            assistant_text = (resp.json().get("response") or "").strip()
+            if not assistant_text:
+                assistant_text = "(No response from Ollama)"
+    except Exception as exc:
+        if messages and messages[-1].get("role") == "user":
+            messages.pop()
+        err_str = str(exc)
+        if "10061" in err_str or "ConnectionRefused" in err_str or "ConnectError" in type(exc).__name__:
+            friendly = (
+                f"Cannot connect to Ollama at {ollama_url}. "
+                "Ollama is not bundled with TinySocs — install it from ollama.com, "
+                "start the service, then try again. Or switch to OpenAI/Anthropic in Settings."
+            )
+        else:
+            friendly = f"Ollama error: {type(exc).__name__}: {err_str}"
+        return {"error": friendly, "session_id": session_id}
+
+    messages.append({"role": "assistant", "content": assistant_text})
+    return {"reply": assistant_text, "session_id": session_id, "tool_calls": []}
+
+
+# ---------------------------------------------------------------------------
+# Settings API (read/write assistant.env, protected by admin password)
+# ---------------------------------------------------------------------------
+_ADMIN_PASSWORD = os.getenv("TINYSOCS_ADMIN_PASSWORD", "tinysocs")
+
+# Settings that the dashboard can read/write
+_SETTINGS_KEYS = [
+    "LLM_MODE", "OPENAI_API_KEY", "OPENAI_MODEL",
+    "ANTHROPIC_API_KEY", "ANTHROPIC_MODEL",
+    "OFFLINE_LLM_URL", "OFFLINE_LLM_MODEL",
+    "SIEM_URL", "SIEM_USER", "SIEM_PASS",
+    "SIEM_SSL_VERIFY", "SIEM_CA_CERT",
+    "WEBHOOK_URL", "WEBHOOK_ENABLED",
+    "NOTIFY_SLACK", "SLACK_WEBHOOK_URL",
+]
+
+# Keys whose values should be masked in GET responses
+_SECRET_KEYS = {"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "SIEM_PASS"}
+
+
+def _find_assistant_env() -> Optional[Path]:
+    """Locate the assistant.env file."""
+    candidates = [
+        Path(os.getenv("ProgramData", "C:\\ProgramData")) / "TinySocs" / "Assistant" / "assistant.env",
+        Path(os.getenv("ProgramFiles", "C:\\Program Files")) / "TinySocs" / "Assistant" / "assistant.env",
+        Path("/var/lib/tinysocs/assistant.env"),
+    ]
+    for p in candidates:
+        if p.is_file():
+            return p
+    return None
+
+
+def _read_env_file(path: Path) -> Dict[str, str]:
+    """Parse a .env file into a dict."""
+    result: Dict[str, str] = {}
+    try:
+        for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            result[k.strip()] = v.strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return result
+
+
+def _write_env_file(path: Path, updates: Dict[str, str]) -> None:
+    """Update specific keys in an .env file, preserving comments and order."""
+    lines = []
+    seen_keys: set = set()
+    try:
+        existing = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except Exception:
+        existing = []
+
+    for line in existing:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            k, _, _ = stripped.partition("=")
+            k = k.strip()
+            if k in updates:
+                lines.append(f"{k}={updates[k]}")
+                seen_keys.add(k)
+                continue
+        lines.append(line)
+
+    # Append any new keys not already in the file
+    for k, v in updates.items():
+        if k not in seen_keys:
+            lines.append(f"{k}={v}")
+
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+@dashboard_app.get("/api/settings")
+def api_settings_get(admin_password: str = Query("")):
+    """Read current settings from assistant.env. Secrets are masked."""
+    if admin_password != _ADMIN_PASSWORD:
+        return JSONResponse(status_code=401, content={"error": "Invalid admin password"})
+
+    env_path = _find_assistant_env()
+    file_values: Dict[str, str] = {}
+    if env_path:
+        file_values = _read_env_file(env_path)
+
+    settings: Dict[str, Any] = {}
+    for key in _SETTINGS_KEYS:
+        # Prefer live env var (may differ from file if service hasn't restarted)
+        val = os.getenv(key, file_values.get(key, ""))
+        if key in _SECRET_KEYS and val:
+            # Mask all but last 4 chars
+            settings[key] = ("*" * max(0, len(val) - 4)) + val[-4:] if len(val) > 4 else "****"
+        else:
+            settings[key] = val
+
+    return {
+        "settings": settings,
+        "env_file": str(env_path) if env_path else None,
+        "llm_mode_active": os.getenv("LLM_MODE", "openai").strip().lower(),
+    }
+
+
+@dashboard_app.post("/api/settings")
+def api_settings_post(body: Dict[str, Any] = Body(...)):
+    """Update settings in assistant.env and live environment."""
+    admin_password = body.get("admin_password", "")
+    if admin_password != _ADMIN_PASSWORD:
+        return JSONResponse(status_code=401, content={"error": "Invalid admin password"})
+
+    updates = body.get("settings", {})
+    if not isinstance(updates, dict):
+        return JSONResponse(status_code=400, content={"error": "settings must be a dict"})
+
+    # Filter to allowed keys only, skip masked/unchanged secrets
+    filtered: Dict[str, str] = {}
+    for k, v in updates.items():
+        if k not in _SETTINGS_KEYS:
+            continue
+        v = str(v).strip()
+        # Skip if it's a masked value (all asterisks with last 4 chars)
+        if k in _SECRET_KEYS and v and "*" in v:
+            continue
+        filtered[k] = v
+
+    if not filtered:
+        return {"ok": True, "message": "No changes to apply", "updated": []}
+
+    # Write to file
+    env_path = _find_assistant_env()
+    if env_path:
+        try:
+            _write_env_file(env_path, filtered)
+        except Exception as exc:
+            return JSONResponse(status_code=500, content={"error": f"Failed to write env file: {exc}"})
+
+    # Apply to live environment
+    for k, v in filtered.items():
+        os.environ[k] = v
+
+    # Clear CA cert cache if SIEM settings changed
+    if any(k.startswith("SIEM_") for k in filtered):
+        global _ca_pem_cache
+        _ca_pem_cache = None
+
+    # Clear chat sessions if LLM settings changed (new provider = fresh context)
+    if any(k.startswith(("LLM_", "OPENAI_", "ANTHROPIC_", "OFFLINE_")) for k in filtered):
+        _chat_sessions.clear()
+        _save_chat_sessions()
+
+    return {
+        "ok": True,
+        "message": f"Updated {len(filtered)} setting(s). Restart service for full effect.",
+        "updated": list(filtered.keys()),
+        "restart_needed": True,
+    }
+
+
+@dashboard_app.get("/api/diag")
+def api_diag():
+    """Diagnostic endpoint for troubleshooting SIEM connectivity."""
+    import requests as _req
+
+    ca = _resolve_ca_cert()
+    url = os.getenv("SIEM_URL", "https://localhost:9201")
+    user = os.getenv("SIEM_USER", "admin")
+    passwd = os.getenv("SIEM_PASS", "admin")
+
+    diag: Dict[str, Any] = {
+        "siem_url": url,
+        "siem_user": user,
+        "siem_pass_set": bool(passwd and passwd != "admin"),
+        "siem_ssl_verify": os.getenv("SIEM_SSL_VERIFY", ""),
+        "siem_ca_cert_env": os.getenv("SIEM_CA_CERT", ""),
+        "resolve_ca_cert_result": str(ca),
+        "resolve_ca_cert_type": type(ca).__name__,
+    }
+
+    # Check if ca cert file exists and is readable
+    if isinstance(ca, str) and ca:
+        ca_path = Path(ca)
+        diag["ca_cert_exists"] = ca_path.is_file()
+        if ca_path.is_file():
+            try:
+                raw = ca_path.read_bytes()
+                diag["ca_cert_size"] = len(raw)
+                diag["ca_cert_starts_with"] = raw[:40].decode("ascii", errors="replace")
+            except Exception as e:
+                diag["ca_cert_read_error"] = str(e)
+
+    # Try a direct request
+    for verify_mode, label in [(ca, "with_ca"), (False, "no_verify")]:
+        try:
+            r = _req.get(f"{url}/_cluster/health", auth=(user, passwd), verify=verify_mode, timeout=10)
+            diag[f"test_{label}"] = {"status": r.status_code, "body": r.text[:200]}
+        except Exception as e:
+            diag[f"test_{label}"] = {"error": f"{type(e).__name__}: {str(e)[:300]}"}
+
+    return diag
 
 
 # ---------------------------------------------------------------------------
@@ -256,14 +2259,52 @@ a { color: var(--accent); text-decoration: none; }
 .header h1 { font-size: 18px; font-weight: 600; }
 .header .meta { color: var(--muted); font-size: 12px; }
 
-.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px 24px; }
-@media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+.main-layout { display: flex; gap: 16px; padding: 16px 24px; align-items: flex-start; }
+.left-panels { flex: 1; min-width: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+               margin-right: 400px; transition: margin-right 0.25s ease; }
+.left-panels.expanded { margin-right: 52px; }
+.right-panel { width: 384px; position: fixed; top: 90px; right: 24px; bottom: 16px; z-index: 10;
+               transition: width 0.25s ease; overflow: hidden; }
+.right-panel.collapsed { width: 36px; }
+.right-panel.collapsed .assistant-card { padding: 8px 6px; }
+.right-panel.collapsed .chat-container,
+.right-panel.collapsed .assistant-header-inner { display: none; }
+.assistant-toggle { position: absolute; top: 8px; left: 8px; width: 22px; height: 22px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 4px; cursor: pointer;
+  color: var(--muted); font-size: 14px; line-height: 20px; text-align: center; z-index: 2;
+  padding: 0; transition: color 0.15s; }
+.assistant-toggle:hover { color: var(--text); }
+@media (max-width: 1100px) {
+  .main-layout { flex-direction: column; }
+  .left-panels { margin-right: 0; }
+  .left-panels.expanded { margin-right: 0; }
+  .right-panel { width: 100%; position: relative; top: auto; right: auto; bottom: auto; }
+  .right-panel.collapsed { width: 100%; }
+  .right-panel .assistant-card { max-height: 450px; height: 450px; }
+  .assistant-toggle { display: none; }
+}
+@media (max-width: 700px) { .left-panels { grid-template-columns: 1fr; } }
 
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
-        padding: 16px; min-height: 200px; }
+        padding: 16px; height: 320px; overflow-y: auto; }
 .card h2 { font-size: 14px; color: var(--muted); text-transform: uppercase;
            letter-spacing: 0.5px; margin-bottom: 12px; font-weight: 500; }
+/* Sticky card headers — pin title rows inside scrollable cards */
+.card-header-sticky { position: sticky; top: -16px; z-index: 2;
+  background: var(--surface); margin: -16px -16px 12px -16px; padding: 12px 16px 8px 16px;
+  border-bottom: 1px solid var(--border); }
 .card.full { grid-column: 1 / -1; }
+.card.assistant-card { height: 100%; max-height: 100%;
+                       overflow: hidden; display: flex; flex-direction: column; }
+
+.explorer-toolbar { display: flex; gap: 6px; margin-bottom: 6px; align-items: stretch; }
+.explorer-toolbar select { width: auto; flex-shrink: 0; margin-bottom: 0;
+  padding: 6px 10px; background: var(--bg); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px; font-size: 13px; }
+.explorer-toolbar input[type="text"] { flex: 1; min-width: 0; margin-bottom: 0; }
+.explorer-toolbar button { flex-shrink: 0; padding: 6px 14px; margin-bottom: 0;
+  background: var(--accent); color: #fff; border: none; border-radius: 4px;
+  cursor: pointer; font-size: 13px; white-space: nowrap; }
 
 .stat-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
 .stat { background: var(--bg); border-radius: 6px; padding: 12px 16px; flex: 1; min-width: 100px; }
@@ -289,18 +2330,93 @@ tr:hover { background: rgba(74, 144, 217, 0.05); }
 .badge-executing { background: rgba(230,126,34,0.15); color: var(--orange); }
 .badge-completed { background: rgba(39,174,96,0.15); color: var(--green); }
 .badge-failed { background: rgba(231,76,60,0.15); color: var(--red); }
+.badge-rejected { background: rgba(231,76,60,0.15); color: var(--red); }
 
-.chart { height: 160px; display: flex; align-items: flex-end; gap: 2px; padding-top: 8px; }
-.chart .bar { flex: 1; min-width: 4px; border-radius: 2px 2px 0 0; transition: height 0.3s;
-              position: relative; cursor: pointer; }
-.chart .bar:hover::after { content: attr(data-tip); position: absolute; bottom: 100%;
-  left: 50%; transform: translateX(-50%); background: var(--surface); border: 1px solid var(--border);
-  padding: 4px 8px; border-radius: 4px; font-size: 11px; white-space: nowrap; z-index: 10; }
-.bar-critical { background: var(--red); }
-.bar-high { background: var(--orange); }
-.bar-medium { background: var(--yellow); }
-.bar-low { background: var(--blue); }
-.bar-info, .bar-default { background: var(--gray); }
+.btn-sm { padding: 3px 10px; border: none; border-radius: 4px; cursor: pointer;
+          font-size: 11px; font-weight: 600; margin-right: 4px; }
+.btn-approve { background: var(--green); color: #fff; }
+.btn-approve:hover { opacity: 0.85; }
+.btn-reject { background: var(--red); color: #fff; }
+.btn-reject:hover { opacity: 0.85; }
+.btn-sm:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Host Timeline inline widget */
+.timeline-card { min-height: 200px; height: auto; overflow: visible; }
+.timeline-card h2 { margin-bottom: 0; }
+
+/* Alert Rules */
+.rules-card { height: auto; max-height: 360px; }
+.rules-btn { font-size: 11px; padding: 4px 12px; border: none; border-radius: 4px;
+  cursor: pointer; font-weight: 500; white-space: nowrap; line-height: 1.4; }
+.rules-btn-accent { background: var(--accent); color: #fff; }
+.rules-btn-accent:hover { opacity: 0.85; }
+.rules-btn-purple { background: #8e44ad; color: #fff; }
+.rules-btn-purple:hover { opacity: 0.85; }
+.rules-pager { display: flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 8px 0 0 0; font-size: 11px; color: var(--muted); border-top: 1px solid var(--border); }
+.rules-pager button { font-size: 11px; padding: 2px 10px; background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
+.rules-pager button:disabled { opacity: 0.35; cursor: default; }
+.rule-row { padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+.rule-row:last-child { border-bottom: none; }
+.rule-row-header { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.rule-row-header:hover { opacity: 0.85; }
+.rule-row .rule-id { font-family: monospace; font-size: 12px; color: var(--accent); min-width: 160px; }
+.rule-row .rule-desc { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rule-row .rule-meta { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.rule-detail { display: none; padding: 8px 0 4px 0; font-size: 12px; }
+.rule-detail.open { display: block; }
+.rule-detail pre { background: var(--bg); padding: 8px; border-radius: 4px; font-size: 11px;
+  overflow-x: auto; white-space: pre-wrap; word-break: break-all; margin: 4px 0; }
+
+/* Fired Detections panel */
+.detections-card { height: 420px; }
+.detection-row { padding: 8px 0; border-bottom: 1px solid var(--border); cursor: pointer;
+                 transition: background 0.15s; }
+.detection-row:hover { background: rgba(74, 144, 217, 0.05); }
+.detection-row-header { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.detection-row-header .rule-name { font-weight: 500; flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.detection-row-header .det-meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.detection-detail { display: none; padding: 12px 16px; margin-top: 6px;
+  background: var(--bg); border-radius: 6px; font-size: 12px; }
+.detection-detail.open { display: block; }
+.detection-detail table { margin-bottom: 10px; }
+.detection-detail td { padding: 3px 8px; }
+.detection-detail td:first-child { color: var(--muted); font-weight: 500; white-space: nowrap; width: 120px; }
+.btn-summarize { background: var(--accent); color: #fff; border: none; padding: 5px 14px;
+  border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 500; }
+.btn-summarize:hover { opacity: 0.9; }
+.btn-summarize:disabled { opacity: 0.4; cursor: wait; }
+.ai-summary { margin-top: 8px; padding: 10px 12px; background: rgba(74, 144, 217, 0.08);
+  border-left: 3px solid var(--accent); border-radius: 4px; font-size: 12px;
+  white-space: pre-wrap; word-wrap: break-word; line-height: 1.5; }
+
+.chat-container { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
+.chat-messages { flex: 1; overflow-y: auto; padding: 8px; background: var(--bg);
+                 border: 1px solid var(--border); border-radius: 4px; margin-bottom: 8px;
+                 font-size: 13px; }
+.chat-msg { margin-bottom: 8px; padding: 6px 10px; border-radius: 6px; max-width: 85%;
+            white-space: pre-wrap; word-wrap: break-word; }
+.chat-msg.user { background: rgba(74,144,217,0.15); margin-left: auto; text-align: right; }
+.chat-msg.assistant { background: rgba(255,255,255,0.05); }
+.chat-msg.tool-info { background: rgba(241,196,15,0.1); font-size: 11px; color: var(--muted);
+                      font-family: monospace; max-width: 100%; }
+.chat-input-row { display: flex; gap: 8px; flex-shrink: 0; padding-top: 8px; }
+.chat-input-row input { flex: 1; }
+.chat-input-row button { white-space: nowrap; }
+
+.chart-svg { width: 100%; height: 200px; }
+.chart-svg text { fill: var(--muted); font-size: 10px; font-family: inherit; }
+.chart-svg .grid-line { stroke: var(--border); stroke-width: 1; }
+.chart-svg .bar-rect { cursor: pointer; rx: 2; ry: 2; }
+.chart-svg .bar-rect:hover { opacity: 0.8; }
+.chart-tooltip { position: absolute; background: var(--surface); border: 1px solid var(--border);
+  padding: 6px 10px; border-radius: 6px; font-size: 11px; white-space: nowrap; z-index: 20;
+  pointer-events: none; display: none; color: var(--text); }
+.chart-legend { display: flex; gap: 12px; justify-content: center; margin-top: 6px; font-size: 11px; color: var(--muted); }
+.chart-legend span::before { content: ''; display: inline-block; width: 10px; height: 10px;
+  border-radius: 2px; margin-right: 4px; vertical-align: middle; }
 
 .empty { text-align: center; padding: 40px; color: var(--muted); }
 .error { color: var(--muted); font-size: 12px; padding: 8px; background: rgba(255,255,255,0.03);
@@ -313,8 +2429,42 @@ tr:hover { background: rgba(74, 144, 217, 0.05); }
 .tab { padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px;
        color: var(--muted); background: var(--bg); border: 1px solid var(--border); }
 .tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
-input[type="text"] { background: var(--bg); border: 1px solid var(--border); color: var(--text);
+input[type="text"], input[type="password"], input[type="number"], select, textarea {
+  background: var(--bg); border: 1px solid var(--border); color: var(--text);
   padding: 6px 10px; border-radius: 4px; font-size: 13px; width: 100%; margin-bottom: 8px; }
+select { cursor: pointer; }
+
+/* Settings modal */
+.modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.6); z-index: 100; align-items: center; justify-content: center; }
+.modal-overlay.open { display: flex; }
+.modal { background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  width: 600px; max-width: 95vw; max-height: 85vh; overflow-y: auto; padding: 24px; }
+.modal h2 { font-size: 16px; margin-bottom: 16px; color: var(--text); text-transform: none;
+  letter-spacing: 0; font-weight: 600; }
+.modal .section-title { font-size: 12px; color: var(--accent); text-transform: uppercase;
+  letter-spacing: 0.5px; margin: 16px 0 8px; padding-bottom: 4px;
+  border-bottom: 1px solid var(--border); }
+.modal label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.modal .field { margin-bottom: 10px; }
+.modal .btn-row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+.modal .btn-save { background: var(--accent); color: #fff; border: none; padding: 8px 20px;
+  border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 600; }
+.modal .btn-save:hover { opacity: 0.9; }
+.modal .btn-cancel { background: var(--bg); color: var(--muted); border: 1px solid var(--border);
+  padding: 8px 20px; border-radius: 4px; cursor: pointer; font-size: 13px; }
+.modal .btn-cancel:hover { color: var(--text); }
+.modal .status-msg { font-size: 12px; padding: 6px 10px; border-radius: 4px; margin-top: 8px; }
+.modal .status-msg.ok { background: rgba(39,174,96,0.15); color: var(--green); }
+.modal .status-msg.err { background: rgba(231,76,60,0.15); color: var(--red); }
+
+.settings-btn { background: none; border: none; color: var(--muted); cursor: pointer;
+  font-size: 18px; padding: 4px 8px; margin-left: 8px; transition: color 0.2s; }
+.settings-btn:hover { color: var(--text); }
+
+.login-box { text-align: center; padding: 24px; }
+.login-box input { max-width: 280px; margin: 8px auto; display: block; }
+.login-box .btn-save { margin-top: 8px; }
 </style>
 </head>
 <body>
@@ -331,47 +2481,290 @@ input[type="text"] { background: var(--bg); border: 1px solid var(--border); col
       <div class="tab" onclick="setHours(168)">7d</div>
     </div>
     <button class="refresh-btn" onclick="refreshAll()">Refresh</button>
+    <button class="settings-btn" onclick="openSettings()" title="Settings">&#9881;</button>
   </div>
 </div>
 
-<div class="grid">
-  <!-- Alert Summary -->
-  <div class="card">
-    <h2>Alert Summary</h2>
-    <div id="summary-content"><div class="loading">Loading...</div></div>
-  </div>
+<!-- Settings Modal -->
+<div class="modal-overlay" id="settingsOverlay" onclick="if(event.target===this)closeSettings()">
+  <div class="modal" id="settingsModal">
+    <!-- Login view -->
+    <div id="settingsLogin">
+      <h2>&#9881; Settings</h2>
+      <div class="login-box">
+        <p style="color:var(--muted);font-size:13px;margin-bottom:12px">Enter admin password to access settings</p>
+        <input type="password" id="adminPassword" placeholder="Admin password" onkeydown="if(event.key==='Enter')settingsAuth()">
+        <button class="btn-save" onclick="settingsAuth()">Unlock</button>
+        <div id="loginError"></div>
+      </div>
+    </div>
+    <!-- Settings form (hidden until auth) -->
+    <div id="settingsForm" style="display:none">
+      <h2>&#9881; Settings</h2>
+      <div id="settingsStatus"></div>
 
-  <!-- Alert Timeline -->
-  <div class="card">
-    <h2>Alert Timeline</h2>
-    <div id="timeline-content"><div class="loading">Loading...</div></div>
-  </div>
+      <div class="section-title">LLM Configuration</div>
+      <div class="field">
+        <label>LLM Provider</label>
+        <select id="s_LLM_MODE">
+          <option value="openai">OpenAI</option>
+          <option value="anthropic">Anthropic (Claude)</option>
+          <option value="ollama">Ollama (Offline)</option>
+          <option value="offline">Disabled</option>
+        </select>
+      </div>
+      <div class="field" id="field_openai">
+        <label>OpenAI API Key</label>
+        <input type="text" id="s_OPENAI_API_KEY" placeholder="sk-...">
+        <label>OpenAI Model</label>
+        <input type="text" id="s_OPENAI_MODEL" placeholder="gpt-4o-mini">
+      </div>
+      <div class="field" id="field_anthropic">
+        <label>Anthropic API Key</label>
+        <input type="text" id="s_ANTHROPIC_API_KEY" placeholder="sk-ant-...">
+        <label>Anthropic Model</label>
+        <input type="text" id="s_ANTHROPIC_MODEL" placeholder="claude-sonnet-4-20250514">
+      </div>
+      <div class="field" id="field_ollama">
+        <label>Ollama URL</label>
+        <input type="text" id="s_OFFLINE_LLM_URL" placeholder="http://localhost:11434">
+        <label>Ollama Model</label>
+        <input type="text" id="s_OFFLINE_LLM_MODEL" placeholder="qwen2.5:0.5b-instruct">
+      </div>
 
-  <!-- Top Rules -->
-  <div class="card">
-    <h2>Top Detection Rules</h2>
-    <div id="rules-content"><div class="loading">Loading...</div></div>
-  </div>
+      <div class="section-title">Notifications</div>
+      <div class="field">
+        <label>Webhook URL (for alerts)</label>
+        <input type="text" id="s_WEBHOOK_URL" placeholder="https://hooks.slack.com/...">
+      </div>
+      <div class="field">
+        <label>Webhook Enabled</label>
+        <select id="s_WEBHOOK_ENABLED">
+          <option value="1">Yes</option>
+          <option value="0">No</option>
+        </select>
+      </div>
 
-  <!-- Fleet Health -->
-  <div class="card">
-    <h2>Fleet Health</h2>
-    <div id="fleet-content"><div class="loading">Loading...</div></div>
-  </div>
+      <div class="section-title">SIEM Connection</div>
+      <div class="field">
+        <label>SIEM URL</label>
+        <input type="text" id="s_SIEM_URL" placeholder="https://localhost:9201">
+      </div>
+      <div class="field">
+        <label>SIEM User</label>
+        <input type="text" id="s_SIEM_USER" placeholder="admin">
+      </div>
+      <div class="field">
+        <label>SIEM Password</label>
+        <input type="text" id="s_SIEM_PASS" placeholder="(unchanged)">
+      </div>
 
-  <!-- Actions -->
-  <div class="card">
-    <h2>Staged Actions</h2>
-    <div id="actions-content"><div class="loading">Loading...</div></div>
-  </div>
-
-  <!-- Event Explorer -->
-  <div class="card">
-    <h2>Event Explorer</h2>
-    <input type="text" id="eventQuery" placeholder="KQL filter (e.g. winlog.event_id:4625)" onkeydown="if(event.key==='Enter')loadEvents()">
-    <div id="events-content"><div class="loading">Loading...</div></div>
+      <div class="btn-row">
+        <button class="btn-cancel" onclick="closeSettings()">Cancel</button>
+        <button class="btn-save" onclick="saveSettings()">Save &amp; Apply</button>
+      </div>
+    </div>
   </div>
 </div>
+
+<div class="main-layout">
+  <div class="left-panels">
+    <!-- Alert Summary -->
+    <div class="card">
+      <div class="card-header-sticky"><h2 style="margin:0">Alert Summary</h2></div>
+      <div id="summary-content"><div class="loading">Loading...</div></div>
+    </div>
+
+    <!-- Alert Timeline -->
+    <div class="card">
+      <div class="card-header-sticky"><h2 style="margin:0">Alert Timeline</h2></div>
+      <div id="timeline-content"><div class="loading">Loading...</div></div>
+    </div>
+
+    <!-- Fired Detections (full width) -->
+    <div class="card full detections-card">
+      <div class="card-header-sticky" style="display:flex;align-items:center;gap:12px">
+        <h2 style="margin:0;white-space:nowrap">Fired Detections</h2>
+        <select id="detStatusFilter" style="font-size:11px;padding:2px 6px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;max-width:200px" onchange="loadDetections()">
+          <option value="active" selected>Active (new + ack)</option>
+          <option value="all">All</option>
+          <option value="new">New only</option>
+          <option value="acknowledged">Acknowledged</option>
+          <option value="dismissed">Dismissed</option>
+        </select>
+      </div>
+      <div id="detections-content"><div class="loading">Loading...</div></div>
+    </div>
+
+    <!-- Fleet Health (full width) -->
+    <div class="card full">
+      <div class="card-header-sticky"><h2 style="margin:0">Fleet Health</h2></div>
+      <div id="fleet-content"><div class="loading">Loading...</div></div>
+    </div>
+
+    <!-- Host Event Timeline (inline widget, hidden until a host is clicked) -->
+    <div class="card full timeline-card" id="hostTimelineCard" style="display:none">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <h2 id="hostTimelineTitle" style="margin:0;font-size:14px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px">Host Event Timeline</h2>
+        <div style="display:flex;gap:6px;align-items:center">
+          <select id="hostTimelineRange" onchange="refreshHostTimeline()" style="font-size:12px;padding:3px 8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px">
+            <option value="1">1 hour</option>
+            <option value="6">6 hours</option>
+            <option value="24" selected>24 hours</option>
+            <option value="48">48 hours</option>
+            <option value="168">7 days</option>
+          </select>
+          <button onclick="closeHostTimeline()" style="background:none;border:none;color:var(--muted);font-size:16px;cursor:pointer;padding:2px 6px" title="Hide">&times;</button>
+        </div>
+      </div>
+      <div id="hostTimelineChart" style="margin-top:10px"><div class="empty">Click a hostname to view its event timeline</div></div>
+      <div id="hostTimelineLegend" style="margin-top:8px;display:flex;flex-wrap:wrap;gap:10px;font-size:11px"></div>
+    </div>
+
+    <!-- Event Explorer -->
+    <div class="card full" id="event-explorer-card">
+      <div class="card-header-sticky" style="display:flex;align-items:center;justify-content:space-between">
+        <h2 style="margin:0">Event Explorer</h2>
+        <button style="font-size:11px;padding:2px 8px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer" onclick="toggleSchema()">Schema</button>
+      </div>
+      <div class="explorer-toolbar">
+        <select id="eventIndex" onchange="loadEvents()">
+          <option value="tinysocs-winlog-*">tinysocs-winlog-*</option>
+          <option value="tinysocs-alerts-*">tinysocs-alerts-*</option>
+        </select>
+        <select id="eventTimeRange" onchange="loadEvents()">
+          <option value="">All time</option>
+          <option value="5m">Last 5 min</option>
+          <option value="15m">Last 15 min</option>
+          <option value="1h">Last 1 hour</option>
+          <option value="6h">Last 6 hours</option>
+          <option value="24h" selected>Last 24 hours</option>
+          <option value="7d">Last 7 days</option>
+        </select>
+        <input type="text" id="eventQuery" placeholder="KQL filter (e.g. winlog.event_id:4625)" onkeydown="if(event.key==='Enter')loadEvents()">
+        <button onclick="loadEvents()">Search</button>
+      </div>
+      <div id="schema-panel" style="display:none;max-height:200px;overflow-y:auto;margin-bottom:8px;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;font-size:12px"></div>
+      <div id="events-content"><div class="loading">Loading...</div></div>
+    </div>
+
+    <!-- Alert Rules -->
+    <div class="card full rules-card" id="rules-card">
+      <div class="card-header-sticky" style="display:flex;align-items:center;gap:12px">
+        <h2 style="margin:0;white-space:nowrap">Alert Rules</h2>
+        <select id="rulesFilter" onchange="filterRules()" style="font-size:11px;padding:2px 6px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px">
+          <option value="all">All Rules</option>
+          <option value="builtin">Built-in</option>
+          <option value="custom">Custom</option>
+          <option value="enabled">Enabled</option>
+          <option value="disabled">Disabled</option>
+        </select>
+        <div style="display:flex;gap:6px;align-items:center;margin-left:auto">
+          <button onclick="toggleRuleBuilder()" class="rules-btn rules-btn-accent">+ New Rule</button>
+          <button onclick="toggleRuleUpload()" class="rules-btn rules-btn-purple">Upload Pack</button>
+        </div>
+      </div>
+
+      <!-- Quick Rule Builder (hidden by default) -->
+      <div id="ruleBuilder" style="display:none;margin-bottom:12px;padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px">
+        <div style="font-size:13px;font-weight:500;margin-bottom:10px;color:var(--text)">Create New Detection Rule</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+          <div>
+            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:2px">Rule ID *</label>
+            <input type="text" id="rb_id" placeholder="e.g. my_custom_rule" style="width:100%;box-sizing:border-box">
+          </div>
+          <div>
+            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:2px">Severity *</label>
+            <select id="rb_severity" style="width:100%;box-sizing:border-box">
+              <option value="low">Low</option>
+              <option value="medium" selected>Medium</option>
+              <option value="high">High</option>
+              <option value="critical">Critical</option>
+            </select>
+          </div>
+        </div>
+        <div style="margin-bottom:8px">
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:2px">Description *</label>
+          <input type="text" id="rb_desc" placeholder="What does this rule detect?" style="width:100%;box-sizing:border-box">
+        </div>
+        <div style="margin-bottom:8px">
+          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:2px">KQL Query *</label>
+          <textarea id="rb_kql" rows="3" placeholder="e.g. winlog.event_id:4625 AND NOT winlog.event_data.IpAddress:127.0.0.1" style="width:100%;box-sizing:border-box;font-family:monospace;font-size:12px;padding:6px 10px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;resize:vertical"></textarea>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:10px">
+          <div>
+            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:2px">Index</label>
+            <input type="text" id="rb_index" value="tinysocs-winlog-*" style="width:100%;box-sizing:border-box">
+          </div>
+          <div>
+            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:2px">Min. events to alert</label>
+            <input type="number" id="rb_threshold" value="1" min="1" style="width:100%;box-sizing:border-box" title="Alert fires when this many matching events are found in a single run">
+          </div>
+          <div>
+            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:2px">Category</label>
+            <select id="rb_category" style="width:100%;box-sizing:border-box">
+              <option value="custom">Custom</option>
+              <option value="auth">Auth</option>
+              <option value="powershell">PowerShell</option>
+              <option value="endpoint">Endpoint</option>
+              <option value="identity">Identity</option>
+              <option value="persistence">Persistence</option>
+              <option value="lateral">Lateral</option>
+              <option value="network">Network</option>
+              <option value="cloud">Cloud</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:2px">Group By <span style="opacity:0.6">(optional)</span></label>
+            <input type="text" id="rb_groupby" value="" placeholder="e.g. host.name, user.name" style="width:100%;box-sizing:border-box" title="Count events per unique combination of these fields. Leave blank to count all matching events together.">
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button onclick="toggleRuleBuilder()" style="font-size:12px;padding:4px 14px;background:var(--bg);color:var(--muted);border:1px solid var(--border);border-radius:4px;cursor:pointer">Cancel</button>
+          <button onclick="createRule()" style="font-size:12px;padding:4px 14px;background:#27ae60;color:#fff;border:none;border-radius:4px;cursor:pointer">Create Rule</button>
+        </div>
+        <div id="ruleBuilderMsg" style="margin-top:6px;font-size:12px;display:none"></div>
+      </div>
+
+      <!-- Rule Pack Upload (hidden by default) -->
+      <div id="ruleUpload" style="display:none;margin-bottom:12px;padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px">
+        <div style="font-size:13px;font-weight:500;margin-bottom:10px;color:var(--text)">Upload Rule Pack</div>
+        <p style="font-size:12px;color:var(--muted);margin:0 0 8px 0">Upload a YAML or JSON file containing a list of detection rules. Each rule needs at least: id, description, kql, severity.</p>
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+          <input type="file" id="rulePackFile" accept=".yaml,.yml,.json" style="font-size:12px;color:var(--text)">
+          <input type="text" id="rulePackName" placeholder="Pack name (optional)" style="width:180px">
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button onclick="toggleRuleUpload()" style="font-size:12px;padding:4px 14px;background:var(--bg);color:var(--muted);border:1px solid var(--border);border-radius:4px;cursor:pointer">Cancel</button>
+          <button onclick="uploadRulePack()" style="font-size:12px;padding:4px 14px;background:#8e44ad;color:#fff;border:none;border-radius:4px;cursor:pointer">Upload</button>
+        </div>
+        <div id="ruleUploadMsg" style="margin-top:6px;font-size:12px;display:none"></div>
+      </div>
+
+      <div id="rules-content"><div class="loading">Loading...</div></div>
+    </div>
+  </div>
+
+  <div class="right-panel" id="rightPanel">
+    <button class="assistant-toggle" onclick="toggleAssistant()" id="assistantToggle" title="Toggle assistant panel">&laquo;</button>
+    <div class="card assistant-card">
+      <div class="assistant-header-inner" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;padding-left:28px">
+        <h2 style="margin:0">Assistant</h2>
+        <button onclick="clearChat()" style="font-size:10px;padding:2px 8px;background:var(--bg);color:var(--muted);border:1px solid var(--border);border-radius:4px;cursor:pointer" title="Start a new conversation">New Chat</button>
+      </div>
+      <div class="chat-container">
+        <div class="chat-messages" id="chatMessages">
+          <div class="chat-msg assistant">Hi! I'm your TinySocs assistant. I can help you understand alerts, search through your logs, and guide you through any security concerns. Just ask me anything in plain English — no technical knowledge needed.</div>
+        </div>
+        <div class="chat-input-row">
+          <input type="text" id="chatInput" placeholder="Ask the assistant..." onkeydown="if(event.key==='Enter')sendChat()">
+          <button class="refresh-btn" onclick="sendChat()">Send</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 
 <script>
 let hours = 24;
@@ -390,13 +2783,20 @@ function severityBadge(s) {
 }
 
 function statusBadge(s) {
-  const cls = {'staged':'staged','approved':'approved','executing':'executing','completed':'completed','failed':'failed'}[s] || 'info';
+  const cls = {'staged':'staged','acknowledged':'approved','dismissed':'rejected'}[s] || 'info';
   return `<span class="badge badge-${cls}">${s}</span>`;
 }
 
-function barColor(sev) {
-  return {'critical':'bar-critical','high':'bar-high','medium':'bar-medium','low':'bar-low','info':'bar-info'}[sev?.toLowerCase()] || 'bar-default';
+// Chart tooltip helpers
+let _tipEl = null;
+function showTip(evt, text) {
+  if (!_tipEl) { _tipEl = document.createElement('div'); _tipEl.className = 'chart-tooltip'; document.body.appendChild(_tipEl); }
+  _tipEl.textContent = text;
+  _tipEl.style.display = 'block';
+  _tipEl.style.left = (evt.pageX + 10) + 'px';
+  _tipEl.style.top = (evt.pageY - 28) + 'px';
 }
+function hideTip() { if (_tipEl) _tipEl.style.display = 'none'; }
 
 async function fetchJSON(path) {
   try {
@@ -432,6 +2832,9 @@ async function loadSummary() {
   el.innerHTML = html;
 }
 
+const SEV_COLORS = {critical:'#e74c3c',high:'#e67e22',medium:'#f1c40f',low:'#3498db',info:'#555'};
+const SEV_ORDER = ['critical','high','medium','low','info'];
+
 async function loadTimeline() {
   const el = document.getElementById('timeline-content');
   const d = await fetchJSON(`/api/alerts/timeline?hours=${hours}`);
@@ -440,30 +2843,380 @@ async function loadTimeline() {
   const buckets = d.buckets || [];
   if (!buckets.length) { el.innerHTML = '<div class="empty">No alerts in period</div>'; return; }
 
+  // Chart dimensions
+  const W = 520, H = 200, pad = {top:12, right:12, bottom:36, left:34};
+  const plotW = W - pad.left - pad.right;
+  const plotH = H - pad.top - pad.bottom;
   const maxCount = Math.max(1, ...buckets.map(b => b.count));
-  let html = '<div class="chart">';
-  for (const b of buckets) {
-    const pct = Math.max(2, (b.count / maxCount) * 100);
-    const topSev = Object.entries(b.severity || {}).sort((a,b) => b[1]-a[1])[0];
-    const cls = topSev ? barColor(topSev[0]) : 'bar-default';
-    const time = b.time ? new Date(b.time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '';
-    html += `<div class="bar ${cls}" style="height:${pct}%" data-tip="${time}: ${b.count} alerts"></div>`;
+  // Nice Y-axis ticks
+  const yTicks = maxCount <= 5 ? Array.from({length:maxCount+1},(_,i)=>i) :
+    [0, Math.round(maxCount/4), Math.round(maxCount/2), Math.round(maxCount*3/4), maxCount];
+  const barW = Math.max(4, Math.min(24, (plotW / buckets.length) - 2));
+  const gap = (plotW - barW * buckets.length) / (buckets.length + 1);
+
+  let svg = `<svg class="chart-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">`;
+
+  // Gridlines + Y labels
+  for (const t of yTicks) {
+    const y = pad.top + plotH - (t / maxCount) * plotH;
+    svg += `<line class="grid-line" x1="${pad.left}" y1="${y}" x2="${W-pad.right}" y2="${y}"/>`;
+    svg += `<text x="${pad.left-4}" y="${y+3}" text-anchor="end">${t}</text>`;
   }
-  html += '</div>';
+
+  // Bars
+  const tipId = 'timeline-tip-' + Math.random().toString(36).slice(2,8);
+  for (let i = 0; i < buckets.length; i++) {
+    const b = buckets[i];
+    const x = pad.left + gap + i * (barW + gap);
+    const time = b.time ? new Date(b.time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '';
+
+    if (b.count === 0) {
+      // Draw a thin baseline tick for empty hours
+      const y0 = pad.top + plotH;
+      svg += `<rect x="${x}" y="${y0-1}" width="${barW}" height="1" fill="#2a2d3a" rx="0"/>`;
+    } else {
+      // Stacked bars by severity (bottom-up)
+      let yOffset = 0;
+      for (const sev of SEV_ORDER) {
+        const cnt = (b.severity || {})[sev] || 0;
+        if (!cnt) continue;
+        const segH = Math.max(2, (cnt / maxCount) * plotH);
+        const y = pad.top + plotH - yOffset - segH;
+        const color = SEV_COLORS[sev] || SEV_COLORS.info;
+        const tip = `${time}: ${cnt} ${sev}`;
+        svg += `<rect class="bar-rect" x="${x}" y="${y}" width="${barW}" height="${segH}" fill="${color}" `
+            + `data-tip="${escapeHtml(tip)}" onmouseenter="showTip(event,this.dataset.tip)" onmouseleave="hideTip()"/>`;
+        yOffset += segH;
+      }
+      // If severity breakdown missing, draw total as yellow
+      if (yOffset === 0) {
+        const barH = Math.max(3, (b.count / maxCount) * plotH);
+        const y = pad.top + plotH - barH;
+        const tip = `${time}: ${b.count} alerts`;
+        svg += `<rect class="bar-rect" x="${x}" y="${y}" width="${barW}" height="${barH}" fill="${SEV_COLORS.medium}" `
+            + `data-tip="${escapeHtml(tip)}" onmouseenter="showTip(event,this.dataset.tip)" onmouseleave="hideTip()"/>`;
+      }
+    }
+
+    // X-axis labels (every few hours to avoid crowding)
+    const labelEvery = buckets.length <= 12 ? 1 : buckets.length <= 24 ? 3 : 6;
+    if (i % labelEvery === 0 || i === buckets.length - 1) {
+      const lbl = b.time ? new Date(b.time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '';
+      svg += `<text x="${x + barW/2}" y="${H - pad.bottom + 14}" text-anchor="middle">${lbl}</text>`;
+    }
+  }
+
+  // Baseline
+  svg += `<line class="grid-line" x1="${pad.left}" y1="${pad.top+plotH}" x2="${W-pad.right}" y2="${pad.top+plotH}"/>`;
+  svg += '</svg>';
+
+  // Legend
+  const sevsPresent = new Set();
+  for (const b of buckets) for (const s of Object.keys(b.severity||{})) sevsPresent.add(s);
+  let legend = '<div class="chart-legend">';
+  for (const s of SEV_ORDER) {
+    if (!sevsPresent.has(s)) continue;
+    legend += `<span style="--c:${SEV_COLORS[s]}"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${SEV_COLORS[s]};margin-right:4px;vertical-align:middle"></span>${s}</span>`;
+  }
+  if (!sevsPresent.size) legend += '<span style="color:var(--muted)">No severity data</span>';
+  legend += '</div>';
+
+  // Tooltip container
+  svg += `<div class="chart-tooltip" id="${tipId}"></div>`;
+
+  el.innerHTML = svg + legend;
+}
+
+// ---- Fired Detections ----
+let _detectionCache = [];
+let _openDetectionIdx = -1;       // which row is currently expanded
+let _detectionSummaries = {};     // idx -> summary text (persists across refresh)
+
+async function loadDetections() {
+  const el = document.getElementById('detections-content');
+  const d = await fetchJSON(`/api/detections/fired?hours=${hours}&limit=50`);
+  if (d.error && !d.detections?.length) { el.innerHTML = `<div class="empty">${d.error}</div>`; return; }
+
+  // Apply status filter
+  const filter = (document.getElementById('detStatusFilter') || {}).value || 'active';
+  let detections = d.detections || [];
+  _detectionCache = detections;  // Keep full list for index references
+  let filtered = detections;
+  if (filter === 'active') {
+    filtered = detections.filter(d => d.status !== 'dismissed');
+  } else if (filter !== 'all') {
+    filtered = detections.filter(d => d.status === filter);
+  }
+  if (!filtered.length) { el.innerHTML = '<div class="empty">No detections match this filter</div>'; return; }
+  // Build a map from filtered index back to cache index
+  const filteredMap = filtered.map(det => detections.indexOf(det));
+
+  let html = '';
+  for (let fi = 0; fi < filtered.length; fi++) {
+    const i = filteredMap[fi];  // index into _detectionCache
+    const det = detections[i];
+    const ts = det.timestamp ? timeAgo(det.timestamp) : '';
+    const evtCount = det.event_count || det.matched_events || 0;
+    const isOpen = (i === _openDetectionIdx);
+
+    const detStatus = det.status || 'new';
+    const detTags = det.tags || [];
+    const statusColors = {new:'#e67e22', acknowledged:'#27ae60', dismissed:'#7f8c8d'};
+    const statusColor = statusColors[detStatus] || '#e67e22';
+
+    html += `<div class="detection-row" onclick="toggleDetection(${i})">`;
+    html += '<div class="detection-row-header">';
+    html += `<span style="font-size:10px;padding:2px 7px;border-radius:3px;background:${statusColor};color:#fff;text-transform:uppercase;flex-shrink:0;font-weight:600">${detStatus}</span>`;
+    html += severityBadge(det.severity);
+    html += `<span class="rule-name">${escapeHtml(det.rule_name || det.rule_id || 'Unknown Rule')}</span>`;
+    if (detTags.length) {
+      for (const tag of detTags) {
+        html += `<span style="font-size:10px;padding:1px 5px;border-radius:3px;background:var(--accent);color:#fff;flex-shrink:0">${escapeHtml(tag)}</span>`;
+      }
+    }
+    html += `<span class="det-meta">${escapeHtml(det.host || '')}</span>`;
+    html += `<span class="det-meta">${evtCount} events</span>`;
+    html += `<span class="det-meta">${ts}</span>`;
+    html += '</div>';
+
+    // Expandable detail section — restore open state after refresh
+    html += `<div class="detection-detail${isOpen ? ' open' : ''}" id="det-detail-${i}">`;
+    html += '<table>';
+    html += `<tr><td>Rule ID</td><td><code>${escapeHtml(det.rule_id || '')}</code></td></tr>`;
+    html += `<tr><td>Rule Name</td><td>${escapeHtml(det.rule_name || '')}</td></tr>`;
+    html += `<tr><td>Severity</td><td>${severityBadge(det.severity)}</td></tr>`;
+    html += `<tr><td>Host</td><td>${escapeHtml(det.host || 'N/A')}</td></tr>`;
+    html += `<tr><td>Description</td><td>${escapeHtml(det.description || 'No description')}</td></tr>`;
+    html += `<tr><td>Event Count</td><td>${det.event_count || 0}</td></tr>`;
+    html += `<tr><td>Matched</td><td>${det.matched_events || 0}</td></tr>`;
+    html += `<tr><td>First Seen</td><td>${det.first_seen ? new Date(det.first_seen).toLocaleString() : 'N/A'}</td></tr>`;
+    html += `<tr><td>Last Seen</td><td>${det.last_seen ? new Date(det.last_seen).toLocaleString() : 'N/A'}</td></tr>`;
+    html += `<tr><td>Timestamp</td><td>${det.timestamp ? new Date(det.timestamp).toLocaleString() : 'N/A'}</td></tr>`;
+    html += '</table>';
+
+    // Action buttons row 1: investigate
+    const prevSum = _detectionSummaries[i];
+    html += '<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">';
+    html += `<button class="btn-summarize" style="background:#8e44ad" onclick="event.stopPropagation(); showInLogs(${i})">Show in Logs</button>`;
+    if (_llmConfigured) {
+      const btnLabel = prevSum ? 'Refresh Summary' : 'AI Summary';
+      html += `<button class="btn-summarize" id="btn-sum-${i}" onclick="event.stopPropagation(); summarizeDetection(${i})">${btnLabel}</button>`;
+      html += `<button class="btn-summarize" style="background:var(--green)" onclick="event.stopPropagation(); askAboutAlert(${i})">Discuss with Assistant</button>`;
+    } else {
+      html += `<button class="btn-summarize" disabled title="Configure an LLM provider in Settings to enable AI summaries" style="opacity:0.4;cursor:default">AI Summary (not configured)</button>`;
+    }
+    html += '</div>';
+
+    // Action buttons row 2: tags (left) + status actions (right)
+    html += '<div style="display:flex;gap:6px;margin-top:6px;align-items:center">';
+    // Tags on the left
+    html += `<span style="color:var(--muted);font-size:11px">Tags:</span>`;
+    const tagList = ['investigating','false-positive','escalated','resolved'];
+    for (const tag of tagList) {
+      const isActive = detTags.includes(tag);
+      const tagStyle = isActive
+        ? 'background:var(--accent);color:#fff'
+        : 'background:var(--bg);color:var(--muted);border:1px solid var(--border)';
+      html += `<button style="font-size:10px;padding:2px 6px;border-radius:3px;cursor:pointer;border:none;${tagStyle}" onclick="event.stopPropagation(); toggleDetectionTag(${i},'${tag}')">${tag}</button>`;
+    }
+    // Push status actions to the right
+    html += '<span style="flex:1"></span>';
+    if (detStatus === 'new') {
+      html += `<button style="font-size:11px;padding:3px 12px;border-radius:4px;cursor:pointer;border:none;background:#2980b9;color:#fff" onclick="event.stopPropagation(); setDetectionStatus(${i},'acknowledged')">Acknowledge</button>`;
+      html += `<button style="font-size:11px;padding:3px 12px;border-radius:4px;cursor:pointer;border:none;background:#95a5a6;color:#fff" onclick="event.stopPropagation(); setDetectionStatus(${i},'dismissed')">Dismiss</button>`;
+    } else if (detStatus === 'acknowledged') {
+      html += `<button style="font-size:11px;padding:3px 12px;border-radius:4px;cursor:pointer;border:none;background:#95a5a6;color:#fff" onclick="event.stopPropagation(); setDetectionStatus(${i},'dismissed')">Dismiss</button>`;
+      html += `<button style="font-size:11px;padding:3px 12px;border-radius:4px;cursor:pointer;border:none;background:#d35400;color:#fff" onclick="event.stopPropagation(); setDetectionStatus(${i},'new')">Reopen</button>`;
+    } else {
+      html += `<button style="font-size:11px;padding:3px 12px;border-radius:4px;cursor:pointer;border:none;background:#d35400;color:#fff" onclick="event.stopPropagation(); setDetectionStatus(${i},'new')">Reopen</button>`;
+    }
+    html += '</div>';
+
+    if (prevSum) {
+      html += `<div class="ai-summary" id="ai-sum-${i}">${escapeHtml(prevSum)}</div>`;
+    } else {
+      html += `<div class="ai-summary" id="ai-sum-${i}" style="display:none"></div>`;
+    }
+    html += '</div>';
+
+    html += '</div>';
+  }
   el.innerHTML = html;
 }
 
-async function loadRules() {
-  const el = document.getElementById('rules-content');
-  const d = await fetchJSON(`/api/alerts/summary?hours=${hours}`);
-  const rules = d.top_rules || [];
-  if (!rules.length) { el.innerHTML = '<div class="empty">No rules fired</div>'; return; }
-
-  let html = '<table><tr><th>Rule</th><th>Fires</th></tr>';
-  for (const r of rules) html += `<tr><td><code>${r.rule}</code></td><td>${r.count}</td></tr>`;
-  html += '</table>';
-  el.innerHTML = html;
+function toggleDetection(idx) {
+  const detail = document.getElementById('det-detail-' + idx);
+  if (!detail) return;
+  const wasOpen = detail.classList.contains('open');
+  // Close any currently open row
+  if (_openDetectionIdx >= 0 && _openDetectionIdx !== idx) {
+    const prev = document.getElementById('det-detail-' + _openDetectionIdx);
+    if (prev) prev.classList.remove('open');
+  }
+  if (wasOpen) {
+    detail.classList.remove('open');
+    _openDetectionIdx = -1;
+  } else {
+    detail.classList.add('open');
+    _openDetectionIdx = idx;
+  }
 }
+
+async function setDetectionStatus(idx, status) {
+  const det = _detectionCache[idx];
+  if (!det) return;
+  try {
+    const r = await fetch(BASE + '/api/detections/' + encodeURIComponent(det.id) + '/status', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({status}),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      det.status = status;
+      loadDetections();  // Re-render to update badges
+    } else {
+      alert('Failed: ' + (d.error || 'unknown'));
+    }
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+async function toggleDetectionTag(idx, tag) {
+  const det = _detectionCache[idx];
+  if (!det) return;
+  let tags = det.tags || [];
+  if (tags.includes(tag)) {
+    tags = tags.filter(t => t !== tag);
+  } else {
+    tags.push(tag);
+  }
+  try {
+    const r = await fetch(BASE + '/api/detections/' + encodeURIComponent(det.id) + '/tags', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({tags}),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      det.tags = d.tags;
+      loadDetections();  // Re-render to update tag pills
+    } else {
+      alert('Failed: ' + (d.error || 'unknown'));
+    }
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+async function summarizeDetection(idx) {
+  const btn = document.getElementById('btn-sum-' + idx);
+  const sumEl = document.getElementById('ai-sum-' + idx);
+  const alertData = _detectionCache[idx];
+  if (!alertData) return;
+
+  btn.disabled = true;
+  btn.textContent = 'Summarizing...';
+  sumEl.style.display = 'block';
+  sumEl.textContent = 'Generating AI summary...';
+  sumEl.style.color = 'var(--muted)';
+  sumEl.style.fontStyle = 'italic';
+
+  try {
+    const r = await fetch(BASE + '/api/detections/summarize', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({alert: alertData}),
+    });
+    const d = await r.json();
+    sumEl.style.color = '';
+    sumEl.style.fontStyle = '';
+
+    if (d.error === true) {
+      sumEl.textContent = d.summary || 'LLM summarization failed';
+      sumEl.style.color = 'var(--red)';
+    } else {
+      sumEl.textContent = d.summary;
+      _detectionSummaries[idx] = d.summary;  // cache for refresh persistence
+    }
+    btn.textContent = 'Refresh Summary';
+    btn.disabled = false;
+  } catch(e) {
+    sumEl.textContent = 'Error: ' + e.message;
+    sumEl.style.color = 'var(--red)';
+    btn.textContent = 'AI Summary';
+    btn.disabled = false;
+  }
+}
+
+function askAboutAlert(idx) {
+  const det = _detectionCache[idx];
+  if (!det) return;
+
+  // Build a concise context prompt from the alert
+  const ruleName = det.rule_name || det.rule_id || 'Unknown';
+  const severity = det.severity || 'unknown';
+  const host = det.host || 'unknown host';
+  const desc = det.description || '';
+  const evtCount = det.event_count || det.matched_events || 0;
+  const ts = det.timestamp ? new Date(det.timestamp).toLocaleString() : '';
+
+  const firstSeen = det.first_seen || '';
+  const lastSeen = det.last_seen || '';
+  const ruleId = det.rule_id || ruleName;
+
+  const prompt = `Hey, I have an alert I'd like your help with:\n` +
+    `Rule: ${ruleName} (rule_id: ${ruleId}), Severity: ${severity}, Host: ${host}, ` +
+    `${evtCount} events` +
+    (firstSeen ? `, First seen: ${firstSeen}` : '') +
+    (lastSeen ? `, Last seen: ${lastSeen}` : '') +
+    (desc ? `, Description: ${desc}` : '') +
+    `\n\nCan you look into this for me? Search the alert index for rule_id:"${ruleId}" ` +
+    `and also search the winlog index for activity on host ${host} around that time. ` +
+    `Tell me what happened in simple terms.`;
+
+  // Put the prompt into the chat input and send
+  const chatInput = document.getElementById('chatInput');
+  chatInput.value = prompt;
+  sendChat();
+
+  // Scroll the assistant panel into view
+  const assistant = document.querySelector('.assistant-card');
+  if (assistant) assistant.scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+
+function showInLogs(idx) {
+  const det = _detectionCache[idx];
+  if (!det) return;
+
+  const host = det.host || '';
+  const firstSeen = det.first_seen || '';
+  const lastSeen = det.last_seen || '';
+
+  // Build a KQL query that targets the host and time window (±5 min)
+  let kql = '';
+  if (host) kql += `winlog.computer_name:"${host}"`;
+  if (firstSeen) {
+    // Widen by 5 minutes either side to capture surrounding context
+    const start = new Date(new Date(firstSeen).getTime() - 5 * 60000).toISOString();
+    const end = lastSeen
+      ? new Date(new Date(lastSeen).getTime() + 5 * 60000).toISOString()
+      : new Date(new Date(firstSeen).getTime() + 10 * 60000).toISOString();
+    if (kql) kql += ' AND ';
+    kql += `@timestamp >= '${start}' AND @timestamp <= '${end}'`;
+  }
+
+  // Set the Event Explorer to winlog index + populate query + run search
+  // Use "All time" since the absolute timestamps are already in the KQL
+  document.getElementById('eventIndex').value = 'tinysocs-winlog-*';
+  document.getElementById('eventTimeRange').value = '';
+  document.getElementById('eventQuery').value = kql;
+  loadEvents();
+
+  // Scroll Event Explorer into view
+  const explorer = document.getElementById('event-explorer-card');
+  if (explorer) explorer.scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+
+let _fleetCache = [];
+let _openFleetIdx = -1;
 
 async function loadFleet() {
   const el = document.getElementById('fleet-content');
@@ -471,50 +3224,265 @@ async function loadFleet() {
   if (d.error && !d.hosts?.length) { el.innerHTML = `<div class="empty">${d.error}</div>`; return; }
 
   const hosts = d.hosts || [];
+  _fleetCache = hosts;
   if (!hosts.length) { el.innerHTML = '<div class="empty">No hosts reporting</div>'; return; }
 
-  let html = '<table><tr><th>Host</th><th>Events (24h)</th><th>Last Seen</th></tr>';
-  for (const h of hosts) {
+  let html = '<table><tr><th>Host</th><th>Events (24h)</th><th>Alerts</th><th>Last Seen</th></tr>';
+  for (let i = 0; i < hosts.length; i++) {
+    const h = hosts[i];
     const ago = h.last_seen ? timeAgo(h.last_seen) : 'unknown';
-    html += `<tr><td>${h.hostname}</td><td>${h.event_count}</td><td>${ago}</td></tr>`;
+    const alertBadge = h.alert_count > 0
+      ? `<span style="background:var(--red);color:#fff;padding:1px 6px;border-radius:4px;font-size:11px">${h.alert_count}</span>`
+      : `<span style="color:var(--muted)">0</span>`;
+    html += `<tr style="cursor:pointer" onclick="toggleFleetDetail(${i})">`;
+    html += `<td style="font-weight:600"><a href="#" style="color:var(--accent);text-decoration:none" onclick="event.stopPropagation(); event.preventDefault(); openHostTimeline('${escapeHtml(h.hostname)}')">${escapeHtml(h.hostname)}</a></td>`;
+    html += `<td>${h.event_count}</td>`;
+    html += `<td>${alertBadge}</td>`;
+    html += `<td>${ago}</td>`;
+    html += `</tr>`;
+
+    // Expandable detail row
+    const isOpen = (_openFleetIdx === i);
+    html += `<tr id="fleet-detail-${i}" style="display:${isOpen ? 'table-row' : 'none'}">`;
+    html += `<td colspan="4" style="padding:10px 16px;background:var(--bg);border-bottom:1px solid var(--border)">`;
+
+    const firstAgo = h.first_seen ? timeAgo(h.first_seen) : 'N/A';
+    const hbAgo = h.heartbeat_ts ? timeAgo(h.heartbeat_ts) : 'No heartbeat';
+    const shipAgo = h.last_ship_time ? timeAgo(h.last_ship_time) : 'N/A';
+
+    html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 24px;font-size:12px">`;
+
+    // Row 1: Times
+    html += `<div><span style="color:var(--muted)">First Seen (24h):</span> ${firstAgo}</div>`;
+    html += `<div><span style="color:var(--muted)">Last Seen:</span> ${ago}</div>`;
+
+    // Row 2: Agent info
+    html += `<div><span style="color:var(--muted)">Agent Version:</span> ${escapeHtml(h.agent_version || 'Unknown')}</div>`;
+    html += `<div><span style="color:var(--muted)">Uptime:</span> ${escapeHtml(h.uptime || 'Unknown')}</div>`;
+
+    // Row 3: Pipeline health
+    html += `<div><span style="color:var(--muted)">Last Heartbeat:</span> ${hbAgo}</div>`;
+    html += `<div><span style="color:var(--muted)">Events Shipped:</span> ${(h.events_shipped || 0).toLocaleString()}</div>`;
+
+    // Row 4: Channels + Event IDs
+    const channels = (h.top_channels || []).map(c => `${c.channel} (${c.count})`).join(', ') || 'None';
+    html += `<div><span style="color:var(--muted)">Top Channels:</span> ${escapeHtml(channels)}</div>`;
+    const evtIds = (h.top_event_ids || []).map(e => `${e.event_id} (${e.count})`).join(', ') || 'None';
+    html += `<div><span style="color:var(--muted)">Top Event IDs:</span> ${escapeHtml(evtIds)}</div>`;
+
+    // Row 5: Alert breakdown
+    const sevs = h.alert_severities || {};
+    const sevStr = Object.entries(sevs).map(([k,v]) => `${k}: ${v}`).join(', ') || 'None';
+    html += `<div><span style="color:var(--muted)">Alerts by Severity:</span> ${escapeHtml(sevStr)}</div>`;
+
+    // Active detections
+    const dets = (h.active_detections || []).map(d => escapeHtml(d)).join(', ') || 'None';
+    html += `<div><span style="color:var(--muted)">Active Detections:</span> ${dets}</div>`;
+    html += `</div>`;
+
+    // Quick actions
+    html += `<div style="margin-top:8px;display:flex;gap:6px">`;
+    html += `<button class="btn-summarize" style="background:#8e44ad;font-size:11px;padding:3px 10px" onclick="event.stopPropagation(); viewHostLogs('${escapeHtml(h.hostname)}')">View Logs</button>`;
+    html += `<button class="btn-summarize" style="background:var(--accent);font-size:11px;padding:3px 10px" onclick="event.stopPropagation(); viewHostAlerts('${escapeHtml(h.hostname)}')">View Alerts</button>`;
+    html += `</div>`;
+
+    html += `</td></tr>`;
   }
   html += '</table>';
   el.innerHTML = html;
 }
+
+function toggleFleetDetail(idx) {
+  const row = document.getElementById('fleet-detail-' + idx);
+  if (!row) return;
+  if (_openFleetIdx === idx) {
+    row.style.display = 'none';
+    _openFleetIdx = -1;
+  } else {
+    // Close previous
+    if (_openFleetIdx >= 0) {
+      const prev = document.getElementById('fleet-detail-' + _openFleetIdx);
+      if (prev) prev.style.display = 'none';
+    }
+    row.style.display = 'table-row';
+    _openFleetIdx = idx;
+  }
+}
+
+function viewHostLogs(hostname) {
+  document.getElementById('eventIndex').value = 'tinysocs-winlog-*';
+  document.getElementById('eventQuery').value = `winlog.computer_name:"${hostname}"`;
+  document.getElementById('eventTimeRange').value = '24h';
+  loadEvents();
+  const explorer = document.getElementById('event-explorer-card');
+  if (explorer) explorer.scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+
+function viewHostAlerts(hostname) {
+  document.getElementById('eventIndex').value = 'tinysocs-alerts-*';
+  document.getElementById('eventQuery').value = `source.computer_name:"${hostname}"`;
+  document.getElementById('eventTimeRange').value = '24h';
+  loadEvents();
+  const explorer = document.getElementById('event-explorer-card');
+  if (explorer) explorer.scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+
+let _openRunbookId = null;
 
 async function loadActions() {
   const el = document.getElementById('actions-content');
   const d = await fetchJSON('/api/actions');
   const actions = d.actions || [];
-  if (!actions.length) { el.innerHTML = '<div class="empty">No staged actions</div>'; return; }
+  if (!actions.length) { el.innerHTML = '<div class="empty">No recommendations yet. TinySocs will suggest guided responses when alerts fire.</div>'; return; }
 
-  let html = '<table><tr><th>Action</th><th>Status</th><th>Params</th><th>Who</th></tr>';
+  let html = '';
   for (const a of actions.slice(0, 20)) {
-    const params = typeof a.params === 'object' ? Object.entries(a.params).map(([k,v])=>`${k}=${v}`).join(', ') : '';
-    html += `<tr><td><code>${a.action}</code></td><td>${statusBadge(a.status)}</td><td>${params}</td><td>${a.who||''}</td></tr>`;
+    const staged = a.staged_at ? timeAgo(a.staged_at) : '';
+    const isOpen = _openRunbookId === a.action_id;
+    const statusCls = a.status === 'staged' ? 'background:#e67e22;color:#fff'
+      : a.status === 'acknowledged' ? 'background:#27ae60;color:#fff'
+      : a.status === 'dismissed' ? 'background:#7f8c8d;color:#fff' : 'background:var(--border);color:var(--fg)';
+
+    const ops = a.status === 'staged'
+      ? `<button class="btn-sm" style="background:#27ae60;color:#fff;border:none;border-radius:4px;padding:3px 10px;cursor:pointer;font-size:11px" onclick="event.stopPropagation();acknowledgeAction('${a.action_id}')">Acknowledge</button> <button class="btn-sm" style="background:#7f8c8d;color:#fff;border:none;border-radius:4px;padding:3px 10px;cursor:pointer;font-size:11px" onclick="event.stopPropagation();dismissAction('${a.action_id}')">Dismiss</button>`
+      : '';
+
+    html += `<div style="border:1px solid var(--border);border-radius:8px;margin-bottom:8px;overflow:hidden">`;
+    html += `<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer;background:${isOpen?'var(--bg)':'transparent'}" onclick="toggleRunbook('${a.action_id}')">`;
+    html += `<span style="font-size:11px;padding:2px 8px;border-radius:4px;${statusCls}">${a.status.toUpperCase()}</span>`;
+    html += `<code style="font-size:13px;font-weight:600">${a.action}</code>`;
+    html += `<span style="color:var(--muted);font-size:12px;flex:1">${escapeHtml(a.params?.reason || Object.entries(a.params||{}).map(([k,v])=>k+'='+v).join(', '))}</span>`;
+    html += `<span style="font-size:11px;color:var(--muted);white-space:nowrap">${staged}</span>`;
+    html += `<span style="white-space:nowrap">${ops}</span>`;
+    html += `</div>`;
+
+    if (isOpen) {
+      const runbook = a.runbook || [];
+      const resolution = a.resolution || '';
+      html += `<div style="padding:8px 14px 14px;border-top:1px solid var(--border);background:var(--bg)">`;
+      if (runbook.length) {
+        html += `<div style="font-size:12px;font-weight:600;color:var(--accent);margin-bottom:6px">Remediation Runbook</div>`;
+        html += `<ol style="margin:0 0 0 18px;padding:0;font-size:12px;line-height:1.8;color:var(--fg)">`;
+        for (const step of runbook) {
+          html += `<li>${escapeHtml(step)}</li>`;
+        }
+        html += `</ol>`;
+      }
+      if (resolution) {
+        html += `<div style="margin-top:8px;padding:6px 10px;background:var(--surface);border-radius:4px;font-size:12px;color:var(--muted)"><strong>Resolution:</strong> ${escapeHtml(resolution)}</div>`;
+      }
+      if (a.resolved_by) {
+        html += `<div style="font-size:11px;color:var(--muted);margin-top:4px">Resolved by ${escapeHtml(a.resolved_by)} ${a.resolved_at ? '&mdash; ' + new Date(a.resolved_at).toLocaleString() : ''}</div>`;
+      }
+      html += `</div>`;
+    }
+    html += `</div>`;
   }
-  html += '</table>';
   el.innerHTML = html;
 }
+
+function toggleRunbook(actionId) {
+  _openRunbookId = _openRunbookId === actionId ? null : actionId;
+  loadActions();
+}
+
+async function acknowledgeAction(actionId) {
+  if (!confirm('Acknowledge this recommendation? You will handle remediation manually using the runbook steps.')) return;
+  try {
+    const r = await fetch(BASE + '/api/actions/' + actionId + '/approve', {method: 'POST'});
+    const d = await r.json();
+    if (!d.ok) alert('Failed: ' + (d.error || 'unknown'));
+  } catch(e) { alert('Error: ' + e.message); }
+  loadActions();
+}
+
+async function dismissAction(actionId) {
+  if (!confirm('Dismiss this recommendation? (false positive / not applicable)')) return;
+  try {
+    const r = await fetch(BASE + '/api/actions/' + actionId + '/reject', {method: 'POST'});
+    const d = await r.json();
+    if (!d.ok) alert('Failed: ' + (d.error || 'unknown'));
+  } catch(e) { alert('Error: ' + e.message); }
+  loadActions();
+}
+
+async function stageTestAction() {
+  try {
+    const r = await fetch(BASE + '/api/actions/test', {method: 'POST'});
+    const d = await r.json();
+    if (!d.ok) { alert('Failed: ' + (d.error || 'unknown')); return; }
+    loadActions();
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+let _schemaCache = {};
 
 async function loadEvents() {
   const el = document.getElementById('events-content');
   const q = document.getElementById('eventQuery').value;
+  const idx = document.getElementById('eventIndex').value;
+  const timeRange = document.getElementById('eventTimeRange').value;
   el.innerHTML = '<div class="loading">Loading...</div>';
-  const d = await fetchJSON(`/api/events/recent?limit=30&q=${encodeURIComponent(q)}`);
+  let url = `/api/events/recent?limit=30&index=${encodeURIComponent(idx)}&q=${encodeURIComponent(q)}`;
+  if (timeRange) url += `&time_range=${encodeURIComponent(timeRange)}`;
+  const d = await fetchJSON(url);
   if (d.error && !d.events?.length) { el.innerHTML = `<div class="empty">${d.error}</div>`; return; }
 
   const events = d.events || [];
   if (!events.length) { el.innerHTML = '<div class="empty">No events found</div>'; return; }
 
-  let html = '<table><tr><th>Time</th><th>Host</th><th>Channel</th><th>ID</th><th>Message</th></tr>';
+  const isAlerts = idx.includes('alerts');
+  let html = isAlerts
+    ? '<table><tr><th>Time</th><th>Host</th><th>Rule</th><th>Severity</th><th>Description</th></tr>'
+    : '<table><tr><th>Time</th><th>Host</th><th>Channel</th><th>ID</th><th>Message</th></tr>';
   for (const e of events) {
     const t = e.timestamp ? new Date(e.timestamp).toLocaleString() : '';
     const msg = (e.message || '').substring(0, 120);
-    html += `<tr><td style="white-space:nowrap">${t}</td><td>${e.host}</td><td>${e.channel}</td><td>${e.event_id}</td><td style="font-size:12px;color:var(--muted)">${msg}</td></tr>`;
+    const hostLink = e.host ? `<a href="#" style="color:var(--accent);text-decoration:none" onclick="event.preventDefault();openHostTimeline('${escapeHtml(e.host)}')">${escapeHtml(e.host)}</a>` : '';
+    html += `<tr><td style="white-space:nowrap">${t}</td><td>${hostLink}</td><td>${e.channel}</td><td>${e.event_id}</td><td style="font-size:12px;color:var(--muted)">${msg}</td></tr>`;
   }
   html += '</table>';
   el.innerHTML = html;
+}
+
+async function toggleSchema() {
+  const panel = document.getElementById('schema-panel');
+  if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+
+  // Fetch schema if not cached
+  if (!_schemaCache._loaded) {
+    panel.innerHTML = '<span style="color:var(--muted)">Loading schema...</span>';
+    panel.style.display = 'block';
+    try {
+      const d = await fetchJSON('/api/indices');
+      _schemaCache = d;
+      _schemaCache._loaded = true;
+    } catch(e) {
+      panel.innerHTML = '<span style="color:var(--danger)">Failed to load schema</span>';
+      return;
+    }
+  }
+
+  const idx = document.getElementById('eventIndex').value;
+  const indices = (_schemaCache.indices || []);
+  const info = indices.find(i => i.pattern === idx);
+  if (!info || info.error) {
+    panel.innerHTML = `<span style="color:var(--danger)">No schema available for ${idx}</span>`;
+    panel.style.display = 'block';
+    return;
+  }
+
+  const fields = info.fields || {};
+  const fieldCount = Object.keys(fields).length;
+  let html = `<div style="margin-bottom:6px"><strong>${idx}</strong> \u2014 ${fieldCount} fields (timestamp: <code>${info.ts_field}</code>)</div>`;
+  html += '<div style="column-count:3;column-gap:16px">';
+  for (const [name, ftype] of Object.entries(fields)) {
+    const typeColor = ftype === 'keyword' ? '#6ea8fe' : ftype === 'text' ? '#75b798' : ftype === 'long' || ftype === 'integer' ? '#e9a64a' : ftype === 'date' ? '#e07cc1' : 'var(--muted)';
+    html += `<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${name} (${ftype})"><code style="color:${typeColor}">${ftype}</code> <span>${name}</span></div>`;
+  }
+  html += '</div>';
+  panel.innerHTML = html;
+  panel.style.display = 'block';
 }
 
 function timeAgo(iso) {
@@ -529,15 +3497,700 @@ function timeAgo(iso) {
   } catch(e) { return iso; }
 }
 
+// ---- Host Event Timeline (inline stacked area chart) ----
+let _hostTimelineHost = '';
+const _channelColors = [
+  '#4a90d9', '#e67e22', '#2ecc71', '#e74c3c', '#9b59b6',
+  '#1abc9c', '#f1c40f', '#e84393', '#00cec9', '#fd79a8',
+];
+
+function openHostTimeline(hostname) {
+  _hostTimelineHost = hostname;
+  const card = document.getElementById('hostTimelineCard');
+  card.style.display = '';
+  document.getElementById('hostTimelineTitle').textContent = hostname + ' \u2014 Event Flow';
+  refreshHostTimeline();
+  card.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+}
+
+function closeHostTimeline() {
+  document.getElementById('hostTimelineCard').style.display = 'none';
+}
+
+async function refreshHostTimeline() {
+  const el = document.getElementById('hostTimelineChart');
+  const legendEl = document.getElementById('hostTimelineLegend');
+  const hrs = document.getElementById('hostTimelineRange').value;
+  el.innerHTML = '<div class="loading">Loading...</div>';
+  legendEl.innerHTML = '';
+
+  const d = await fetchJSON(`/api/host/timeline?hostname=${encodeURIComponent(_hostTimelineHost)}&hours=${hrs}`);
+  if (d.error && !d.buckets?.length) { el.innerHTML = `<div class="empty">${d.error}</div>`; return; }
+
+  const buckets = d.buckets || [];
+  if (!buckets.length) { el.innerHTML = '<div class="empty">No data</div>'; return; }
+
+  // Collect all channels and assign colours
+  const channels = d.channels || [];
+  if (!channels.length) {
+    // Fallback: collect from buckets
+    const cs = new Set();
+    buckets.forEach(b => Object.keys(b.channels || {}).forEach(c => cs.add(c)));
+    channels.push(...[...cs].sort());
+  }
+  const chColor = {};
+  channels.forEach((c, i) => { chColor[c] = _channelColors[i % _channelColors.length]; });
+
+  // Compute stacked values for each bucket
+  // stackedVals[i] = array of cumulative heights per channel (bottom to top)
+  const stackedMax = buckets.map(b => {
+    let cum = 0;
+    return channels.map(c => { cum += (b.channels?.[c] || 0); return cum; });
+  });
+  const maxY = Math.max(1, ...stackedMax.map(s => s[s.length - 1] || 0));
+
+  // SVG dimensions
+  const W = 900, H = 220;
+  const pad = {top: 16, right: 16, bottom: 28, left: 46};
+  const plotW = W - pad.left - pad.right;
+  const plotH = H - pad.top - pad.bottom;
+  const n = buckets.length;
+
+  // Y-axis ticks
+  const yTicks = [];
+  const step = Math.max(1, Math.ceil(maxY / 4));
+  for (let t = 0; t <= maxY; t += step) yTicks.push(t);
+  if (yTicks[yTicks.length - 1] < maxY) yTicks.push(Math.ceil(maxY));
+
+  let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-height:220px" xmlns="http://www.w3.org/2000/svg">`;
+
+  // Grid lines + Y labels
+  for (const t of yTicks) {
+    const y = pad.top + plotH - (t / maxY) * plotH;
+    svg += `<line x1="${pad.left}" y1="${y}" x2="${W-pad.right}" y2="${y}" stroke="var(--border)" stroke-width="0.5"/>`;
+    svg += `<text x="${pad.left-6}" y="${y+3}" text-anchor="end" fill="var(--muted)" font-size="10">${t}</text>`;
+  }
+
+  // Draw stacked areas (bottom channel first, then stacked upward)
+  for (let ci = channels.length - 1; ci >= 0; ci--) {
+    const color = chColor[channels[ci]];
+    // Upper edge: cumulative up to channel ci
+    let upper = '';
+    for (let i = 0; i < n; i++) {
+      const x = pad.left + (i / Math.max(1, n - 1)) * plotW;
+      const yVal = stackedMax[i][ci] || 0;
+      const y = pad.top + plotH - (yVal / maxY) * plotH;
+      upper += `${x},${y} `;
+    }
+    // Lower edge: cumulative up to channel ci-1 (or 0 if first)
+    let lower = '';
+    for (let i = n - 1; i >= 0; i--) {
+      const x = pad.left + (i / Math.max(1, n - 1)) * plotW;
+      const yVal = ci > 0 ? (stackedMax[i][ci - 1] || 0) : 0;
+      const y = pad.top + plotH - (yVal / maxY) * plotH;
+      lower += `${x},${y} `;
+    }
+    svg += `<polygon points="${upper}${lower}" fill="${color}" opacity="0.55"/>`;
+    // Stroke along top edge for clarity
+    svg += `<polyline points="${upper}" fill="none" stroke="${color}" stroke-width="1.2" opacity="0.8"/>`;
+  }
+
+  // X labels
+  const labelEvery = Math.max(1, Math.floor(n / 10));
+  for (let i = 0; i < n; i++) {
+    if (i % labelEvery === 0 || i === n - 1) {
+      const x = pad.left + (i / Math.max(1, n - 1)) * plotW;
+      const lbl = buckets[i].time ? new Date(buckets[i].time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '';
+      svg += `<text x="${x}" y="${H - 4}" text-anchor="middle" fill="var(--muted)" font-size="10">${lbl}</text>`;
+    }
+  }
+
+  // Baseline
+  svg += `<line x1="${pad.left}" y1="${pad.top+plotH}" x2="${W-pad.right}" y2="${pad.top+plotH}" stroke="var(--border)" stroke-width="1"/>`;
+  svg += '</svg>';
+
+  // Stats line
+  const total = buckets.reduce((s, b) => s + b.count, 0);
+  const avg = Math.round(total / Math.max(1, n));
+  svg += `<div style="font-size:11px;color:var(--muted);margin-top:6px;text-align:center">`;
+  svg += `Total: <strong>${total.toLocaleString()}</strong> events | `;
+  svg += `Avg: <strong>${avg}</strong>/interval | `;
+  svg += `Peak: <strong>${Math.ceil(maxY)}</strong> | `;
+  svg += `Interval: ${d.interval}`;
+  svg += `</div>`;
+
+  el.innerHTML = svg;
+
+  // Legend
+  let leg = '';
+  channels.forEach(c => {
+    const cTotal = buckets.reduce((s, b) => s + (b.channels?.[c] || 0), 0);
+    leg += `<span style="display:inline-flex;align-items:center;gap:4px;color:var(--text)">`;
+    leg += `<span style="width:10px;height:10px;border-radius:2px;background:${chColor[c]};display:inline-block"></span>`;
+    leg += `${escapeHtml(c)} <span style="color:var(--muted)">(${cTotal.toLocaleString()})</span></span>`;
+  });
+  legendEl.innerHTML = leg;
+}
+
+// ---- Alert Rules Management ----
+let _rulesCache = [];
+let _openRuleIdx = -1;
+let _rulesPage = 0;
+const _RULES_PER_PAGE = 10;
+
+async function loadRules() {
+  const el = document.getElementById('rules-content');
+  const d = await fetchJSON('/api/rules');
+  if (d.error) { el.innerHTML = `<div class="error">${escapeHtml(d.error)}</div>`; return; }
+  _rulesCache = d.rules || [];
+  // Don't re-render if the builder or upload form is open — user is mid-edit
+  const builderOpen = document.getElementById('ruleBuilder')?.style.display !== 'none';
+  const uploadOpen = document.getElementById('ruleUpload')?.style.display !== 'none';
+  if (builderOpen || uploadOpen) return;
+  _rulesPage = 0;
+  renderRules();
+}
+
+function renderRules() {
+  const el = document.getElementById('rules-content');
+  const filter = document.getElementById('rulesFilter').value;
+  let rules = _rulesCache;
+
+  // Apply filter
+  if (filter === 'builtin') rules = rules.filter(r => r.source === 'built-in');
+  else if (filter === 'custom') rules = rules.filter(r => r.source !== 'built-in');
+  else if (filter === 'enabled') rules = rules.filter(r => r.enabled !== false);
+  else if (filter === 'disabled') rules = rules.filter(r => r.enabled === false);
+
+  if (!rules.length) {
+    el.innerHTML = '<div class="empty">No rules match this filter</div>';
+    return;
+  }
+
+  // Pagination
+  const totalRules = rules.length;
+  const totalPages = Math.ceil(totalRules / _RULES_PER_PAGE);
+  if (_rulesPage >= totalPages) _rulesPage = totalPages - 1;
+  if (_rulesPage < 0) _rulesPage = 0;
+  const pageStart = _rulesPage * _RULES_PER_PAGE;
+  const pageRules = rules.slice(pageStart, pageStart + _RULES_PER_PAGE);
+
+  // Group the current page's rules by category
+  const cats = {};
+  for (const r of pageRules) {
+    const cat = r.category || 'uncategorised';
+    if (!cats[cat]) cats[cat] = [];
+    cats[cat].push(r);
+  }
+
+  let html = '';
+  const catOrder = ['auth','powershell','endpoint','identity','persistence','lateral','network','cloud','custom','uncategorised'];
+  const sortedCats = Object.keys(cats).sort((a,b) => {
+    const ia = catOrder.indexOf(a), ib = catOrder.indexOf(b);
+    return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+  });
+
+  for (const cat of sortedCats) {
+    const catRules = cats[cat];
+    html += `<div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin:10px 0 4px 0;padding-top:6px;border-top:1px solid var(--border)">${escapeHtml(cat)} <span style="font-weight:400">(${catRules.length})</span></div>`;
+    for (const r of catRules) {
+      const idx = _rulesCache.indexOf(r);
+      const isOpen = (idx === _openRuleIdx);
+      const enabled = r.enabled !== false;
+      const opacStyle = enabled ? '' : 'opacity:0.5;';
+      const srcBadge = r.source === 'built-in'
+        ? '<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:#34495e;color:#bdc3c7;flex-shrink:0">BUILT-IN</span>'
+        : `<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:#8e44ad;color:#fff;flex-shrink:0">${escapeHtml(r.source || 'CUSTOM')}</span>`;
+      const sevColors = {critical:'#e74c3c',high:'#e67e22',medium:'#f39c12',low:'#3498db',info:'#95a5a6'};
+      const sevColor = sevColors[r.severity] || '#95a5a6';
+
+      html += `<div class="rule-row" style="${opacStyle}">`;
+      html += `<div class="rule-row-header" onclick="toggleRuleDetail(${idx})">`;
+      html += srcBadge;
+      html += `<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:${sevColor};color:#fff;flex-shrink:0">${escapeHtml(r.severity || 'medium')}</span>`;
+      html += `<span class="rule-id">${escapeHtml(r.id)}</span>`;
+      html += `<span class="rule-desc">${escapeHtml(r.description || '')}</span>`;
+      html += `<span class="rule-meta">threshold: ${r.threshold || 1}</span>`;
+      if (!enabled) html += '<span class="rule-meta" style="color:#e74c3c">disabled</span>';
+      html += '</div>';
+
+      // Expandable detail
+      html += `<div class="rule-detail${isOpen ? ' open' : ''}" id="rule-detail-${idx}">`;
+      html += `<table style="width:100%;font-size:12px">`;
+      html += `<tr><td style="width:100px;color:var(--muted)">Index</td><td><code>${escapeHtml(r.index || '')}</code></td></tr>`;
+      html += `<tr><td style="color:var(--muted)">Group By</td><td><code>${escapeHtml((r.group_by||[]).join(', '))}</code></td></tr>`;
+      html += `<tr><td style="color:var(--muted)">Threshold</td><td>${r.threshold || 1}</td></tr>`;
+      html += `<tr><td style="color:var(--muted)">Time Field</td><td><code>${escapeHtml(r.time_field || '@timestamp')}</code></td></tr>`;
+      html += '</table>';
+      html += `<div style="margin-top:6px"><span style="font-size:11px;color:var(--muted)">KQL Query:</span></div>`;
+      html += `<pre>${escapeHtml(r.kql || '')}</pre>`;
+
+      // Actions
+      html += '<div style="display:flex;gap:6px;margin-top:6px">';
+      if (r.editable) {
+        html += `<button onclick="event.stopPropagation();toggleCustomRule('${escapeHtml(r.id)}')" style="font-size:11px;padding:3px 10px;border-radius:4px;cursor:pointer;border:none;background:${enabled?'#e67e22':'#27ae60'};color:#fff">${enabled?'Disable':'Enable'}</button>`;
+        html += `<button onclick="event.stopPropagation();deleteCustomRule('${escapeHtml(r.id)}')" style="font-size:11px;padding:3px 10px;border-radius:4px;cursor:pointer;border:none;background:#e74c3c;color:#fff">Delete</button>`;
+      }
+      // "Test in Explorer" button for all rules
+      html += `<button onclick="event.stopPropagation();testRuleInExplorer(${idx})" style="font-size:11px;padding:3px 10px;border-radius:4px;cursor:pointer;border:none;background:var(--accent);color:#fff">Test in Explorer</button>`;
+      html += '</div>';
+      html += '</div>';
+      html += '</div>';
+    }
+  }
+
+  // Pager
+  if (totalPages > 1) {
+    html += `<div class="rules-pager">`;
+    html += `<button onclick="rulesPagePrev()" ${_rulesPage === 0 ? 'disabled' : ''}>&laquo; Prev</button>`;
+    html += `<span>Page ${_rulesPage + 1} of ${totalPages} (${totalRules} rules)</span>`;
+    html += `<button onclick="rulesPageNext()" ${_rulesPage >= totalPages - 1 ? 'disabled' : ''}>Next &raquo;</button>`;
+    html += '</div>';
+  }
+
+  el.innerHTML = html;
+}
+
+function rulesPagePrev() { _rulesPage = Math.max(0, _rulesPage - 1); _openRuleIdx = -1; renderRules(); }
+function rulesPageNext() { _rulesPage++; _openRuleIdx = -1; renderRules(); }
+
+function filterRules() { _rulesPage = 0; renderRules(); }
+
+function toggleRuleDetail(idx) {
+  _openRuleIdx = (_openRuleIdx === idx) ? -1 : idx;
+  renderRules();
+}
+
+function toggleRuleBuilder() {
+  const el = document.getElementById('ruleBuilder');
+  el.style.display = el.style.display === 'none' ? '' : 'none';
+  document.getElementById('ruleUpload').style.display = 'none';
+}
+
+function toggleRuleUpload() {
+  const el = document.getElementById('ruleUpload');
+  el.style.display = el.style.display === 'none' ? '' : 'none';
+  document.getElementById('ruleBuilder').style.display = 'none';
+}
+
+async function createRule() {
+  const id = document.getElementById('rb_id').value.trim();
+  const desc = document.getElementById('rb_desc').value.trim();
+  const kql = document.getElementById('rb_kql').value.trim();
+  const sev = document.getElementById('rb_severity').value;
+  const idx = document.getElementById('rb_index').value.trim();
+  const thresh = parseInt(document.getElementById('rb_threshold').value) || 1;
+  const cat = document.getElementById('rb_category').value;
+  const gbRaw = document.getElementById('rb_groupby').value.trim();
+  const gb = gbRaw ? gbRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+  const msg = document.getElementById('ruleBuilderMsg');
+
+  if (!id || !desc || !kql) {
+    msg.style.display = '';
+    msg.style.color = '#e74c3c';
+    msg.textContent = 'Please fill in Rule ID, Description, and KQL Query.';
+    return;
+  }
+
+  msg.style.display = '';
+  msg.style.color = 'var(--muted)';
+  msg.textContent = 'Validating KQL query...';
+
+  const r = await fetch(BASE + '/api/rules', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({rule: {id, description: desc, kql, severity: sev, index: idx, threshold: thresh, category: cat, group_by: gb}})
+  });
+  const d = await r.json();
+  if (d.error) {
+    msg.style.display = '';
+    msg.style.color = '#e74c3c';
+    msg.innerHTML = escapeHtml(d.error) + (d.hint ? `<br><span style="font-size:11px;color:var(--muted)">${escapeHtml(d.hint)}</span>` : '');
+  } else {
+    msg.style.display = '';
+    msg.style.color = '#27ae60';
+    let successMsg = `Rule "${id}" created and enabled.`;
+    if (d.warning) successMsg += `<br><span style="font-size:11px;color:#e67e22">\u26a0 ${escapeHtml(d.warning)}</span>`;
+    msg.innerHTML = successMsg;
+    // Clear form
+    document.getElementById('rb_id').value = '';
+    document.getElementById('rb_desc').value = '';
+    document.getElementById('rb_kql').value = '';
+    setTimeout(() => { toggleRuleBuilder(); msg.style.display = 'none'; }, 1500);
+    loadRules();
+  }
+}
+
+async function uploadRulePack() {
+  const fileInput = document.getElementById('rulePackFile');
+  const packName = document.getElementById('rulePackName').value.trim() || 'uploaded-pack';
+  const msg = document.getElementById('ruleUploadMsg');
+
+  if (!fileInput.files.length) {
+    msg.style.display = '';
+    msg.style.color = '#e74c3c';
+    msg.textContent = 'Please select a file.';
+    return;
+  }
+
+  const file = fileInput.files[0];
+  const text = await file.text();
+  const isYaml = file.name.endsWith('.yaml') || file.name.endsWith('.yml');
+
+  const r = await fetch(BASE + '/api/rules/upload', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({content: text, format: isYaml ? 'yaml' : 'json', pack_name: packName})
+  });
+  const d = await r.json();
+  if (d.error) {
+    msg.style.display = '';
+    msg.style.color = '#e74c3c';
+    msg.textContent = d.error;
+  } else {
+    msg.style.display = '';
+    msg.style.color = '#27ae60';
+    let result = `Added ${d.added} rule(s)`;
+    if (d.skipped > 0) result += `, skipped ${d.skipped}`;
+    msg.textContent = result;
+    fileInput.value = '';
+    setTimeout(() => { toggleRuleUpload(); msg.style.display = 'none'; }, 2000);
+    loadRules();
+  }
+}
+
+async function toggleCustomRule(ruleId) {
+  await fetch(BASE + `/api/rules/${encodeURIComponent(ruleId)}/toggle`, {method: 'POST'});
+  loadRules();
+}
+
+async function deleteCustomRule(ruleId) {
+  if (!confirm(`Delete custom rule "${ruleId}"? This cannot be undone.`)) return;
+  await fetch(BASE + `/api/rules/${encodeURIComponent(ruleId)}`, {method: 'DELETE'});
+  loadRules();
+}
+
+function testRuleInExplorer(idx) {
+  const rule = _rulesCache[idx];
+  if (!rule) return;
+  // Set Event Explorer to the rule's index and KQL
+  document.getElementById('eventIndex').value = rule.index || 'tinysocs-winlog-*';
+  document.getElementById('eventQuery').value = rule.kql || '';
+  document.getElementById('eventTimeRange').value = '24h';
+  loadEvents();
+  const explorer = document.getElementById('event-explorer-card');
+  if (explorer) explorer.scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+
 function refreshAll() {
   document.getElementById('lastUpdate').textContent = 'Refreshing...';
-  Promise.all([loadSummary(), loadTimeline(), loadRules(), loadFleet(), loadActions(), loadEvents()])
+  // Load local data (rules) immediately — no SIEM dependency
+  loadRules();
+  // Load SIEM-dependent data
+  Promise.all([loadSummary(), loadTimeline(), loadDetections(), loadFleet(), loadEvents()])
     .then(() => {
       document.getElementById('lastUpdate').textContent = 'Updated ' + new Date().toLocaleTimeString();
+    })
+    .catch(() => {
+      document.getElementById('lastUpdate').textContent = 'SIEM not connected — ' + new Date().toLocaleTimeString();
     });
 }
 
-// Auto-refresh every 30 seconds
+// ---- Utility ----
+function escapeHtml(text) {
+  if (!text) return '';
+  const div = document.createElement('div');
+  div.textContent = String(text);
+  return div.innerHTML;
+}
+
+// ---- Chat (with persistence) ----
+let chatSessionId = null;
+
+function _saveChatLocal() {
+  // Save chat state to localStorage so it survives page refreshes
+  try {
+    const el = document.getElementById('chatMessages');
+    localStorage.setItem('tinysocs_chat_session', chatSessionId || '');
+    localStorage.setItem('tinysocs_chat_html', el.innerHTML);
+  } catch(e) { /* localStorage may be unavailable */ }
+}
+
+async function restoreChat() {
+  // Try to restore chat from localStorage first (instant), then verify with server
+  try {
+    const savedId = localStorage.getItem('tinysocs_chat_session');
+    const savedHtml = localStorage.getItem('tinysocs_chat_html');
+    if (savedId && savedHtml) {
+      chatSessionId = savedId;
+      document.getElementById('chatMessages').innerHTML = savedHtml;
+      const el = document.getElementById('chatMessages');
+      el.scrollTop = el.scrollHeight;
+      return;
+    }
+  } catch(e) { /* ignore */ }
+
+  // No local cache — check server for recent sessions
+  try {
+    const d = await fetchJSON('/api/chat/sessions');
+    if (d.sessions && d.sessions.length > 0) {
+      const latest = d.sessions[d.sessions.length - 1];
+      const hist = await fetchJSON(`/api/chat/history?session_id=${encodeURIComponent(latest.session_id)}`);
+      if (hist.messages && hist.messages.length > 0) {
+        chatSessionId = latest.session_id;
+        const el = document.getElementById('chatMessages');
+        el.innerHTML = '';
+        for (const m of hist.messages) {
+          el.innerHTML += `<div class="chat-msg ${m.role}">${escapeHtml(m.content)}</div>`;
+        }
+        el.scrollTop = el.scrollHeight;
+        _saveChatLocal();
+      }
+    }
+  } catch(e) { /* server may not have history */ }
+}
+
+function clearChat() {
+  chatSessionId = null;
+  const el = document.getElementById('chatMessages');
+  el.innerHTML = '<div class="chat-msg assistant">Hi! I\\\'m your TinySocs assistant. I can help you understand alerts, search through your logs, and guide you through any security concerns. Just ask me anything in plain English \u2014 no technical knowledge needed.</div>';
+  try {
+    localStorage.removeItem('tinysocs_chat_session');
+    localStorage.removeItem('tinysocs_chat_html');
+  } catch(e) {}
+}
+
+async function sendChat() {
+  const input = document.getElementById('chatInput');
+  const msg = input.value.trim();
+  if (!msg) return;
+
+  const el = document.getElementById('chatMessages');
+  el.innerHTML += `<div class="chat-msg user">${escapeHtml(msg)}</div>`;
+  input.value = '';
+  input.disabled = true;
+
+  el.innerHTML += '<div class="chat-msg assistant" id="chatLoading" style="color:var(--muted);font-style:italic">Thinking...</div>';
+  el.scrollTop = el.scrollHeight;
+
+  try {
+    const body = {message: msg};
+    if (chatSessionId) body.session_id = chatSessionId;
+
+    const r = await fetch(BASE + '/api/chat', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    const d = await r.json();
+
+    const loader = document.getElementById('chatLoading');
+    if (loader) loader.remove();
+
+    if (d.error) {
+      el.innerHTML += `<div class="chat-msg assistant" style="color:var(--red)">${escapeHtml(d.error)}</div>`;
+    } else {
+      chatSessionId = d.session_id;
+      if (d.tool_calls && d.tool_calls.length) {
+        for (const tc of d.tool_calls) {
+          el.innerHTML += `<div class="chat-msg tool-info">Tool: ${escapeHtml(tc.tool)}(${escapeHtml(JSON.stringify(tc.input)).substring(0,200)})</div>`;
+        }
+      }
+      el.innerHTML += `<div class="chat-msg assistant">${escapeHtml(d.reply)}</div>`;
+      // Refresh detections in case the assistant changed something
+      loadDetections();
+    }
+  } catch(e) {
+    const loader = document.getElementById('chatLoading');
+    if (loader) loader.remove();
+    el.innerHTML += `<div class="chat-msg assistant" style="color:var(--red)">Error: ${escapeHtml(e.message)}</div>`;
+  }
+
+  input.disabled = false;
+  input.focus();
+  el.scrollTop = el.scrollHeight;
+  _saveChatLocal();
+}
+
+// ---- Settings ----
+let settingsPassword = null;
+
+function openSettings() {
+  document.getElementById('settingsOverlay').classList.add('open');
+  // Always require password on each open
+  settingsPassword = null;
+  document.getElementById('settingsLogin').style.display = 'block';
+  document.getElementById('settingsForm').style.display = 'none';
+  document.getElementById('adminPassword').value = '';
+  document.getElementById('loginError').innerHTML = '';
+  setTimeout(() => document.getElementById('adminPassword').focus(), 100);
+}
+
+function closeSettings() {
+  settingsPassword = null;
+  document.getElementById('settingsOverlay').classList.remove('open');
+}
+
+async function settingsAuth() {
+  const pw = document.getElementById('adminPassword').value;
+  if (!pw) return;
+  try {
+    const r = await fetch(BASE + '/api/settings?admin_password=' + encodeURIComponent(pw));
+    const d = await r.json();
+    if (d.error) {
+      document.getElementById('loginError').innerHTML = `<div class="status-msg err" style="margin-top:8px">${escapeHtml(d.error)}</div>`;
+      return;
+    }
+    settingsPassword = pw;
+    document.getElementById('settingsLogin').style.display = 'none';
+    document.getElementById('settingsForm').style.display = 'block';
+    populateSettings(d);
+  } catch(e) {
+    document.getElementById('loginError').innerHTML = `<div class="status-msg err" style="margin-top:8px">${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function loadSettings() {
+  try {
+    const r = await fetch(BASE + '/api/settings?admin_password=' + encodeURIComponent(settingsPassword));
+    const d = await r.json();
+    if (d.error) {
+      settingsPassword = null;
+      openSettings();
+      return;
+    }
+    document.getElementById('settingsLogin').style.display = 'none';
+    document.getElementById('settingsForm').style.display = 'block';
+    populateSettings(d);
+  } catch(e) {
+    document.getElementById('settingsStatus').innerHTML = `<div class="status-msg err">${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function populateSettings(d) {
+  const s = d.settings || {};
+  const fields = ['LLM_MODE','OPENAI_API_KEY','OPENAI_MODEL','ANTHROPIC_API_KEY','ANTHROPIC_MODEL',
+    'OFFLINE_LLM_URL','OFFLINE_LLM_MODEL','WEBHOOK_URL','WEBHOOK_ENABLED',
+    'SIEM_URL','SIEM_USER','SIEM_PASS'];
+  for (const f of fields) {
+    const el = document.getElementById('s_' + f);
+    if (el) {
+      if (el.tagName === 'SELECT') {
+        el.value = s[f] || el.options[0].value;
+      } else {
+        el.value = s[f] || '';
+      }
+    }
+  }
+  updateProviderFields();
+  document.getElementById('settingsStatus').innerHTML = '';
+}
+
+function updateProviderFields() {
+  const mode = document.getElementById('s_LLM_MODE').value;
+  document.getElementById('field_openai').style.display = mode === 'openai' ? 'block' : 'none';
+  document.getElementById('field_anthropic').style.display = mode === 'anthropic' ? 'block' : 'none';
+  document.getElementById('field_ollama').style.display = (mode === 'ollama' || mode === 'offline') ? 'block' : 'none';
+}
+// Bind the change event
+document.getElementById('s_LLM_MODE')?.addEventListener('change', updateProviderFields);
+
+async function saveSettings() {
+  const fields = ['LLM_MODE','OPENAI_API_KEY','OPENAI_MODEL','ANTHROPIC_API_KEY','ANTHROPIC_MODEL',
+    'OFFLINE_LLM_URL','OFFLINE_LLM_MODEL','WEBHOOK_URL','WEBHOOK_ENABLED',
+    'SIEM_URL','SIEM_USER','SIEM_PASS'];
+  const settings = {};
+  for (const f of fields) {
+    const el = document.getElementById('s_' + f);
+    if (el) settings[f] = el.value;
+  }
+
+  const statusEl = document.getElementById('settingsStatus');
+  statusEl.innerHTML = '<div class="status-msg" style="color:var(--muted)">Saving...</div>';
+
+  try {
+    const r = await fetch(BASE + '/api/settings', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({admin_password: settingsPassword, settings}),
+    });
+    const d = await r.json();
+    if (d.error) {
+      statusEl.innerHTML = `<div class="status-msg err">${escapeHtml(d.error)}</div>`;
+    } else {
+      statusEl.innerHTML = `<div class="status-msg ok">${escapeHtml(d.message)}</div>`;
+      // Close the modal after a brief confirmation display
+      setTimeout(() => closeSettings(), 1200);
+    }
+  } catch(e) {
+    statusEl.innerHTML = `<div class="status-msg err">${escapeHtml(e.message)}</div>`;
+  }
+}
+
+// ---- LLM status tracking ----
+let _llmConfigured = true;  // assume yes until checked
+let _llmReason = '';
+
+async function checkLlmStatus() {
+  try {
+    const d = await fetchJSON('/api/llm/status');
+    _llmConfigured = d.configured === true;
+    _llmReason = d.reason || '';
+
+    // Update chat welcome message
+    const chatEl = document.getElementById('chatMessages');
+    if (!_llmConfigured && chatEl) {
+      chatEl.innerHTML = '<div class="chat-msg assistant">' +
+        'AI assistant is not configured. All dashboard data panels work without AI.' +
+        '<br><br>To enable the assistant, open Settings (gear icon) and configure an LLM provider.' +
+        '</div>';
+      const chatInput = document.getElementById('chatInput');
+      if (chatInput) { chatInput.placeholder = 'AI not configured \u2014 open Settings to enable'; }
+    }
+  } catch(e) { /* keep defaults */ }
+}
+
+// ---- Collapsible Assistant ----
+function toggleAssistant() {
+  const panel = document.getElementById('rightPanel');
+  const left = document.querySelector('.left-panels');
+  const btn = document.getElementById('assistantToggle');
+  const collapsed = panel.classList.toggle('collapsed');
+  left.classList.toggle('expanded', collapsed);
+  btn.innerHTML = collapsed ? '&raquo;' : '&laquo;';
+  btn.title = collapsed ? 'Show assistant' : 'Hide assistant';
+  try { localStorage.setItem('tinysocs_assistant_collapsed', collapsed ? '1' : ''); } catch(e) {}
+}
+function restoreAssistantState() {
+  try {
+    if (localStorage.getItem('tinysocs_assistant_collapsed') === '1') {
+      const panel = document.getElementById('rightPanel');
+      const left = document.querySelector('.left-panels');
+      const btn = document.getElementById('assistantToggle');
+      panel.classList.add('collapsed');
+      left.classList.add('expanded');
+      btn.innerHTML = '&raquo;';
+      btn.title = 'Show assistant';
+    }
+  } catch(e) {}
+}
+
+// Align assistant panel with the first card row
+function alignAssistantPanel() {
+  const firstCard = document.querySelector('.left-panels .card');
+  const panel = document.getElementById('rightPanel');
+  if (firstCard && panel) {
+    const rect = firstCard.getBoundingClientRect();
+    panel.style.top = rect.top + 'px';
+  }
+}
+
+// Start up
+restoreAssistantState();
+alignAssistantPanel();
+window.addEventListener('resize', alignAssistantPanel);
+checkLlmStatus();
+restoreChat();
 refreshAll();
 setInterval(refreshAll, 30000);
 </script>

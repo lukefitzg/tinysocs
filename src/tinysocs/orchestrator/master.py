@@ -684,6 +684,56 @@ def _pack_preview_extras(merged: List[DetectionEvidence], *, max_rules: int = 5,
 
     return {"rule_counts": rule_counts, "top_hosts": hosts_by_rule}
 
+def notify_webhook(preview: Dict[str, Any], incident: Optional[Dict[str, Any]]) -> None:
+    """Send alert notification to a generic webhook URL (webhook.site, Slack, Teams, etc.)."""
+    url = os.getenv("WEBHOOK_URL")
+    if not url:
+        return
+    if os.getenv("WEBHOOK_ENABLED", "1").strip() not in ("1", "true", "yes"):
+        return
+
+    sev   = (preview.get("severity") or "unknown")
+    items = int(preview.get("items") or 0)
+    tldr  = preview.get("tldr") or "(no TL;DR)"
+
+    rule_counts: List[Tuple[str, int]] = preview.get("rule_counts") or []
+    top_hosts: Dict[str, List[Tuple[str, int]]] = preview.get("top_hosts") or {}
+
+    lines = [
+        f"TinySocs Alert: {sev} \u00b7 {items} item(s)",
+        f"- {tldr}",
+    ]
+
+    if rule_counts:
+        rules_line = ", ".join(f"{r} ({c})" for r, c in rule_counts)
+        lines.append(f"- Rules: {rules_line}")
+
+    for r, _ in rule_counts[:3]:
+        hosts = top_hosts.get(r) or []
+        if hosts:
+            host_line = ", ".join(f"{h} ({c})" for h, c in hosts)
+            lines.append(f"\u2022 {r} \u2192 {host_line}")
+
+    text = "\n".join(lines)
+
+    if incident and _privacy_share_body():
+        more = incident.get("markdown") or incident.get("report") or incident.get("body")
+        if more:
+            text = text + "\n\n" + textwrap.shorten(more, width=3000, placeholder=" ...")
+
+    # Build JSON payload — use "text" key (compatible with Slack, webhook.site, etc.)
+    payload = {
+        "text": text,
+        "severity": sev,
+        "items": items,
+        "source": "tinysocs",
+    }
+
+    try:
+        requests.post(url, json=payload, timeout=6)
+    except Exception as e:
+        print(f"[master] WARN: webhook notify failed: {e}")
+
 def notify_slack(preview: Dict[str, Any], incident: Optional[Dict[str, Any]]) -> None:
     url = os.getenv("SLACK_WEBHOOK_URL")
     if not url:
@@ -1034,6 +1084,9 @@ def run_master(rules: str, window: str, host: Optional[str], deadline_sec: float
 
     try:
         inc_obj = incident if isinstance(incident, dict) else None
+        # Generic webhook (WEBHOOK_URL + WEBHOOK_ENABLED)
+        if os.getenv("WEBHOOK_URL"):
+            notify_webhook(preview, inc_obj)
         if os.getenv("NOTIFY_SLACK", "0") == "1":
             notify_slack(preview, inc_obj)
         if os.getenv("NOTIFY_GCHAT", "0") == "1":

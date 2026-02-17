@@ -1301,7 +1301,7 @@ begin
         'function _http($user,$pass,$path) {' + #13#10 +
         '  try {' + #13#10 +
         '    $pair = ($user + '':'' + $pass)' + #13#10 +
-        '    $code = & curl.exe -k -s -o NUL -w ''%{http_code}'' -u $pair ($siemUrl + $path) 2>$null' + #13#10 +
+        '    $code = & curl.exe -k -s -o NUL -w ''%{http_code}'' --connect-timeout 5 -m 10 -u $pair ($siemUrl + $path) 2>$null' + #13#10 +
         '    if (-not $code) { $code = ''000'' }' + #13#10 +
         '    return [string]$code' + #13#10 +
         '  } catch { return ''000'' }' + #13#10 +
@@ -1310,7 +1310,7 @@ begin
 
         'function _curl_i($path) {' + #13#10 +
         '  try {' + #13#10 +
-        '    return (& curl.exe -k -sS -i ($siemUrl + $path) 2>&1 | Out-String)' + #13#10 +
+        '    return (& curl.exe -k -sS -i --connect-timeout 5 -m 10 ($siemUrl + $path) 2>&1 | Out-String)' + #13#10 +
         '  } catch { return (''EXC: '' + $_.Exception.Message) }' + #13#10 +
         '}' + #13#10 +
         '' + #13#10 +
@@ -1711,7 +1711,56 @@ begin
         '    } catch { Write-Warning (''[TinySocs][Inno] assistant.env credential write failed: '' + $_.Exception.Message) }' + #13#10 +
         '  }' + #13#10 +
         '} else {' + #13#10 +
-        '  Write-Warning ''[TinySocs][Inno] No credential candidate AUTHENTICATED (authinfo never returned 200); skipping TB-3 to avoid 401 loops. OpenSearch persistence succeeded.'' ' + #13#10 +
+        '  Write-Warning ''[TinySocs][Inno] No credential candidate AUTHENTICATED (authinfo never returned 200).''' + #13#10 +
+        '  Write-Host ''[TinySocs][Inno] FALLBACK: attempting password rehash + securityadmin push since no creds worked''' + #13#10 +
+        '  try {' + #13#10 +
+        '    if (Get-Command Set-TinySocsOpenSearchAdminPasswordInConfig -ErrorAction SilentlyContinue) {' + #13#10 +
+        '      Set-TinySocsOpenSearchAdminPasswordInConfig `' + #13#10 +
+        '        -OpenSearchRoot $openSearchRoot `' + #13#10 +
+        '        -ConfigRoot $pdConf `' + #13#10 +
+        '        -AdminPassword $p_in' + #13#10 +
+        '      Write-Host ''[TinySocs][Inno] FALLBACK: internal_users.yml updated with wizard password hash''' + #13#10 +
+        '    } else { Write-Warning ''Set-TinySocsOpenSearchAdminPasswordInConfig not found'' }' + #13#10 +
+        '  } catch { Write-Warning (''[TinySocs][Inno] FALLBACK admin hash failed: '' + $_.Exception.Message) }' + #13#10 +
+        '  try {' + #13#10 +
+        '    if (Get-Command Ensure-TinySocsOpenSearchSecurityInitialized -ErrorAction SilentlyContinue) {' + #13#10 +
+        '      Ensure-TinySocsOpenSearchSecurityInitialized `' + #13#10 +
+        '        -OpenSearchRoot $openSearchRoot `' + #13#10 +
+        '        -ProgramDataConf $pdConf `' + #13#10 +
+        '        -Url ''https://localhost:9201''' + #13#10 +
+        '      Write-Host ''[TinySocs][Inno] FALLBACK: securityadmin push completed''' + #13#10 +
+        '    } else { Write-Warning ''Ensure-TinySocsOpenSearchSecurityInitialized not found'' }' + #13#10 +
+        '  } catch { Write-Warning (''[TinySocs][Inno] FALLBACK securityadmin push failed: '' + $_.Exception.Message) }' + #13#10 +
+        '' + #13#10 +
+        '  # Re-probe after fallback rehash' + #13#10 +
+        '  Write-Host ''[TinySocs][Inno] FALLBACK: waiting 5s then re-probing credentials...''' + #13#10 +
+        '  Start-Sleep -Seconds 5' + #13#10 +
+        '  $reProbeDeadline = (Get-Date).AddSeconds(60)' + #13#10 +
+        '  while ((Get-Date) -lt $reProbeDeadline -and (-not $ok)) {' + #13#10 +
+        '    foreach ($pair in $candidates) {' + #13#10 +
+        '      $cu = $pair[0]; $cp = $pair[1]' + #13#10 +
+        '      $hc = _http $cu $cp $probePath' + #13#10 +
+        '      Write-Host (''[TinySocs][Inno] FALLBACK re-probe user='' + $cu + '' http='' + $hc)' + #13#10 +
+        '      if ($hc -eq ''200'') { $u = $cu; $p = $cp; $ok = $true; $okCode = $hc; break }' + #13#10 +
+        '    }' + #13#10 +
+        '    if (-not $ok) { Start-Sleep -Seconds 3 }' + #13#10 +
+        '  }' + #13#10 +
+        '  if ($ok) {' + #13#10 +
+        '    Write-Host (''[TinySocs][Inno] FALLBACK: creds now AUTHENTICATED after rehash: user='' + $u)' + #13#10 +
+        '    $aEnv = Join-Path $env:ProgramData ''TinySocs\Assistant\assistant.env''' + #13#10 +
+        '    if (Test-Path $aEnv) {' + #13#10 +
+        '      try {' + #13#10 +
+        '        $ec = Get-Content $aEnv -Raw' + #13#10 +
+        '        $ec = $ec -replace ''(?m)^SIEM_PASS=.*$'', (''SIEM_PASS='' + $p)' + #13#10 +
+        '        $ec = $ec -replace ''(?m)^SIEM_USER=.*$'', (''SIEM_USER='' + $u)' + #13#10 +
+        '        $ec = $ec -replace ''(?m)^SIEM_URL=.*$'',  (''SIEM_URL='' + $siemUrl)' + #13#10 +
+        '        Set-Content -Path $aEnv -Value $ec -Force' + #13#10 +
+        '        Write-Host ''[TinySocs][Inno] FALLBACK: assistant.env updated with proven credentials''' + #13#10 +
+        '      } catch { Write-Warning (''[TinySocs][Inno] FALLBACK assistant.env write failed: '' + $_.Exception.Message) }' + #13#10 +
+        '    }' + #13#10 +
+        '  } else {' + #13#10 +
+        '    Write-Warning ''[TinySocs][Inno] FALLBACK: credentials still not working after rehash. Manual intervention required.''' + #13#10 +
+        '  }' + #13#10 +
         '}' + #13#10 +
         '' + #13#10 +
 

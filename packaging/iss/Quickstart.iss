@@ -1671,6 +1671,19 @@ begin
         '      & $sc @sp | Out-Null' + #13#10 +
         '    }' + #13#10 +
         '  } catch { Write-Warning (''[TinySocs][Inno] Credential preset failed (continuing): '' + $_.Exception.Message) }' + #13#10 +
+        '' + #13#10 +
+        '  # Write proven credentials directly into assistant.env (Phase 11 CredMan reconciliation may be too late)' + #13#10 +
+        '  $aEnv = Join-Path $env:ProgramData ''TinySocs\Assistant\assistant.env''' + #13#10 +
+        '  if (Test-Path $aEnv) {' + #13#10 +
+        '    try {' + #13#10 +
+        '      $ec = Get-Content $aEnv -Raw' + #13#10 +
+        '      $ec = $ec -replace ''(?m)^SIEM_PASS=.*$'', (''SIEM_PASS='' + $p)' + #13#10 +
+        '      $ec = $ec -replace ''(?m)^SIEM_USER=.*$'', (''SIEM_USER='' + $u)' + #13#10 +
+        '      $ec = $ec -replace ''(?m)^SIEM_URL=.*$'',  (''SIEM_URL='' + $siemUrl)' + #13#10 +
+        '      Set-Content -Path $aEnv -Value $ec -Force' + #13#10 +
+        '      Write-Host (''[TinySocs][Inno] assistant.env updated with PROVEN credentials (user='' + $u + '')'')' + #13#10 +
+        '    } catch { Write-Warning (''[TinySocs][Inno] assistant.env credential write failed: '' + $_.Exception.Message) }' + #13#10 +
+        '  }' + #13#10 +
         '} else {' + #13#10 +
         '  Write-Warning ''[TinySocs][Inno] No credential candidate AUTHENTICATED (authinfo never returned 200); skipping TB-3 to avoid 401 loops. OpenSearch persistence succeeded.'' ' + #13#10 +
         '}' + #13#10 +

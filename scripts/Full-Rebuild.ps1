@@ -306,8 +306,39 @@ Write-Host ""
 Write-Host "  assistant.env:"
 $envFile = Join-Path $env:ProgramData 'TinySocs\Assistant\assistant.env'
 if (Test-Path $envFile) {
-    Get-Content $envFile | Where-Object { $_ -match '^(LLM_MODE|OPENAI_API_KEY|ANTHROPIC_API_KEY|SIEM_URL|BOT_PORT)=' } | ForEach-Object {
-        Write-Host "    $_"
+    Get-Content $envFile | Where-Object { $_ -match '^(LLM_MODE|OPENAI_API_KEY|ANTHROPIC_API_KEY|SIEM_URL|SIEM_USER|SIEM_PASS|WEBHOOK_URL|WEBHOOK_ENABLED|BOT_PORT)=' } | ForEach-Object {
+        # Mask secrets but show first/last 4 chars
+        if ($_ -match '^(SIEM_PASS|OPENAI_API_KEY|ANTHROPIC_API_KEY)=(.+)$') {
+            $key = $Matches[1]; $val = $Matches[2]
+            if ($val.Length -gt 8) {
+                $masked = $val.Substring(0,4) + ('*' * ($val.Length - 8)) + $val.Substring($val.Length - 4)
+            } else { $masked = '****' }
+            Write-Host "    ${key}=$masked"
+        } else {
+            Write-Host "    $_"
+        }
+    }
+
+    # Test SIEM auth
+    Write-Host ""
+    Write-Host "  SIEM auth test:"
+    $siemPass = (Get-Content $envFile | Where-Object { $_ -match '^SIEM_PASS=' }) -replace '^SIEM_PASS=',''
+    $siemUser = (Get-Content $envFile | Where-Object { $_ -match '^SIEM_USER=' }) -replace '^SIEM_USER=',''
+    if (-not $siemUser) { $siemUser = 'admin' }
+    if ($siemPass) {
+        try {
+            $authHeader = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${siemUser}:${siemPass}"))
+            $result = curl.exe -k -s -o NUL -w '%{http_code}' -H "Authorization: Basic $authHeader" https://127.0.0.1:9201/_cluster/health 2>$null
+            if ($result -eq '200') {
+                Write-Host "    SIEM auth OK (HTTP 200)" -ForegroundColor Green
+            } else {
+                Write-Host "    SIEM auth FAILED (HTTP $result) -- password in assistant.env may not match OpenSearch" -ForegroundColor Red
+            }
+        } catch {
+            Write-Host "    SIEM auth test error: $($_.Exception.Message)" -ForegroundColor Red
+        }
+    } else {
+        Write-Host "    SIEM_PASS is empty in assistant.env!" -ForegroundColor Red
     }
 } else {
     Write-Host "    assistant.env not found" -ForegroundColor Yellow

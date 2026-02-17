@@ -1823,22 +1823,26 @@ begin
         '  $configPath = Join-Path $env:ProgramData ''TinySocs\Collector\agent\config.yml''' + CRLF +
         '}' + CRLF +
         '' + CRLF +
-        'if (Test-Path $configPath) {' + CRLF;
+        '# Use regex replacement to preserve YAML nesting (Set-TinySocsYamlScalar writes to root level)' + CRLF +
+        'if (Test-Path $configPath) {' + CRLF +
+        '  $content = Get-Content $configPath -Raw' + CRLF;
 
       if WebhookUrl <> '' then
         Script := Script +
-          '  Set-TinySocsYamlScalar -Path $configPath -Key ''webhook_url'' -Value ''' + PsEscape(WebhookUrl) + '''' + CRLF +
-          '  Write-Host ''[TinySocs][Inno] Set webhook_url in agent-config.yml''' + CRLF;
+          '  $content = $content -replace ''(?m)(^\s+webhook_url:\s*).*$'', (''${1}' + PsEscape(WebhookUrl) + ''')' + CRLF +
+          '  Write-Host ''[TinySocs][Inno] Set webhook_url in agent-config.yml (nested)''' + CRLF;
 
       if (EmailEnabled) and (SmtpHost <> '') then
         Script := Script +
-          '  Set-TinySocsYamlScalar -Path $configPath -Key ''smtp_host'' -Value ''' + PsEscape(SmtpHost) + '''' + CRLF +
-          '  Set-TinySocsYamlScalar -Path $configPath -Key ''smtp_port'' -Value ''' + PsEscape(SmtpPort) + '''' + CRLF +
-          '  Set-TinySocsYamlScalar -Path $configPath -Key ''email_from'' -Value ''' + PsEscape(EmailFrom) + '''' + CRLF +
-          '  Set-TinySocsYamlScalar -Path $configPath -Key ''email_to'' -Value ''' + PsEscape(EmailTo) + '''' + CRLF +
-          '  Write-Host ''[TinySocs][Inno] Set email notification config in agent-config.yml''' + CRLF;
+          '  $content = $content -replace ''(?m)(^\s+smtp_host:\s*).*$'', (''${1}' + PsEscape(SmtpHost) + ''')' + CRLF +
+          '  $content = $content -replace ''(?m)(^\s+smtp_port:\s*).*$'', (''${1}' + PsEscape(SmtpPort) + ''')' + CRLF +
+          '  $content = $content -replace ''(?m)(^\s+(?:email_)?from:\s*).*$'', (''${1}' + PsEscape(EmailFrom) + ''')' + CRLF +
+          '  $content = $content -replace ''(?m)(^\s+(?:email_)?to:\s*).*$'', (''${1}' + PsEscape(EmailTo) + ''')' + CRLF +
+          '  Write-Host ''[TinySocs][Inno] Set email notification config in agent-config.yml (nested)''' + CRLF;
 
       Script := Script +
+        '  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)' + CRLF +
+        '  [System.IO.File]::WriteAllText($configPath, $content, $utf8NoBom)' + CRLF +
         '} else {' + CRLF +
         '  Write-Warning ''[TinySocs][Inno] agent-config.yml not found; cannot write notification config.''' + CRLF +
         '}' + CRLF;

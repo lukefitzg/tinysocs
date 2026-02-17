@@ -332,47 +332,32 @@ if (Test-Path $envFile) {
             if ($result -eq '200') {
                 Write-Host "    SIEM auth OK (HTTP 200)" -ForegroundColor Green
             } else {
-                Write-Host "    SIEM auth FAILED (HTTP $result) -- attempting self-heal..." -ForegroundColor Yellow
-                # Try common password candidates to find the working one
-                $healed = $false
-                foreach ($tryPass in @('admin', $siemPass)) {
-                    $tryAuth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("admin:${tryPass}"))
-                    $tryResult = curl.exe -k -s -o NUL -w '%{http_code}' -H "Authorization: Basic $tryAuth" https://127.0.0.1:9201/_cluster/health 2>$null
-                    if ($tryResult -eq '200') {
-                        Write-Host "    Found working password (user=admin). Updating assistant.env..." -ForegroundColor Yellow
-                        $content = Get-Content $envFile -Raw
-                        $content = $content -replace '(?m)^SIEM_PASS=.*$', "SIEM_PASS=$tryPass"
-                        $content = $content -replace '(?m)^SIEM_USER=.*$', 'SIEM_USER=admin'
-                        Set-Content -Path $envFile -Value $content -Force
-                        Restart-Service TinySocsAssistant -ErrorAction SilentlyContinue
-                        Write-Host "    SIEM auth HEALED and assistant restarted" -ForegroundColor Green
-                        $healed = $true
-                        break
+                Write-Host "    SIEM auth FAILED (HTTP $result) -- diagnosing..." -ForegroundColor Yellow
+                # Probe for which password actually works (report only, no auto-fix)
+                $foundPass = $null
+                $foundSource = $null
+
+                # Check OPENSEARCH_INITIAL_ADMIN_PASSWORD from service registry
+                try {
+                    $svcEnv = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\TinySocsOpenSearch' -Name Environment -ErrorAction SilentlyContinue).Environment
+                    $initPass = ($svcEnv | Where-Object { $_ -match '^OPENSEARCH_INITIAL_ADMIN_PASSWORD=' }) -replace '^OPENSEARCH_INITIAL_ADMIN_PASSWORD=',''
+                    if ($initPass -and $initPass -ne $siemPass) {
+                        $tryAuth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("admin:${initPass}"))
+                        $tryResult = curl.exe -k -s -o NUL -w '%{http_code}' -H "Authorization: Basic $tryAuth" https://127.0.0.1:9201/_cluster/health 2>$null
+                        if ($tryResult -eq '200') { $foundPass = $initPass; $foundSource = 'OPENSEARCH_INITIAL_ADMIN_PASSWORD (service registry)' }
                     }
-                }
-                if (-not $healed) {
-                    # Also try with the OPENSEARCH_INITIAL_ADMIN_PASSWORD from registry
-                    try {
-                        $svcEnv = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\TinySocsOpenSearch' -Name Environment -ErrorAction SilentlyContinue).Environment
-                        $initPass = ($svcEnv | Where-Object { $_ -match '^OPENSEARCH_INITIAL_ADMIN_PASSWORD=' }) -replace '^OPENSEARCH_INITIAL_ADMIN_PASSWORD=',''
-                        if ($initPass) {
-                            $tryAuth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("admin:${initPass}"))
-                            $tryResult = curl.exe -k -s -o NUL -w '%{http_code}' -H "Authorization: Basic $tryAuth" https://127.0.0.1:9201/_cluster/health 2>$null
-                            if ($tryResult -eq '200') {
-                                Write-Host "    Found working password from OpenSearch service env. Updating assistant.env..." -ForegroundColor Yellow
-                                $content = Get-Content $envFile -Raw
-                                $content = $content -replace '(?m)^SIEM_PASS=.*$', "SIEM_PASS=$initPass"
-                                $content = $content -replace '(?m)^SIEM_USER=.*$', 'SIEM_USER=admin'
-                                Set-Content -Path $envFile -Value $content -Force
-                                Restart-Service TinySocsAssistant -ErrorAction SilentlyContinue
-                                Write-Host "    SIEM auth HEALED and assistant restarted" -ForegroundColor Green
-                                $healed = $true
-                            }
-                        }
-                    } catch { }
-                }
-                if (-not $healed) {
-                    Write-Host "    SIEM auth FAILED -- could not find working password. Manual fix required." -ForegroundColor Red
+                } catch { }
+
+                if ($foundPass) {
+                    Write-Host "    Working password found via: $foundSource" -ForegroundColor Yellow
+                    Write-Host "    To fix, run:" -ForegroundColor Yellow
+                    Write-Host "      `$f = Get-Content '$envFile' -Raw" -ForegroundColor White
+                    Write-Host "      `$f = `$f -replace '(?m)^SIEM_PASS=.*$', 'SIEM_PASS=<password>'" -ForegroundColor White
+                    Write-Host "      Set-Content -Path '$envFile' -Value `$f -Force" -ForegroundColor White
+                    Write-Host "      Restart-Service TinySocsAssistant" -ForegroundColor White
+                } else {
+                    Write-Host "    Could not find a working password. Check postinstall logs:" -ForegroundColor Red
+                    Write-Host "      Get-Content '$env:ProgramData\TinySocs\logs\postinstall-powershell*.log' -Tail 30" -ForegroundColor White
                 }
             }
         } catch {

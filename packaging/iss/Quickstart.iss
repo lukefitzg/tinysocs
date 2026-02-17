@@ -1636,8 +1636,34 @@ begin
         '    Start-Sleep -Seconds 2' + #13#10 +
         '  } while ((Get-Date) -lt $deadline)' + #13#10 +
         '' + #13#10 +
-        '  # IMPORTANT: if we got 401, security is UP. Do NOT run init "because 401".' + #13#10 +
+        '  # If 401, security is UP but password may not match wizard. Try to fix.' + #13#10 +
+        '  if ($c -eq ''401'') {' + #13#10 +
+        '    Write-Host ''[TinySocs][Inno] TB-12: Got 401 -- rehashing admin password into internal_users.yml''' + #13#10 +
+        '    try {' + #13#10 +
+        '      if (Get-Command Set-TinySocsOpenSearchAdminPasswordInConfig -ErrorAction SilentlyContinue) {' + #13#10 +
+        '        Set-TinySocsOpenSearchAdminPasswordInConfig `' + #13#10 +
+        '          -OpenSearchRoot $openSearchRoot `' + #13#10 +
+        '          -ConfigRoot $pdConf `' + #13#10 +
+        '          -AdminPassword $p_in' + #13#10 +
+        '        Write-Host ''[TinySocs][Inno] TB-12: internal_users.yml updated with wizard password hash''' + #13#10 +
+        '      } else { Write-Warning ''[TinySocs][Inno] Set-TinySocsOpenSearchAdminPasswordInConfig not found'' }' + #13#10 +
+        '    } catch { Write-Warning (''[TinySocs][Inno] TB-12 admin hash failed: '' + $_.Exception.Message) }' + #13#10 +
+        '' + #13#10 +
+        '    Write-Host ''[TinySocs][Inno] TB-12: Pushing updated security config via securityadmin''' + #13#10 +
+        '    try {' + #13#10 +
+        '      if (Get-Command Ensure-TinySocsOpenSearchSecurityInitialized -ErrorAction SilentlyContinue) {' + #13#10 +
+        '        Ensure-TinySocsOpenSearchSecurityInitialized `' + #13#10 +
+        '          -OpenSearchRoot $openSearchRoot `' + #13#10 +
+        '          -ProgramDataConf $pdConf `' + #13#10 +
+        '          -Url ''https://localhost:9201''' + #13#10 +
+        '        Write-Host ''[TinySocs][Inno] TB-12: securityadmin push completed''' + #13#10 +
+        '      } else { Write-Warning ''[TinySocs][Inno] Ensure-TinySocsOpenSearchSecurityInitialized not found'' }' + #13#10 +
+        '    } catch { Write-Warning (''[TinySocs][Inno] TB-12 securityadmin push failed: '' + $_.Exception.Message) }' + #13#10 +
+        '  }' + #13#10 +
         '} catch { Write-Warning (''[TinySocs][Inno] TB-12 encountered error (continuing): '' + $_.Exception.Message) }' + #13#10 +
+        '' + #13#10 +
+        '# Brief pause after potential securityadmin push to let cluster reload' + #13#10 +
+        'Start-Sleep -Seconds 3' + #13#10 +
         '' + #13#10 +
 
         '{ PATCH(2026-01-16): CRED PRESET probe must be unforgeable. Use /_plugins/_security/authinfo and require 200. }' + #13#10 +

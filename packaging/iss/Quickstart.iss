@@ -746,6 +746,56 @@ begin
   UpdateLlmFieldVisibility;
 end;
 
+procedure TestWebhookBtnClick(Sender: TObject);
+var
+  Url: String;
+  PsExe: String;
+  PsCmd: String;
+  ResultCode: Integer;
+begin
+  Url := Trim(WebhookUrlEdit.Text);
+  if Url = '' then
+  begin
+    WebhookTestLabel.Caption := 'Enter a webhook URL first.';
+    WebhookTestLabel.Font.Color := clRed;
+    Exit;
+  end;
+
+  WebhookTestLabel.Caption := 'Sending test...';
+  WebhookTestLabel.Font.Color := clWindowText;
+  WizardForm.Refresh;
+
+  PsExe := GetPowerShellExePath;
+  PsCmd :=
+    '-NoProfile -ExecutionPolicy Bypass -Command "' +
+    'try { ' +
+    '$body = @{text=''TinySocs test webhook -- if you see this, notifications are working.''} | ConvertTo-Json -Compress; ' +
+    '[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; ' +
+    '$r = Invoke-RestMethod -Uri '''' + PsEscape(Url) + ''''' +
+    ' -Method Post -ContentType ''application/json'' -Body $body -TimeoutSec 10; ' +
+    'exit 0 ' +
+    '} catch { exit 1 }"';
+
+  if Exec(PsExe, PsCmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  begin
+    if ResultCode = 0 then
+    begin
+      WebhookTestLabel.Caption := 'Success -- test message sent.';
+      WebhookTestLabel.Font.Color := clGreen;
+    end
+    else
+    begin
+      WebhookTestLabel.Caption := 'Failed (HTTP error or unreachable). Check URL.';
+      WebhookTestLabel.Font.Color := clRed;
+    end;
+  end
+  else
+  begin
+    WebhookTestLabel.Caption := 'Could not run PowerShell.';
+    WebhookTestLabel.Font.Color := clRed;
+  end;
+end;
+
 procedure InitializeWizard;
 var
   L: TNewStaticText;
@@ -1042,56 +1092,6 @@ begin
   EmailTo := '';
   EmailEnabled := False;
   PsRunCounter := 0;
-end;
-
-procedure TestWebhookBtnClick(Sender: TObject);
-var
-  Url: String;
-  PsExe: String;
-  PsCmd: String;
-  ResultCode: Integer;
-begin
-  Url := Trim(WebhookUrlEdit.Text);
-  if Url = '' then
-  begin
-    WebhookTestLabel.Caption := 'Enter a webhook URL first.';
-    WebhookTestLabel.Font.Color := clRed;
-    Exit;
-  end;
-
-  WebhookTestLabel.Caption := 'Sending test...';
-  WebhookTestLabel.Font.Color := clWindowText;
-  WizardForm.Refresh;
-
-  PsExe := GetPowerShellExePath;
-  PsCmd :=
-    '-NoProfile -ExecutionPolicy Bypass -Command "' +
-    'try { ' +
-    '$body = @{text=''TinySocs test webhook -- if you see this, notifications are working.''} | ConvertTo-Json -Compress; ' +
-    '[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; ' +
-    '$r = Invoke-RestMethod -Uri '''' + PsEscape(Url) + ''''' +
-    ' -Method Post -ContentType ''application/json'' -Body $body -TimeoutSec 10; ' +
-    'exit 0 ' +
-    '} catch { exit 1 }"';
-
-  if Exec(PsExe, PsCmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-  begin
-    if ResultCode = 0 then
-    begin
-      WebhookTestLabel.Caption := 'Success -- test message sent.';
-      WebhookTestLabel.Font.Color := clGreen;
-    end
-    else
-    begin
-      WebhookTestLabel.Caption := 'Failed (HTTP error or unreachable). Check URL.';
-      WebhookTestLabel.Font.Color := clRed;
-    end;
-  end
-  else
-  begin
-    WebhookTestLabel.Caption := 'Could not run PowerShell.';
-    WebhookTestLabel.Font.Color := clRed;
-  end;
 end;
 
 function GetSelectedRole: Integer;

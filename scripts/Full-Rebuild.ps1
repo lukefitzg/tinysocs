@@ -230,12 +230,19 @@ if (-not $iscc) {
 
 if ($iscc) {
     Write-Host "  Using ISCC: $iscc"
-    & $iscc $issFile
     $setupExe = Join-Path (Split-Path $issFile) 'TinySocs-Setup.exe'
+    # Remove stale exe so a failed compile can't launch an old installer
+    if (Test-Path $setupExe) { Remove-Item $setupExe -Force }
+    & $iscc $issFile
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  ISCC compile FAILED (exit code $LASTEXITCODE). Fix the errors above and re-run." -ForegroundColor Red
+        exit 1
+    }
     if (Test-Path $setupExe) {
         Write-Host "  Installer built: $setupExe" -ForegroundColor Green
     } else {
         Write-Host "  WARNING: ISCC ran but TinySocs-Setup.exe not found!" -ForegroundColor Red
+        exit 1
     }
 } else {
     Write-Host "  ISCC.exe not found. Install Inno Setup 6 from https://jrsoftware.org/isdl.php" -ForegroundColor Red

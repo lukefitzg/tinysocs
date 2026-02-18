@@ -278,6 +278,9 @@ Name: "{app}\OpenSearch\config-template"; Flags: uninsneveruninstall
 
 [Run]
 ; Post-install configuration is handled in the [Code] ssPostInstall step.
+; "Launch Dashboard" checkbox shown on the finish page (postinstall flag).
+Filename: "http://localhost:8090/dashboard/"; Description: "Open TinySocs Dashboard"; \
+  Flags: postinstall nowait shellexec skipifsilent
 
 [UninstallRun]
 ; IMPORTANT:
@@ -299,6 +302,7 @@ Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
 Type: filesandordirs; Name: "{app}"
 
 [Icons]
+Name: "{group}\TinySocs Dashboard"; Filename: "http://localhost:8090/dashboard/"; IconFilename: "{sys}\shell32.dll"; IconIndex: 13
 Name: "{group}\Operator README"; Filename: "{app}\modules\OPERATOR-README.txt"; WorkingDir: "{app}\modules"
 
 [Code]
@@ -521,6 +525,21 @@ begin
 
   { Last-ditch: rely on PATH }
   Result := 'powershell.exe';
+end;
+
+procedure CopyToClipboard(const Text: String);
+var
+  ResultCode: Integer;
+  PsExe: String;
+begin
+  { Copy text to Windows clipboard via PowerShell Set-Clipboard }
+  PsExe := GetPowerShellExePath;
+  try
+    Exec(PsExe, '-NoLogo -NoProfile -NonInteractive -Command "Set-Clipboard -Value ''' + Text + '''"',
+         '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  except
+    Log('CopyToClipboard: exception (non-fatal)');
+  end;
 end;
 
 function RunPowerShellScript(const PsScript: String): Boolean;
@@ -1151,14 +1170,18 @@ begin
       if SiemPass = '' then
       begin
         SiemPass := GeneratePassword(24);
+        CopyToClipboard(SiemPass);
         MsgBox(
           'SIEM password was blank, so a strong one was generated.' + CRLF + CRLF +
           'User: admin' + CRLF +
           'Password: ' + SiemPass + CRLF + CRLF +
-          'It will be stored securely in Windows Credential Manager.',
+          'The password has been copied to your clipboard.' + CRLF +
+          'It will also be stored securely in Windows Credential Manager.',
           mbInformation,
           MB_OK
         );
+        { Show the generated password in the field so the user can see/copy it }
+        SiemPassEdit.Text := SiemPass;
       end;
     end;
   end

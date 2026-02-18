@@ -83,6 +83,13 @@ Get-Process -Name java -ErrorAction SilentlyContinue | Where-Object {
     $_.Path -match 'TinySocs|OpenSearch'
 } | Stop-Process -Force -ErrorAction SilentlyContinue
 
+# Also kill any lingering TinySocs-Quickstart.exe (assistant PyInstaller bundle)
+Get-Process -Name 'TinySocs-Quickstart' -ErrorAction SilentlyContinue |
+    Stop-Process -Force -ErrorAction SilentlyContinue
+
+# Brief pause to let file handles release after process kills
+Start-Sleep -Seconds 2
+
 # Purge install directory
 $installDir = Join-Path $env:ProgramFiles 'TinySocs'
 if (Test-Path $installDir) {
@@ -90,11 +97,16 @@ if (Test-Path $installDir) {
     Remove-Item -Path $installDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-# Purge ProgramData
+# Purge ProgramData (retry once if file locks linger)
 $dataDir = Join-Path $env:ProgramData 'TinySocs'
 if (Test-Path $dataDir) {
     Write-Host "  Removing $dataDir"
     Remove-Item -Path $dataDir -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path $dataDir) {
+        Write-Host "  Retry removing $dataDir (files may have been locked)..."
+        Start-Sleep -Seconds 2
+        Remove-Item -Path $dataDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 # Remove scheduled tasks

@@ -1587,18 +1587,27 @@ begin
         '# TB-10d-acl: Fix ACLs on seeded opensearch-security dir so OpenSearch can read config on first boot' + CRLF +
         '# Without this, allow_default_init_securityindex silently fails (files unreadable) and security stays at 503.' + CRLF +
         '# Files copied from vendor zip have broken ACLs (inheritance disabled, no explicit grants).' + CRLF +
-        '# We grant SYSTEM + Administrators full control on each file individually.' + CRLF +
+        '# Use .NET ACL API directly — icacls.exe is unreliable inside Inno-generated PowerShell scripts.' + CRLF +
         'try {' + CRLF +
         '  $secCfgDir = Join-Path $pdConf ''opensearch-security''' + CRLF +
         '  if (Test-Path -LiteralPath $secCfgDir -PathType Container) {' + CRLF +
-        '    try { attrib.exe -R ($secCfgDir + ''\*'') /S | Out-Null } catch { }' + CRLF +
-        '    # Grant full control to SYSTEM + Administrators on every file explicitly' + CRLF +
-        '    Get-ChildItem -LiteralPath $secCfgDir -File -ErrorAction SilentlyContinue | ForEach-Object {' + CRLF +
-        '      & icacls.exe $_.FullName /grant "SYSTEM:F" "Administrators:F" /C /Q 2>&1 | Out-Null' + CRLF +
+        '    $sysSid  = New-Object System.Security.Principal.SecurityIdentifier(''S-1-5-18'')' + CRLF +
+        '    $admSid  = New-Object System.Security.Principal.SecurityIdentifier(''S-1-5-32-544'')' + CRLF +
+        '    $sysRule = New-Object System.Security.AccessControl.FileSystemAccessRule($sysSid, ''FullControl'', ''Allow'')' + CRLF +
+        '    $admRule = New-Object System.Security.AccessControl.FileSystemAccessRule($admSid, ''FullControl'', ''Allow'')' + CRLF +
+        '    $fixed = 0' + CRLF +
+        '    foreach ($f in (Get-ChildItem -LiteralPath $secCfgDir -File -ErrorAction SilentlyContinue)) {' + CRLF +
+        '      try {' + CRLF +
+        '        $acl = Get-Acl -LiteralPath $f.FullName' + CRLF +
+        '        $acl.AddAccessRule($sysRule)' + CRLF +
+        '        $acl.AddAccessRule($admRule)' + CRLF +
+        '        Set-Acl -LiteralPath $f.FullName -AclObject $acl' + CRLF +
+        '        $fixed++' + CRLF +
+        '      } catch {' + CRLF +
+        '        Write-Warning (''[TinySocs][Inno] TB-10d-acl: failed on '' + $f.Name + '': '' + $_.Exception.Message)' + CRLF +
+        '      }' + CRLF +
         '    }' + CRLF +
-        '    # Also fix the directory itself' + CRLF +
-        '    & icacls.exe $secCfgDir /grant "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F" /C /Q 2>&1 | Out-Null' + CRLF +
-        '    Write-Host ''[TinySocs][Inno] TB-10d-acl: Fixed ACLs on opensearch-security config dir + files''' + CRLF +
+        '    Write-Host (''[TinySocs][Inno] TB-10d-acl: Fixed ACLs on '' + $fixed + '' files in opensearch-security'')' + CRLF +
         '  }' + CRLF +
         '} catch { Write-Warning (''[TinySocs][Inno] TB-10d-acl: ACL fix failed (continuing): '' + $_.Exception.Message) }' + CRLF +
         '' + CRLF +

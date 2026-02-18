@@ -321,7 +321,7 @@ async def api_alert_timeline(hours: int = Query(24, ge=1, le=720)):
             "timeline": {
                 "date_histogram": {"field": "timestamp", "fixed_interval": "1h", "min_doc_count": 0},
                 "aggs": {
-                    "by_severity": {"terms": {"field": "alert.severity", "size": 10}}
+                    "by_severity": {"terms": {"field": "alert.severity.keyword", "size": 10}}
                 },
             }
         },
@@ -351,7 +351,7 @@ async def api_alert_summary(hours: int = Query(24, ge=1, le=720)):
     # Total + severity
     body_sev = {
         "query": {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}},
-        "aggs": {"by_severity": {"terms": {"field": "alert.severity", "size": 10}}},
+        "aggs": {"by_severity": {"terms": {"field": "alert.severity.keyword", "size": 10}}},
     }
     resp_sev = await _safe_query_async("tinysocs-alerts-*", body_sev)
 
@@ -365,7 +365,7 @@ async def api_alert_summary(hours: int = Query(24, ge=1, le=720)):
     # Top rules
     body_rules = {
         "query": {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}},
-        "aggs": {"by_rule": {"terms": {"field": "alert.rule_id", "size": 10, "order": {"_count": "desc"}}}},
+        "aggs": {"by_rule": {"terms": {"field": "alert.rule_id.keyword", "size": 10, "order": {"_count": "desc"}}}},
     }
     resp_rules = await _safe_query_async("tinysocs-alerts-*", body_rules)
     top_rules = [
@@ -1025,7 +1025,7 @@ async def api_fleet_health():
             "by_host": {
                 "terms": {"field": "source.computer_name.keyword", "size": 50},
                 "aggs": {
-                    "by_severity": {"terms": {"field": "alert.severity", "size": 5}},
+                    "by_severity": {"terms": {"field": "alert.severity.keyword", "size": 5}},
                 },
             }
         },

@@ -1564,17 +1564,16 @@ begin
         '    $dstS = Join-Path $pdConf $secName' + CRLF +
         '    if (Test-Path -LiteralPath $srcS -PathType Container) {' + CRLF +
         '      if (-not (Test-Path -LiteralPath $dstS -PathType Container)) {' + CRLF +
-        '        Copy-Item -LiteralPath $srcS -Destination $dstS -Recurse -Force' + CRLF +
-        '        Write-Host (''[TinySocs][Inno] TB-10d: Seeded '' + $secName + '' into ProgramData config'')' + CRLF +
-        '      } else {' + CRLF +
-        '        # Dir exists but individual files may be missing (e.g. previous partial install).' + CRLF +
-        '        # Copy any missing files without overwriting existing ones.' + CRLF +
-        '        Get-ChildItem -LiteralPath $srcS -File -ErrorAction SilentlyContinue | ForEach-Object {' + CRLF +
-        '          $dstF = Join-Path $dstS $_.Name' + CRLF +
-        '          if (-not (Test-Path -LiteralPath $dstF -PathType Leaf)) {' + CRLF +
-        '            Copy-Item -LiteralPath $_.FullName -Destination $dstF -Force' + CRLF +
-        '            Write-Host (''[TinySocs][Inno] TB-10d: Seeded missing '' + $_.Name + '' into '' + $secName)' + CRLF +
-        '          }' + CRLF +
+        '        New-Item -ItemType Directory -Path $dstS -Force | Out-Null' + CRLF +
+        '      }' + CRLF +
+        '      # Seed missing files using content-copy (not Copy-Item) so new files' + CRLF +
+        '      # inherit ACLs from the destination directory instead of carrying' + CRLF +
+        '      # broken ACLs from the vendor zip source.' + CRLF +
+        '      Get-ChildItem -LiteralPath $srcS -File -ErrorAction SilentlyContinue | ForEach-Object {' + CRLF +
+        '        $dstF = Join-Path $dstS $_.Name' + CRLF +
+        '        if (-not (Test-Path -LiteralPath $dstF -PathType Leaf)) {' + CRLF +
+        '          [System.IO.File]::WriteAllBytes($dstF, [System.IO.File]::ReadAllBytes($_.FullName))' + CRLF +
+        '          Write-Host (''[TinySocs][Inno] TB-10d: Seeded missing '' + $_.Name + '' into '' + $secName)' + CRLF +
         '        }' + CRLF +
         '      }' + CRLF +
         '    }' + CRLF +

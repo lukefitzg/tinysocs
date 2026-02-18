@@ -1,20 +1,30 @@
 {
   "index_patterns": ["tinysocs-winlog-*"],
-  "priority": 100,
+  "priority": 500,
   "template": {
     "settings": {
       "number_of_shards": 1,
       "number_of_replicas": 0,
       "auto_expand_replicas": "0-1",
+      "refresh_interval": "5s",
       "plugins.index_state_management.policy_id": "tinysocs-winlog-retention"
     },
     "mappings": {
+      "dynamic": true,
       "properties": {
-        "@timestamp": {
-          "type": "date"
-        },
-        "message": {
-          "type": "text"
+        "@timestamp": { "type": "date" },
+        "ts": { "type": "date" },
+        "message": { "type": "text" },
+        "input": { "type": "keyword" },
+        "channel": { "type": "keyword" },
+        "eventId": { "type": "long" },
+        "openSearchIndex": { "type": "keyword" },
+        "body": {
+          "type": "object",
+          "dynamic": true,
+          "properties": {
+            "@timestamp": { "type": "date" }
+          }
         },
         "event": {
           "properties": {

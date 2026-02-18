@@ -225,7 +225,7 @@ _os_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="os-query")
 
 # Connection failure cache: avoid hammering a down SIEM with long timeouts
 _siem_fail_cache: Dict[str, Any] = {"error": None, "until": 0.0}
-_SIEM_FAIL_CACHE_SECS = 30  # cache a connection failure for 30 seconds
+_SIEM_FAIL_CACHE_SECS = 5  # cache a connection failure briefly (local app, recovers fast)
 
 
 def _os_query(index: str, body: Dict[str, Any], size: int = 0) -> Dict[str, Any]:
@@ -259,10 +259,26 @@ def _os_query(index: str, body: Dict[str, Any], size: int = 0) -> Dict[str, Any]
             verify=verify,
             timeout=(5, 15),  # (connect_timeout, read_timeout)
         )
-        resp.raise_for_status()
-        # Connection succeeded — clear any cached failure
+        # Connection succeeded — clear any cached failure regardless of status code
         _siem_fail_cache["error"] = None
         _siem_fail_cache["until"] = 0.0
+        # Handle HTTP errors gracefully (e.g. 400 from bad aggregation field types)
+        # Don't use raise_for_status() — it raises HTTPError which inherits from
+        # OSError and would be caught by the connection-error handler below.
+        if resp.status_code >= 400:
+            err_body = ""
+            try:
+                err_body = resp.text[:300]
+            except Exception:
+                pass
+            print(f"[dashboard] HTTP {resp.status_code} on {index}: {err_body}")
+            # Return an error dict directly instead of raising, so this is NOT
+            # confused with a connection failure and doesn't pollute the fail cache.
+            return {
+                "error": f"SIEM query error (HTTP {resp.status_code})",
+                "hits": {"total": {"value": 0}, "hits": []},
+                "aggregations": {},
+            }
         return resp.json()
     except (_req.exceptions.ConnectionError, _req.exceptions.Timeout, OSError) as exc:
         # Cache this failure so parallel requests fail fast

@@ -3924,16 +3924,24 @@ function _saveChatLocal() {
 }
 
 async function restoreChat() {
-  // Try to restore chat from localStorage first (instant), then verify with server
+  // Try to restore chat from localStorage, but verify session still exists on server
   try {
     const savedId = localStorage.getItem('tinysocs_chat_session');
     const savedHtml = localStorage.getItem('tinysocs_chat_html');
     if (savedId && savedHtml) {
-      chatSessionId = savedId;
-      document.getElementById('chatMessages').innerHTML = savedHtml;
-      const el = document.getElementById('chatMessages');
-      el.scrollTop = el.scrollHeight;
-      return;
+      // Verify session exists on server (may have been wiped by reinstall)
+      const check = await fetchJSON(`/api/chat/history?session_id=${encodeURIComponent(savedId)}`);
+      if (check.messages && check.messages.length > 0) {
+        chatSessionId = savedId;
+        document.getElementById('chatMessages').innerHTML = savedHtml;
+        const el = document.getElementById('chatMessages');
+        el.scrollTop = el.scrollHeight;
+        return;
+      } else {
+        // Server doesn't have this session — clear stale localStorage
+        localStorage.removeItem('tinysocs_chat_session');
+        localStorage.removeItem('tinysocs_chat_html');
+      }
     }
   } catch(e) { /* ignore */ }
 

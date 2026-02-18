@@ -1586,19 +1586,19 @@ begin
 
         '# TB-10d-acl: Fix ACLs on seeded opensearch-security dir so OpenSearch can read config on first boot' + CRLF +
         '# Without this, allow_default_init_securityindex silently fails (files unreadable) and security stays at 503.' + CRLF +
-        '# Files extracted from zip on Windows have inheritance DISABLED at the file level — setting inheritable' + CRLF +
-        '# ACEs on the parent dir alone does NOT propagate. We must /reset /T first to re-enable inheritance' + CRLF +
-        '# on every file, then /grant /T to add explicit full-control ACEs.' + CRLF +
+        '# Files copied from vendor zip have broken ACLs (inheritance disabled, no explicit grants).' + CRLF +
+        '# We grant SYSTEM + Administrators full control on each file individually.' + CRLF +
         'try {' + CRLF +
         '  $secCfgDir = Join-Path $pdConf ''opensearch-security''' + CRLF +
         '  if (Test-Path -LiteralPath $secCfgDir -PathType Container) {' + CRLF +
         '    try { attrib.exe -R ($secCfgDir + ''\*'') /S | Out-Null } catch { }' + CRLF +
-        '    # Step 1: Reset ACLs on dir + all children — re-enables inheritance so files inherit from parent' + CRLF +
-        '    & icacls.exe $secCfgDir /reset /T /C /Q 2>&1 | Out-Null' + CRLF +
-        '    # Step 2: Grant explicit full-control to SYSTEM + Administrators (inheritable to children)' + CRLF +
-        '    $who3 = $null; try { $who3 = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name } catch { $who3 = $env:USERNAME }' + CRLF +
-        '    & icacls.exe $secCfgDir /grant "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F" ($who3 + ":(OI)(CI)F") /T /C 2>&1 | Out-Null' + CRLF +
-        '    Write-Host ''[TinySocs][Inno] TB-10d-acl: Fixed ACLs on opensearch-security config dir (reset+grant)''' + CRLF +
+        '    # Grant full control to SYSTEM + Administrators on every file explicitly' + CRLF +
+        '    Get-ChildItem -LiteralPath $secCfgDir -File -ErrorAction SilentlyContinue | ForEach-Object {' + CRLF +
+        '      & icacls.exe $_.FullName /grant "SYSTEM:F" "Administrators:F" /C /Q 2>&1 | Out-Null' + CRLF +
+        '    }' + CRLF +
+        '    # Also fix the directory itself' + CRLF +
+        '    & icacls.exe $secCfgDir /grant "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F" /C /Q 2>&1 | Out-Null' + CRLF +
+        '    Write-Host ''[TinySocs][Inno] TB-10d-acl: Fixed ACLs on opensearch-security config dir + files''' + CRLF +
         '  }' + CRLF +
         '} catch { Write-Warning (''[TinySocs][Inno] TB-10d-acl: ACL fix failed (continuing): '' + $_.Exception.Message) }' + CRLF +
         '' + CRLF +

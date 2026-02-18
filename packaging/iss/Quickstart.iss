@@ -1418,6 +1418,8 @@ begin
         '[Environment]::SetEnvironmentVariable(''OPENSEARCH_PATH_CONF'', [string]$pdConf, ''Machine'')' + #13#10 +
         '[Environment]::SetEnvironmentVariable(''OPENSEARCH_PATH_CONF'', [string]$pdConf, ''Process'')' + #13#10 +
         '' + #13#10 +
+        '# Write env vars to BOTH the service Environment key AND NSSM AppEnvironmentExtra.' + #13#10 +
+        '# NSSM reads AppEnvironmentExtra under the Parameters subkey, NOT the standard service Environment key.' + #13#10 +
         'try {' + #13#10 +
         '  $svcKey = ''HKLM:\SYSTEM\CurrentControlSet\Services\TinySocsOpenSearch''' + #13#10 +
         '  if (Test-Path $svcKey) {' + #13#10 +
@@ -1427,9 +1429,25 @@ begin
         '    $cur = @($cur | Where-Object { $_ -and ($_ -notmatch ''^OPENSEARCH_PATH_CONF='') -and ($_ -notmatch ''^OPENSEARCH_INITIAL_ADMIN_PASSWORD='') })' + #13#10 +
         '    $new = @($cur + @(''OPENSEARCH_PATH_CONF='' + $pdConf) + @(''OPENSEARCH_INITIAL_ADMIN_PASSWORD=' + PsEscape(SiemPass) + '''))' + #13#10 +
         '    New-ItemProperty -Path $svcKey -Name Environment -PropertyType MultiString -Value $new -Force | Out-Null' + #13#10 +
-        '    Write-Host ''[TinySocs][Inno] TB-10: Set OPENSEARCH_PATH_CONF + OPENSEARCH_INITIAL_ADMIN_PASSWORD in service env''' + #13#10 +
+        '    Write-Host ''[TinySocs][Inno] TB-10: Set OPENSEARCH_PATH_CONF + OPENSEARCH_INITIAL_ADMIN_PASSWORD in service Environment key''' + #13#10 +
         '  }' + #13#10 +
-        '} catch { Write-Warning (''[TinySocs][Inno] TB-10: failed to update service env (continuing): '' + $_.Exception.Message) }' + #13#10 +
+        '} catch { Write-Warning (''[TinySocs][Inno] TB-10: failed to update service Environment key (continuing): '' + $_.Exception.Message) }' + #13#10 +
+        '' + #13#10 +
+        '# Also write to NSSM AppEnvironmentExtra (Parameters subkey) — this is what NSSM actually reads.' + #13#10 +
+        'try {' + #13#10 +
+        '  $nssmParamsKey = ''HKLM:\SYSTEM\CurrentControlSet\Services\TinySocsOpenSearch\Parameters''' + #13#10 +
+        '  if (Test-Path $nssmParamsKey) {' + #13#10 +
+        '    $aeLines = @()' + #13#10 +
+        '    try { $aeLines = (Get-ItemProperty -Path $nssmParamsKey -Name AppEnvironmentExtra -ErrorAction SilentlyContinue).AppEnvironmentExtra } catch { $aeLines = @() }' + #13#10 +
+        '    if ($aeLines -is [string]) { $aeLines = @($aeLines) }' + #13#10 +
+        '    $aeLines = @($aeLines | Where-Object { $_ -and ($_ -notmatch ''^OPENSEARCH_PATH_CONF='') -and ($_ -notmatch ''^OPENSEARCH_INITIAL_ADMIN_PASSWORD='') })' + #13#10 +
+        '    $aeNew = @($aeLines + @(''OPENSEARCH_PATH_CONF='' + $pdConf) + @(''OPENSEARCH_INITIAL_ADMIN_PASSWORD=' + PsEscape(SiemPass) + '''))' + #13#10 +
+        '    New-ItemProperty -Path $nssmParamsKey -Name AppEnvironmentExtra -PropertyType MultiString -Value $aeNew -Force | Out-Null' + #13#10 +
+        '    Write-Host ''[TinySocs][Inno] TB-10: Set OPENSEARCH_PATH_CONF + OPENSEARCH_INITIAL_ADMIN_PASSWORD in NSSM AppEnvironmentExtra''' + #13#10 +
+        '  } else {' + #13#10 +
+        '    Write-Host ''[TinySocs][Inno] TB-10: NSSM Parameters key not yet created; AppEnvironmentExtra will be set by service registration''' + #13#10 +
+        '  }' + #13#10 +
+        '} catch { Write-Warning (''[TinySocs][Inno] TB-10: failed to update NSSM AppEnvironmentExtra (continuing): '' + $_.Exception.Message) }' + #13#10 +
         '' + #13#10 +
         '$installRoot = $null' + #13#10 +
         'try { $installRoot = (Get-TinySocsInstallRoot | Select-Object -First 1) } catch { $installRoot = $null }' + #13#10 +
@@ -1521,14 +1539,45 @@ begin
         '  foreach ($secName in @(''opensearch-security'',''security'')) {' + CRLF +
         '    $srcS = Join-Path $vendorCfg $secName' + CRLF +
         '    $dstS = Join-Path $pdConf $secName' + CRLF +
-        '    if ((Test-Path -LiteralPath $srcS -PathType Container) -and (-not (Test-Path -LiteralPath $dstS -PathType Container))) {' + CRLF +
-        '      Copy-Item -LiteralPath $srcS -Destination $dstS -Recurse -Force' + CRLF +
-        '      Write-Host (''[TinySocs][Inno] TB-10d: Seeded '' + $secName + '' into ProgramData config'')' + CRLF +
+        '    if (Test-Path -LiteralPath $srcS -PathType Container) {' + CRLF +
+        '      if (-not (Test-Path -LiteralPath $dstS -PathType Container)) {' + CRLF +
+        '        Copy-Item -LiteralPath $srcS -Destination $dstS -Recurse -Force' + CRLF +
+        '        Write-Host (''[TinySocs][Inno] TB-10d: Seeded '' + $secName + '' into ProgramData config'')' + CRLF +
+        '      } else {' + CRLF +
+        '        # Dir exists but individual files may be missing (e.g. previous partial install).' + CRLF +
+        '        # Copy any missing files without overwriting existing ones.' + CRLF +
+        '        Get-ChildItem -LiteralPath $srcS -File -ErrorAction SilentlyContinue | ForEach-Object {' + CRLF +
+        '          $dstF = Join-Path $dstS $_.Name' + CRLF +
+        '          if (-not (Test-Path -LiteralPath $dstF -PathType Leaf)) {' + CRLF +
+        '            Copy-Item -LiteralPath $_.FullName -Destination $dstF -Force' + CRLF +
+        '            Write-Host (''[TinySocs][Inno] TB-10d: Seeded missing '' + $_.Name + '' into '' + $secName)' + CRLF +
+        '          }' + CRLF +
+        '        }' + CRLF +
+        '      }' + CRLF +
         '    }' + CRLF +
         '  }' + CRLF +
         '} else {' + CRLF +
         '  Write-Warning (''[TinySocs][Inno] TB-10d: Vendor config not found at: '' + $vendorCfg)' + CRLF +
         '}' + CRLF +
+        '' + CRLF +
+
+        '# TB-10d-acl: Fix ACLs on seeded opensearch-security dir so OpenSearch can read config on first boot' + CRLF +
+        '# Without this, allow_default_init_securityindex silently fails (files unreadable) and security stays at 503.' + CRLF +
+        '# Files extracted from zip on Windows have inheritance DISABLED at the file level — setting inheritable' + CRLF +
+        '# ACEs on the parent dir alone does NOT propagate. We must /reset /T first to re-enable inheritance' + CRLF +
+        '# on every file, then /grant /T to add explicit full-control ACEs.' + CRLF +
+        'try {' + CRLF +
+        '  $secCfgDir = Join-Path $pdConf ''opensearch-security''' + CRLF +
+        '  if (Test-Path -LiteralPath $secCfgDir -PathType Container) {' + CRLF +
+        '    try { attrib.exe -R ($secCfgDir + ''\*'') /S | Out-Null } catch { }' + CRLF +
+        '    # Step 1: Reset ACLs on dir + all children — re-enables inheritance so files inherit from parent' + CRLF +
+        '    & icacls.exe $secCfgDir /reset /T /C /Q 2>&1 | Out-Null' + CRLF +
+        '    # Step 2: Grant explicit full-control to SYSTEM + Administrators (inheritable to children)' + CRLF +
+        '    $who3 = $null; try { $who3 = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name } catch { $who3 = $env:USERNAME }' + CRLF +
+        '    & icacls.exe $secCfgDir /grant "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F" ($who3 + ":(OI)(CI)F") /T /C 2>&1 | Out-Null' + CRLF +
+        '    Write-Host ''[TinySocs][Inno] TB-10d-acl: Fixed ACLs on opensearch-security config dir (reset+grant)''' + CRLF +
+        '  }' + CRLF +
+        '} catch { Write-Warning (''[TinySocs][Inno] TB-10d-acl: ACL fix failed (continuing): '' + $_.Exception.Message) }' + CRLF +
         '' + CRLF +
 
         '# TB-10e: Bootstrap opensearch.yml with TLS + single-node settings' + CRLF +
@@ -1567,6 +1616,41 @@ begin
         '    [System.IO.File]::WriteAllText($pdYml, $ymlRaw, (New-Object System.Text.UTF8Encoding($false)))' + CRLF +
         '    Write-Host ''[TinySocs][Inno] TB-10e: Added discovery.type/network.host to opensearch.yml''' + CRLF +
         '  }' + CRLF +
+        '}' + CRLF +
+        '' + CRLF +
+
+        '# TB-10f: Hash wizard password into internal_users.yml BEFORE first service start' + CRLF +
+        '# This ensures OpenSearch initializes its security index with the correct admin hash.' + CRLF +
+        '# Without this, the bundled static hash is used and the wizard password never works.' + CRLF +
+        'Write-Host ''[TinySocs][Inno] TB-10f: Pre-hashing wizard password into internal_users.yml''' + CRLF +
+        'try {' + CRLF +
+        '  if (Get-Command Set-TinySocsOpenSearchAdminPasswordInConfig -ErrorAction SilentlyContinue) {' + CRLF +
+        '    Set-TinySocsOpenSearchAdminPasswordInConfig `' + CRLF +
+        '      -OpenSearchRoot $openSearchRoot `' + CRLF +
+        '      -ConfigRoot $pdConf `' + CRLF +
+        '      -AdminPassword $p_in' + CRLF +
+        '    Write-Host ''[TinySocs][Inno] TB-10f: internal_users.yml updated with wizard password hash (pre-boot)''' + CRLF +
+        '  } else {' + CRLF +
+        '    Write-Warning ''[TinySocs][Inno] TB-10f: Set-TinySocsOpenSearchAdminPasswordInConfig not found; first boot may use bundled hash''' + CRLF +
+        '  }' + CRLF +
+        '} catch {' + CRLF +
+        '  Write-Warning (''[TinySocs][Inno] TB-10f: Pre-boot password hash failed (TB-12 fallback will retry): '' + $_.Exception.Message)' + CRLF +
+        '}' + CRLF +
+        '' + CRLF +
+
+        '# TB-10g: Write DPAPI admin-pass file BEFORE first boot so wrapper STAGE 3 can read it.' + CRLF +
+        '# Without this, the wrapper can''t set OPENSEARCH_INITIAL_ADMIN_PASSWORD on first boot' + CRLF +
+        '# (CredMan is unavailable under SYSTEM and the DPAPI file doesn''t exist yet).' + CRLF +
+        'Write-Host ''[TinySocs][Inno] TB-10g: Writing DPAPI admin-pass file (pre-boot)''' + CRLF +
+        'try {' + CRLF +
+        '  if (Get-Command Write-TinySocsSiemAdminPassToDpapiFile -ErrorAction SilentlyContinue) {' + CRLF +
+        '    Write-TinySocsSiemAdminPassToDpapiFile -CertsDir $certsDir -AdminPass $p_in | Out-Null' + CRLF +
+        '    Write-Host ''[TinySocs][Inno] TB-10g: DPAPI admin-pass file written OK''' + CRLF +
+        '  } else {' + CRLF +
+        '    Write-Warning ''[TinySocs][Inno] TB-10g: Write-TinySocsSiemAdminPassToDpapiFile not found; STAGE 3 DPAPI fallback won''''t be available on first boot''' + CRLF +
+        '  }' + CRLF +
+        '} catch {' + CRLF +
+        '  Write-Warning (''[TinySocs][Inno] TB-10g: DPAPI admin-pass file write failed (continuing): '' + $_.Exception.Message)' + CRLF +
         '}' + CRLF +
         '' + CRLF +
 

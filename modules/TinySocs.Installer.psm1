@@ -74,11 +74,31 @@ function _EnsureAdminKeystoreP12 {
 
     $m = $all | Where-Object { $_.Name -match 'admin' } | Select-Object -First 1
     if (-not $m) { $m = $all | Where-Object { $_.Name -match 'kirk' } | Select-Object -First 1 }
-    if (-not $m) { $m = $all | Select-Object -First 1 }
+    # DO NOT fall back to first .p12 — that copies server/transport certs (CN=TinySocs-OpenSearch)
+    # which won't match the admin_dn (CN=TinySocs-OpenSearch-Admin) and securityadmin will fail.
 
     if ($m) {
       Copy-Item -LiteralPath $m.FullName -Destination $target -Force
       if (Test-Path -LiteralPath $target -PathType Leaf) { return $target }
+    }
+  } catch { }
+
+  # Last resort: export from Windows cert store if the admin cert exists there
+  try {
+    $adminCert = Get-ChildItem -Path Cert:\LocalMachine\My -ErrorAction SilentlyContinue |
+      Where-Object { $_.Subject -eq 'CN=TinySocs-OpenSearch-Admin' -and $_.HasPrivateKey } |
+      Sort-Object NotAfter -Descending | Select-Object -First 1
+    if ($adminCert) {
+      $dpapiPath = Join-Path $CertsDir "opensearch-tls-storepass.dpapi"
+      $sp = $null
+      if ((Test-Path -LiteralPath $dpapiPath) -and (Get-Command Get-TinySocsStorepassFromDpapiFile -ErrorAction SilentlyContinue)) {
+        $sp = (Get-TinySocsStorepassFromDpapiFile -Path $dpapiPath).Password
+      }
+      if (-not [string]::IsNullOrWhiteSpace($sp)) {
+        $secPass = ConvertTo-SecureString -String $sp -Force -AsPlainText
+        Export-PfxCertificate -Cert $adminCert -FilePath $target -Password $secPass -Force | Out-Null
+        if (Test-Path -LiteralPath $target -PathType Leaf) { return $target }
+      }
     }
   } catch { }
 

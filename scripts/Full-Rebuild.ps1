@@ -112,9 +112,12 @@ if (Test-Path $dataDir) {
 # Remove scheduled tasks
 Unregister-ScheduledTask -TaskName 'TinySocs-DailySummary' -Confirm:$false -ErrorAction SilentlyContinue
 
-# Clean credential manager
-cmdkey /delete:TinySocs/SIEM/Creds 2>$null | Out-Null
-cmdkey /delete:TinySocs/OpenSearch/tinysocs 2>$null | Out-Null
+# Clean credential manager (both slash- and colon-delimited target variants)
+foreach ($t in @(
+    'TinySocs/SIEM/Creds',   'TinySocs:SIEM/Creds',
+    'TinySocs/OpenSearch/tinysocs', 'TinySocs:OpenSearch/tinysocs',
+    'TinySocs/OpenSearch/Tls', 'TinySocs:OpenSearch/Tls'
+)) { cmdkey /delete:$t 2>$null | Out-Null }
 
 Write-Host "  Old TinySocs fully purged." -ForegroundColor Green
 

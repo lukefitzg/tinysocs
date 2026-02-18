@@ -180,14 +180,20 @@ def _resolve_ca_cert() -> Any:
     if _ca_pem_cache is not None:
         return _ca_pem_cache
 
-    # 1. Explicit env override
+    # 0. Explicit disable — honour SIEM_SSL_VERIFY=false before anything else
+    verify_str = os.getenv("SIEM_SSL_VERIFY", "").lower()
+    if verify_str in ("false", "0", "no"):
+        print("[dashboard] CA cert: verification disabled (SIEM_SSL_VERIFY=false)")
+        _ca_pem_cache = False  # type: ignore[assignment]
+        return False
+
+    # 1. Explicit CA cert path
     explicit = os.getenv("SIEM_CA_CERT", "")
     if explicit and Path(explicit).is_file():
         print(f"[dashboard] CA cert: SIEM_CA_CERT={explicit}")
         _ca_pem_cache = _ensure_pem(Path(explicit))
         return _ca_pem_cache
 
-    verify_str = os.getenv("SIEM_SSL_VERIFY", "").lower()
     if verify_str in ("true", "1", "yes"):
         print("[dashboard] CA cert: using system bundle (SIEM_SSL_VERIFY=true)")
         _ca_pem_cache = True  # type: ignore[assignment]

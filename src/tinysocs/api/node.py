@@ -144,7 +144,7 @@ def _os_search(index_pattern: str, body: dict, size: int = 20) -> list[dict[str,
     - Flattens _source + a tiny bit of metadata into each returned doc.
     """
     base = _get_siem_base_url()
-    url = f"{base}/{index_pattern}/_search"
+    url = f"{base}/{index_pattern}/_search?ignore_unavailable=true&allow_no_indices=true"
 
     payload = dict(body)
     if "size" not in payload:

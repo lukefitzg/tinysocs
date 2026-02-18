@@ -247,9 +247,13 @@ def _os_query(index: str, body: Dict[str, Any], size: int = 0) -> Dict[str, Any]
     verify = _resolve_ca_cert()
 
     body["size"] = size
+    # ignore_unavailable + allow_no_indices: return empty results instead of 400/404
+    # when no concrete index matches a wildcard pattern (e.g. tinysocs-alerts-* on
+    # fresh install before any alerts are generated).
+    search_url = f"{url.rstrip('/')}/{index}/_search?ignore_unavailable=true&allow_no_indices=true"
     try:
         resp = _req.post(
-            f"{url.rstrip('/')}/{index}/_search",
+            search_url,
             json=body,
             auth=(user, passwd),
             verify=verify,
@@ -494,12 +498,15 @@ def api_alerts_purge(body: Dict[str, Any] = Body(...)):
     }
     try:
         resp = _req.post(
-            f"{url.rstrip('/')}/tinysocs-alerts-*/_delete_by_query",
+            f"{url.rstrip('/')}/tinysocs-alerts-*/_delete_by_query?ignore_unavailable=true&allow_no_indices=true",
             json=delete_body,
             auth=(user, passwd),
             verify=verify,
             timeout=30,
         )
+        # No alerts index yet — nothing to purge
+        if resp.status_code in (404, 400):
+            return {"deleted": 0, "message": "No alerts index exists yet"}
         resp.raise_for_status()
         result = resp.json()
         deleted = result.get("deleted", 0)

@@ -134,8 +134,9 @@ def _os_query(index: str, body: Dict[str, Any], size: int = 0) -> Dict[str, Any]
     verify = _resolve_ca_cert()
 
     body["size"] = size
+    search_url = f"{url.rstrip('/')}/{index}/_search?ignore_unavailable=true&allow_no_indices=true"
     resp = requests.post(
-        f"{url.rstrip('/')}/{index}/_search",
+        search_url,
         json=body,
         auth=(user, passwd),
         verify=verify,

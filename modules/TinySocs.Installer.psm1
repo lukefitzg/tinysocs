@@ -167,7 +167,7 @@ function Ensure-TinySocsOpenSearchHttpClientAuthOptional {
     -Value 'OPTIONAL'
 
   try {
-    Write-TinySocsLog "Enforced plugins.security.ssl.http.clientauth_mode: NONE in $yml"
+    Write-TinySocsLog "Enforced plugins.security.ssl.http.clientauth_mode: OPTIONAL in $yml"
   } catch {
     # If Write-TinySocsLog isn't in scope for some reason, don't fail over logging.
   }
@@ -5217,9 +5217,10 @@ function Initialize-TinySocsOpenSearchSecurity {
     # We keep cert validation ON, but disable revocation checking for loopback only unless explicitly overridden.
     [switch]$DisableTlsRevocationCheck,
 
-    # PATCH: avoid mTLS regressions on the HTTP layer (Schannel fatal alerts)
+    # OPTIONAL allows securityadmin to present admin client certs for bootstrap
+    # without requiring client certs from normal HTTPS clients (curl, browsers).
     [ValidateSet("NONE","OPTIONAL","REQUIRE")]
-    [string]$HttpClientAuthMode = "NONE",
+    [string]$HttpClientAuthMode = "OPTIONAL",
 
     # Make the installer deterministic by not hardcoding paths
     [string]$OpenSearchRoot,
@@ -5633,7 +5634,7 @@ function Initialize-TinySocsOpenSearchSecurity {
       ''
     )
 
-    # PATCH: NEVER hardcode OPTIONAL here; it causes mTLS-ish behaviour and breaks Schannel clients.
+    # OPTIONAL = accept client certs if offered (needed for securityadmin) but don't require them.
     $rawYml = $rawYml.TrimEnd() + "`r`n`r`n" +
       ("plugins.security.ssl.http.clientauth_mode: {0}`r`n" -f $HttpClientAuthMode) +
       "plugins.security.authcz.admin_dn:`r`n" +
@@ -9396,7 +9397,7 @@ function _Purge-TinySocsLegacyPlaintextSslKeystoreKeys {
   [void]$filtered.Add("plugins.security.ssl.http.truststore_type: PKCS12")
   [void]$filtered.Add("plugins.security.ssl.http.truststore_filepath: $ts")
 
-  $httpClientAuthMode = if ($env:TINYSOCS_HTTP_CLIENTAUTH_MODE) { $env:TINYSOCS_HTTP_CLIENTAUTH_MODE } else { "NONE" }
+  $httpClientAuthMode = if ($env:TINYSOCS_HTTP_CLIENTAUTH_MODE) { $env:TINYSOCS_HTTP_CLIENTAUTH_MODE } else { "OPTIONAL" }
   [void]$filtered.Add("plugins.security.ssl.http.clientauth_mode: $httpClientAuthMode")
 
   [void]$filtered.Add("plugins.security.ssl.transport.keystore_type: PKCS12")

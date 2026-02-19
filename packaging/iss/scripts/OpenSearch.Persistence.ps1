@@ -8,9 +8,11 @@ param(
   [int]$HttpPort = 9201,
   [string]$NetworkHost = "127.0.0.1",
 
-  # PATCH: enforce deterministic HTTP TLS client auth mode to avoid mTLS regressions
+  # PATCH: enforce deterministic HTTP TLS client auth mode.
+  # OPTIONAL allows securityadmin to present admin client certs for bootstrap
+  # without requiring client certs from normal HTTPS clients (curl, browsers).
   [ValidateSet("NONE","OPTIONAL","REQUIRE")]
-  [string]$HttpClientAuthMode = "NONE",
+  [string]$HttpClientAuthMode = "OPTIONAL",
 
   [string]$OpenSearchRoot = "",   # default: infer from script location (..\OpenSearch)
   [switch]$ForceRecreateKeystore  # if set: blow away opensearch.keystore and rebuild deterministically
@@ -117,7 +119,8 @@ $ErrorActionPreference = "Stop"
 # PATCH: bump version to reflect PS5.1 compat fixes (no ProtectedData assembly name; no assumed IsAscii7 property)
 # PATCH(20260114): enforce deterministic http clientauth_mode
 # PATCH(20260114): harden keystore writes on Windows (stale .tmp + file locks)
-$script:PERSIST_VERSION = "0.0.20260114-ps51-compat-storeinfo-normalize-clientauth-none-keystore-tmpfix"
+# PATCH(20260218): clientauth_mode default NONE->OPTIONAL so securityadmin can present admin cert
+$script:PERSIST_VERSION = "0.0.20260218-clientauth-optional"
 
 function Write-Log([string]$Msg) { Write-Host "[TinySocs][OpenSearch][Persist] $Msg" }
 
@@ -1142,7 +1145,7 @@ foreach ($cfg in $configDirs) {
   Ensure-YamlKeySingleLine -Path $yml -Key "network.host" -CanonicalLine ("network.host: {0}" -f $NetworkHost)
   Ensure-YamlKeySingleLine -Path $yml -Key "http.port"    -CanonicalLine ("http.port: {0}" -f $HttpPort)
 
-  # PATCH: avoid mTLS regressions on HTTP by canonicalizing clientauth_mode
+  # PATCH: canonicalize clientauth_mode (OPTIONAL = accept admin client certs without requiring them)
   Ensure-YamlKeySingleLine -Path $yml -Key "plugins.security.ssl.http.clientauth_mode" -CanonicalLine ("plugins.security.ssl.http.clientauth_mode: {0}" -f $HttpClientAuthMode)
 
   Remove-PlaintextSslPasswordKeysFromYml -YmlPath $yml

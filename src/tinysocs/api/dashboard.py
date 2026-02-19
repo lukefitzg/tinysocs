@@ -180,14 +180,20 @@ def _resolve_ca_cert() -> Any:
     if _ca_pem_cache is not None:
         return _ca_pem_cache
 
-    # 1. Explicit env override
+    # 0. Explicit disable — honour SIEM_SSL_VERIFY=false before anything else
+    verify_str = os.getenv("SIEM_SSL_VERIFY", "").lower()
+    if verify_str in ("false", "0", "no"):
+        print("[dashboard] CA cert: verification disabled (SIEM_SSL_VERIFY=false)")
+        _ca_pem_cache = False  # type: ignore[assignment]
+        return False
+
+    # 1. Explicit CA cert path
     explicit = os.getenv("SIEM_CA_CERT", "")
     if explicit and Path(explicit).is_file():
         print(f"[dashboard] CA cert: SIEM_CA_CERT={explicit}")
         _ca_pem_cache = _ensure_pem(Path(explicit))
         return _ca_pem_cache
 
-    verify_str = os.getenv("SIEM_SSL_VERIFY", "").lower()
     if verify_str in ("true", "1", "yes"):
         print("[dashboard] CA cert: using system bundle (SIEM_SSL_VERIFY=true)")
         _ca_pem_cache = True  # type: ignore[assignment]
@@ -875,7 +881,7 @@ async def api_host_timeline(
         "query": {
             "bool": {
                 "must": [
-                    {"term": {"winlog.computer_name": hostname}},
+                    {"term": {"winlog.computer_name.keyword": hostname}},
                     {"range": {"@timestamp": {"gte": f"now-{hours}h", "lte": "now"}}},
                 ]
             }
@@ -893,7 +899,7 @@ async def api_host_timeline(
                 },
                 "aggs": {
                     "by_channel": {
-                        "terms": {"field": "winlog.channel", "size": 10},
+                        "terms": {"field": "winlog.channel.keyword", "size": 10},
                     }
                 },
             }
@@ -1021,13 +1027,13 @@ async def api_fleet_health():
         "query": {"range": {"@timestamp": {"gte": "now-24h", "lte": "now"}}},
         "aggs": {
             "by_host": {
-                "terms": {"field": "winlog.computer_name", "size": 50},
+                "terms": {"field": "winlog.computer_name.keyword", "size": 50},
                 "aggs": {
                     "last_seen": {"max": {"field": "@timestamp"}},
                     "first_seen": {"min": {"field": "@timestamp"}},
                     "event_count": {"value_count": {"field": "@timestamp"}},
-                    "top_channels": {"terms": {"field": "winlog.channel", "size": 5}},
-                    "top_event_ids": {"terms": {"field": "winlog.event_id", "size": 5}},
+                    "top_channels": {"terms": {"field": "winlog.channel.keyword", "size": 5}},
+                    "top_event_ids": {"terms": {"field": "event.code", "size": 5}},
                 },
             }
         },
@@ -2309,12 +2315,10 @@ a { color: var(--accent); text-decoration: none; }
 @media (max-width: 700px) { .left-panels { grid-template-columns: 1fr; } }
 
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
-        padding: 16px; height: 320px; overflow-y: auto; }
+        padding: 16px; overflow: hidden; }
 .card h2 { font-size: 14px; color: var(--muted); text-transform: uppercase;
            letter-spacing: 0.5px; margin-bottom: 12px; font-weight: 500; }
-/* Sticky card headers — pin title rows inside scrollable cards */
-.card-header-sticky { position: sticky; top: -16px; z-index: 2;
-  background: var(--surface); margin: -16px -16px 12px -16px; padding: 12px 16px 8px 16px;
+.card-header-sticky { background: var(--surface); margin: -16px -16px 12px -16px; padding: 12px 16px 8px 16px;
   border-bottom: 1px solid var(--border); }
 .card.full { grid-column: 1 / -1; }
 .card.assistant-card { height: 100%; max-height: 100%;
@@ -2367,19 +2371,20 @@ tr:hover { background: rgba(74, 144, 217, 0.05); }
 .timeline-card { min-height: 200px; height: auto; overflow: visible; }
 .timeline-card h2 { margin-bottom: 0; }
 
+/* Shared pager */
+.pager { display: flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 8px 0 0 0; font-size: 11px; color: var(--muted); border-top: 1px solid var(--border); }
+.pager button { font-size: 11px; padding: 2px 10px; background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
+.pager button:disabled { opacity: 0.35; cursor: default; }
+
 /* Alert Rules */
-.rules-card { height: auto; max-height: 360px; }
 .rules-btn { font-size: 11px; padding: 4px 12px; border: none; border-radius: 4px;
   cursor: pointer; font-weight: 500; white-space: nowrap; line-height: 1.4; }
 .rules-btn-accent { background: var(--accent); color: #fff; }
 .rules-btn-accent:hover { opacity: 0.85; }
 .rules-btn-purple { background: #8e44ad; color: #fff; }
 .rules-btn-purple:hover { opacity: 0.85; }
-.rules-pager { display: flex; align-items: center; justify-content: center; gap: 8px;
-  padding: 8px 0 0 0; font-size: 11px; color: var(--muted); border-top: 1px solid var(--border); }
-.rules-pager button { font-size: 11px; padding: 2px 10px; background: var(--bg); color: var(--text);
-  border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
-.rules-pager button:disabled { opacity: 0.35; cursor: default; }
 .rule-row { padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
 .rule-row:last-child { border-bottom: none; }
 .rule-row-header { display: flex; align-items: center; gap: 8px; cursor: pointer; }
@@ -2393,7 +2398,7 @@ tr:hover { background: rgba(74, 144, 217, 0.05); }
   overflow-x: auto; white-space: pre-wrap; word-break: break-all; margin: 4px 0; }
 
 /* Fired Detections panel */
-.detections-card { height: 420px; }
+.detections-card { }
 .detection-row { padding: 8px 0; border-bottom: 1px solid var(--border); cursor: pointer;
                  transition: background 0.15s; }
 .detection-row:hover { background: rgba(74, 144, 217, 0.05); }
@@ -2608,7 +2613,7 @@ select { cursor: pointer; }
     <div class="card full detections-card">
       <div class="card-header-sticky" style="display:flex;align-items:center;gap:12px">
         <h2 style="margin:0;white-space:nowrap">Fired Detections</h2>
-        <select id="detStatusFilter" style="font-size:11px;padding:2px 6px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;max-width:200px" onchange="loadDetections()">
+        <select id="detStatusFilter" style="font-size:11px;padding:2px 6px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;max-width:200px" onchange="_detectionsPage=0;_openDetectionIdx=-1;renderDetections()">
           <option value="active" selected>Active (new + ack)</option>
           <option value="all">All</option>
           <option value="new">New only</option>
@@ -2675,7 +2680,7 @@ select { cursor: pointer; }
     <div class="card full rules-card" id="rules-card">
       <div class="card-header-sticky" style="display:flex;align-items:center;gap:12px">
         <h2 style="margin:0;white-space:nowrap">Alert Rules</h2>
-        <select id="rulesFilter" onchange="filterRules()" style="font-size:11px;padding:2px 6px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px">
+        <select id="rulesFilter" onchange="filterRules()" style="flex:1;margin-bottom:0;height:32px">
           <option value="all">All Rules</option>
           <option value="builtin">Built-in</option>
           <option value="custom">Custom</option>
@@ -2954,16 +2959,22 @@ async function loadTimeline() {
 let _detectionCache = [];
 let _openDetectionIdx = -1;       // which row is currently expanded
 let _detectionSummaries = {};     // idx -> summary text (persists across refresh)
+let _detectionsPage = 0;
+const _DETECTIONS_PER_PAGE = 10;
 
 async function loadDetections() {
   const el = document.getElementById('detections-content');
   const d = await fetchJSON(`/api/detections/fired?hours=${hours}&limit=50`);
   if (d.error && !d.detections?.length) { el.innerHTML = `<div class="empty">${d.error}</div>`; return; }
+  _detectionCache = d.detections || [];
+  _detectionsPage = 0;
+  renderDetections();
+}
 
-  // Apply status filter
+function renderDetections() {
+  const el = document.getElementById('detections-content');
   const filter = (document.getElementById('detStatusFilter') || {}).value || 'active';
-  let detections = d.detections || [];
-  _detectionCache = detections;  // Keep full list for index references
+  let detections = _detectionCache;
   let filtered = detections;
   if (filter === 'active') {
     filtered = detections.filter(d => d.status !== 'dismissed');
@@ -2971,12 +2982,20 @@ async function loadDetections() {
     filtered = detections.filter(d => d.status === filter);
   }
   if (!filtered.length) { el.innerHTML = '<div class="empty">No detections match this filter</div>'; return; }
-  // Build a map from filtered index back to cache index
   const filteredMap = filtered.map(det => detections.indexOf(det));
 
+  // Pagination
+  const totalItems = filtered.length;
+  const totalPages = Math.ceil(totalItems / _DETECTIONS_PER_PAGE);
+  if (_detectionsPage >= totalPages) _detectionsPage = totalPages - 1;
+  if (_detectionsPage < 0) _detectionsPage = 0;
+  const pageStart = _detectionsPage * _DETECTIONS_PER_PAGE;
+  const pageFiltered = filtered.slice(pageStart, pageStart + _DETECTIONS_PER_PAGE);
+  const pageMap = filteredMap.slice(pageStart, pageStart + _DETECTIONS_PER_PAGE);
+
   let html = '';
-  for (let fi = 0; fi < filtered.length; fi++) {
-    const i = filteredMap[fi];  // index into _detectionCache
+  for (let pi = 0; pi < pageFiltered.length; pi++) {
+    const i = pageMap[pi];  // index into _detectionCache
     const det = detections[i];
     const ts = det.timestamp ? timeAgo(det.timestamp) : '';
     const evtCount = det.event_count || det.matched_events || 0;
@@ -3032,7 +3051,6 @@ async function loadDetections() {
 
     // Action buttons row 2: tags (left) + status actions (right)
     html += '<div style="display:flex;gap:6px;margin-top:6px;align-items:center">';
-    // Tags on the left
     html += `<span style="color:var(--muted);font-size:11px">Tags:</span>`;
     const tagList = ['investigating','false-positive','escalated','resolved'];
     for (const tag of tagList) {
@@ -3042,7 +3060,6 @@ async function loadDetections() {
         : 'background:var(--bg);color:var(--muted);border:1px solid var(--border)';
       html += `<button style="font-size:10px;padding:2px 6px;border-radius:3px;cursor:pointer;border:none;${tagStyle}" onclick="event.stopPropagation(); toggleDetectionTag(${i},'${tag}')">${tag}</button>`;
     }
-    // Push status actions to the right
     html += '<span style="flex:1"></span>';
     if (detStatus === 'new') {
       html += `<button style="font-size:11px;padding:3px 12px;border-radius:4px;cursor:pointer;border:none;background:#2980b9;color:#fff" onclick="event.stopPropagation(); setDetectionStatus(${i},'acknowledged')">Acknowledge</button>`;
@@ -3064,8 +3081,21 @@ async function loadDetections() {
 
     html += '</div>';
   }
+
+  // Pager
+  if (totalPages > 1) {
+    html += `<div class="pager">`;
+    html += `<button onclick="detectionsPagePrev()" ${_detectionsPage === 0 ? 'disabled' : ''}>&laquo; Prev</button>`;
+    html += `<span>Page ${_detectionsPage + 1} of ${totalPages} (${totalItems} detections)</span>`;
+    html += `<button onclick="detectionsPageNext()" ${_detectionsPage >= totalPages - 1 ? 'disabled' : ''}>Next &raquo;</button>`;
+    html += '</div>';
+  }
+
   el.innerHTML = html;
 }
+
+function detectionsPagePrev() { _detectionsPage = Math.max(0, _detectionsPage - 1); _openDetectionIdx = -1; renderDetections(); }
+function detectionsPageNext() { _detectionsPage++; _openDetectionIdx = -1; renderDetections(); }
 
 function toggleDetection(idx) {
   const detail = document.getElementById('det-detail-' + idx);
@@ -3240,19 +3270,35 @@ function showInLogs(idx) {
 
 let _fleetCache = [];
 let _openFleetIdx = -1;
+let _fleetPage = 0;
+const _FLEET_PER_PAGE = 10;
 
 async function loadFleet() {
   const el = document.getElementById('fleet-content');
   const d = await fetchJSON('/api/fleet/health');
   if (d.error && !d.hosts?.length) { el.innerHTML = `<div class="empty">${d.error}</div>`; return; }
+  _fleetCache = d.hosts || [];
+  _fleetPage = 0;
+  renderFleet();
+}
 
-  const hosts = d.hosts || [];
-  _fleetCache = hosts;
+function renderFleet() {
+  const el = document.getElementById('fleet-content');
+  const hosts = _fleetCache;
   if (!hosts.length) { el.innerHTML = '<div class="empty">No hosts reporting</div>'; return; }
 
+  // Pagination
+  const totalItems = hosts.length;
+  const totalPages = Math.ceil(totalItems / _FLEET_PER_PAGE);
+  if (_fleetPage >= totalPages) _fleetPage = totalPages - 1;
+  if (_fleetPage < 0) _fleetPage = 0;
+  const pageStart = _fleetPage * _FLEET_PER_PAGE;
+  const pageHosts = hosts.slice(pageStart, pageStart + _FLEET_PER_PAGE);
+
   let html = '<table><tr><th>Host</th><th>Events (24h)</th><th>Alerts</th><th>Last Seen</th></tr>';
-  for (let i = 0; i < hosts.length; i++) {
-    const h = hosts[i];
+  for (let pi = 0; pi < pageHosts.length; pi++) {
+    const i = pageStart + pi;  // index into _fleetCache
+    const h = pageHosts[pi];
     const ago = h.last_seen ? timeAgo(h.last_seen) : 'unknown';
     const alertBadge = h.alert_count > 0
       ? `<span style="background:var(--red);color:#fff;padding:1px 6px;border-radius:4px;font-size:11px">${h.alert_count}</span>`
@@ -3274,36 +3320,25 @@ async function loadFleet() {
     const shipAgo = h.last_ship_time ? timeAgo(h.last_ship_time) : 'N/A';
 
     html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 24px;font-size:12px">`;
-
-    // Row 1: Times
     html += `<div><span style="color:var(--muted)">First Seen (24h):</span> ${firstAgo}</div>`;
     html += `<div><span style="color:var(--muted)">Last Seen:</span> ${ago}</div>`;
-
-    // Row 2: Agent info
     html += `<div><span style="color:var(--muted)">Agent Version:</span> ${escapeHtml(h.agent_version || 'Unknown')}</div>`;
     html += `<div><span style="color:var(--muted)">Uptime:</span> ${escapeHtml(h.uptime || 'Unknown')}</div>`;
-
-    // Row 3: Pipeline health
     html += `<div><span style="color:var(--muted)">Last Heartbeat:</span> ${hbAgo}</div>`;
     html += `<div><span style="color:var(--muted)">Events Shipped:</span> ${(h.events_shipped || 0).toLocaleString()}</div>`;
 
-    // Row 4: Channels + Event IDs
     const channels = (h.top_channels || []).map(c => `${c.channel} (${c.count})`).join(', ') || 'None';
     html += `<div><span style="color:var(--muted)">Top Channels:</span> ${escapeHtml(channels)}</div>`;
     const evtIds = (h.top_event_ids || []).map(e => `${e.event_id} (${e.count})`).join(', ') || 'None';
     html += `<div><span style="color:var(--muted)">Top Event IDs:</span> ${escapeHtml(evtIds)}</div>`;
 
-    // Row 5: Alert breakdown
     const sevs = h.alert_severities || {};
     const sevStr = Object.entries(sevs).map(([k,v]) => `${k}: ${v}`).join(', ') || 'None';
     html += `<div><span style="color:var(--muted)">Alerts by Severity:</span> ${escapeHtml(sevStr)}</div>`;
-
-    // Active detections
     const dets = (h.active_detections || []).map(d => escapeHtml(d)).join(', ') || 'None';
     html += `<div><span style="color:var(--muted)">Active Detections:</span> ${dets}</div>`;
     html += `</div>`;
 
-    // Quick actions
     html += `<div style="margin-top:8px;display:flex;gap:6px">`;
     html += `<button class="btn-summarize" style="background:#8e44ad;font-size:11px;padding:3px 10px" onclick="event.stopPropagation(); viewHostLogs('${escapeHtml(h.hostname)}')">View Logs</button>`;
     html += `<button class="btn-summarize" style="background:var(--accent);font-size:11px;padding:3px 10px" onclick="event.stopPropagation(); viewHostAlerts('${escapeHtml(h.hostname)}')">View Alerts</button>`;
@@ -3312,8 +3347,21 @@ async function loadFleet() {
     html += `</td></tr>`;
   }
   html += '</table>';
+
+  // Pager
+  if (totalPages > 1) {
+    html += `<div class="pager">`;
+    html += `<button onclick="fleetPagePrev()" ${_fleetPage === 0 ? 'disabled' : ''}>&laquo; Prev</button>`;
+    html += `<span>Page ${_fleetPage + 1} of ${totalPages} (${totalItems} hosts)</span>`;
+    html += `<button onclick="fleetPageNext()" ${_fleetPage >= totalPages - 1 ? 'disabled' : ''}>Next &raquo;</button>`;
+    html += '</div>';
+  }
+
   el.innerHTML = html;
 }
+
+function fleetPagePrev() { _fleetPage = Math.max(0, _fleetPage - 1); _openFleetIdx = -1; renderFleet(); }
+function fleetPageNext() { _fleetPage++; _openFleetIdx = -1; renderFleet(); }
 
 function toggleFleetDetail(idx) {
   const row = document.getElementById('fleet-detail-' + idx);
@@ -3439,6 +3487,10 @@ async function stageTestAction() {
 }
 
 let _schemaCache = {};
+let _eventsCache = [];
+let _eventsIdx = '';
+let _eventsPage = 0;
+const _EVENTS_PER_PAGE = 15;
 
 async function loadEvents() {
   const el = document.getElementById('events-content');
@@ -3446,27 +3498,57 @@ async function loadEvents() {
   const idx = document.getElementById('eventIndex').value;
   const timeRange = document.getElementById('eventTimeRange').value;
   el.innerHTML = '<div class="loading">Loading...</div>';
-  let url = `/api/events/recent?limit=30&index=${encodeURIComponent(idx)}&q=${encodeURIComponent(q)}`;
+  let url = `/api/events/recent?limit=200&index=${encodeURIComponent(idx)}&q=${encodeURIComponent(q)}`;
   if (timeRange) url += `&time_range=${encodeURIComponent(timeRange)}`;
   const d = await fetchJSON(url);
   if (d.error && !d.events?.length) { el.innerHTML = `<div class="empty">${d.error}</div>`; return; }
 
-  const events = d.events || [];
-  if (!events.length) { el.innerHTML = '<div class="empty">No events found</div>'; return; }
+  _eventsCache = d.events || [];
+  _eventsIdx = idx;
+  _eventsPage = 0;
+  if (!_eventsCache.length) { el.innerHTML = '<div class="empty">No events found</div>'; return; }
+  renderEvents();
+}
+
+function renderEvents() {
+  const el = document.getElementById('events-content');
+  const events = _eventsCache;
+  const idx = _eventsIdx;
+
+  // Pagination
+  const totalItems = events.length;
+  const totalPages = Math.ceil(totalItems / _EVENTS_PER_PAGE);
+  if (_eventsPage >= totalPages) _eventsPage = totalPages - 1;
+  if (_eventsPage < 0) _eventsPage = 0;
+  const pageStart = _eventsPage * _EVENTS_PER_PAGE;
+  const pageEvents = events.slice(pageStart, pageStart + _EVENTS_PER_PAGE);
 
   const isAlerts = idx.includes('alerts');
   let html = isAlerts
     ? '<table><tr><th>Time</th><th>Host</th><th>Rule</th><th>Severity</th><th>Description</th></tr>'
     : '<table><tr><th>Time</th><th>Host</th><th>Channel</th><th>ID</th><th>Message</th></tr>';
-  for (const e of events) {
+  for (const e of pageEvents) {
     const t = e.timestamp ? new Date(e.timestamp).toLocaleString() : '';
     const msg = (e.message || '').substring(0, 120);
     const hostLink = e.host ? `<a href="#" style="color:var(--accent);text-decoration:none" onclick="event.preventDefault();openHostTimeline('${escapeHtml(e.host)}')">${escapeHtml(e.host)}</a>` : '';
     html += `<tr><td style="white-space:nowrap">${t}</td><td>${hostLink}</td><td>${e.channel}</td><td>${e.event_id}</td><td style="font-size:12px;color:var(--muted)">${msg}</td></tr>`;
   }
   html += '</table>';
+
+  // Pager
+  if (totalPages > 1) {
+    html += `<div class="pager">`;
+    html += `<button onclick="eventsPagePrev()" ${_eventsPage === 0 ? 'disabled' : ''}>&laquo; Prev</button>`;
+    html += `<span>Page ${_eventsPage + 1} of ${totalPages} (${totalItems} events)</span>`;
+    html += `<button onclick="eventsPageNext()" ${_eventsPage >= totalPages - 1 ? 'disabled' : ''}>Next &raquo;</button>`;
+    html += '</div>';
+  }
+
   el.innerHTML = html;
 }
+
+function eventsPagePrev() { _eventsPage = Math.max(0, _eventsPage - 1); renderEvents(); }
+function eventsPageNext() { _eventsPage++; renderEvents(); }
 
 async function toggleSchema() {
   const panel = document.getElementById('schema-panel');
@@ -3764,7 +3846,7 @@ function renderRules() {
 
   // Pager
   if (totalPages > 1) {
-    html += `<div class="rules-pager">`;
+    html += `<div class="pager">`;
     html += `<button onclick="rulesPagePrev()" ${_rulesPage === 0 ? 'disabled' : ''}>&laquo; Prev</button>`;
     html += `<span>Page ${_rulesPage + 1} of ${totalPages} (${totalRules} rules)</span>`;
     html += `<button onclick="rulesPageNext()" ${_rulesPage >= totalPages - 1 ? 'disabled' : ''}>Next &raquo;</button>`;

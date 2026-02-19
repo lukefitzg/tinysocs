@@ -1583,10 +1583,9 @@ begin
         '}' + CRLF +
         '' + CRLF +
 
-        '# TB-10d-acl: Fix ACLs on seeded opensearch-security dir so OpenSearch can read config on first boot' + CRLF +
-        '# Without this, allow_default_init_securityindex silently fails (files unreadable) and security stays at 503.' + CRLF +
-        '# Files copied from vendor zip have broken ACLs (inheritance disabled, no explicit grants).' + CRLF +
-        '# Use .NET ACL API directly — icacls.exe is unreliable inside Inno-generated PowerShell scripts.' + CRLF +
+        '# TB-10d-acl: Fix ACLs on seeded opensearch-security dir so OpenSearch + securityadmin can read config.' + CRLF +
+        '# WriteAllBytes files inherit no ACEs and have inheritance DISABLED (zip-extraction artifact).' + CRLF +
+        '# Re-enable inheritance so the directory ACEs (Administrators:F, SYSTEM:F) propagate to files.' + CRLF +
         'try {' + CRLF +
         '  $secCfgDir = Join-Path $pdConf ''opensearch-security''' + CRLF +
         '  if (Test-Path -LiteralPath $secCfgDir -PathType Container) {' + CRLF +
@@ -1598,6 +1597,7 @@ begin
         '    foreach ($f in (Get-ChildItem -LiteralPath $secCfgDir -File -ErrorAction SilentlyContinue)) {' + CRLF +
         '      try {' + CRLF +
         '        $acl = Get-Acl -LiteralPath $f.FullName' + CRLF +
+        '        $acl.SetAccessRuleProtection($false, $true)' + CRLF +
         '        $acl.AddAccessRule($sysRule)' + CRLF +
         '        $acl.AddAccessRule($admRule)' + CRLF +
         '        Set-Acl -LiteralPath $f.FullName -AclObject $acl' + CRLF +

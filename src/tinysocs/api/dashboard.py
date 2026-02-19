@@ -2367,6 +2367,9 @@ tr:hover { background: rgba(74, 144, 217, 0.05); }
 .btn-reject:hover { opacity: 0.85; }
 .btn-sm:disabled { opacity: 0.4; cursor: not-allowed; }
 
+/* Event Explorer: prevent layout jump on refresh */
+#events-content { min-height: 420px; }
+
 /* Host Timeline inline widget */
 .timeline-card { min-height: 200px; height: auto; overflow: visible; }
 .timeline-card h2 { margin-bottom: 0; }
@@ -2671,6 +2674,9 @@ select { cursor: pointer; }
         </select>
         <input type="text" id="eventQuery" placeholder="KQL filter (e.g. winlog.event_id:4625)" onkeydown="if(event.key==='Enter')loadEvents()">
         <button onclick="loadEvents()">Search</button>
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--muted);cursor:pointer;margin-left:6px;white-space:nowrap;user-select:none">
+          <input type="checkbox" id="eventsLiveToggle" onchange="toggleEventsLive(this.checked)" style="accent-color:var(--accent);cursor:pointer"> Live
+        </label>
       </div>
       <div id="schema-panel" style="display:none;max-height:200px;overflow-y:auto;margin-bottom:8px;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;font-size:12px"></div>
       <div id="events-content"><div class="loading">Loading...</div></div>
@@ -2967,7 +2973,6 @@ async function loadDetections() {
   const d = await fetchJSON(`/api/detections/fired?hours=${hours}&limit=50`);
   if (d.error && !d.detections?.length) { el.innerHTML = `<div class="empty">${d.error}</div>`; return; }
   _detectionCache = d.detections || [];
-  _detectionsPage = 0;
   renderDetections();
 }
 
@@ -3278,7 +3283,6 @@ async function loadFleet() {
   const d = await fetchJSON('/api/fleet/health');
   if (d.error && !d.hosts?.length) { el.innerHTML = `<div class="empty">${d.error}</div>`; return; }
   _fleetCache = d.hosts || [];
-  _fleetPage = 0;
   renderFleet();
 }
 
@@ -3490,14 +3494,17 @@ let _schemaCache = {};
 let _eventsCache = [];
 let _eventsIdx = '';
 let _eventsPage = 0;
+let _eventsLive = false;
 const _EVENTS_PER_PAGE = 15;
 
-async function loadEvents() {
+function toggleEventsLive(on) { _eventsLive = on; }
+
+async function loadEvents(background) {
   const el = document.getElementById('events-content');
   const q = document.getElementById('eventQuery').value;
   const idx = document.getElementById('eventIndex').value;
   const timeRange = document.getElementById('eventTimeRange').value;
-  el.innerHTML = '<div class="loading">Loading...</div>';
+  if (!background) el.innerHTML = '<div class="loading">Loading...</div>';
   let url = `/api/events/recent?limit=200&index=${encodeURIComponent(idx)}&q=${encodeURIComponent(q)}`;
   if (timeRange) url += `&time_range=${encodeURIComponent(timeRange)}`;
   const d = await fetchJSON(url);
@@ -3505,7 +3512,7 @@ async function loadEvents() {
 
   _eventsCache = d.events || [];
   _eventsIdx = idx;
-  _eventsPage = 0;
+  if (!background) _eventsPage = 0;
   if (!_eventsCache.length) { el.innerHTML = '<div class="empty">No events found</div>'; return; }
   renderEvents();
 }
@@ -3752,7 +3759,6 @@ async function loadRules() {
   const builderOpen = document.getElementById('ruleBuilder')?.style.display !== 'none';
   const uploadOpen = document.getElementById('ruleUpload')?.style.display !== 'none';
   if (builderOpen || uploadOpen) return;
-  _rulesPage = 0;
   renderRules();
 }
 
@@ -3991,8 +3997,10 @@ function refreshAll() {
   document.getElementById('lastUpdate').textContent = 'Refreshing...';
   // Load local data (rules) immediately — no SIEM dependency
   loadRules();
-  // Load SIEM-dependent data
-  Promise.all([loadSummary(), loadTimeline(), loadDetections(), loadFleet(), loadEvents()])
+  // Load SIEM-dependent data; only refresh Event Explorer when Live is on
+  const tasks = [loadSummary(), loadTimeline(), loadDetections(), loadFleet()];
+  if (_eventsLive) tasks.push(loadEvents(true));
+  Promise.all(tasks)
     .then(() => {
       document.getElementById('lastUpdate').textContent = 'Updated ' + new Date().toLocaleTimeString();
     })

@@ -38,6 +38,7 @@
     <Compile Include="Queue/**/*.cs" />
     <Compile Include="Shipper/**/*.cs" />
     <Compile Include="Detection/**/*.cs" />
+    <Compile Include="Notification/**/*.cs" />
   </ItemGroup>
 
   <!-- Stop bogus literal JSON/config content items -->

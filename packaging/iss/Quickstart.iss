@@ -1686,6 +1686,35 @@ begin
         '}' + CRLF +
         '' + CRLF +
 
+        '# TB-10e2: Ensure admin_dn is in opensearch.yml and ACLs are correct on security config.' + CRLF +
+        '# These functions exist in the module but were never wired into the installer flow.' + CRLF +
+        '# Without admin_dn, securityadmin cannot authenticate as an admin user.' + CRLF +
+        '# Without correct ACLs, securityadmin cannot read the security YAML files.' + CRLF +
+        'Write-Host ''[TinySocs][Inno] TB-10e2: Ensure admin_dn + security config ACLs''' + CRLF +
+        'try {' + CRLF +
+        '  $pdYml = Join-Path $pdConf ''opensearch.yml''' + CRLF +
+        '  if (Get-Command Ensure-TinySocsOpenSearchAdminDn -ErrorAction SilentlyContinue) {' + CRLF +
+        '    Ensure-TinySocsOpenSearchAdminDn -OpenSearchYmlPath $pdYml -AdminDn ''CN=TinySocs-OpenSearch-Admin''' + CRLF +
+        '    Write-Host ''[TinySocs][Inno] TB-10e2: admin_dn set in opensearch.yml''' + CRLF +
+        '  } else {' + CRLF +
+        '    Write-Warning ''[TinySocs][Inno] TB-10e2: Ensure-TinySocsOpenSearchAdminDn not found in module''' + CRLF +
+        '  }' + CRLF +
+        '} catch {' + CRLF +
+        '  Write-Warning (''[TinySocs][Inno] TB-10e2: admin_dn setup failed: '' + $_.Exception.Message)' + CRLF +
+        '}' + CRLF +
+        'try {' + CRLF +
+        '  $secCfgDir = Join-Path $pdConf ''opensearch-security''' + CRLF +
+        '  if (Get-Command Ensure-TinySocsAclForOpenSearchSecurityConfig -ErrorAction SilentlyContinue) {' + CRLF +
+        '    Ensure-TinySocsAclForOpenSearchSecurityConfig -SecurityConfigDir $secCfgDir' + CRLF +
+        '    Write-Host ''[TinySocs][Inno] TB-10e2: Security config ACLs normalized''' + CRLF +
+        '  } else {' + CRLF +
+        '    Write-Warning ''[TinySocs][Inno] TB-10e2: Ensure-TinySocsAclForOpenSearchSecurityConfig not found in module''' + CRLF +
+        '  }' + CRLF +
+        '} catch {' + CRLF +
+        '  Write-Warning (''[TinySocs][Inno] TB-10e2: ACL normalization failed: '' + $_.Exception.Message)' + CRLF +
+        '}' + CRLF +
+        '' + CRLF +
+
         '# TB-10f: Hash wizard password into internal_users.yml BEFORE first service start' + CRLF +
         '# This ensures OpenSearch initializes its security index with the correct admin hash.' + CRLF +
         '# Without this, the bundled static hash is used and the wizard password never works.' + CRLF +

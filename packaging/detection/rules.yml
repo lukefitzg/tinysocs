@@ -138,6 +138,256 @@ rules:
       - write_alert_doc
       - append_alert_log
 
+  # ── Phase 13: Credential Access ────────────────────────────────────
+
+  - id: "TS-060"
+    name: "lsass_access"
+    description: "Process accessing LSASS memory (Sysmon Event 10)"
+    severity: "critical"
+    enabled: true
+    type: threshold_by_key
+    condition:
+      event_id: 10
+      channel: "Microsoft-Windows-Sysmon/Operational"
+      group_by: "winlog.event_data.SourceImage"
+      threshold: 1
+      window_minutes: 5
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  - id: "TS-061"
+    name: "credential_dumping_tools"
+    description: "Known credential dumping tool detected (process creation)"
+    severity: "critical"
+    enabled: true
+    type: threshold_by_key
+    condition:
+      event_id: 4688
+      channel: Security
+      group_by: "winlog.event_data.NewProcessName"
+      threshold: 1
+      window_minutes: 5
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  - id: "TS-062"
+    name: "ntds_dit_access"
+    description: "Access to ntds.dit or SYSTEM hive (4663)"
+    severity: "critical"
+    enabled: true
+    type: threshold_by_key
+    condition:
+      event_id: 4663
+      channel: Security
+      group_by: "winlog.computer_name"
+      threshold: 1
+      window_minutes: 5
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  # ── Phase 13: Lateral Movement ───────────────────────────────────
+
+  - id: "TS-070"
+    name: "psexec_usage"
+    description: "PsExec service installation detected (7045)"
+    severity: "high"
+    enabled: true
+    type: threshold_by_key
+    condition:
+      event_id: 7045
+      channel: System
+      group_by: "winlog.computer_name"
+      threshold: 1
+      window_minutes: 5
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  - id: "TS-071"
+    name: "rdp_brute_force"
+    description: "Multiple RDP logon failures (4625 LogonType 10)"
+    severity: "high"
+    enabled: true
+    type: threshold_by_key
+    condition:
+      event_id: 4625
+      channel: Security
+      group_by: "winlog.event_data.IpAddress"
+      threshold: 5
+      window_minutes: 10
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  - id: "TS-072"
+    name: "remote_service_install"
+    description: "Service installed remotely (7045 — non-standard path)"
+    severity: "high"
+    enabled: true
+    type: threshold_by_key
+    condition:
+      event_id: 7045
+      channel: System
+      group_by: "winlog.event_data.ServiceName"
+      threshold: 1
+      window_minutes: 5
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  # ── Phase 13: Defence Evasion ────────────────────────────────────
+
+  - id: "TS-080"
+    name: "event_log_cleared"
+    description: "Security event log cleared (1102)"
+    severity: "high"
+    enabled: true
+    type: threshold_by_key
+    condition:
+      event_id: 1102
+      channel: Security
+      group_by: "winlog.computer_name"
+      threshold: 1
+      window_minutes: 5
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  - id: "TS-081"
+    name: "defender_tamper"
+    description: "Windows Defender real-time protection disabled or exclusion added"
+    severity: "high"
+    enabled: true
+    type: threshold_by_key
+    condition:
+      event_id: 5001
+      channel: "Microsoft-Windows-Windows Defender/Operational"
+      group_by: "winlog.computer_name"
+      threshold: 1
+      window_minutes: 5
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  - id: "TS-082"
+    name: "amsi_bypass"
+    description: "AMSI bypass patterns in ScriptBlock (4104)"
+    severity: "critical"
+    enabled: true
+    type: threshold_by_key
+    condition:
+      event_id: 4104
+      channel: "Microsoft-Windows-PowerShell/Operational"
+      group_by: "winlog.computer_name"
+      threshold: 1
+      window_minutes: 5
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  - id: "TS-083"
+    name: "timestomp_detected"
+    description: "File creation time modified (Sysmon Event 2)"
+    severity: "medium"
+    enabled: true
+    type: threshold_by_key
+    condition:
+      event_id: 2
+      channel: "Microsoft-Windows-Sysmon/Operational"
+      group_by: "winlog.event_data.Image"
+      threshold: 1
+      window_minutes: 5
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  # ── Phase 13: Persistence ────────────────────────────────────────
+
+  - id: "TS-090"
+    name: "service_install_suspicious"
+    description: "Service installed with suspicious path (temp, appdata, public)"
+    severity: "high"
+    enabled: true
+    type: threshold_by_key
+    condition:
+      event_id: 7045
+      channel: System
+      group_by: "winlog.event_data.ServiceName"
+      threshold: 1
+      window_minutes: 5
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  - id: "TS-091"
+    name: "registry_run_key"
+    description: "Run/RunOnce registry modification (Sysmon Event 13)"
+    severity: "high"
+    enabled: true
+    type: threshold_by_key
+    condition:
+      event_id: 13
+      channel: "Microsoft-Windows-Sysmon/Operational"
+      group_by: "winlog.event_data.Image"
+      threshold: 1
+      window_minutes: 5
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  - id: "TS-092"
+    name: "startup_folder_write"
+    description: "File written to Startup folder (Sysmon Event 11)"
+    severity: "high"
+    enabled: true
+    type: threshold_by_key
+    condition:
+      event_id: 11
+      channel: "Microsoft-Windows-Sysmon/Operational"
+      group_by: "winlog.event_data.Image"
+      threshold: 1
+      window_minutes: 5
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  # ── Phase 13: Exfiltration ──────────────────────────────────────
+
+  - id: "TS-100"
+    name: "dns_tunnel_volume"
+    description: "High volume of DNS queries to single domain (Sysmon Event 22)"
+    severity: "high"
+    enabled: true
+    type: threshold_by_key
+    condition:
+      event_id: 22
+      channel: "Microsoft-Windows-Sysmon/Operational"
+      group_by: "winlog.event_data.QueryName"
+      threshold: 50
+      window_minutes: 5
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  - id: "TS-101"
+    name: "large_outbound_transfer"
+    description: "Unusual outbound connection volume (Sysmon Event 3)"
+    severity: "medium"
+    enabled: true
+    type: threshold_by_key
+    condition:
+      event_id: 3
+      channel: "Microsoft-Windows-Sysmon/Operational"
+      group_by: "winlog.event_data.Image"
+      threshold: 100
+      window_minutes: 5
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
   # ── Lab / low-threshold variants ────────────────────────────────────
 
   - id: "TS-001-lab"

@@ -93,3 +93,11 @@ detection:
       smtp_port: 587
       from: ""
       to: ""
+
+    # Retry queue: disk-backed retry for failed webhook/email notifications.
+    # Failed notifications are written to notification_queue.jsonl and retried
+    # with exponential backoff. Entries older than max_age_seconds are discarded.
+    retry:
+      max_attempts: 3
+      backoff_seconds: 30
+      max_age_seconds: 3600

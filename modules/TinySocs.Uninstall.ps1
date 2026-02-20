@@ -118,6 +118,51 @@ _KillOpenSearchJava
 # The Inno uninstaller is running from {app}\unins*.exe and will remove {app} via [UninstallDelete].
 _Log "Skipping deletion of AppDir in script; Inno will remove {app} via [UninstallDelete]."
 
+# Remove TinySocs scheduled tasks
+_Log "Removing scheduled tasks"
+foreach ($taskName in @("TinySocs\DailySummary")) {
+  try {
+    $t = Get-ScheduledTask -TaskName ($taskName -replace '.*\\','') -TaskPath ("\$($taskName -replace '\\[^\\]+$','')\") -ErrorAction SilentlyContinue
+    if ($t) {
+      Unregister-ScheduledTask -TaskName ($taskName -replace '.*\\','') -TaskPath ("\$($taskName -replace '\\[^\\]+$','')\") -Confirm:$false -ErrorAction SilentlyContinue
+      _Log "Removed scheduled task: $taskName"
+    } else {
+      _Log "Scheduled task not found (already removed): $taskName"
+    }
+  } catch {
+    _Log "Failed to remove scheduled task $taskName : $($_.Exception.Message)"
+    # Also try schtasks.exe as fallback
+    try { schtasks /Delete /TN $taskName /F 2>&1 | Out-Null } catch { }
+  }
+}
+
+# Optionally remove Windows Credential Manager entry
+if (-not $effectiveKeep) {
+  _Log "Removing CredMan entries"
+  foreach ($target in @("TinySocs/OpenSearch/tinysocs", "TinySocs/SIEM/Creds")) {
+    try {
+      # Use cmdkey.exe (available on all Windows)
+      $r = cmdkey /delete:$target 2>&1
+      _Log "cmdkey /delete:$target => $r"
+    } catch {
+      _Log "Failed to remove CredMan entry $target : $($_.Exception.Message)"
+    }
+  }
+}
+
+# Remove NSSM service entries cleanly (if NSSM was used)
+foreach ($nssmSvc in @("TinySocsOpenSearch","TinySocsAgent","TinySocsNode","TinySocsMaster","TinySocsAnchors","TinySocsAssistant")) {
+  try {
+    $nssmPath = Join-Path $appDir "nssm.exe"
+    if (Test-Path -LiteralPath $nssmPath -PathType Leaf) {
+      $r = & $nssmPath remove $nssmSvc confirm 2>&1
+      _Log "NSSM remove $nssmSvc => $r"
+    }
+  } catch {
+    _Log "NSSM remove $nssmSvc failed (non-fatal): $($_.Exception.Message)"
+  }
+}
+
 if (-not $effectiveKeep) {
   _Log "Removing data directory: $dataDir"
   try { Remove-Item -LiteralPath $dataDir -Recurse -Force } catch { }

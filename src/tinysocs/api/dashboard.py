@@ -12,18 +12,140 @@ Browse: http://localhost:8090/dashboard
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
+import secrets
 import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import Body, FastAPI, Query
+from fastapi import Body, FastAPI, Header, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 
 dashboard_app = FastAPI(title="TinySocs Dashboard", docs_url=None, redoc_url=None)
+
+# ---------------------------------------------------------------------------
+# Dashboard authentication (M0 — Phase 13)
+# Uses SIEM_PASS as the single admin password. No more hardcoded "tinysocs".
+# ---------------------------------------------------------------------------
+_AUTH_TOKEN_SECRET = secrets.token_hex(32)  # rotates each process restart
+_active_sessions: Dict[str, float] = {}    # token -> expiry timestamp
+_SESSION_TTL = 86400  # 24 hours
+
+
+def _get_admin_password() -> str:
+    """Return the current admin password (SIEM_PASS from env or assistant.env)."""
+    pw = os.getenv("SIEM_PASS", "").strip()
+    if pw:
+        return pw
+    # Try reading from assistant.env file directly
+    env_path = _find_assistant_env_for_auth()
+    if env_path and env_path.is_file():
+        for line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if line.startswith("SIEM_PASS="):
+                val = line.split("=", 1)[1].strip()
+                if val:
+                    return val
+    return ""  # empty = force setup on first access
+
+
+def _find_assistant_env_for_auth() -> Optional[Path]:
+    """Locate assistant.env (duplicated to avoid forward-ref issues)."""
+    candidates = [
+        Path(os.getenv("ProgramData", "C:\\ProgramData")) / "TinySocs" / "Assistant" / "assistant.env",
+        Path(os.getenv("ProgramFiles", "C:\\Program Files")) / "TinySocs" / "Assistant" / "assistant.env",
+        Path("/var/lib/tinysocs/assistant.env"),
+    ]
+    for p in candidates:
+        if p.is_file():
+            return p
+    return None
+
+
+def _create_session_token() -> str:
+    """Create a new session token and store it."""
+    import time
+    token = secrets.token_hex(32)
+    _active_sessions[token] = time.time() + _SESSION_TTL
+    now = time.time()
+    expired = [t for t, exp in _active_sessions.items() if exp < now]
+    for t in expired:
+        _active_sessions.pop(t, None)
+    return token
+
+
+def _validate_session(token: str) -> bool:
+    """Check if a session token is valid and not expired."""
+    import time
+    if not token:
+        return False
+    expiry = _active_sessions.get(token)
+    if expiry is None:
+        return False
+    if time.time() > expiry:
+        _active_sessions.pop(token, None)
+        return False
+    return True
+
+
+@dashboard_app.post("/api/auth/login")
+def api_auth_login(body: Dict[str, Any] = Body(...)):
+    """Authenticate with the admin password (SIEM_PASS)."""
+    password = body.get("password", "")
+    admin_pw = _get_admin_password()
+    if not admin_pw:
+        return JSONResponse(status_code=503, content={
+            "error": "No admin password configured. Run the installer or set SIEM_PASS in assistant.env."
+        })
+    if not hmac.compare_digest(password, admin_pw):
+        return JSONResponse(status_code=401, content={"error": "Invalid password"})
+    token = _create_session_token()
+    return {"ok": True, "token": token}
+
+
+@dashboard_app.get("/api/auth/check")
+def api_auth_check(authorization: str = Header("")):
+    """Check if the current session token is valid."""
+    token = authorization.replace("Bearer ", "") if authorization.startswith("Bearer ") else authorization
+    if _validate_session(token):
+        return {"ok": True, "authenticated": True}
+    return JSONResponse(status_code=401, content={"ok": False, "authenticated": False})
+
+
+@dashboard_app.post("/api/auth/change-password")
+def api_auth_change_password(body: Dict[str, Any] = Body(...)):
+    """Change the admin password (updates SIEM_PASS in assistant.env and live env)."""
+    token = body.get("token", "")
+    if not _validate_session(token):
+        return JSONResponse(status_code=401, content={"error": "Not authenticated"})
+    current_password = body.get("current_password", "")
+    new_password = body.get("new_password", "")
+    admin_pw = _get_admin_password()
+    if not hmac.compare_digest(current_password, admin_pw):
+        return JSONResponse(status_code=401, content={"error": "Current password is incorrect"})
+    if len(new_password) < 8:
+        return JSONResponse(status_code=400, content={"error": "New password must be at least 8 characters"})
+    os.environ["SIEM_PASS"] = new_password
+    env_path = _find_assistant_env_for_auth()
+    if env_path and env_path.is_file():
+        lines = env_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        updated = False
+        for i, line in enumerate(lines):
+            if line.strip().startswith("SIEM_PASS="):
+                lines[i] = f"SIEM_PASS={new_password}"
+                updated = True
+                break
+        if not updated:
+            lines.append(f"SIEM_PASS={new_password}")
+        env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _active_sessions.clear()
+    return {"ok": True, "message": "Password changed successfully. Please log in again."}
+
 
 # ---------------------------------------------------------------------------
 # In-memory chat sessions: session_id -> list of Anthropic message dicts
@@ -2056,14 +2178,8 @@ def _chat_ollama(
 
 # ---------------------------------------------------------------------------
 # Settings API (read/write assistant.env, protected by admin password)
+# Uses _get_admin_password() defined above (M0 auth section).
 # ---------------------------------------------------------------------------
-def _get_admin_password() -> str:
-    """Return the current dashboard admin password.
-
-    Priority: SIEM_PASS env var (set by installer / assistant.env).
-    Empty string means no password has been configured yet.
-    """
-    return os.getenv("SIEM_PASS", "") or ""
 
 # Settings that the dashboard can read/write
 _SETTINGS_KEYS = [
@@ -2392,13 +2508,16 @@ def api_test_email(body: Dict[str, Any] = Body(...)):
 
 
 @dashboard_app.get("/api/settings")
-def api_settings_get(admin_password: str = Query("")):
+def api_settings_get(admin_password: str = Query(""), authorization: str = Header("")):
     """Read current settings from assistant.env. Secrets are masked."""
-    current_pw = _get_admin_password()
-    if not current_pw:
-        return JSONResponse(status_code=403, content={"error": "password_not_set"})
-    if admin_password != current_pw:
-        return JSONResponse(status_code=401, content={"error": "Invalid admin password"})
+    # Accept session token (M0) or legacy admin_password
+    token = authorization.replace("Bearer ", "") if authorization.startswith("Bearer ") else ""
+    if not _validate_session(token):
+        current_pw = _get_admin_password()
+        if not current_pw:
+            return JSONResponse(status_code=403, content={"error": "password_not_set"})
+        if not hmac.compare_digest(admin_password, current_pw):
+            return JSONResponse(status_code=401, content={"error": "Invalid admin password"})
 
     env_path = _find_assistant_env()
     file_values: Dict[str, str] = {}
@@ -2425,12 +2544,15 @@ def api_settings_get(admin_password: str = Query("")):
 @dashboard_app.post("/api/settings")
 def api_settings_post(body: Dict[str, Any] = Body(...)):
     """Update settings in assistant.env and live environment."""
-    admin_password = body.get("admin_password", "")
-    current_pw = _get_admin_password()
-    if not current_pw:
-        return JSONResponse(status_code=403, content={"error": "password_not_set"})
-    if admin_password != current_pw:
-        return JSONResponse(status_code=401, content={"error": "Invalid admin password"})
+    # Accept session token (M0) or legacy admin_password
+    token = body.get("token", "")
+    if not _validate_session(token):
+        admin_password = body.get("admin_password", "")
+        current_pw = _get_admin_password()
+        if not current_pw:
+            return JSONResponse(status_code=403, content={"error": "password_not_set"})
+        if not hmac.compare_digest(admin_password, current_pw):
+            return JSONResponse(status_code=401, content={"error": "Invalid admin password"})
 
     updates = body.get("settings", {})
     if not isinstance(updates, dict):
@@ -2823,6 +2945,18 @@ select { cursor: pointer; }
 </head>
 <body>
 
+<!-- Full-page login gate (M0) -->
+<div id="loginGate" style="position:fixed;inset:0;z-index:10000;background:var(--bg);display:flex;align-items:center;justify-content:center">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:40px 36px;max-width:360px;width:100%;text-align:center;box-shadow:0 4px 24px rgba(0,0,0,0.3)">
+    <h1 style="font-size:22px;margin-bottom:6px">TinySocs Dashboard</h1>
+    <div style="color:var(--muted);font-size:13px;margin-bottom:24px">Enter your admin password to continue</div>
+    <input type="password" id="loginPassword" placeholder="Password" style="width:100%;max-width:280px;margin:0 auto 12px auto;display:block" onkeydown="if(event.key==='Enter')doLogin()">
+    <button onclick="doLogin()" style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:10px 32px;font-size:14px;cursor:pointer;font-weight:500">Sign In</button>
+    <div id="loginError" style="color:var(--red);font-size:13px;margin-top:8px;min-height:20px"></div>
+  </div>
+</div>
+
+<div id="dashboardContent" style="display:none">
 <div class="header">
   <div>
     <h1>TinySocs Dashboard</h1>
@@ -2836,6 +2970,7 @@ select { cursor: pointer; }
     </div>
     <button class="refresh-btn" onclick="refreshAll()">Refresh</button>
     <button class="settings-btn" onclick="openSettings()" title="Settings">&#9881;</button>
+    <button class="settings-btn" onclick="doLogout()" title="Logout" style="margin-left:4px">&#x23FB;</button>
   </div>
 </div>
 
@@ -2975,6 +3110,22 @@ select { cursor: pointer; }
         <button class="btn-cancel" onclick="closeSettings()">Cancel</button>
         <button class="btn-save" onclick="saveSettings()">Save &amp; Apply</button>
       </div>
+
+      <div class="section-title" style="margin-top:24px">Change Dashboard Password</div>
+      <div class="field">
+        <label>Current Password</label>
+        <input type="password" id="changePwCurrent" placeholder="Current password">
+      </div>
+      <div class="field">
+        <label>New Password</label>
+        <input type="password" id="changePwNew" placeholder="New password (min 8 chars)">
+      </div>
+      <div class="field">
+        <label>Confirm New Password</label>
+        <input type="password" id="changePwConfirm" placeholder="Confirm new password">
+      </div>
+      <div id="changePwStatus" style="min-height:20px;margin:8px 0"></div>
+      <button class="btn-save" onclick="changePassword()" style="background:#e67e22">Change Password</button>
     </div>
   </div>
 </div>
@@ -4857,15 +5008,144 @@ function alignAssistantPanel() {
   }
 }
 
-// Start up
+// Start up — dashboard is behind login gate; don't load data until authed
 restoreAssistantState();
 alignAssistantPanel();
 window.addEventListener('resize', alignAssistantPanel);
-checkLlmStatus();
-restoreChat();
-refreshAll();
-setInterval(refreshAll, 30000);
+setInterval(() => { if (_authToken) refreshAll(); }, 30000);
+
+// ---- M0: Dashboard Login Gate ----
+let _authToken = null;
+
+async function doLogin() {
+  const pw = document.getElementById('loginPassword').value;
+  const errEl = document.getElementById('loginError');
+  errEl.textContent = '';
+  if (!pw) { errEl.textContent = 'Please enter a password'; return; }
+  try {
+    const r = await fetch(BASE + '/api/auth/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({password: pw}),
+    });
+    const d = await r.json();
+    if (d.error) { errEl.textContent = d.error; return; }
+    _authToken = d.token;
+    try { sessionStorage.setItem('tinysocs_auth', _authToken); } catch(e) {}
+    unlockDashboard();
+  } catch(e) { errEl.textContent = 'Connection error: ' + e.message; }
+}
+
+function unlockDashboard() {
+  document.getElementById('loginGate').style.display = 'none';
+  document.getElementById('dashboardContent').style.display = 'block';
+  checkLlmStatus();
+  restoreChat();
+  refreshAll();
+}
+
+async function checkExistingSession() {
+  try { _authToken = sessionStorage.getItem('tinysocs_auth'); } catch(e) {}
+  if (!_authToken) { showLoginGate(); return; }
+  try {
+    const r = await fetch(BASE + '/api/auth/check', {
+      headers: {'Authorization': 'Bearer ' + _authToken},
+    });
+    if (r.ok) { unlockDashboard(); return; }
+  } catch(e) {}
+  _authToken = null;
+  try { sessionStorage.removeItem('tinysocs_auth'); } catch(e) {}
+  showLoginGate();
+}
+
+function showLoginGate() {
+  document.getElementById('loginGate').style.display = 'flex';
+  document.getElementById('dashboardContent').style.display = 'none';
+  document.getElementById('loginPassword').value = '';
+  setTimeout(() => document.getElementById('loginPassword').focus(), 100);
+}
+
+function doLogout() {
+  _authToken = null;
+  try { sessionStorage.removeItem('tinysocs_auth'); } catch(e) {}
+  showLoginGate();
+}
+
+async function changePassword() {
+  const cur = document.getElementById('changePwCurrent').value;
+  const newPw = document.getElementById('changePwNew').value;
+  const confirm = document.getElementById('changePwConfirm').value;
+  const statusEl = document.getElementById('changePwStatus');
+  statusEl.innerHTML = '';
+  if (!cur || !newPw) { statusEl.innerHTML = '<span style="color:var(--red)">All fields required</span>'; return; }
+  if (newPw !== confirm) { statusEl.innerHTML = '<span style="color:var(--red)">New passwords do not match</span>'; return; }
+  if (newPw.length < 8) { statusEl.innerHTML = '<span style="color:var(--red)">Password must be at least 8 characters</span>'; return; }
+  try {
+    const r = await fetch(BASE + '/api/auth/change-password', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({token: _authToken, current_password: cur, new_password: newPw}),
+    });
+    const d = await r.json();
+    if (d.error) { statusEl.innerHTML = '<span style="color:var(--red)">' + escapeHtml(d.error) + '</span>'; return; }
+    statusEl.innerHTML = '<span style="color:#27ae60">Password changed. Logging out...</span>';
+    setTimeout(doLogout, 1500);
+  } catch(e) { statusEl.innerHTML = '<span style="color:var(--red)">' + escapeHtml(e.message) + '</span>'; }
+}
+
+// Override settings to use session token
+const _origOpenSettings = openSettings;
+openSettings = function() {
+  document.getElementById('settingsOverlay').classList.add('open');
+  if (_authToken) {
+    // Skip password prompt — use session token
+    (async () => {
+      try {
+        const r = await fetch(BASE + '/api/settings', { headers: {'Authorization': 'Bearer ' + _authToken} });
+        const d = await r.json();
+        if (!d.error) {
+          settingsPassword = _authToken;
+          document.getElementById('settingsLogin').style.display = 'none';
+          document.getElementById('settingsForm').style.display = 'block';
+          populateSettings(d);
+          return;
+        }
+      } catch(e) {}
+      _origOpenSettings();
+    })();
+  } else { _origOpenSettings(); }
+};
+
+// Override saveSettings to pass session token
+const _origSaveSettings = saveSettings;
+saveSettings = async function() {
+  const fields = ['LLM_MODE','OPENAI_API_KEY','OPENAI_MODEL','ANTHROPIC_API_KEY','ANTHROPIC_MODEL',
+    'OFFLINE_LLM_URL','OFFLINE_LLM_MODEL','WEBHOOK_URL','WEBHOOK_ENABLED',
+    'SIEM_URL','SIEM_USER','SIEM_PASS',
+    'SMTP_HOST','SMTP_PORT','SMTP_FROM','SMTP_TO','EMAIL_ENABLED'];
+  const settings = {};
+  for (const f of fields) {
+    const el = document.getElementById('s_' + f);
+    if (el) settings[f] = el.value;
+  }
+  const statusEl = document.getElementById('settingsStatus');
+  statusEl.innerHTML = '<div class="status-msg" style="color:var(--muted)">Saving...</div>';
+  try {
+    const r = await fetch(BASE + '/api/settings', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({token: _authToken, admin_password: settingsPassword, settings}),
+    });
+    const d = await r.json();
+    if (d.error) { statusEl.innerHTML = '<div class="status-msg err">' + escapeHtml(d.error) + '</div>'; }
+    else { statusEl.innerHTML = '<div class="status-msg ok">' + escapeHtml(d.message) + '</div>'; setTimeout(() => closeSettings(), 1200); }
+  } catch(e) { statusEl.innerHTML = '<div class="status-msg err">' + escapeHtml(e.message) + '</div>'; }
+};
+
+// Boot: check existing session
+checkExistingSession();
 </script>
+</div><!-- /dashboardContent -->
 </body>
 </html>
 """

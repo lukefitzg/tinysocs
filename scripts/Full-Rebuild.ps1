@@ -155,6 +155,7 @@ if (-not (Test-Path $osVendorCheck)) {
     if (-not (Test-Path $zipDest)) {
         Write-Host "  Downloading OpenSearch 3.3.2 (~300MB, one-time only)..."
         try {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
             $ProgressPreference = 'SilentlyContinue'
             Invoke-WebRequest -Uri $zipUrl -OutFile $zipDest -UseBasicParsing
             Write-Host "  Downloaded." -ForegroundColor Green

@@ -29,6 +29,7 @@ if (Test-Path $exePath) {
 }
 
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 Write-Host "[Download-Sysmon] Downloading Sysmon from $url..."
 Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing
 

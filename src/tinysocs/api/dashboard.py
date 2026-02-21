@@ -3438,7 +3438,7 @@ select { cursor: pointer; }
           <option value="720" selected>30 days</option>
           <option value="2160">90 days</option>
         </select>
-        <a id="complianceDownload" href="#" style="display:none;font-size:11px;padding:4px 10px;background:var(--accent);color:#fff;border-radius:4px;text-decoration:none;margin-left:auto" download>Download Report</a>
+        <a id="complianceDownload" href="#" style="display:none;font-size:16px;padding:2px 8px;color:var(--muted);text-decoration:none;margin-left:auto;cursor:pointer" title="Download HTML report" download>&#x2B07;</a>
       </div>
       <div id="compliance-summary" style="display:none;display:flex;gap:12px;margin:12px 0">
         <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
@@ -4681,7 +4681,7 @@ function refreshAll() {
   // Load local data (rules) immediately — no SIEM dependency
   loadRules();
   // Load SIEM-dependent data; only refresh Event Explorer when Live is on
-  const tasks = [loadSummary(), loadTimeline(), loadDetections(), loadFleet(), loadComplianceReport()];
+  const tasks = [loadSummary(), loadTimeline(), loadDetections(), loadFleet()];
   if (_eventsLive) tasks.push(loadEvents(true));
   Promise.all(tasks)
     .then(() => {
@@ -5328,6 +5328,44 @@ async function loadComplianceFrameworks() {
   } catch(e) { console.log('compliance frameworks error:', e); }
 }
 
+let _complianceControls = [];
+let _compliancePage = 0;
+const _compliancePageSize = 10;
+
+function _renderCompliancePage() {
+  const el = document.getElementById('compliance-content');
+  const total = _complianceControls.length;
+  const pages = Math.ceil(total / _compliancePageSize);
+  if (_compliancePage >= pages) _compliancePage = Math.max(0, pages - 1);
+  const start = _compliancePage * _compliancePageSize;
+  const slice = _complianceControls.slice(start, start + _compliancePageSize);
+  const statusColors = {active:'#00b894',deployed:'#fdcb6e',not_mapped:'#b2bec3'};
+  const statusLabels = {active:'Active',deployed:'Deployed',not_mapped:'Not Mapped'};
+  let html = '<table style="width:100%;border-collapse:collapse;font-size:12px">';
+  html += '<tr style="border-bottom:1px solid var(--border)"><th style="text-align:left;padding:6px 8px;color:var(--muted);font-size:10px;text-transform:uppercase">Control</th><th style="text-align:left;padding:6px 8px;color:var(--muted);font-size:10px;text-transform:uppercase">Name</th><th style="text-align:left;padding:6px 8px;color:var(--muted);font-size:10px;text-transform:uppercase">Status</th><th style="text-align:left;padding:6px 8px;color:var(--muted);font-size:10px;text-transform:uppercase">Rules</th><th style="text-align:right;padding:6px 8px;color:var(--muted);font-size:10px;text-transform:uppercase">Events</th></tr>';
+  slice.forEach(c => {
+    const sc = statusColors[c.status]||'#b2bec3';
+    const sl = statusLabels[c.status]||c.status;
+    const rules = c.mapped_rules && c.mapped_rules.length ? c.mapped_rules.join(', ') : '&mdash;';
+    html += '<tr style="border-bottom:1px solid var(--border)">';
+    html += '<td style="padding:6px 8px;font-weight:500">' + escapeHtml(c.id) + '</td>';
+    html += '<td style="padding:6px 8px" title="' + escapeHtml(c.description||'') + '">' + escapeHtml(c.name) + '</td>';
+    html += '<td style="padding:6px 8px"><span style="color:' + sc + ';font-weight:600">' + sl + '</span></td>';
+    html += '<td style="padding:6px 8px;font-size:11px;color:var(--muted)">' + rules + '</td>';
+    html += '<td style="padding:6px 8px;text-align:right">' + (c.fire_count||0) + '</td>';
+    html += '</tr>';
+  });
+  html += '</table>';
+  if (pages > 1) {
+    html += '<div style="display:flex;align-items:center;justify-content:flex-end;gap:8px;margin-top:8px;font-size:11px;color:var(--muted)">';
+    html += '<button onclick="_compliancePage=Math.max(0,_compliancePage-1);_renderCompliancePage()" style="padding:2px 8px;font-size:11px;background:var(--bg);color:var(--muted);border:1px solid var(--border);border-radius:3px;cursor:pointer"' + (_compliancePage===0?' disabled':'') + '>&laquo; Prev</button>';
+    html += '<span>' + (_compliancePage+1) + ' / ' + pages + '</span>';
+    html += '<button onclick="_compliancePage=Math.min(' + (pages-1) + ',_compliancePage+1);_renderCompliancePage()" style="padding:2px 8px;font-size:11px;background:var(--bg);color:var(--muted);border:1px solid var(--border);border-radius:3px;cursor:pointer"' + (_compliancePage>=pages-1?' disabled':'') + '>Next &raquo;</button>';
+    html += '</div>';
+  }
+  el.innerHTML = html;
+}
+
 async function loadComplianceReport() {
   const fw = document.getElementById('complianceFramework').value;
   if (!fw) return;
@@ -5339,35 +5377,17 @@ async function loadComplianceReport() {
     const r = await fetch(BASE + '/api/compliance/report?framework=' + encodeURIComponent(fw) + '&hours=' + hrs, {headers:{'Authorization':'Bearer '+_authToken}});
     const d = await r.json();
     if (!d.ok) { el.innerHTML = '<div style="color:var(--muted);font-size:13px">Error: ' + escapeHtml(d.error||'Unknown') + '</div>'; return; }
-    // Update summary
     sumEl.style.display = 'flex';
     document.getElementById('comp-coverage').textContent = d.summary.coverage_pct + '%';
     document.getElementById('comp-covered').textContent = d.summary.covered;
     document.getElementById('comp-notmapped').textContent = d.summary.not_mapped;
     document.getElementById('comp-total').textContent = d.summary.total_controls;
-    // Update download link
     const dl = document.getElementById('complianceDownload');
     dl.href = BASE + '/api/compliance/report/html?framework=' + encodeURIComponent(fw) + '&hours=' + hrs;
     dl.style.display = 'inline-block';
-    // Build controls table
-    let html = '<table style="width:100%;border-collapse:collapse;font-size:12px">';
-    html += '<tr style="border-bottom:1px solid var(--border)"><th style="text-align:left;padding:6px 8px;color:var(--muted);font-size:10px;text-transform:uppercase">Control</th><th style="text-align:left;padding:6px 8px;color:var(--muted);font-size:10px;text-transform:uppercase">Name</th><th style="text-align:left;padding:6px 8px;color:var(--muted);font-size:10px;text-transform:uppercase">Status</th><th style="text-align:left;padding:6px 8px;color:var(--muted);font-size:10px;text-transform:uppercase">Rules</th><th style="text-align:right;padding:6px 8px;color:var(--muted);font-size:10px;text-transform:uppercase">Events</th></tr>';
-    (d.controls||[]).forEach(c => {
-      const statusColors = {active:'#00b894',deployed:'#fdcb6e',not_mapped:'#b2bec3'};
-      const statusLabels = {active:'Active',deployed:'Deployed',not_mapped:'Not Mapped'};
-      const sc = statusColors[c.status]||'#b2bec3';
-      const sl = statusLabels[c.status]||c.status;
-      const rules = c.mapped_rules && c.mapped_rules.length ? c.mapped_rules.join(', ') : '&mdash;';
-      html += '<tr style="border-bottom:1px solid var(--border)">';
-      html += '<td style="padding:6px 8px;font-weight:500">' + escapeHtml(c.id) + '</td>';
-      html += '<td style="padding:6px 8px" title="' + escapeHtml(c.description||'') + '">' + escapeHtml(c.name) + '</td>';
-      html += '<td style="padding:6px 8px"><span style="color:' + sc + ';font-weight:600">' + sl + '</span></td>';
-      html += '<td style="padding:6px 8px;font-size:11px;color:var(--muted)">' + rules + '</td>';
-      html += '<td style="padding:6px 8px;text-align:right">' + (c.fire_count||0) + '</td>';
-      html += '</tr>';
-    });
-    html += '</table>';
-    el.innerHTML = html;
+    _complianceControls = d.controls || [];
+    _compliancePage = 0;
+    _renderCompliancePage();
   } catch(e) {
     el.innerHTML = '<div style="color:var(--muted);font-size:13px">Failed to load compliance data.</div>';
   }

@@ -8497,7 +8497,7 @@ function Ensure-TinySocsLocalCaAndServerCert {
       -Signer $caCert `
       -TextExtension @(
         "2.5.29.19={critical}{text}ca=false",
-        "2.5.29.17={text}DNS=localhost&IP=127.0.0.1"
+        "2.5.29.17={text}DNS=localhost&IPAddress=127.0.0.1"
       )
   } else {
     Write-TinySocsLog "Found existing OpenSearch server cert in LocalMachine\My (thumbprint=$($serverCert.Thumbprint))."
@@ -8638,11 +8638,11 @@ function New-TinySocsDashboardCert {
 
   # Build SAN list: localhost + hostname + machine IPs
   $hostname = [System.Net.Dns]::GetHostName()
-  $sanParts = @("DNS=localhost", "DNS=$hostname", "IP=127.0.0.1")
+  $sanParts = @("DNS=localhost", "DNS=$hostname", "IPAddress=127.0.0.1")
   try {
     $ips = [System.Net.Dns]::GetHostAddresses($hostname) |
       Where-Object { $_.AddressFamily -eq 'InterNetwork' } |
-      ForEach-Object { "IP=$($_.IPAddressToString)" }
+      ForEach-Object { "IPAddress=$($_.IPAddressToString)" }
     if ($ips) { $sanParts += $ips }
   } catch { }
   $sanText = ($sanParts | Select-Object -Unique) -join "&"

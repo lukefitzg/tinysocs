@@ -2396,12 +2396,14 @@ def api_test_webhook(body: Dict[str, Any] = Body(...)):
     """Send a test payload to the configured webhook URL."""
     import requests as _req
 
+    # Accept session token (M0) or legacy admin_password
     admin_password = body.get("admin_password", "")
-    current_pw = _get_admin_password()
-    if not current_pw:
-        return JSONResponse(status_code=403, content={"error": "password_not_set"})
-    if admin_password != current_pw:
-        return JSONResponse(status_code=401, content={"error": "Invalid admin password"})
+    if not _validate_session(admin_password):
+        current_pw = _get_admin_password()
+        if not current_pw:
+            return JSONResponse(status_code=403, content={"error": "password_not_set"})
+        if admin_password != current_pw:
+            return JSONResponse(status_code=401, content={"error": "Invalid admin password"})
 
     # Use URL from body (if testing a new URL before saving) or from config
     url = body.get("webhook_url", "").strip()
@@ -2437,12 +2439,14 @@ def api_test_email(body: Dict[str, Any] = Body(...)):
     import smtplib
     from email.mime.text import MIMEText
 
+    # Accept session token (M0) or legacy admin_password
     admin_password = body.get("admin_password", "")
-    current_pw = _get_admin_password()
-    if not current_pw:
-        return JSONResponse(status_code=403, content={"error": "password_not_set"})
-    if admin_password != current_pw:
-        return JSONResponse(status_code=401, content={"error": "Invalid admin password"})
+    if not _validate_session(admin_password):
+        current_pw = _get_admin_password()
+        if not current_pw:
+            return JSONResponse(status_code=403, content={"error": "password_not_set"})
+        if admin_password != current_pw:
+            return JSONResponse(status_code=401, content={"error": "Invalid admin password"})
 
     # Use values from body (for testing before save) or from agent-config.yml
     smtp_host = body.get("smtp_host", "").strip()
@@ -2732,7 +2736,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sa
 a { color: var(--accent); text-decoration: none; }
 
 .header { background: var(--surface); border-bottom: 1px solid var(--border);
-           padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
+           padding: 16px 24px; display: flex; align-items: center; justify-content: space-between;
+           position: sticky; top: 0; z-index: 20; }
 .header h1 { font-size: 18px; font-weight: 600; }
 .header .meta { color: var(--muted); font-size: 12px; }
 
@@ -3090,31 +3095,13 @@ select { cursor: pointer; }
         <input type="text" id="s_SIEM_PASS" placeholder="(unchanged)">
       </div>
 
-      <div class="section-title">Change Dashboard Password</div>
-      <p style="color:var(--muted);font-size:12px;margin-bottom:8px">This password protects both the dashboard and the SIEM datastore.</p>
-      <div class="field">
-        <label>Current Password</label>
-        <input type="password" id="pw_current" placeholder="Current password">
-      </div>
-      <div class="field">
-        <label>New Password</label>
-        <input type="password" id="pw_new" placeholder="New password (min 8 characters)">
-      </div>
-      <div class="field">
-        <label>Confirm New Password</label>
-        <input type="password" id="pw_confirm" placeholder="Confirm new password">
-      </div>
-      <div class="field">
-        <button class="btn-save" onclick="changePassword()" style="width:auto">Change Password</button>
-        <div id="changePasswordStatus"></div>
-      </div>
-
       <div class="btn-row">
         <button class="btn-cancel" onclick="closeSettings()">Cancel</button>
         <button class="btn-save" onclick="saveSettings()">Save &amp; Apply</button>
       </div>
 
       <div class="section-title" style="margin-top:24px">Change Dashboard Password</div>
+      <p style="color:var(--muted);font-size:12px;margin-bottom:8px">This password protects both the dashboard and the SIEM datastore.</p>
       <div class="field">
         <label>Current Password</label>
         <input type="password" id="changePwCurrent" placeholder="Current password">
@@ -5006,13 +4993,15 @@ function restoreAssistantState() {
   } catch(e) {}
 }
 
-// Align assistant panel with the first card row
+// Align assistant panel with the first card row (never above the header)
 function alignAssistantPanel() {
   const firstCard = document.querySelector('.left-panels .card');
+  const header = document.querySelector('.header');
   const panel = document.getElementById('rightPanel');
   if (firstCard && panel) {
     const rect = firstCard.getBoundingClientRect();
-    panel.style.top = rect.top + 'px';
+    const minTop = header ? header.getBoundingClientRect().bottom : 0;
+    panel.style.top = Math.max(rect.top, minTop) + 'px';
   }
 }
 
@@ -5020,6 +5009,7 @@ function alignAssistantPanel() {
 restoreAssistantState();
 alignAssistantPanel();
 window.addEventListener('resize', alignAssistantPanel);
+window.addEventListener('scroll', alignAssistantPanel);
 setInterval(() => { if (_authToken) refreshAll(); }, 30000);
 
 // ---- M0: Dashboard Login Gate ----
@@ -5097,7 +5087,7 @@ async function changePassword() {
     const d = await r.json();
     if (d.error) { statusEl.innerHTML = '<span style="color:var(--red)">' + escapeHtml(d.error) + '</span>'; return; }
     statusEl.innerHTML = '<span style="color:#27ae60">Password changed. Logging out...</span>';
-    setTimeout(doLogout, 1500);
+    setTimeout(() => { closeSettings(); doLogout(); }, 1500);
   } catch(e) { statusEl.innerHTML = '<span style="color:var(--red)">' + escapeHtml(e.message) + '</span>'; }
 }
 

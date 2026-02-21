@@ -278,8 +278,12 @@ if (Test-Path $setupExe) {
     Write-Host "    3. LLM Provider (OpenAI / Anthropic / Ollama / None)"
     Write-Host "    4. Notifications (webhook + email, optional)"
     Write-Host ""
-    Start-Process $setupExe -Wait
-    Write-Host "  Installer finished." -ForegroundColor Green
+    # Launch without -Wait and poll the process directly.
+    # Start-Process -Wait hangs when Inno Setup's post-install scripts
+    # spawn services/child processes that outlive the installer.
+    $proc = Start-Process $setupExe -PassThru
+    $proc.WaitForExit()
+    Write-Host "  Installer finished (exit code $($proc.ExitCode))." -ForegroundColor Green
 } else {
     Write-Host "  TinySocs-Setup.exe not found at $setupExe" -ForegroundColor Red
     exit 1

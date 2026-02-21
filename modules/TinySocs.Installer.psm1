@@ -10353,6 +10353,26 @@ function Install-TinySocsLocalSiem {
               -AuthParams $auth `
               -SkipTlsVerify:($skipTlsForLocal)
 
+            # Phase 13 (M6): alerts index template
+            $alertsTmplBody = @'
+{
+  "index_patterns": ["tinysocs-alerts-*"],
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "auto_expand_replicas": "0-1"
+    }
+  },
+  "priority": 500
+}
+'@
+            $null = _EnsureIndexTemplate `
+              -BaseUrl $siemUrl `
+              -TemplateName "tinysocs-alerts" `
+              -BodyJson $alertsTmplBody `
+              -AuthParams $auth `
+              -SkipTlsVerify:($skipTlsForLocal)
+
           } catch {
             Write-TinySocsLog -Level "WARN" -Message "Template precreate step failed (continuing; installer may still create templates later): $($_.Exception.Message)"
           }

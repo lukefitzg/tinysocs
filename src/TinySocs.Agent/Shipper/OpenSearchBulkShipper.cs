@@ -13,6 +13,7 @@ using Microsoft.Extensions.Logging;
 using TinySocs.Agent.Configuration;
 using TinySocs.Agent.Models;
 using TinySocs.Agent.Detection;
+using TinySocs.Agent.Notification;
 
 namespace TinySocs.Agent.Shipper
 {
@@ -53,6 +54,9 @@ namespace TinySocs.Agent.Shipper
         private readonly DetectionEngine? _detectionEngine;
         private readonly AlertWriter? _alertWriter;
         private readonly RuleLoader? _ruleLoader;
+
+        // Phase 13 (M4): Notification retry queue
+        private readonly RetryQueue? _retryQueue;
         private DateTime _lastRuleReloadTime;
 
         public OpenSearchBulkShipper(
@@ -120,7 +124,26 @@ namespace TinySocs.Agent.Shipper
                     Path.GetDirectoryName(_config.Agent.LogFile) ?? @"C:\ProgramData\TinySocs\Collector\logs",
                     "alerts.log");
 
-                _alertWriter = new AlertWriter(alertWriterLogger, _httpClient, _bulkUri, alertLogPath, _config.Detection.Notification);
+                // Phase 13 (M4): Initialise notification retry queue
+                var notificationConfig = _config.Detection.Notification;
+                if (notificationConfig != null &&
+                    (!string.IsNullOrEmpty(notificationConfig.WebhookUrl) || notificationConfig.Email != null))
+                {
+                    try
+                    {
+                        var retryLogger = loggerFactory.CreateLogger<RetryQueue>();
+                        var queueDir = Path.Combine(
+                            Path.GetDirectoryName(_config.Agent.LogFile) ?? @"C:\ProgramData\TinySocs\Collector\logs",
+                            "notifications");
+                        _retryQueue = new RetryQueue(retryLogger, notificationConfig, queueDir);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to initialise notification retry queue; notifications will be fire-and-forget.");
+                    }
+                }
+
+                _alertWriter = new AlertWriter(alertWriterLogger, _httpClient, _bulkUri, alertLogPath, notificationConfig, _retryQueue);
 
                 // Load rules initially
                 LoadRules();

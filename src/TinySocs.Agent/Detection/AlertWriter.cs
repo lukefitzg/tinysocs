@@ -10,6 +10,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using TinySocs.Agent.Configuration;
+using TinySocs.Agent.Notification;
 
 namespace TinySocs.Agent.Detection
 {
@@ -38,18 +39,23 @@ namespace TinySocs.Agent.Detection
         // Email: rate limiter — max 1 email per rule per 5 minutes
         private readonly ConcurrentDictionary<string, DateTime> _lastEmailPerRule;
 
+        // Phase 13 (M4): Retry queue for failed notifications
+        private readonly RetryQueue? _retryQueue;
+
         public AlertWriter(
             ILogger<AlertWriter> logger,
             HttpClient httpClient,
             Uri bulkUri,
             string alertLogPath,
-            NotificationConfig? notification = null)
+            NotificationConfig? notification = null,
+            RetryQueue? retryQueue = null)
         {
             _logger = logger;
             _httpClient = httpClient;
             _bulkUri = bulkUri;
             _alertLogPath = alertLogPath;
             _notification = notification ?? new NotificationConfig();
+            _retryQueue = retryQueue;
             _writtenAlertIds = new HashSet<string>();
             _lastEmailPerRule = new ConcurrentDictionary<string, DateTime>();
 
@@ -251,22 +257,24 @@ namespace TinySocs.Agent.Detection
                 return;
             }
 
+            // Build payload before try block so it's accessible in catch for retry
+            var severity = alert.Alert.Severity.ToUpperInvariant();
+            var emoji = severity switch
+            {
+                "HIGH" => "\U0001f534",
+                "CRITICAL" => "\U0001f6a8",
+                "MEDIUM" => "\U0001f7e0",
+                _ => "\U0001f7e1"
+            };
+
+            var text = $"{emoji} *[TinySocs] [{severity}] {alert.Alert.RuleName}*\n" +
+                       $"{alert.Alert.Description}\n" +
+                       $"Events: {alert.Alert.EventCount} | Window: {alert.Alert.WindowStart}";
+
+            var payload = JsonSerializer.Serialize(new { text });
+
             try
             {
-                var severity = alert.Alert.Severity.ToUpperInvariant();
-                var emoji = severity switch
-                {
-                    "HIGH" => "\U0001f534",
-                    "CRITICAL" => "\U0001f6a8",
-                    "MEDIUM" => "\U0001f7e0",
-                    _ => "\U0001f7e1"
-                };
-
-                var text = $"{emoji} *[TinySocs] [{severity}] {alert.Alert.RuleName}*\n" +
-                           $"{alert.Alert.Description}\n" +
-                           $"Events: {alert.Alert.EventCount} | Window: {alert.Alert.WindowStart}";
-
-                var payload = JsonSerializer.Serialize(new { text });
                 var content = new StringContent(payload, Encoding.UTF8, "application/json");
 
                 var response = await _webhookClient.PostAsync(_notification.WebhookUrl, content).ConfigureAwait(false);
@@ -278,17 +286,20 @@ namespace TinySocs.Agent.Detection
                 else
                 {
                     _logger.LogWarning(
-                        "Webhook POST failed for alert {AlertId}: HTTP {StatusCode}",
+                        "Webhook POST failed for alert {AlertId}: HTTP {StatusCode} — queuing for retry",
                         alert.Alert.Id, (int)response.StatusCode);
+                    _retryQueue?.EnqueueWebhook(_notification.WebhookUrl!, payload);
                 }
             }
             catch (TaskCanceledException)
             {
-                _logger.LogWarning("Webhook timed out for alert {AlertId}", alert.Alert.Id);
+                _logger.LogWarning("Webhook timed out for alert {AlertId} — queuing for retry", alert.Alert.Id);
+                _retryQueue?.EnqueueWebhook(_notification.WebhookUrl!, payload);
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Webhook failed for alert {AlertId}", alert.Alert.Id);
+                _logger.LogWarning(ex, "Webhook failed for alert {AlertId} — queuing for retry", alert.Alert.Id);
+                _retryQueue?.EnqueueWebhook(_notification.WebhookUrl!, payload);
             }
         }
 
@@ -319,19 +330,17 @@ namespace TinySocs.Agent.Detection
                 return;
             }
 
+            // Build subject and body before try block for retry access
+            var severity = alert.Alert.Severity.ToUpperInvariant();
+            var subject = $"[TinySocs] [{severity}] {alert.Alert.RuleName} \u2014 {alert.Alert.Description}";
+            if (subject.Length > 200)
+            {
+                subject = subject.Substring(0, 197) + "...";
+            }
+            var body = BuildEmailBody(alert);
+
             try
             {
-                var severity = alert.Alert.Severity.ToUpperInvariant();
-                var subject = $"[TinySocs] [{severity}] {alert.Alert.RuleName} \u2014 {alert.Alert.Description}";
-
-                // Truncate subject to reasonable length
-                if (subject.Length > 200)
-                {
-                    subject = subject.Substring(0, 197) + "...";
-                }
-
-                var body = BuildEmailBody(alert);
-
                 using var message = new MailMessage(email.From, email.To, subject, body);
                 message.IsBodyHtml = true;
 
@@ -346,7 +355,8 @@ namespace TinySocs.Agent.Detection
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Email failed for alert {AlertId}", alert.Alert.Id);
+                _logger.LogWarning(ex, "Email failed for alert {AlertId} — queuing for retry", alert.Alert.Id);
+                _retryQueue?.EnqueueEmail(subject, body, email.From, email.To, email.SmtpHost, email.SmtpPort);
             }
         }
 

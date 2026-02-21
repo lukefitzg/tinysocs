@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tinysocs.dev/schema/event-schema.json",
+  "title": "TinySocs Windows Event Log Document",
+  "description": "Schema for documents indexed into tinysocs-winlog-* indices. Each document represents a single Windows event log entry collected by the TinySocs Agent.",
+  "type": "object",
+  "required": ["@timestamp", "event", "winlog"],
+  "properties": {
+    "@timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC timestamp of the event in ISO 8601 format."
+    },
+    "message": {
+      "type": "string",
+      "description": "Human-readable formatted event description. May be truncated per privacy.truncate_fields config.",
+      "maxLength": 32768
+    },
+    "event": {
+      "type": "object",
+      "description": "ECS-aligned event metadata.",
+      "required": ["id"],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "description": "Numeric Windows event ID (e.g., 4624 for logon, 4625 for logon failure).",
+          "minimum": 0
+        },
+        "code": {
+          "type": "integer",
+          "description": "Alias for event.id (mirrors ECS event.code).",
+          "minimum": 0
+        },
+        "level": {
+          "type": "string",
+          "description": "Event severity level as reported by Windows.",
+          "enum": ["Critical", "Error", "Warning", "Information", "Verbose"]
+        },
+        "provider": {
+          "type": "string",
+          "description": "Name of the Windows event provider (e.g., 'Microsoft-Windows-Security-Auditing')."
+        },
+        "record_id": {
+          "type": "integer",
+          "description": "Windows event record ID (monotonically increasing per channel).",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "winlog": {
+      "type": "object",
+      "description": "Windows-specific event log fields.",
+      "required": ["channel"],
+      "properties": {
+        "channel": {
+          "type": "string",
+          "description": "Windows event log channel name.",
+          "examples": [
+            "Security",
+            "System",
+            "Application",
+            "Microsoft-Windows-Sysmon/Operational",
+            "Microsoft-Windows-PowerShell/Operational",
+            "Microsoft-Windows-Windows Defender/Operational"
+          ]
+        },
+        "computer_name": {
+          "type": "string",
+          "description": "FQDN or hostname of the machine that generated the event."
+        },
+        "event_id": {
+          "type": "string",
+          "description": "String representation of the event ID (for keyword-based queries)."
+        },
+        "provider_name": {
+          "type": "string",
+          "description": "Provider name from the Windows event XML."
+        },
+        "record_id": {
+          "type": "integer",
+          "description": "Windows event record ID.",
+          "minimum": 0
+        },
+        "event_data": {
+          "type": "object",
+          "description": "Dynamic key-value pairs extracted from the Windows event XML EventData element. Contents vary by event ID and provider. Fields listed in privacy.drop_fields will be absent; fields in privacy.hash_fields will contain SHA-256 hashes.",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "tinysocs": {
+      "type": "object",
+      "description": "TinySocs agent metadata.",
+      "properties": {
+        "input_name": {
+          "type": "string",
+          "description": "Logical input name from agent-config.yml (e.g., 'win-events')."
+        },
+        "node_id": {
+          "type": "string",
+          "description": "Agent node identifier from agent-config.yml."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -33,7 +33,7 @@ A lightweight, privacy-first, federated SIEM assistant. Wraps OpenSearch and use
 1. Download `TinySocs-Setup.exe`
 2. Run as Administrator, select **TinyBox** role
 3. Follow the wizard (configure secrets, notifications)
-4. Verify: `Test-TinySocsHealth` (expect 12/12 PASS)
+4. Verify: `Test-TinySocsHealth` (expect 14/14 PASS)
 5. Open dashboards: `https://localhost:5602`
 
 See the full [Getting Started Guide](docs/getting-started.md).
@@ -66,16 +66,21 @@ python -m tinysocs.api.bot   # start bot API (port 8090)
 - **Multi-LLM Support**: Claude (Anthropic), GPT-4o (OpenAI), local models (Ollama)
 - **Action Execution**: `block_ip`, `disable_user`, `isolate_host` with dry-run and audit trail
 - **Operator Dashboards**: Alert timeline, detection rules, fleet health, event explorer
-- **Notifications**: Slack/Teams webhooks, SMTP email alerts
+- **Notifications**: Slack/Teams webhooks, SMTP email alerts with retry queue
 - **Daily Summaries**: Automated HTML email digests with alert trends
 - **Privacy-First**: Field redaction, hashing, truncation; data stays on-prem
 - **Federated**: Multi-node architecture with HMAC-authenticated evidence ledger
+- **Schema-Defined**: JSON Schema for events and alerts, with compliance tests
+- **40+ Detection Rules**: MITRE ATT&CK mapped across 8 categories
 
 ## Documentation
 
 - [Getting Started](docs/getting-started.md) — Install and verify in <15 minutes
 - [Operator Runbook](docs/operator-runbook.md) — Day-to-day operations reference
 - [Troubleshooting](docs/troubleshooting.md) — Common issues and fixes
+- [Detection Coverage](docs/detection-coverage.md) — Rules matrix with MITRE ATT&CK mapping
+- [Event Schema](schema/event-schema.json) — JSON Schema for `tinysocs-winlog-*` documents
+- [Alert Schema](schema/alert-schema.json) — JSON Schema for `tinysocs-alerts-*` documents
 
 ## Env Toggles
 

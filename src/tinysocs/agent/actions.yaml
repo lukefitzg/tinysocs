@@ -10,6 +10,18 @@ auth_failed_burst:
   - label: Lock IP at Windows Firewall (temporary)
     cmd: netsh advfirewall firewall add rule name="TinySOCS Block <ip>" dir=in action=block remoteip=<ip>
 
+script_block_volume:
+  - label: Review ScriptBlock volume by host
+    cmd: Get-WinEvent -FilterHashtable @{LogName="Microsoft-Windows-PowerShell/Operational"; Id=4104} -MaxEvents 50 | Group-Object MachineName | Sort-Object Count -Descending
+  - label: Identify top ScriptBlock sources
+    cmd: Get-WinEvent -FilterHashtable @{LogName="Microsoft-Windows-PowerShell/Operational"; Id=4104} -MaxEvents 100 | ForEach-Object {$_.Properties[0].Value.Substring(0,100)} | Group-Object | Sort-Object Count -Descending | Select-Object -First 20
+
+sysmon_proc_creation:
+  - label: Review process creation events on host
+    cmd: Get-WinEvent -FilterHashtable @{LogName="Microsoft-Windows-Sysmon/Operational"; Id=1} -MaxEvents 50 | Format-List
+  - label: Identify most frequent processes
+    cmd: Get-WinEvent -FilterHashtable @{LogName="Microsoft-Windows-Sysmon/Operational"; Id=1} -MaxEvents 200 | ForEach-Object {$_.Properties[4].Value} | Group-Object | Sort-Object Count -Descending | Select-Object -First 20
+
 ps_script_block:
   - label: Pull ScriptBlock transcript for host
     cmd: Get-WinEvent -LogName "Microsoft-Windows-PowerShell/Operational" | Where-Object {$_.Id -eq 4104 -and $_.MachineName -eq "<host>"} | Select-Object -First 50 | Format-List
@@ -62,6 +74,18 @@ powershell_web_dl:
   - label: Block egress for host temporarily
     cmd: netsh advfirewall firewall add rule name="TinySOCS Egress Block <host>" dir=out action=block remoteip=any program=C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe
 
+ps_transcription_off:
+  - label: Re-enable PowerShell transcription
+    cmd: Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription" -Name "EnableTranscripting" -Value 1
+  - label: Check transcription policy
+    cmd: Get-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription" -ErrorAction SilentlyContinue | Format-List
+
+scriptblock_base64:
+  - label: Decode and review base64 content
+    cmd: Get-WinEvent -FilterHashtable @{LogName="Microsoft-Windows-PowerShell/Operational"; Id=4104} -MaxEvents 20 | Where-Object {$_.Message -match "[A-Za-z0-9+/]{200,}"} | Select-Object -First 5 | Format-List
+  - label: Enable Constrained Language Mode
+    cmd: Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" -Name "__PSLockdownPolicy" -Value 4
+
 vpn_geo_impossible:
   - label: Force password reset
     cmd: Set-ADAccountPassword -Identity <user> -Reset -NewPassword (Read-Host -AsSecureString)
@@ -83,3 +107,117 @@ m365_mail_forward_rule:
     cmd: Get-InboxRule -Mailbox "<userUPN>"
   - label: Remove forward rule
     cmd: Remove-InboxRule -Mailbox "<userUPN>" -Identity "<ruleName>"
+
+# ── Phase 13: Credential Access ──
+
+lsass_access:
+  - label: Identify accessing process
+    cmd: Get-WinEvent -FilterHashtable @{LogName="Microsoft-Windows-Sysmon/Operational"; Id=10} | Where-Object {$_.Properties[5].Value -like "*lsass.exe"} | Select-Object -First 20 | Format-List
+  - label: Kill offending process
+    cmd: Stop-Process -Name "<process>" -Force
+  - label: Enable Credential Guard
+    cmd: Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\LSA" -Name "RunAsPPL" -Value 1
+
+credential_dumping_tools:
+  - label: Quarantine binary
+    cmd: Move-Item -Path "<path>" -Destination "C:\ProgramData\TinySocs\Quarantine\"
+  - label: Kill process immediately
+    cmd: Stop-Process -Name "<process>" -Force
+  - label: Isolate host (EDR)
+    cmd: crowdstrike RTR isolate --device <device_id>
+
+ntds_dit_access:
+  - label: Review VSS snapshots
+    cmd: vssadmin list shadows
+  - label: Delete suspicious VSS snapshot
+    cmd: vssadmin delete shadows /shadow=<shadow_id>
+  - label: Check for ntdsutil usage
+    cmd: Get-WinEvent -FilterHashtable @{LogName="Security"; Id=4688} | Where-Object {$_.Properties[5].Value -like "*ntdsutil*"} | Select-Object -First 20
+
+# ── Phase 13: Lateral Movement ──
+
+psexec_usage:
+  - label: Identify PsExec service
+    cmd: Get-WinEvent -FilterHashtable @{LogName="System"; Id=7045} | Where-Object {$_.Properties[0].Value -like "*PSEXE*"} | Select-Object -First 20
+  - label: Remove PsExec service
+    cmd: sc.exe delete PSEXESVC
+  - label: Block PsExec via AppLocker
+    cmd: '# Add AppLocker rule to block psexec.exe execution'
+
+rdp_brute_force:
+  - label: Block source IP at firewall
+    cmd: netsh advfirewall firewall add rule name="TinySOCS Block RDP <ip>" dir=in action=block remoteip=<ip>
+  - label: Restrict RDP to specific IPs (NLA)
+    cmd: Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "UserAuthentication" -Value 1
+  - label: Disable RDP temporarily
+    cmd: Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 1
+
+remote_service_install:
+  - label: Inspect installed service
+    cmd: Get-WmiObject Win32_Service | Where-Object {$_.Name -eq "<service>"} | Format-List *
+  - label: Stop and disable service
+    cmd: Stop-Service -Name "<service>" -Force; Set-Service -Name "<service>" -StartupType Disabled
+
+# ── Phase 13: Defence Evasion ──
+
+event_log_cleared:
+  - label: Investigate who cleared the log
+    cmd: Get-WinEvent -FilterHashtable @{LogName="Security"; Id=1102} | Select-Object -First 10 | Format-List
+  - label: Enable log forwarding (prevent future gaps)
+    cmd: '# Configure Windows Event Forwarding to a remote collector'
+
+defender_tamper:
+  - label: Re-enable real-time protection
+    cmd: Set-MpPreference -DisableRealtimeMonitoring $false
+  - label: Review Defender exclusions
+    cmd: Get-MpPreference | Select-Object -ExpandProperty ExclusionPath
+  - label: Remove suspicious exclusion
+    cmd: Remove-MpPreference -ExclusionPath "<path>"
+
+amsi_bypass:
+  - label: Review ScriptBlock content
+    cmd: Get-WinEvent -FilterHashtable @{LogName="Microsoft-Windows-PowerShell/Operational"; Id=4104} | Where-Object {$_.Message -match "AmsiUtils|amsiInitFailed"} | Select-Object -First 10 | Format-List
+  - label: Enable Constrained Language Mode
+    cmd: Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" -Name "__PSLockdownPolicy" -Value 4
+  - label: Block PowerShell for non-admins (AppLocker)
+    cmd: '# Add AppLocker deny rule for powershell.exe targeting standard users'
+
+timestomp_detected:
+  - label: Inspect modified file
+    cmd: Get-WinEvent -FilterHashtable @{LogName="Microsoft-Windows-Sysmon/Operational"; Id=2} | Select-Object -First 20 | Format-List
+  - label: Quarantine suspicious file
+    cmd: Move-Item -Path "<file>" -Destination "C:\ProgramData\TinySocs\Quarantine\"
+
+# ── Phase 13: Persistence ──
+
+service_install_suspicious:
+  - label: Inspect service details
+    cmd: Get-WmiObject Win32_Service | Where-Object {$_.Name -eq "<service>"} | Format-List *
+  - label: Stop and remove service
+    cmd: Stop-Service -Name "<service>" -Force; sc.exe delete "<service>"
+
+registry_run_key:
+  - label: List Run key entries
+    cmd: Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" | Format-List
+  - label: Remove suspicious entry
+    cmd: Remove-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name "<valuename>"
+
+startup_folder_write:
+  - label: List Startup folder contents
+    cmd: Get-ChildItem "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup" | Format-List
+  - label: Remove suspicious shortcut/binary
+    cmd: Remove-Item -Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\<filename>" -Force
+
+# ── Phase 13: Exfiltration ──
+
+dns_tunnel_volume:
+  - label: Review DNS queries
+    cmd: Get-WinEvent -FilterHashtable @{LogName="Microsoft-Windows-Sysmon/Operational"; Id=22} | Where-Object {$_.Properties[4].Value -like "*<domain>*"} | Select-Object -First 50
+  - label: Block domain at DNS
+    cmd: Add-DnsServerQueryResolutionPolicy -Name "Block_<domain>" -Action DENY -FQDN "EQ,*.<domain>"
+
+large_outbound_transfer:
+  - label: Identify destination IPs
+    cmd: Get-WinEvent -FilterHashtable @{LogName="Microsoft-Windows-Sysmon/Operational"; Id=3} | Where-Object {$_.Properties[6].Value -eq "<image>"} | Select-Object -First 50 | Format-List
+  - label: Block outbound for process
+    cmd: netsh advfirewall firewall add rule name="TinySOCS Block Egress <image>" dir=out action=block program="<image>"

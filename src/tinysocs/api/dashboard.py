@@ -12,18 +12,140 @@ Browse: http://localhost:8090/dashboard
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
+import secrets
 import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import Body, FastAPI, Query
+from fastapi import Body, FastAPI, Header, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 
 dashboard_app = FastAPI(title="TinySocs Dashboard", docs_url=None, redoc_url=None)
+
+# ---------------------------------------------------------------------------
+# Dashboard authentication (M0 — Phase 13)
+# Uses SIEM_PASS as the single admin password. No more hardcoded "tinysocs".
+# ---------------------------------------------------------------------------
+_AUTH_TOKEN_SECRET = secrets.token_hex(32)  # rotates each process restart
+_active_sessions: Dict[str, float] = {}    # token -> expiry timestamp
+_SESSION_TTL = 86400  # 24 hours
+
+
+def _get_admin_password() -> str:
+    """Return the current admin password (SIEM_PASS from env or assistant.env)."""
+    pw = os.getenv("SIEM_PASS", "").strip()
+    if pw:
+        return pw
+    # Try reading from assistant.env file directly
+    env_path = _find_assistant_env_for_auth()
+    if env_path and env_path.is_file():
+        for line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if line.startswith("SIEM_PASS="):
+                val = line.split("=", 1)[1].strip()
+                if val:
+                    return val
+    return ""  # empty = force setup on first access
+
+
+def _find_assistant_env_for_auth() -> Optional[Path]:
+    """Locate assistant.env (duplicated to avoid forward-ref issues)."""
+    candidates = [
+        Path(os.getenv("ProgramData", "C:\\ProgramData")) / "TinySocs" / "Assistant" / "assistant.env",
+        Path(os.getenv("ProgramFiles", "C:\\Program Files")) / "TinySocs" / "Assistant" / "assistant.env",
+        Path("/var/lib/tinysocs/assistant.env"),
+    ]
+    for p in candidates:
+        if p.is_file():
+            return p
+    return None
+
+
+def _create_session_token() -> str:
+    """Create a new session token and store it."""
+    import time
+    token = secrets.token_hex(32)
+    _active_sessions[token] = time.time() + _SESSION_TTL
+    now = time.time()
+    expired = [t for t, exp in _active_sessions.items() if exp < now]
+    for t in expired:
+        _active_sessions.pop(t, None)
+    return token
+
+
+def _validate_session(token: str) -> bool:
+    """Check if a session token is valid and not expired."""
+    import time
+    if not token:
+        return False
+    expiry = _active_sessions.get(token)
+    if expiry is None:
+        return False
+    if time.time() > expiry:
+        _active_sessions.pop(token, None)
+        return False
+    return True
+
+
+@dashboard_app.post("/api/auth/login")
+def api_auth_login(body: Dict[str, Any] = Body(...)):
+    """Authenticate with the admin password (SIEM_PASS)."""
+    password = body.get("password", "")
+    admin_pw = _get_admin_password()
+    if not admin_pw:
+        return JSONResponse(status_code=503, content={
+            "error": "No admin password configured. Run the installer or set SIEM_PASS in assistant.env."
+        })
+    if not hmac.compare_digest(password, admin_pw):
+        return JSONResponse(status_code=401, content={"error": "Invalid password"})
+    token = _create_session_token()
+    return {"ok": True, "token": token}
+
+
+@dashboard_app.get("/api/auth/check")
+def api_auth_check(authorization: str = Header("")):
+    """Check if the current session token is valid."""
+    token = authorization.replace("Bearer ", "") if authorization.startswith("Bearer ") else authorization
+    if _validate_session(token):
+        return {"ok": True, "authenticated": True}
+    return JSONResponse(status_code=401, content={"ok": False, "authenticated": False})
+
+
+@dashboard_app.post("/api/auth/change-password")
+def api_auth_change_password(body: Dict[str, Any] = Body(...)):
+    """Change the admin password (updates SIEM_PASS in assistant.env and live env)."""
+    token = body.get("token", "")
+    if not _validate_session(token):
+        return JSONResponse(status_code=401, content={"error": "Not authenticated"})
+    current_password = body.get("current_password", "")
+    new_password = body.get("new_password", "")
+    admin_pw = _get_admin_password()
+    if not hmac.compare_digest(current_password, admin_pw):
+        return JSONResponse(status_code=401, content={"error": "Current password is incorrect"})
+    if len(new_password) < 8:
+        return JSONResponse(status_code=400, content={"error": "New password must be at least 8 characters"})
+    os.environ["SIEM_PASS"] = new_password
+    env_path = _find_assistant_env_for_auth()
+    if env_path and env_path.is_file():
+        lines = env_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        updated = False
+        for i, line in enumerate(lines):
+            if line.strip().startswith("SIEM_PASS="):
+                lines[i] = f"SIEM_PASS={new_password}"
+                updated = True
+                break
+        if not updated:
+            lines.append(f"SIEM_PASS={new_password}")
+        env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _active_sessions.clear()
+    return {"ok": True, "message": "Password changed successfully. Please log in again."}
+
 
 # ---------------------------------------------------------------------------
 # In-memory chat sessions: session_id -> list of Anthropic message dicts
@@ -2056,8 +2178,8 @@ def _chat_ollama(
 
 # ---------------------------------------------------------------------------
 # Settings API (read/write assistant.env, protected by admin password)
+# Uses _get_admin_password() defined above (M0 auth section).
 # ---------------------------------------------------------------------------
-_ADMIN_PASSWORD = os.getenv("TINYSOCS_ADMIN_PASSWORD", "tinysocs")
 
 # Settings that the dashboard can read/write
 _SETTINGS_KEYS = [
@@ -2130,11 +2252,272 @@ def _write_env_file(path: Path, updates: Dict[str, str]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-@dashboard_app.get("/api/settings")
-def api_settings_get(admin_password: str = Query("")):
-    """Read current settings from assistant.env. Secrets are masked."""
-    if admin_password != _ADMIN_PASSWORD:
+# ---------------------------------------------------------------------------
+# agent-config.yml helpers (email/webhook notification settings for the C# agent)
+# ---------------------------------------------------------------------------
+def _find_agent_config() -> Optional[Path]:
+    """Locate the agent-config.yml file used by the C# collector agent."""
+    candidates = [
+        Path(os.getenv("ProgramData", "C:\\ProgramData")) / "TinySocs" / "Collector" / "agent-config.yml",
+        Path(os.getenv("ProgramFiles", "C:\\Program Files")) / "TinySocs" / "Collector" / "agent-config.yml",
+        Path("/var/lib/tinysocs/agent-config.yml"),  # Linux fallback
+    ]
+    for p in candidates:
+        if p.is_file():
+            return p
+    return None
+
+
+def _read_agent_config() -> dict:
+    """Read and parse agent-config.yml. Returns empty dict on failure."""
+    import yaml
+    p = _find_agent_config()
+    if not p:
+        return {}
+    try:
+        return yaml.safe_load(p.read_text(encoding="utf-8", errors="ignore")) or {}
+    except Exception:
+        return {}
+
+
+def _write_agent_config(data: dict) -> None:
+    """Write agent-config.yml back to disk, preserving structure."""
+    import yaml
+    p = _find_agent_config()
+    if not p:
+        return
+    p.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False), encoding="utf-8")
+
+
+def _get_notification_config() -> dict:
+    """Read the detection.notification section from agent-config.yml."""
+    cfg = _read_agent_config()
+    return cfg.get("detection", {}).get("notification", {})
+
+
+def _set_notification_config(updates: dict) -> None:
+    """Update the detection.notification section in agent-config.yml."""
+    cfg = _read_agent_config()
+    if not cfg:
+        return
+    detection = cfg.setdefault("detection", {})
+    notification = detection.setdefault("notification", {})
+    notification.update(updates)
+    _write_agent_config(cfg)
+
+
+@dashboard_app.get("/api/settings/notifications")
+def api_notification_settings_get(admin_password: str = Query("")):
+    """Read current notification settings (webhook + email) from agent-config.yml."""
+    current_pw = _get_admin_password()
+    if not current_pw:
+        return JSONResponse(status_code=403, content={"error": "password_not_set"})
+    if admin_password != current_pw:
         return JSONResponse(status_code=401, content={"error": "Invalid admin password"})
+
+    notif = _get_notification_config()
+    email = notif.get("email", {})
+    return {
+        "webhook_url": notif.get("webhook_url", ""),
+        "email_smtp_host": email.get("smtp_host", ""),
+        "email_smtp_port": email.get("smtp_port", 587),
+        "email_from": email.get("from", ""),
+        "email_to": email.get("to", ""),
+        "agent_config_found": _find_agent_config() is not None,
+    }
+
+
+@dashboard_app.post("/api/settings/notifications")
+def api_notification_settings_post(body: Dict[str, Any] = Body(...)):
+    """Update notification settings in agent-config.yml."""
+    admin_password = body.get("admin_password", "")
+    current_pw = _get_admin_password()
+    if not current_pw:
+        return JSONResponse(status_code=403, content={"error": "password_not_set"})
+    if admin_password != current_pw:
+        return JSONResponse(status_code=401, content={"error": "Invalid admin password"})
+
+    settings = body.get("settings", {})
+    if not isinstance(settings, dict):
+        return JSONResponse(status_code=400, content={"error": "settings must be a dict"})
+
+    # Build the notification update
+    updates: Dict[str, Any] = {}
+    if "webhook_url" in settings:
+        updates["webhook_url"] = str(settings["webhook_url"]).strip()
+    email_updates = {}
+    for field, key in [("email_smtp_host", "smtp_host"), ("email_smtp_port", "smtp_port"),
+                       ("email_from", "from"), ("email_to", "to")]:
+        if field in settings:
+            val = settings[field]
+            if key == "smtp_port":
+                try:
+                    val = int(val)
+                except (ValueError, TypeError):
+                    val = 587
+            else:
+                val = str(val).strip()
+            email_updates[key] = val
+    if email_updates:
+        updates["email"] = email_updates
+
+    if not updates:
+        return {"ok": True, "message": "No changes to apply."}
+
+    # If we're only updating email sub-keys, merge with existing email config
+    if "email" in updates:
+        existing = _get_notification_config().get("email", {})
+        existing.update(updates["email"])
+        updates["email"] = existing
+
+    try:
+        _set_notification_config(updates)
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"error": f"Failed to write agent-config.yml: {exc}"})
+
+    # Also sync webhook URL to assistant.env (Python-side notifications)
+    if "webhook_url" in updates:
+        env_path = _find_assistant_env()
+        if env_path:
+            try:
+                _write_env_file(env_path, {"WEBHOOK_URL": updates["webhook_url"]})
+                os.environ["WEBHOOK_URL"] = updates["webhook_url"]
+            except Exception:
+                pass  # Non-fatal; agent-config.yml is the primary source
+
+    return {
+        "ok": True,
+        "message": "Notification settings saved. C# agent will reload within 60 seconds.",
+    }
+
+
+@dashboard_app.post("/api/settings/test-webhook")
+def api_test_webhook(body: Dict[str, Any] = Body(...)):
+    """Send a test payload to the configured webhook URL."""
+    import requests as _req
+
+    admin_password = body.get("admin_password", "")
+    current_pw = _get_admin_password()
+    if not current_pw:
+        return JSONResponse(status_code=403, content={"error": "password_not_set"})
+    if admin_password != current_pw:
+        return JSONResponse(status_code=401, content={"error": "Invalid admin password"})
+
+    # Use URL from body (if testing a new URL before saving) or from config
+    url = body.get("webhook_url", "").strip()
+    if not url:
+        notif = _get_notification_config()
+        url = notif.get("webhook_url", "")
+    if not url:
+        # Also check assistant.env
+        url = os.getenv("WEBHOOK_URL", "").strip()
+    if not url:
+        return JSONResponse(status_code=400, content={"error": "No webhook URL configured."})
+
+    payload = {"text": "[TinySocs] Test notification — webhook delivery verified."}
+    try:
+        resp = _req.post(url, json=payload, timeout=10)
+        if 200 <= resp.status_code < 300:
+            return {"ok": True, "message": f"Webhook test successful (HTTP {resp.status_code})."}
+        else:
+            return JSONResponse(status_code=502, content={
+                "error": f"Webhook returned HTTP {resp.status_code}: {resp.text[:200]}"
+            })
+    except _req.exceptions.Timeout:
+        return JSONResponse(status_code=504, content={"error": "Webhook request timed out (10s)."})
+    except _req.exceptions.ConnectionError as exc:
+        return JSONResponse(status_code=502, content={"error": f"Connection failed: {exc}"})
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"error": f"Unexpected error: {exc}"})
+
+
+@dashboard_app.post("/api/settings/test-email")
+def api_test_email(body: Dict[str, Any] = Body(...)):
+    """Send a test email via the configured SMTP settings."""
+    import smtplib
+    from email.mime.text import MIMEText
+
+    admin_password = body.get("admin_password", "")
+    current_pw = _get_admin_password()
+    if not current_pw:
+        return JSONResponse(status_code=403, content={"error": "password_not_set"})
+    if admin_password != current_pw:
+        return JSONResponse(status_code=401, content={"error": "Invalid admin password"})
+
+    # Use values from body (for testing before save) or from agent-config.yml
+    smtp_host = body.get("smtp_host", "").strip()
+    smtp_port = body.get("smtp_port", 0)
+    email_from = body.get("email_from", "").strip()
+    email_to = body.get("email_to", "").strip()
+
+    if not smtp_host or not email_from or not email_to:
+        notif = _get_notification_config()
+        email_cfg = notif.get("email", {})
+        smtp_host = smtp_host or email_cfg.get("smtp_host", "")
+        smtp_port = smtp_port or email_cfg.get("smtp_port", 587)
+        email_from = email_from or email_cfg.get("from", "")
+        email_to = email_to or email_cfg.get("to", "")
+
+    try:
+        smtp_port = int(smtp_port) if smtp_port else 587
+    except (ValueError, TypeError):
+        smtp_port = 587
+
+    if not smtp_host:
+        return JSONResponse(status_code=400, content={"error": "SMTP host not configured."})
+    if not email_from or not email_to:
+        return JSONResponse(status_code=400, content={"error": "Email from/to address not configured."})
+
+    msg = MIMEText(
+        "<h2>TinySocs Email Test</h2>"
+        "<p>This is a test email from the TinySocs dashboard.</p>"
+        "<p>If you received this, your email notification configuration is working correctly.</p>",
+        "html",
+    )
+    msg["Subject"] = "[TinySocs] Test Email \u2014 Configuration Verified"
+    msg["From"] = email_from
+    msg["To"] = email_to
+
+    try:
+        server = smtplib.SMTP(smtp_host, smtp_port, timeout=10)
+        try:
+            server.ehlo()
+            if smtp_port in (587, 465):
+                try:
+                    server.starttls()
+                    server.ehlo()
+                except smtplib.SMTPNotSupportedError:
+                    pass  # Server doesn't support STARTTLS, continue unencrypted
+            server.sendmail(email_from, [email_to], msg.as_string())
+            return {"ok": True, "message": f"Test email sent to {email_to}."}
+        finally:
+            try:
+                server.quit()
+            except Exception:
+                pass
+    except smtplib.SMTPAuthenticationError as exc:
+        return JSONResponse(status_code=502, content={"error": f"SMTP authentication failed: {exc}"})
+    except smtplib.SMTPConnectError as exc:
+        return JSONResponse(status_code=502, content={"error": f"SMTP connection failed: {exc}"})
+    except (ConnectionRefusedError, OSError) as exc:
+        return JSONResponse(status_code=502, content={"error": f"Connection refused: {smtp_host}:{smtp_port} — {exc}"})
+    except smtplib.SMTPException as exc:
+        return JSONResponse(status_code=502, content={"error": f"SMTP error: {exc}"})
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"error": f"Unexpected error: {exc}"})
+
+
+@dashboard_app.get("/api/settings")
+def api_settings_get(admin_password: str = Query(""), authorization: str = Header("")):
+    """Read current settings from assistant.env. Secrets are masked."""
+    # Accept session token (M0) or legacy admin_password
+    token = authorization.replace("Bearer ", "") if authorization.startswith("Bearer ") else ""
+    if not _validate_session(token):
+        current_pw = _get_admin_password()
+        if not current_pw:
+            return JSONResponse(status_code=403, content={"error": "password_not_set"})
+        if not hmac.compare_digest(admin_password, current_pw):
+            return JSONResponse(status_code=401, content={"error": "Invalid admin password"})
 
     env_path = _find_assistant_env()
     file_values: Dict[str, str] = {}
@@ -2161,9 +2544,15 @@ def api_settings_get(admin_password: str = Query("")):
 @dashboard_app.post("/api/settings")
 def api_settings_post(body: Dict[str, Any] = Body(...)):
     """Update settings in assistant.env and live environment."""
-    admin_password = body.get("admin_password", "")
-    if admin_password != _ADMIN_PASSWORD:
-        return JSONResponse(status_code=401, content={"error": "Invalid admin password"})
+    # Accept session token (M0) or legacy admin_password
+    token = body.get("token", "")
+    if not _validate_session(token):
+        admin_password = body.get("admin_password", "")
+        current_pw = _get_admin_password()
+        if not current_pw:
+            return JSONResponse(status_code=403, content={"error": "password_not_set"})
+        if not hmac.compare_digest(admin_password, current_pw):
+            return JSONResponse(status_code=401, content={"error": "Invalid admin password"})
 
     updates = body.get("settings", {})
     if not isinstance(updates, dict):
@@ -2211,6 +2600,65 @@ def api_settings_post(body: Dict[str, Any] = Body(...)):
         "updated": list(filtered.keys()),
         "restart_needed": True,
     }
+
+
+@dashboard_app.get("/api/settings/password-status")
+def api_password_status():
+    """Check whether a dashboard password has been configured."""
+    pw = _get_admin_password()
+    return {"configured": bool(pw)}
+
+
+@dashboard_app.post("/api/settings/setup-password")
+def api_setup_password(body: Dict[str, Any] = Body(...)):
+    """First-time password setup. Only works when SIEM_PASS is empty/unset."""
+    current_pw = _get_admin_password()
+    if current_pw:
+        return JSONResponse(status_code=400, content={"error": "Password already configured. Use Change Password instead."})
+
+    new_password = body.get("new_password", "").strip()
+    if len(new_password) < 8:
+        return JSONResponse(status_code=400, content={"error": "Password must be at least 8 characters."})
+
+    # Write to assistant.env and live env
+    env_path = _find_assistant_env()
+    if env_path:
+        try:
+            _write_env_file(env_path, {"SIEM_PASS": new_password})
+        except Exception as exc:
+            return JSONResponse(status_code=500, content={"error": f"Failed to write env file: {exc}"})
+    os.environ["SIEM_PASS"] = new_password
+
+    return {"ok": True, "message": "Password configured successfully."}
+
+
+@dashboard_app.post("/api/settings/change-password")
+def api_change_password(body: Dict[str, Any] = Body(...)):
+    """Change the dashboard/SIEM password. Requires current password."""
+    current_pw = _get_admin_password()
+    if not current_pw:
+        return JSONResponse(status_code=403, content={"error": "password_not_set"})
+
+    old_password = body.get("old_password", "")
+    if old_password != current_pw:
+        return JSONResponse(status_code=401, content={"error": "Current password is incorrect."})
+
+    new_password = body.get("new_password", "").strip()
+    if len(new_password) < 8:
+        return JSONResponse(status_code=400, content={"error": "New password must be at least 8 characters."})
+    if new_password == old_password:
+        return JSONResponse(status_code=400, content={"error": "New password must differ from current password."})
+
+    # Write to assistant.env and live env
+    env_path = _find_assistant_env()
+    if env_path:
+        try:
+            _write_env_file(env_path, {"SIEM_PASS": new_password})
+        except Exception as exc:
+            return JSONResponse(status_code=500, content={"error": f"Failed to write env file: {exc}"})
+    os.environ["SIEM_PASS"] = new_password
+
+    return {"ok": True, "message": "Password changed successfully. SIEM password also updated."}
 
 
 @dashboard_app.get("/api/diag")
@@ -2500,6 +2948,18 @@ select { cursor: pointer; }
 </head>
 <body>
 
+<!-- Full-page login gate (M0) -->
+<div id="loginGate" style="position:fixed;inset:0;z-index:10000;background:var(--bg);display:flex;align-items:center;justify-content:center">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:40px 36px;max-width:360px;width:100%;text-align:center;box-shadow:0 4px 24px rgba(0,0,0,0.3)">
+    <h1 style="font-size:22px;margin-bottom:6px">TinySocs Dashboard</h1>
+    <div style="color:var(--muted);font-size:13px;margin-bottom:24px">Enter your admin password to continue</div>
+    <input type="password" id="loginPassword" placeholder="Password" style="width:100%;max-width:280px;margin:0 auto 12px auto;display:block" onkeydown="if(event.key==='Enter')doLogin()">
+    <button onclick="doLogin()" style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:10px 32px;font-size:14px;cursor:pointer;font-weight:500">Sign In</button>
+    <div id="loginError" style="color:var(--red);font-size:13px;margin-top:8px;min-height:20px"></div>
+  </div>
+</div>
+
+<div id="dashboardContent" style="display:none">
 <div class="header">
   <div>
     <h1>TinySocs Dashboard</h1>
@@ -2513,6 +2973,7 @@ select { cursor: pointer; }
     </div>
     <button class="refresh-btn" onclick="refreshAll()">Refresh</button>
     <button class="settings-btn" onclick="openSettings()" title="Settings">&#9881;</button>
+    <button class="settings-btn" onclick="doLogout()" title="Logout" style="margin-left:4px">&#x23FB;</button>
   </div>
 </div>
 
@@ -2527,6 +2988,19 @@ select { cursor: pointer; }
         <input type="password" id="adminPassword" placeholder="Admin password" onkeydown="if(event.key==='Enter')settingsAuth()">
         <button class="btn-save" onclick="settingsAuth()">Unlock</button>
         <div id="loginError"></div>
+      </div>
+    </div>
+    <!-- First-time password setup view -->
+    <div id="settingsSetup" style="display:none">
+      <h2>&#128274; Set Dashboard Password</h2>
+      <div class="login-box">
+        <p style="color:var(--muted);font-size:13px;margin-bottom:12px">
+          No password has been configured yet. Set one now to protect your dashboard and SIEM access.
+        </p>
+        <input type="password" id="setupPassword" placeholder="New password (min 8 characters)" onkeydown="if(event.key==='Enter')document.getElementById('setupPasswordConfirm').focus()">
+        <input type="password" id="setupPasswordConfirm" placeholder="Confirm password" style="margin-top:4px" onkeydown="if(event.key==='Enter')submitSetupPassword()">
+        <button class="btn-save" onclick="submitSetupPassword()">Set Password</button>
+        <div id="setupError"></div>
       </div>
     </div>
     <!-- Settings form (hidden until auth) -->
@@ -2563,7 +3037,7 @@ select { cursor: pointer; }
         <input type="text" id="s_OFFLINE_LLM_MODEL" placeholder="qwen2.5:0.5b-instruct">
       </div>
 
-      <div class="section-title">Notifications</div>
+      <div class="section-title">Notifications — Webhook</div>
       <div class="field">
         <label>Webhook URL (for alerts)</label>
         <input type="text" id="s_WEBHOOK_URL" placeholder="https://hooks.slack.com/...">
@@ -2574,6 +3048,32 @@ select { cursor: pointer; }
           <option value="1">Yes</option>
           <option value="0">No</option>
         </select>
+      </div>
+      <div class="field">
+        <button class="btn-save" onclick="testWebhook()" style="width:auto;background:var(--surface);color:var(--accent);border:1px solid var(--accent)">Test Webhook</button>
+        <span id="webhookTestStatus" style="font-size:12px;margin-left:8px"></span>
+      </div>
+
+      <div class="section-title">Notifications — Email</div>
+      <div class="field">
+        <label>SMTP Host</label>
+        <input type="text" id="s_EMAIL_SMTP_HOST" placeholder="smtp.example.com">
+      </div>
+      <div class="field">
+        <label>SMTP Port</label>
+        <input type="number" id="s_EMAIL_SMTP_PORT" placeholder="587" value="587">
+      </div>
+      <div class="field">
+        <label>From Address</label>
+        <input type="text" id="s_EMAIL_FROM" placeholder="tinysocs@example.com">
+      </div>
+      <div class="field">
+        <label>To Address</label>
+        <input type="text" id="s_EMAIL_TO" placeholder="operator@example.com">
+      </div>
+      <div class="field">
+        <button class="btn-save" onclick="testEmail()" style="width:auto;background:var(--surface);color:var(--accent);border:1px solid var(--accent)">Test Email</button>
+        <span id="emailTestStatus" style="font-size:12px;margin-left:8px"></span>
       </div>
 
       <div class="section-title">SIEM Connection</div>
@@ -2590,10 +3090,45 @@ select { cursor: pointer; }
         <input type="text" id="s_SIEM_PASS" placeholder="(unchanged)">
       </div>
 
+      <div class="section-title">Change Dashboard Password</div>
+      <p style="color:var(--muted);font-size:12px;margin-bottom:8px">This password protects both the dashboard and the SIEM datastore.</p>
+      <div class="field">
+        <label>Current Password</label>
+        <input type="password" id="pw_current" placeholder="Current password">
+      </div>
+      <div class="field">
+        <label>New Password</label>
+        <input type="password" id="pw_new" placeholder="New password (min 8 characters)">
+      </div>
+      <div class="field">
+        <label>Confirm New Password</label>
+        <input type="password" id="pw_confirm" placeholder="Confirm new password">
+      </div>
+      <div class="field">
+        <button class="btn-save" onclick="changePassword()" style="width:auto">Change Password</button>
+        <div id="changePasswordStatus"></div>
+      </div>
+
       <div class="btn-row">
         <button class="btn-cancel" onclick="closeSettings()">Cancel</button>
         <button class="btn-save" onclick="saveSettings()">Save &amp; Apply</button>
       </div>
+
+      <div class="section-title" style="margin-top:24px">Change Dashboard Password</div>
+      <div class="field">
+        <label>Current Password</label>
+        <input type="password" id="changePwCurrent" placeholder="Current password">
+      </div>
+      <div class="field">
+        <label>New Password</label>
+        <input type="password" id="changePwNew" placeholder="New password (min 8 chars)">
+      </div>
+      <div class="field">
+        <label>Confirm New Password</label>
+        <input type="password" id="changePwConfirm" placeholder="Confirm new password">
+      </div>
+      <div id="changePwStatus" style="min-height:20px;margin:8px 0"></div>
+      <button class="btn-save" onclick="changePassword()" style="background:#e67e22">Change Password</button>
     </div>
   </div>
 </div>
@@ -4136,12 +4671,31 @@ async function sendChat() {
 // ---- Settings ----
 let settingsPassword = null;
 
-function openSettings() {
+async function openSettings() {
   document.getElementById('settingsOverlay').classList.add('open');
-  // Always require password on each open
   settingsPassword = null;
-  document.getElementById('settingsLogin').style.display = 'block';
+  // Hide all views first
+  document.getElementById('settingsLogin').style.display = 'none';
+  document.getElementById('settingsSetup').style.display = 'none';
   document.getElementById('settingsForm').style.display = 'none';
+
+  // Check if password is configured
+  try {
+    const r = await fetch(BASE + '/api/settings/password-status');
+    const d = await r.json();
+    if (!d.configured) {
+      // No password set — show first-time setup
+      document.getElementById('settingsSetup').style.display = 'block';
+      document.getElementById('setupPassword').value = '';
+      document.getElementById('setupPasswordConfirm').value = '';
+      document.getElementById('setupError').innerHTML = '';
+      setTimeout(() => document.getElementById('setupPassword').focus(), 100);
+      return;
+    }
+  } catch(e) { /* fall through to login */ }
+
+  // Password is set — show login
+  document.getElementById('settingsLogin').style.display = 'block';
   document.getElementById('adminPassword').value = '';
   document.getElementById('loginError').innerHTML = '';
   setTimeout(() => document.getElementById('adminPassword').focus(), 100);
@@ -4152,6 +4706,47 @@ function closeSettings() {
   document.getElementById('settingsOverlay').classList.remove('open');
 }
 
+async function submitSetupPassword() {
+  const pw = document.getElementById('setupPassword').value;
+  const confirm = document.getElementById('setupPasswordConfirm').value;
+  const errEl = document.getElementById('setupError');
+
+  if (!pw || pw.length < 8) {
+    errEl.innerHTML = '<div class="status-msg err" style="margin-top:8px">Password must be at least 8 characters.</div>';
+    return;
+  }
+  if (pw !== confirm) {
+    errEl.innerHTML = '<div class="status-msg err" style="margin-top:8px">Passwords do not match.</div>';
+    return;
+  }
+
+  try {
+    const r = await fetch(BASE + '/api/settings/setup-password', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({new_password: pw}),
+    });
+    const d = await r.json();
+    if (d.error) {
+      errEl.innerHTML = `<div class="status-msg err" style="margin-top:8px">${escapeHtml(d.error)}</div>`;
+      return;
+    }
+    // Password set — now authenticate and show settings
+    settingsPassword = pw;
+    document.getElementById('settingsSetup').style.display = 'none';
+    errEl.innerHTML = '';
+    // Load settings with new password
+    const r2 = await fetch(BASE + '/api/settings?admin_password=' + encodeURIComponent(pw));
+    const d2 = await r2.json();
+    if (!d2.error) {
+      document.getElementById('settingsForm').style.display = 'block';
+      populateSettings(d2);
+    }
+  } catch(e) {
+    errEl.innerHTML = `<div class="status-msg err" style="margin-top:8px">${escapeHtml(e.message)}</div>`;
+  }
+}
+
 async function settingsAuth() {
   const pw = document.getElementById('adminPassword').value;
   if (!pw) return;
@@ -4159,7 +4754,8 @@ async function settingsAuth() {
     const r = await fetch(BASE + '/api/settings?admin_password=' + encodeURIComponent(pw));
     const d = await r.json();
     if (d.error) {
-      document.getElementById('loginError').innerHTML = `<div class="status-msg err" style="margin-top:8px">${escapeHtml(d.error)}</div>`;
+      const msg = d.error === 'password_not_set' ? 'No password configured.' : d.error;
+      document.getElementById('loginError').innerHTML = `<div class="status-msg err" style="margin-top:8px">${escapeHtml(msg)}</div>`;
       return;
     }
     settingsPassword = pw;
@@ -4168,6 +4764,37 @@ async function settingsAuth() {
     populateSettings(d);
   } catch(e) {
     document.getElementById('loginError').innerHTML = `<div class="status-msg err" style="margin-top:8px">${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function changePassword() {
+  const current = document.getElementById('pw_current').value;
+  const newPw = document.getElementById('pw_new').value;
+  const confirm = document.getElementById('pw_confirm').value;
+  const statusEl = document.getElementById('changePasswordStatus');
+
+  if (!current) { statusEl.innerHTML = '<div class="status-msg err">Enter current password.</div>'; return; }
+  if (!newPw || newPw.length < 8) { statusEl.innerHTML = '<div class="status-msg err">New password must be at least 8 characters.</div>'; return; }
+  if (newPw !== confirm) { statusEl.innerHTML = '<div class="status-msg err">Passwords do not match.</div>'; return; }
+
+  try {
+    const r = await fetch(BASE + '/api/settings/change-password', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({old_password: current, new_password: newPw}),
+    });
+    const d = await r.json();
+    if (d.error) {
+      statusEl.innerHTML = `<div class="status-msg err">${escapeHtml(d.error)}</div>`;
+      return;
+    }
+    settingsPassword = newPw;
+    statusEl.innerHTML = `<div class="status-msg ok">${escapeHtml(d.message)}</div>`;
+    document.getElementById('pw_current').value = '';
+    document.getElementById('pw_new').value = '';
+    document.getElementById('pw_confirm').value = '';
+  } catch(e) {
+    statusEl.innerHTML = `<div class="status-msg err">${escapeHtml(e.message)}</div>`;
   }
 }
 
@@ -4205,6 +4832,25 @@ function populateSettings(d) {
   }
   updateProviderFields();
   document.getElementById('settingsStatus').innerHTML = '';
+  // Load email notification settings from agent-config.yml
+  loadNotificationSettings();
+}
+
+async function loadNotificationSettings() {
+  try {
+    const r = await fetch(BASE + '/api/settings/notifications?admin_password=' + encodeURIComponent(settingsPassword));
+    const d = await r.json();
+    if (d.error) return;
+    const map = {EMAIL_SMTP_HOST: 'email_smtp_host', EMAIL_SMTP_PORT: 'email_smtp_port',
+                 EMAIL_FROM: 'email_from', EMAIL_TO: 'email_to'};
+    for (const [elId, key] of Object.entries(map)) {
+      const el = document.getElementById('s_' + elId);
+      if (el && d[key] !== undefined) el.value = d[key];
+    }
+    // Also populate webhook URL from agent-config if the assistant.env one is empty
+    const whEl = document.getElementById('s_WEBHOOK_URL');
+    if (whEl && !whEl.value && d.webhook_url) whEl.value = d.webhook_url;
+  } catch(e) { /* non-fatal */ }
 }
 
 function updateProviderFields() {
@@ -4230,21 +4876,85 @@ async function saveSettings() {
   statusEl.innerHTML = '<div class="status-msg" style="color:var(--muted)">Saving...</div>';
 
   try {
+    // Save assistant.env settings
     const r = await fetch(BASE + '/api/settings', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({admin_password: settingsPassword, settings}),
     });
     const d = await r.json();
+
+    // Also save notification settings to agent-config.yml
+    const notifSettings = {
+      webhook_url: document.getElementById('s_WEBHOOK_URL')?.value || '',
+      email_smtp_host: document.getElementById('s_EMAIL_SMTP_HOST')?.value || '',
+      email_smtp_port: document.getElementById('s_EMAIL_SMTP_PORT')?.value || '587',
+      email_from: document.getElementById('s_EMAIL_FROM')?.value || '',
+      email_to: document.getElementById('s_EMAIL_TO')?.value || '',
+    };
+    const r2 = await fetch(BASE + '/api/settings/notifications', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({admin_password: settingsPassword, settings: notifSettings}),
+    });
+    const d2 = await r2.json();
+
     if (d.error) {
       statusEl.innerHTML = `<div class="status-msg err">${escapeHtml(d.error)}</div>`;
     } else {
-      statusEl.innerHTML = `<div class="status-msg ok">${escapeHtml(d.message)}</div>`;
-      // Close the modal after a brief confirmation display
+      const msg = d2.error ? d.message + ' (Warning: notification save failed)' : d.message;
+      statusEl.innerHTML = `<div class="status-msg ok">${escapeHtml(msg)}</div>`;
       setTimeout(() => closeSettings(), 1200);
     }
   } catch(e) {
     statusEl.innerHTML = `<div class="status-msg err">${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function testWebhook() {
+  const statusEl = document.getElementById('webhookTestStatus');
+  const url = document.getElementById('s_WEBHOOK_URL')?.value || '';
+  statusEl.innerHTML = '<span style="color:var(--muted)">Testing...</span>';
+  try {
+    const r = await fetch(BASE + '/api/settings/test-webhook', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({admin_password: settingsPassword, webhook_url: url}),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      statusEl.innerHTML = `<span style="color:var(--green)">${escapeHtml(d.message)}</span>`;
+    } else {
+      statusEl.innerHTML = `<span style="color:var(--red)">${escapeHtml(d.error)}</span>`;
+    }
+  } catch(e) {
+    statusEl.innerHTML = `<span style="color:var(--red)">${escapeHtml(e.message)}</span>`;
+  }
+}
+
+async function testEmail() {
+  const statusEl = document.getElementById('emailTestStatus');
+  statusEl.innerHTML = '<span style="color:var(--muted)">Sending test email...</span>';
+  try {
+    const r = await fetch(BASE + '/api/settings/test-email', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        admin_password: settingsPassword,
+        smtp_host: document.getElementById('s_EMAIL_SMTP_HOST')?.value || '',
+        smtp_port: document.getElementById('s_EMAIL_SMTP_PORT')?.value || '587',
+        email_from: document.getElementById('s_EMAIL_FROM')?.value || '',
+        email_to: document.getElementById('s_EMAIL_TO')?.value || '',
+      }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      statusEl.innerHTML = `<span style="color:var(--green)">${escapeHtml(d.message)}</span>`;
+    } else {
+      statusEl.innerHTML = `<span style="color:var(--red)">${escapeHtml(d.error)}</span>`;
+    }
+  } catch(e) {
+    statusEl.innerHTML = `<span style="color:var(--red)">${escapeHtml(e.message)}</span>`;
   }
 }
 
@@ -4306,15 +5016,144 @@ function alignAssistantPanel() {
   }
 }
 
-// Start up
+// Start up — dashboard is behind login gate; don't load data until authed
 restoreAssistantState();
 alignAssistantPanel();
 window.addEventListener('resize', alignAssistantPanel);
-checkLlmStatus();
-restoreChat();
-refreshAll();
-setInterval(refreshAll, 30000);
+setInterval(() => { if (_authToken) refreshAll(); }, 30000);
+
+// ---- M0: Dashboard Login Gate ----
+let _authToken = null;
+
+async function doLogin() {
+  const pw = document.getElementById('loginPassword').value;
+  const errEl = document.getElementById('loginError');
+  errEl.textContent = '';
+  if (!pw) { errEl.textContent = 'Please enter a password'; return; }
+  try {
+    const r = await fetch(BASE + '/api/auth/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({password: pw}),
+    });
+    const d = await r.json();
+    if (d.error) { errEl.textContent = d.error; return; }
+    _authToken = d.token;
+    try { sessionStorage.setItem('tinysocs_auth', _authToken); } catch(e) {}
+    unlockDashboard();
+  } catch(e) { errEl.textContent = 'Connection error: ' + e.message; }
+}
+
+function unlockDashboard() {
+  document.getElementById('loginGate').style.display = 'none';
+  document.getElementById('dashboardContent').style.display = 'block';
+  checkLlmStatus();
+  restoreChat();
+  refreshAll();
+}
+
+async function checkExistingSession() {
+  try { _authToken = sessionStorage.getItem('tinysocs_auth'); } catch(e) {}
+  if (!_authToken) { showLoginGate(); return; }
+  try {
+    const r = await fetch(BASE + '/api/auth/check', {
+      headers: {'Authorization': 'Bearer ' + _authToken},
+    });
+    if (r.ok) { unlockDashboard(); return; }
+  } catch(e) {}
+  _authToken = null;
+  try { sessionStorage.removeItem('tinysocs_auth'); } catch(e) {}
+  showLoginGate();
+}
+
+function showLoginGate() {
+  document.getElementById('loginGate').style.display = 'flex';
+  document.getElementById('dashboardContent').style.display = 'none';
+  document.getElementById('loginPassword').value = '';
+  setTimeout(() => document.getElementById('loginPassword').focus(), 100);
+}
+
+function doLogout() {
+  _authToken = null;
+  try { sessionStorage.removeItem('tinysocs_auth'); } catch(e) {}
+  showLoginGate();
+}
+
+async function changePassword() {
+  const cur = document.getElementById('changePwCurrent').value;
+  const newPw = document.getElementById('changePwNew').value;
+  const confirm = document.getElementById('changePwConfirm').value;
+  const statusEl = document.getElementById('changePwStatus');
+  statusEl.innerHTML = '';
+  if (!cur || !newPw) { statusEl.innerHTML = '<span style="color:var(--red)">All fields required</span>'; return; }
+  if (newPw !== confirm) { statusEl.innerHTML = '<span style="color:var(--red)">New passwords do not match</span>'; return; }
+  if (newPw.length < 8) { statusEl.innerHTML = '<span style="color:var(--red)">Password must be at least 8 characters</span>'; return; }
+  try {
+    const r = await fetch(BASE + '/api/auth/change-password', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({token: _authToken, current_password: cur, new_password: newPw}),
+    });
+    const d = await r.json();
+    if (d.error) { statusEl.innerHTML = '<span style="color:var(--red)">' + escapeHtml(d.error) + '</span>'; return; }
+    statusEl.innerHTML = '<span style="color:#27ae60">Password changed. Logging out...</span>';
+    setTimeout(doLogout, 1500);
+  } catch(e) { statusEl.innerHTML = '<span style="color:var(--red)">' + escapeHtml(e.message) + '</span>'; }
+}
+
+// Override settings to use session token
+const _origOpenSettings = openSettings;
+openSettings = function() {
+  document.getElementById('settingsOverlay').classList.add('open');
+  if (_authToken) {
+    // Skip password prompt — use session token
+    (async () => {
+      try {
+        const r = await fetch(BASE + '/api/settings', { headers: {'Authorization': 'Bearer ' + _authToken} });
+        const d = await r.json();
+        if (!d.error) {
+          settingsPassword = _authToken;
+          document.getElementById('settingsLogin').style.display = 'none';
+          document.getElementById('settingsForm').style.display = 'block';
+          populateSettings(d);
+          return;
+        }
+      } catch(e) {}
+      _origOpenSettings();
+    })();
+  } else { _origOpenSettings(); }
+};
+
+// Override saveSettings to pass session token
+const _origSaveSettings = saveSettings;
+saveSettings = async function() {
+  const fields = ['LLM_MODE','OPENAI_API_KEY','OPENAI_MODEL','ANTHROPIC_API_KEY','ANTHROPIC_MODEL',
+    'OFFLINE_LLM_URL','OFFLINE_LLM_MODEL','WEBHOOK_URL','WEBHOOK_ENABLED',
+    'SIEM_URL','SIEM_USER','SIEM_PASS',
+    'SMTP_HOST','SMTP_PORT','SMTP_FROM','SMTP_TO','EMAIL_ENABLED'];
+  const settings = {};
+  for (const f of fields) {
+    const el = document.getElementById('s_' + f);
+    if (el) settings[f] = el.value;
+  }
+  const statusEl = document.getElementById('settingsStatus');
+  statusEl.innerHTML = '<div class="status-msg" style="color:var(--muted)">Saving...</div>';
+  try {
+    const r = await fetch(BASE + '/api/settings', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({token: _authToken, admin_password: settingsPassword, settings}),
+    });
+    const d = await r.json();
+    if (d.error) { statusEl.innerHTML = '<div class="status-msg err">' + escapeHtml(d.error) + '</div>'; }
+    else { statusEl.innerHTML = '<div class="status-msg ok">' + escapeHtml(d.message) + '</div>'; setTimeout(() => closeSettings(), 1200); }
+  } catch(e) { statusEl.innerHTML = '<div class="status-msg err">' + escapeHtml(e.message) + '</div>'; }
+};
+
+// Boot: check existing session
+checkExistingSession();
 </script>
+</div><!-- /dashboardContent -->
 </body>
 </html>
 """

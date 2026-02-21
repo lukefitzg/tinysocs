@@ -268,6 +268,226 @@
   category: cloud
 
 
+# ===== Phase 13 — Detection Coverage Expansion =====
+# Credential Access
+
+- id: lsass_access
+  description: Process accessing LSASS memory (Sysmon Event 10, TargetImage lsass.exe)
+  index: "tinysocs-winlog-*"
+  time_field: "@timestamp"
+  kql: >
+    (event.code:10 OR winlog.event_id:10)
+    AND (provider.name:"Microsoft-Windows-Sysmon" OR winlog.provider_name:"Microsoft-Windows-Sysmon")
+    AND (winlog.event_data.TargetImage:(*\\lsass.exe))
+  group_by: ["host.name","winlog.event_data.SourceImage"]
+  threshold: 1
+  severity: critical
+  category: credential_access
+
+- id: credential_dumping_tools
+  description: Known credential dumping tool names in process creation (mimikatz, procdump, secretsdump)
+  index: "tinysocs-winlog-*"
+  time_field: "@timestamp"
+  kql: >
+    (event.code:(4688 OR 1) OR winlog.event_id:(4688 OR 1))
+    AND (
+      process.name:(mimikatz.exe procdump.exe procdump64.exe secretsdump.exe lazagne.exe)
+      OR process.executable:(*\\mimikatz* *\\procdump* *\\secretsdump* *\\lazagne*)
+      OR winlog.event_data.NewProcessName:(*\\mimikatz* *\\procdump* *\\secretsdump* *\\lazagne*)
+      OR process.command_line:(*mimikatz* OR *sekurlsa* OR *lsadump* OR *kerberos::*)
+      OR winlog.event_data.CommandLine:(*mimikatz* OR *sekurlsa* OR *lsadump* OR *kerberos::*)
+    )
+  group_by: ["host.name","process.name"]
+  threshold: 1
+  severity: critical
+  category: credential_access
+
+- id: ntds_dit_access
+  description: Access to ntds.dit or SYSTEM hive (credential theft from domain controller)
+  index: "tinysocs-winlog-*"
+  time_field: "@timestamp"
+  kql: >
+    (event.code:(4663 OR 11) OR winlog.event_id:(4663 OR 11))
+    AND (
+      winlog.event_data.ObjectName:(*ntds.dit* OR *SYSTEM*)
+      OR winlog.event_data.TargetFilename:(*ntds.dit* OR *\\config\\SYSTEM*)
+      OR message:(*ntds.dit* OR *vssadmin* OR *ntdsutil*)
+    )
+  group_by: ["host.name"]
+  threshold: 1
+  severity: critical
+  category: credential_access
+
+# Lateral Movement
+
+- id: psexec_usage
+  description: PsExec service installation or named pipe creation
+  index: "tinysocs-winlog-*"
+  time_field: "@timestamp"
+  kql: >
+    (
+      ((event.code:7045 OR winlog.event_id:7045) AND winlog.event_data.ServiceName:(*PSEXESVC* OR *psexec*))
+      OR
+      ((event.code:(17 OR 18) OR winlog.event_id:(17 OR 18))
+        AND (provider.name:"Microsoft-Windows-Sysmon" OR winlog.provider_name:"Microsoft-Windows-Sysmon")
+        AND winlog.event_data.PipeName:(*PSEXESVC* OR *psexec*))
+    )
+  group_by: ["host.name"]
+  threshold: 1
+  severity: high
+  category: lateral
+
+- id: rdp_brute_force
+  description: Multiple RDP logon failures (4625 LogonType 10)
+  index: "tinysocs-winlog-*"
+  time_field: "@timestamp"
+  kql: >
+    (event.code:4625 OR winlog.event_id:4625)
+    AND winlog.event_data.LogonType:10
+  group_by: ["winlog.event_data.IpAddress"]
+  threshold: 5
+  severity: high
+  category: lateral
+
+- id: remote_service_install
+  description: Service installed remotely (Event 7045 — suspicious service paths)
+  index: "tinysocs-winlog-*"
+  time_field: "@timestamp"
+  kql: >
+    (event.code:7045 OR winlog.event_id:7045)
+    AND NOT winlog.event_data.ImagePath:(*\\Windows\\* OR *\\Microsoft\\*)
+  group_by: ["host.name","winlog.event_data.ServiceName"]
+  threshold: 1
+  severity: high
+  category: lateral
+
+# Defence Evasion
+
+- id: event_log_cleared
+  description: Security or System event log cleared (Event 1102 or 104)
+  index: "tinysocs-winlog-*"
+  time_field: "@timestamp"
+  kql: >
+    (event.code:(1102 OR 104) OR winlog.event_id:(1102 OR 104))
+  group_by: ["host.name"]
+  threshold: 1
+  severity: high
+  category: evasion
+
+- id: defender_tamper
+  description: Windows Defender real-time protection disabled or exclusion added
+  index: "tinysocs-winlog-*"
+  time_field: "@timestamp"
+  kql: >
+    (event.code:(5001 OR 5010 OR 5007) OR winlog.event_id:(5001 OR 5010 OR 5007))
+    AND (winlog.channel:"Microsoft-Windows-Windows Defender/Operational" OR channel:"Microsoft-Windows-Windows Defender/Operational")
+  group_by: ["host.name"]
+  threshold: 1
+  severity: high
+  category: evasion
+
+- id: amsi_bypass
+  description: AMSI bypass patterns detected in PowerShell ScriptBlock
+  index: "tinysocs-winlog-*"
+  time_field: "@timestamp"
+  kql: >
+    (event.code:4104 OR winlog.event_id:4104)
+    AND (winlog.channel:"Microsoft-Windows-PowerShell/Operational" OR channel:"Microsoft-Windows-PowerShell/Operational")
+    AND (
+      message:(*AmsiUtils* OR *amsiInitFailed* OR *AmsiScanBuffer* OR *SetProtection* OR *Disable-Amsi*)
+    )
+  group_by: ["host.name"]
+  threshold: 1
+  severity: critical
+  category: evasion
+
+- id: timestomp_detected
+  description: File creation time modified (Sysmon Event 2 — timestomping)
+  index: "tinysocs-winlog-*"
+  time_field: "@timestamp"
+  kql: >
+    (event.code:2 OR winlog.event_id:2)
+    AND (provider.name:"Microsoft-Windows-Sysmon" OR winlog.provider_name:"Microsoft-Windows-Sysmon")
+  group_by: ["host.name","winlog.event_data.Image"]
+  threshold: 1
+  severity: medium
+  category: evasion
+
+# Persistence
+
+- id: service_install_suspicious
+  description: Service installed with suspicious path (temp, appdata, public)
+  index: "tinysocs-winlog-*"
+  time_field: "@timestamp"
+  kql: >
+    (event.code:7045 OR winlog.event_id:7045)
+    AND (
+      winlog.event_data.ImagePath:(*\\temp\\* OR *\\tmp\\* OR *\\appdata\\* OR *\\public\\* OR *\\downloads\\*)
+    )
+  group_by: ["host.name","winlog.event_data.ServiceName"]
+  threshold: 1
+  severity: high
+  category: persistence
+
+- id: registry_run_key
+  description: Run/RunOnce registry modification (Sysmon Event 13)
+  index: "tinysocs-winlog-*"
+  time_field: "@timestamp"
+  kql: >
+    (event.code:13 OR winlog.event_id:13)
+    AND (provider.name:"Microsoft-Windows-Sysmon" OR winlog.provider_name:"Microsoft-Windows-Sysmon")
+    AND (
+      winlog.event_data.TargetObject:(*\\Run\\* OR *\\RunOnce\\*)
+    )
+  group_by: ["host.name","winlog.event_data.Image"]
+  threshold: 1
+  severity: high
+  category: persistence
+
+- id: startup_folder_write
+  description: File written to Startup folder (Sysmon Event 11)
+  index: "tinysocs-winlog-*"
+  time_field: "@timestamp"
+  kql: >
+    (event.code:11 OR winlog.event_id:11)
+    AND (provider.name:"Microsoft-Windows-Sysmon" OR winlog.provider_name:"Microsoft-Windows-Sysmon")
+    AND (
+      winlog.event_data.TargetFilename:(*\\Start Menu\\Programs\\Startup\\* OR *\\Startup\\*)
+    )
+  group_by: ["host.name","winlog.event_data.Image"]
+  threshold: 1
+  severity: high
+  category: persistence
+
+# Exfiltration
+
+- id: dns_tunnel_volume
+  description: High volume of DNS queries to single domain (possible DNS tunneling)
+  index: "tinysocs-winlog-*"
+  time_field: "@timestamp"
+  kql: >
+    (event.code:22 OR winlog.event_id:22)
+    AND (provider.name:"Microsoft-Windows-Sysmon" OR winlog.provider_name:"Microsoft-Windows-Sysmon")
+  group_by: ["host.name","winlog.event_data.QueryName"]
+  threshold: 50
+  severity: high
+  category: exfiltration
+
+- id: large_outbound_transfer
+  description: Unusual outbound network connection volume (Sysmon Event 3)
+  index: "tinysocs-winlog-*"
+  time_field: "@timestamp"
+  kql: >
+    (event.code:3 OR winlog.event_id:3)
+    AND (provider.name:"Microsoft-Windows-Sysmon" OR winlog.provider_name:"Microsoft-Windows-Sysmon")
+    AND winlog.event_data.Initiated:true
+    AND NOT winlog.event_data.DestinationIp:(10.* OR 172.16.* OR 192.168.* OR 127.0.0.1 OR "::1")
+  group_by: ["host.name","winlog.event_data.Image"]
+  threshold: 100
+  severity: medium
+  category: exfiltration
+
+
 # ===== Lab-only, low-threshold kickers =====
 
 - id: auth_failed_burst_lab

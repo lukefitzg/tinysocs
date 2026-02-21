@@ -11,7 +11,9 @@ Import-Module "$env:ProgramFiles\TinySocs\modules\TinySocs.Installer.psm1"
 Test-TinySocsHealth
 ```
 
-Expected: **12/12 PASS**. Any FAIL or WARN items need investigation.
+Expected: **14/14 PASS**. Any FAIL or WARN items need investigation.
+
+> Checks 13 and 14 (webhook delivery, SMTP EHLO) are only exercised if notifications are configured.
 
 ### Service Status
 
@@ -64,11 +66,34 @@ detection:
 
 ### Test Webhook
 
+From the TinySocs dashboard Settings page, use the **Test Webhook** button.
+
+Or via PowerShell:
+
 ```powershell
 # Quick test with curl
 curl.exe -X POST "https://hooks.slack.com/services/YOUR/WEBHOOK/URL" `
   -H "Content-Type: application/json" `
   -d '{"text":"[TinySocs] Test notification"}'
+```
+
+### Notification Retry Queue
+
+Failed webhook and email notifications are automatically queued for retry in:
+
+```
+C:\ProgramData\TinySocs\Collector\notification_queue.jsonl
+```
+
+The retry queue uses exponential backoff (default: 3 attempts, 30s base backoff). Entries older than 1 hour are discarded. Configure in `agent-config.yml`:
+
+```yaml
+detection:
+  notification:
+    retry:
+      max_attempts: 3
+      backoff_seconds: 30
+      max_age_seconds: 3600
 ```
 
 ## Dashboards
@@ -236,8 +261,38 @@ Restart-Service TinySocsAssistant
 | Alert log | `C:\ProgramData\TinySocs\Collector\logs\alerts.log` |
 | Assistant log | `C:\ProgramData\TinySocs\Assistant\logs\` |
 | OpenSearch logs | `C:\ProgramData\TinySocs\OpenSearch\logs\` |
+| Notification retry | `C:\ProgramData\TinySocs\Collector\notification_queue.jsonl` |
 | Installer log | `C:\ProgramData\TinySocs\logs\postinstall-powershell*.log` |
+| Uninstall log | `%TEMP%\tinysocs-uninstall.log` |
 | Action audit | `C:\ProgramData\TinySocs\audit\actions_audit.jsonl` |
+
+## Upgrading
+
+### In-Place Upgrade
+
+Run the new `TinySocs-Setup.exe` over the existing installation. The installer will:
+
+1. **Detect** the existing version and log it
+2. **Back up** `agent-config.yml`, `assistant.env`, and `rules.yml` to `.pre-upgrade.bak` files
+3. **Stop** non-OpenSearch services before file replacement
+4. **Deploy** new binaries and modules (configs use `onlyifdoesntexist` to preserve edits)
+5. **Verify** config backups — if the installer accidentally overwrote a config, the backup is restored
+6. **Restart** services and run the full post-install chain
+
+After upgrade, verify:
+
+```powershell
+Import-Module "$env:ProgramFiles\TinySocs\modules\TinySocs.Installer.psm1"
+Test-TinySocsHealth
+```
+
+### Smoke Test After Upgrade
+
+```powershell
+Invoke-TinySocsSmokeTest
+```
+
+This generates test events and verifies alerts appear in the index.
 
 ## Data Retention
 

@@ -132,6 +132,14 @@ public sealed class NotificationConfig
 {
     public string? WebhookUrl { get; set; }
     public EmailConfig? Email { get; set; }
+    public NotificationRetryConfig Retry { get; set; } = new();
+}
+
+public sealed class NotificationRetryConfig
+{
+    public int MaxAttempts { get; set; } = 3;
+    public int BackoffSeconds { get; set; } = 30;
+    public int MaxAgeSeconds { get; set; } = 3600;
 }
 
 public sealed class EmailConfig

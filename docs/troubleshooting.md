@@ -144,6 +144,51 @@ If OpenSearch Dashboards is still initializing, wait a minute and retry.
 3. Check environment variables are set (TINYSOCS_SMTP_HOST, SIEM_URL, etc.)
 4. Test SMTP connectivity: `Test-NetConnection smtp.company.com -Port 587`
 
+### 11. Dashboard login fails ("Password not set")
+
+**Symptom**: The TinySocs dashboard (`http://localhost:8090/dashboard/`) shows a "Set up password" prompt instead of the login form.
+
+**Cause**: `SIEM_PASS` environment variable is not set or is empty.
+
+**Fix**: Check `assistant.env` has a SIEM_PASS value:
+
+```powershell
+Select-String "SIEM_PASS" "C:\ProgramData\TinySocs\Assistant\assistant.env"
+```
+
+If it's empty, set it to the same password used for OpenSearch:
+
+```powershell
+# Find the working password from CredMan
+Import-Module "$env:ProgramFiles\TinySocs\modules\TinySocs.Installer.psm1"
+$creds = Get-TSSiemCredsCanonical
+$creds.Pass  # This is the current working password
+```
+
+### 12. Webhook notifications stuck in retry queue
+
+**Symptom**: Webhook messages appear in `notification_queue.jsonl` but are never delivered.
+
+**Cause**: The webhook URL is unreachable or returning non-2xx status codes.
+
+**Fix**:
+1. Test the URL manually: `curl.exe -X POST "YOUR_URL" -H "Content-Type: application/json" -d '{"text":"test"}'`
+2. Check firewall/proxy allows outbound HTTPS to the webhook host
+3. Clear the retry queue if entries are stale: `Remove-Item "C:\ProgramData\TinySocs\Collector\notification_queue.jsonl"`
+
+### 13. Upgrade clobbered my config
+
+**Symptom**: After an upgrade, `agent-config.yml` or `assistant.env` was reset to defaults.
+
+**Fix**: The installer creates `.pre-upgrade.bak` backups before deployment. Restore them:
+
+```powershell
+$pd = "C:\ProgramData\TinySocs"
+Copy-Item "$pd\Collector\agent-config.yml.pre-upgrade.bak" "$pd\Collector\agent-config.yml" -Force
+Copy-Item "$pd\Assistant\assistant.env.pre-upgrade.bak" "$pd\Assistant\assistant.env" -Force
+Restart-Service TinySocsAgent, TinySocsAssistant
+```
+
 ## Performance Issues
 
 ### OpenSearch using too much memory

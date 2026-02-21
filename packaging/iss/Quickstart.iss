@@ -38,7 +38,7 @@
 
 [Setup]
 AppName=TinySocs
-AppVersion=0.7.1
+AppVersion=0.8.0
 AppPublisher=TinySocs
 AppId={{F2DCCF8F-6F5F-4D8B-9EAF-6E2C2C6B1234}}
 DefaultDirName={commonpf}\TinySocs
@@ -901,7 +901,7 @@ begin
   L.Left := 0;
   L.Top := SharedSecretEdit.Top + ScaleY(36);
   L.Width := SecurityPage.SurfaceWidth;
-  L.Caption := 'SIEM password (leave blank to auto-generate a strong one):';
+  L.Caption := 'SIEM + Dashboard password (leave blank to auto-generate a strong one):';
 
   SiemPassEdit := TNewEdit.Create(SecurityPage.Surface);
   SiemPassEdit.Parent := SecurityPage.Surface;
@@ -917,7 +917,7 @@ begin
   L.Width := SecurityPage.SurfaceWidth;
   L.WordWrap := True;
   L.AutoSize := True;
-  L.Caption := 'The SIEM password is for the local OpenSearch datastore (admin user).'
+  L.Caption := 'This password protects both the OpenSearch datastore and the TinySocs dashboard.'
     + ' If left blank, a strong password will be generated and stored in Windows'
     + ' Credential Manager.';
 
@@ -1175,6 +1175,7 @@ begin
           'SIEM password was blank, so a strong one was generated.' + CRLF + CRLF +
           'User: admin' + CRLF +
           'Password: ' + SiemPass + CRLF + CRLF +
+          'This password protects both the SIEM datastore and the TinySocs dashboard.' + CRLF +
           'The password has been copied to your clipboard.' + CRLF +
           'It will also be stored securely in Windows Credential Manager.',
           mbInformation,
@@ -1245,7 +1246,42 @@ begin
     Log('CurStepChanged(ssPostInstall): begin');
 
     { *** BUILD STAMP (change this every rebuild) *** }
-    Log('TinySocs installer build stamp: 2026-02-16-v17-WEBHOOK-LLM-FIELDS-EXPLORER');
+    Log('TinySocs installer build stamp: 2026-02-20-v18-PHASE13-UPGRADE-PATH');
+
+    { ---- Phase 13 M5: Restore operator-edited configs if overwritten by upgrade ---- }
+    { The [Files] section uses onlyifdoesntexist, so configs should survive, but }
+    { this is a safety net: if the .bak is newer/different, the operator had edits. }
+    Log('CurStepChanged: Phase 13 M5 — verifying config backups');
+    Script :=
+      '$ErrorActionPreference = ''SilentlyContinue''' + CRLF +
+      '$dataRoot = Join-Path $env:ProgramData ''TinySocs''' + CRLF +
+      '$pairs = @(' + CRLF +
+      '  @{ Live = Join-Path $dataRoot ''Collector\agent-config.yml'';      Bak = Join-Path $dataRoot ''Collector\agent-config.yml.pre-upgrade.bak'' },' + CRLF +
+      '  @{ Live = Join-Path $dataRoot ''Collector\agent\config.yml'';       Bak = Join-Path $dataRoot ''Collector\agent\config.yml.pre-upgrade.bak'' },' + CRLF +
+      '  @{ Live = Join-Path $dataRoot ''Assistant\assistant.env'';          Bak = Join-Path $dataRoot ''Assistant\assistant.env.pre-upgrade.bak'' },' + CRLF +
+      '  @{ Live = Join-Path $dataRoot ''Collector\rules\rules.yml'';        Bak = Join-Path $dataRoot ''Collector\rules\rules.yml.pre-upgrade.bak'' }' + CRLF +
+      ')' + CRLF +
+      'foreach ($p in $pairs) {' + CRLF +
+      '  if (Test-Path -LiteralPath $p.Bak -PathType Leaf) {' + CRLF +
+      '    if (-not (Test-Path -LiteralPath $p.Live -PathType Leaf)) {' + CRLF +
+      '      Write-Host (''[TinySocs][Inno] Restoring missing config from backup: '' + $p.Bak)' + CRLF +
+      '      Copy-Item -LiteralPath $p.Bak -Destination $p.Live -Force' + CRLF +
+      '    } else {' + CRLF +
+      '      # Compare; if live file is different (installer overwrote), restore operator version' + CRLF +
+      '      $bakHash = (Get-FileHash -LiteralPath $p.Bak -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash' + CRLF +
+      '      $liveHash = (Get-FileHash -LiteralPath $p.Live -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash' + CRLF +
+      '      if ($bakHash -and $liveHash -and ($bakHash -ne $liveHash)) {' + CRLF +
+      '        Write-Host (''[TinySocs][Inno] Config changed during upgrade; restoring operator version: '' + $p.Live)' + CRLF +
+      '        Copy-Item -LiteralPath $p.Bak -Destination $p.Live -Force' + CRLF +
+      '      }' + CRLF +
+      '    }' + CRLF +
+      '    # Clean up backup file after successful restore/verify' + CRLF +
+      '    try { Remove-Item -LiteralPath $p.Bak -Force } catch { }' + CRLF +
+      '  }' + CRLF +
+      '}' + CRLF +
+      'Write-Host ''[TinySocs][Inno] Phase 13 M5: Config backup verification complete.''' + CRLF;
+    RunPowerShellScript(Script);
+    Log('CurStepChanged: Phase 13 M5 — config backup verification done');
 
     AppDir := ExpandConstant('{app}');
     InstallerModule := AppDir + '\modules\TinySocs.Installer.psm1';
@@ -1278,7 +1314,7 @@ begin
       Script :=
         '$ErrorActionPreference = ''Stop''' + #13#10 +
         '$ProgressPreference = ''SilentlyContinue''' + #13#10 +
-        'Write-Host ''[TinySocs][Inno] build stamp: 2026-02-16-v17-WEBHOOK-LLM-FIELDS-EXPLORER''' + #13#10 +
+        'Write-Host ''[TinySocs][Inno] build stamp: 2026-02-20-v18-PHASE13-UPGRADE-PATH''' + #13#10 +
         '' + #13#10 +
 
         '# Force TEMP/TMP to ProgramData AND harden ACL so stashes never land in user-profile temp (avoids ACL/AV weirdness)' + #13#10 +
@@ -1647,6 +1683,35 @@ begin
         '    [System.IO.File]::WriteAllText($pdYml, $ymlRaw, (New-Object System.Text.UTF8Encoding($false)))' + CRLF +
         '    Write-Host ''[TinySocs][Inno] TB-10e: Added discovery.type/network.host to opensearch.yml''' + CRLF +
         '  }' + CRLF +
+        '}' + CRLF +
+        '' + CRLF +
+
+        '# TB-10e2: Ensure admin_dn is in opensearch.yml and ACLs are correct on security config.' + CRLF +
+        '# These functions exist in the module but were never wired into the installer flow.' + CRLF +
+        '# Without admin_dn, securityadmin cannot authenticate as an admin user.' + CRLF +
+        '# Without correct ACLs, securityadmin cannot read the security YAML files.' + CRLF +
+        'Write-Host ''[TinySocs][Inno] TB-10e2: Ensure admin_dn + security config ACLs''' + CRLF +
+        'try {' + CRLF +
+        '  $pdYml = Join-Path $pdConf ''opensearch.yml''' + CRLF +
+        '  if (Get-Command Ensure-TinySocsOpenSearchAdminDn -ErrorAction SilentlyContinue) {' + CRLF +
+        '    Ensure-TinySocsOpenSearchAdminDn -OpenSearchYmlPath $pdYml -AdminDn ''CN=TinySocs-OpenSearch-Admin''' + CRLF +
+        '    Write-Host ''[TinySocs][Inno] TB-10e2: admin_dn set in opensearch.yml''' + CRLF +
+        '  } else {' + CRLF +
+        '    Write-Warning ''[TinySocs][Inno] TB-10e2: Ensure-TinySocsOpenSearchAdminDn not found in module''' + CRLF +
+        '  }' + CRLF +
+        '} catch {' + CRLF +
+        '  Write-Warning (''[TinySocs][Inno] TB-10e2: admin_dn setup failed: '' + $_.Exception.Message)' + CRLF +
+        '}' + CRLF +
+        'try {' + CRLF +
+        '  $secCfgDir = Join-Path $pdConf ''opensearch-security''' + CRLF +
+        '  if (Get-Command Ensure-TinySocsAclForOpenSearchSecurityConfig -ErrorAction SilentlyContinue) {' + CRLF +
+        '    Ensure-TinySocsAclForOpenSearchSecurityConfig -SecurityConfigDir $secCfgDir' + CRLF +
+        '    Write-Host ''[TinySocs][Inno] TB-10e2: Security config ACLs normalized''' + CRLF +
+        '  } else {' + CRLF +
+        '    Write-Warning ''[TinySocs][Inno] TB-10e2: Ensure-TinySocsAclForOpenSearchSecurityConfig not found in module''' + CRLF +
+        '  }' + CRLF +
+        '} catch {' + CRLF +
+        '  Write-Warning (''[TinySocs][Inno] TB-10e2: ACL normalization failed: '' + $_.Exception.Message)' + CRLF +
         '}' + CRLF +
         '' + CRLF +
 
@@ -2075,6 +2140,111 @@ begin
   except
     Log('CurStepChanged: exception: ' + GetExceptionMessage);
     Log('CurStepChanged: continuing install.');
+  end;
+end;
+
+{ ---- Phase 13 M5: Upgrade path validation ---- }
+{ PrepareToInstall runs BEFORE files are deployed. Detect existing install, }
+{ back up operator-edited configs so the 'onlyifdoesntexist' flag + file overwrite }
+{ cannot clobber them, and verify services can be stopped cleanly. }
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  DataRoot: String;
+  AgentCfg: String;
+  AgentCfgLegacy: String;
+  AssistantEnv: String;
+  RulesFile: String;
+  PrevUninstExe: String;
+  PrevVersion: String;
+begin
+  Result := '';  { empty = OK to continue }
+  NeedsRestart := False;
+
+  DataRoot := ExpandConstant('{commonappdata}\TinySocs');
+  AgentCfg := DataRoot + '\Collector\agent-config.yml';
+  AgentCfgLegacy := DataRoot + '\Collector\agent\config.yml';
+  AssistantEnv := DataRoot + '\Assistant\assistant.env';
+  RulesFile := DataRoot + '\Collector\rules\rules.yml';
+
+  { Detect previous installation }
+  PrevUninstExe := ExpandConstant('{app}\unins000.exe');
+  if FileExists(PrevUninstExe) then
+  begin
+    Log('PrepareToInstall: UPGRADE detected — previous uninstaller found at: ' + PrevUninstExe);
+
+    { Read previous version from registry if available }
+    PrevVersion := '';
+    try
+      if RegQueryStringValue(HKLM, 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{#SetupSetting("AppId")}_is1',
+                             'DisplayVersion', PrevVersion) then
+        Log('PrepareToInstall: Previous version: ' + PrevVersion)
+      else
+        Log('PrepareToInstall: Could not read previous version from registry.');
+    except
+      Log('PrepareToInstall: Exception reading previous version.');
+    end;
+  end
+  else
+    Log('PrepareToInstall: Fresh install (no previous uninstaller found).');
+
+  { Back up operator-edited config files before file deployment }
+  if FileExists(AgentCfg) then
+  begin
+    Log('PrepareToInstall: Backing up ' + AgentCfg);
+    try
+      FileCopy(AgentCfg, AgentCfg + '.pre-upgrade.bak', False);
+    except
+      Log('PrepareToInstall: WARNING — failed to back up agent-config.yml');
+    end;
+  end;
+
+  if FileExists(AgentCfgLegacy) then
+  begin
+    Log('PrepareToInstall: Backing up ' + AgentCfgLegacy);
+    try
+      FileCopy(AgentCfgLegacy, AgentCfgLegacy + '.pre-upgrade.bak', False);
+    except
+      Log('PrepareToInstall: WARNING — failed to back up legacy config.yml');
+    end;
+  end;
+
+  if FileExists(AssistantEnv) then
+  begin
+    Log('PrepareToInstall: Backing up ' + AssistantEnv);
+    try
+      FileCopy(AssistantEnv, AssistantEnv + '.pre-upgrade.bak', False);
+    except
+      Log('PrepareToInstall: WARNING — failed to back up assistant.env');
+    end;
+  end;
+
+  if FileExists(RulesFile) then
+  begin
+    Log('PrepareToInstall: Backing up ' + RulesFile);
+    try
+      FileCopy(RulesFile, RulesFile + '.pre-upgrade.bak', False);
+    except
+      Log('PrepareToInstall: WARNING — failed to back up rules.yml');
+    end;
+  end;
+
+  { Pre-stop services so file replacement can proceed without locks }
+  if FileExists(PrevUninstExe) then
+  begin
+    Log('PrepareToInstall: Stopping TinySocs services for upgrade...');
+    try
+      RunPowerShellScript(
+        '$ErrorActionPreference = ''SilentlyContinue''' + CRLF +
+        'foreach ($svc in @(''TinySocsAgent'',''TinySocsNode'',''TinySocsMaster'',''TinySocsAnchors'',''TinySocsAssistant'')) {' + CRLF +
+        '  try { Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue } catch { }' + CRLF +
+        '}' + CRLF +
+        '# Do NOT stop TinySocsOpenSearch here — persistence script handles restart.' + CRLF +
+        'Write-Host ''[TinySocs][Inno] Pre-upgrade: services stopped.'''
+      );
+    except
+      Log('PrepareToInstall: WARNING — service stop failed (non-fatal).');
+    end;
   end;
 end;
 

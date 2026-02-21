@@ -14783,11 +14783,14 @@ function Test-TinySocsHealth {
   # --- Phase 14: Sysmon and Dashboard TLS checks ---
 
   # Check 15: Sysmon Service — optional component, INFO if not installed
-  # ARM64 installs register as "Sysmon64a"; x64 as "Sysmon64"
+  # ARM64 installs register as "Sysmon64a"; x64 as "Sysmon64".
+  # Check both and prefer whichever is Running (handles stale orphan entries).
   try {
-    $sysmonSvc = Get-Service -Name "Sysmon64" -ErrorAction SilentlyContinue
-    if (-not $sysmonSvc) {
-      $sysmonSvc = Get-Service -Name "Sysmon64a" -ErrorAction SilentlyContinue
+    $sysmonSvc = $null
+    foreach ($svcName in @("Sysmon64", "Sysmon64a")) {
+      $s = Get-Service -Name $svcName -ErrorAction SilentlyContinue
+      if ($s -and $s.Status -eq "Running") { $sysmonSvc = $s; break }
+      if ($s -and -not $sysmonSvc) { $sysmonSvc = $s }  # keep first found as fallback
     }
     if ($sysmonSvc) {
       if ($sysmonSvc.Status -eq "Running") {

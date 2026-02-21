@@ -93,8 +93,18 @@ def _import_func(module_name: str, attr: str) -> Optional[Any]:
     except Exception:
         return None
 
-def _start_uvicorn(app_or_str: Any, port: int, host: str = "127.0.0.1") -> uvicorn.Server:
-    cfg = uvicorn.Config(app_or_str, host=host, port=port, log_level=os.getenv("UVICORN_LOG_LEVEL", "warning"))
+def _start_uvicorn(
+    app_or_str: Any, port: int, host: str = "127.0.0.1",
+    ssl_certfile: str = "", ssl_keyfile: str = "",
+) -> uvicorn.Server:
+    ssl_kwargs: dict = {}
+    if ssl_certfile and ssl_keyfile:
+        ssl_kwargs = {"ssl_certfile": ssl_certfile, "ssl_keyfile": ssl_keyfile}
+    cfg = uvicorn.Config(
+        app_or_str, host=host, port=port,
+        log_level=os.getenv("UVICORN_LOG_LEVEL", "warning"),
+        **ssl_kwargs,
+    )
     srv = uvicorn.Server(cfg)
     threading.Thread(target=srv.run, daemon=True).start()
     time.sleep(1.0)
@@ -189,9 +199,19 @@ def main() -> None:
     os.environ.setdefault("MASTER_SHARED_SECRET", "dev-secret-change-me")
     os.environ.setdefault("TINYSOCS_QUEUE_PATH", ".\\data\\actions_queue.jsonl")
 
-    host = os.getenv("HOST", "127.0.0.1")
+    host = os.getenv("DASHBOARD_BIND", os.getenv("HOST", "127.0.0.1"))
     node_port = int(os.getenv("NODE_PORT", os.getenv("PORT", "8081")))
     bot_port  = int(os.getenv("BOT_PORT", "8090"))
+
+    # Dashboard TLS config (Phase 14 M0)
+    tls_cert = os.getenv("DASHBOARD_TLS_CERT", "").strip()
+    tls_key = os.getenv("DASHBOARD_TLS_KEY", "").strip()
+    if host != "127.0.0.1" and not (tls_cert and tls_key):
+        print("[quickstart] WARNING: Network bind requested but no TLS certs configured. "
+              "Falling back to localhost.")
+        host = "127.0.0.1"
+    if tls_cert and tls_key:
+        print(f"[quickstart] TLS enabled: cert={tls_cert}")
 
     frozen = bool(getattr(sys, "frozen", False))
     node_spec, bot_spec, used = _choose_app_spec()
@@ -199,7 +219,8 @@ def main() -> None:
 
     print(f"[quickstart] starting Node@{host}:{node_port} + Bot@{host}:{bot_port} ...")
     _start_uvicorn(node_spec, node_port, host=host)
-    _start_uvicorn(bot_spec,  bot_port,  host=host)
+    _start_uvicorn(bot_spec, bot_port, host=host,
+                   ssl_certfile=tls_cert, ssl_keyfile=tls_key)
 
     # One master run (preview) — try package path, then flat path
     run_master = _import_func("tinysocs.orchestrator.master", "run_master") \

@@ -1,0 +1,81 @@
+name: "PCI DSS v4.0"
+version: "4.0"
+description: "Mapping of TinySocs detections to PCI DSS v4.0 requirements for log monitoring and security event management."
+
+controls:
+  # ── Requirement 5: Protect All Systems and Networks from Malicious Software ──
+  - id: "5.2.2"
+    name: "Anti-malware solutions detect and address all known types of malware"
+    description: "Defender tamper detection and AMSI bypass monitoring"
+    rules: ["defender_tamper", "amsi_bypass", "TS-081", "TS-082"]
+    required: true
+
+  # ── Requirement 7: Restrict Access to System Components ──
+  - id: "7.2.4"
+    name: "Access to system components and data is appropriately defined and assigned"
+    description: "Privileged access monitoring — admin account creation, credential access"
+    rules: ["local_admin_create", "lsass_access", "credential_dumping_tools", "TS-010", "TS-060", "TS-061"]
+    required: true
+
+  # ── Requirement 8: Identify Users and Authenticate Access ──
+  - id: "8.2.8"
+    name: "Access attempts are limited after consecutive failed authentication"
+    description: "Brute-force detection and lockout monitoring"
+    rules: ["auth_failed_burst", "rdp_brute_force", "TS-001", "TS-002", "TS-071"]
+    required: true
+
+  - id: "8.6.3"
+    name: "MFA for all remote network access"
+    description: "MFA fatigue and bypass detection"
+    rules: ["m365_mfa_fatigue", "vpn_geo_impossible"]
+    required: false
+
+  # ── Requirement 10: Log and Monitor All Access ──
+  - id: "10.2.1"
+    name: "Audit logs are enabled and active for all system components"
+    description: "Event log collection and integrity monitoring"
+    rules: ["event_log_cleared", "ps_transcription_off", "TS-080"]
+    required: true
+
+  - id: "10.2.1.2"
+    name: "Audit logs capture all actions by individuals with administrative access"
+    description: "Admin activity monitoring — service installs, registry changes, scheduled tasks"
+    rules: ["service_install_suspicious", "scheduled_task_creation", "registry_run_key", "TS-090", "TS-020", "TS-091"]
+    required: true
+
+  - id: "10.2.1.4"
+    name: "Audit logs capture invalid logical access attempts"
+    description: "Failed authentication attempt logging and alerting"
+    rules: ["auth_failed_burst", "rdp_brute_force", "TS-001", "TS-002", "TS-071"]
+    required: true
+
+  - id: "10.2.2"
+    name: "Audit logs record sufficient detail to reconstruct events"
+    description: "Process creation, command-line, and script block logging"
+    rules: ["ps_script_block", "sysmon_proc_creation", "proc_creation_powershell_suspicious", "TS-030", "TS-050"]
+    required: true
+
+  - id: "10.4.1"
+    name: "Audit logs are reviewed at least daily"
+    description: "Automated daily summary report generation and alert review"
+    rules: []
+    required: false
+
+  - id: "10.4.2"
+    name: "Logs of all other system components are reviewed periodically"
+    description: "Automated detection rules provide continuous log review"
+    rules: ["auth_failed_burst", "suspicious_powershell", "lolbin_execs", "TS-001", "TS-040"]
+    required: true
+
+  # ── Requirement 11: Test Security of Systems and Networks Regularly ──
+  - id: "11.5.1"
+    name: "Network intrusion detection and prevention techniques detect and alert"
+    description: "Network-level anomaly detection and lateral movement monitoring"
+    rules: ["psexec_usage", "remote_service_install", "large_outbound_transfer", "TS-070", "TS-072", "TS-101"]
+    required: true
+
+  - id: "11.5.1.1"
+    name: "Intrusion detection and prevention methods detect, alert on, and address covert malware communication channels"
+    description: "DNS tunnelling and exfiltration detection"
+    rules: ["dns_tunnel_volume", "TS-100"]
+    required: true

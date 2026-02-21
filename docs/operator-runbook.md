@@ -11,9 +11,9 @@ Import-Module "$env:ProgramFiles\TinySocs\modules\TinySocs.Installer.psm1"
 Test-TinySocsHealth
 ```
 
-Expected: **14/14 PASS**. Any FAIL or WARN items need investigation.
+Expected: **16/16 PASS**. Any FAIL or WARN items need investigation.
 
-> Checks 13 and 14 (webhook delivery, SMTP EHLO) are only exercised if notifications are configured.
+> Checks 13-14 (webhook, SMTP) are only exercised if notifications are configured. Check 15 (Sysmon) reports INFO if Sysmon is not installed. Check 16 (Dashboard TLS) validates cert files when network mode is enabled.
 
 ### Service Status
 
@@ -96,11 +96,43 @@ detection:
       max_age_seconds: 3600
 ```
 
-## Dashboards
+## Dashboard
 
-Access at `https://localhost:5602`.
+### TinySocs Operator Dashboard
 
-### Available Dashboards
+Access at `http://localhost:8090` (localhost mode) or `https://<ip>:8090` (network mode with TLS).
+
+| Section | Purpose |
+|---------|---------|
+| Alert Summary | Severity breakdown with 24h/48h/7d time range |
+| Alert Timeline | Alerts over time by severity |
+| Fired Detections | Detection alerts with triage (acknowledge/dismiss) |
+| Fleet Health | Agent heartbeat status and event throughput |
+| Event Explorer | Browse raw events with KQL queries |
+| Alert Rules | Manage rules, create custom rules, upload rule packs |
+| Compliance Coverage | NIST CSF, HIPAA, PCI DSS compliance reports |
+| AI Assistant | Natural language security analysis |
+
+### Dashboard TLS Configuration
+
+For network access (non-localhost), the installer generates TLS certificates automatically. To reconfigure:
+
+```powershell
+Import-Module "$env:ProgramFiles\TinySocs\modules\TinySocs.Installer.psm1"
+New-TinySocsDashboardCert
+```
+
+Cert and key are written to `C:\ProgramData\TinySocs\Assistant\certs\`. Update `assistant.env` with the paths:
+
+```
+DASHBOARD_BIND=0.0.0.0
+DASHBOARD_TLS_CERT=C:\ProgramData\TinySocs\Assistant\certs\dashboard-cert.pem
+DASHBOARD_TLS_KEY=C:\ProgramData\TinySocs\Assistant\certs\dashboard-key.pem
+```
+
+### OpenSearch Dashboards
+
+Also available at `https://localhost:5602` for direct OpenSearch access.
 
 | Dashboard | Purpose |
 |-----------|---------|
@@ -293,6 +325,70 @@ Invoke-TinySocsSmokeTest
 ```
 
 This generates test events and verifies alerts appear in the index.
+
+## Sysmon Management
+
+### Check Sysmon Status
+
+```powershell
+Get-Service Sysmon64
+```
+
+### Install or Update Sysmon
+
+```powershell
+Import-Module "$env:ProgramFiles\TinySocs\modules\TinySocs.Installer.psm1"
+Install-TinySocsSysmon
+```
+
+This installs Sysmon with the TinySocs configuration, or updates the config if Sysmon is already installed.
+
+### Remove Sysmon
+
+```powershell
+Import-Module "$env:ProgramFiles\TinySocs\modules\TinySocs.Installer.psm1"
+Uninstall-TinySocsSysmon
+```
+
+### Sysmon Configuration
+
+The TinySocs Sysmon config is at `C:\ProgramData\TinySocs\Sysmon\sysmon-config.xml`. To update the config without reinstalling:
+
+```powershell
+Sysmon64.exe -c "C:\ProgramData\TinySocs\Sysmon\sysmon-config.xml"
+```
+
+## Compliance Reports
+
+### Generate from Dashboard
+
+The Compliance Coverage card in the TinySocs dashboard shows real-time coverage for NIST CSF, HIPAA, and PCI DSS. Use the framework dropdown to switch between frameworks and the "Download Report" link to export as HTML.
+
+### Generate from CLI
+
+```powershell
+python -m tinysocs.reporting.compliance_report --framework nist_csf --hours 720 --output report.html
+```
+
+Available frameworks: `nist_csf`, `hipaa`, `pci_dss`.
+
+### Add Custom Framework
+
+Create a YAML file in `src/tinysocs/reporting/frameworks/` following the structure of `nist_csf.yaml`. The framework will automatically appear in the dashboard and CLI.
+
+## Atomic Red Team Validation
+
+Test detection coverage against known attack techniques:
+
+```powershell
+# Dry run (list tests without executing)
+.\tests\Test-AtomicDetection.ps1 -DryRun
+
+# Full run (requires admin, running TinySocs, and internet access)
+.\tests\Test-AtomicDetection.ps1
+```
+
+Results are written to `docs/detection-efficacy.md`. See [Detection Efficacy](detection-efficacy.md) for details.
 
 ## Data Retention
 

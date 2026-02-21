@@ -1,0 +1,109 @@
+# tests/atomic-tests.yaml
+# Mapping of Atomic Red Team technique tests to TinySocs detection rules.
+# Used by Test-AtomicDetection.ps1 to validate detection coverage.
+#
+# Each entry specifies:
+#   - atomic_technique: MITRE ATT&CK technique ID
+#   - technique_name: Human-readable name
+#   - atomic_test_number: Which Atomic test to run (1-based index)
+#   - expected_rules: TinySocs rule IDs that should fire
+#   - sysmon_required: Whether Sysmon must be installed for detection
+#   - timeout_seconds: How long to wait for the detection pipeline
+#   - notes: Additional context
+
+tests:
+  - atomic_technique: "T1110.001"
+    technique_name: "Brute Force — Password Guessing"
+    atomic_test_number: 1
+    expected_rules: ["TS-001", "auth_failed_burst"]
+    sysmon_required: false
+    timeout_seconds: 120
+    notes: "Generates failed logon events (4625). Threshold: 5 failures in 2h."
+
+  - atomic_technique: "T1003.001"
+    technique_name: "OS Credential Dumping — LSASS Memory"
+    atomic_test_number: 1
+    expected_rules: ["TS-060", "lsass_access"]
+    sysmon_required: true
+    timeout_seconds: 120
+    notes: "Triggers Sysmon Event 10 targeting lsass.exe."
+
+  - atomic_technique: "T1059.001"
+    technique_name: "Command and Scripting Interpreter — PowerShell"
+    atomic_test_number: 1
+    expected_rules: ["TS-030", "suspicious_powershell", "ps_script_block"]
+    sysmon_required: false
+    timeout_seconds: 120
+    notes: "Generates ScriptBlock logging (4104) and suspicious flags."
+
+  - atomic_technique: "T1053.005"
+    technique_name: "Scheduled Task/Job — Scheduled Task"
+    atomic_test_number: 1
+    expected_rules: ["TS-020", "scheduled_task_creation"]
+    sysmon_required: false
+    timeout_seconds: 120
+    notes: "Creates a scheduled task, generating event 4698."
+
+  - atomic_technique: "T1547.001"
+    technique_name: "Boot or Logon Autostart Execution — Registry Run Keys"
+    atomic_test_number: 1
+    expected_rules: ["TS-091", "registry_run_key"]
+    sysmon_required: true
+    timeout_seconds: 120
+    notes: "Modifies Run/RunOnce registry key. Requires Sysmon Event 13."
+
+  - atomic_technique: "T1543.003"
+    technique_name: "Create or Modify System Process — Windows Service"
+    atomic_test_number: 1
+    expected_rules: ["TS-090", "service_install_suspicious"]
+    sysmon_required: false
+    timeout_seconds: 120
+    notes: "Installs a service with suspicious path. Generates event 7045."
+
+  - atomic_technique: "T1070.001"
+    technique_name: "Indicator Removal — Clear Windows Event Logs"
+    atomic_test_number: 1
+    expected_rules: ["TS-080", "event_log_cleared"]
+    sysmon_required: false
+    timeout_seconds: 120
+    notes: "Clears the Security event log, generating event 1102."
+
+  - atomic_technique: "T1562.001"
+    technique_name: "Impair Defenses — Disable or Modify Tools"
+    atomic_test_number: 1
+    expected_rules: ["TS-081", "defender_tamper"]
+    sysmon_required: false
+    timeout_seconds: 120
+    notes: "Disables Windows Defender real-time protection."
+
+  - atomic_technique: "T1021.002"
+    technique_name: "Remote Services — SMB/Windows Admin Shares"
+    atomic_test_number: 1
+    expected_rules: ["TS-070", "psexec_usage"]
+    sysmon_required: false
+    timeout_seconds: 120
+    notes: "Uses PsExec-style service installation. Generates event 7045."
+
+  - atomic_technique: "T1136.001"
+    technique_name: "Create Account — Local Account"
+    atomic_test_number: 1
+    expected_rules: ["TS-010", "local_admin_create"]
+    sysmon_required: false
+    timeout_seconds: 120
+    notes: "Creates a new local user account, generating event 4720."
+
+  - atomic_technique: "T1218.011"
+    technique_name: "System Binary Proxy Execution — Rundll32"
+    atomic_test_number: 1
+    expected_rules: ["proc_creation_lolbins", "lolbin_execs"]
+    sysmon_required: false
+    timeout_seconds: 120
+    notes: "Executes rundll32 with suspicious arguments. Detected via 4688 or Sysmon 1."
+
+  - atomic_technique: "T1003.003"
+    technique_name: "OS Credential Dumping — NTDS"
+    atomic_test_number: 1
+    expected_rules: ["TS-062", "ntds_dit_access"]
+    sysmon_required: false
+    timeout_seconds: 180
+    notes: "Accesses ntds.dit. Generates event 4663. Requires domain controller or simulated access."

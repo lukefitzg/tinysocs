@@ -189,6 +189,54 @@ Copy-Item "$pd\Assistant\assistant.env.pre-upgrade.bak" "$pd\Assistant\assistant
 Restart-Service TinySocsAgent, TinySocsAssistant
 ```
 
+### 14. Dashboard certificate errors (HTTPS mode)
+
+**Symptom**: Browser shows "connection refused" or "certificate invalid" when accessing `https://<ip>:8090`.
+
+**Checklist**:
+1. Verify cert files exist: `Test-Path "C:\ProgramData\TinySocs\Assistant\certs\dashboard-cert.pem"`
+2. Check `assistant.env` has `DASHBOARD_TLS_CERT` and `DASHBOARD_TLS_KEY` set
+3. Verify `DASHBOARD_BIND=0.0.0.0` for network access
+
+**Fix**: Regenerate certificates:
+
+```powershell
+Import-Module "$env:ProgramFiles\TinySocs\modules\TinySocs.Installer.psm1"
+New-TinySocsDashboardCert
+```
+
+### 15. Sysmon conflicts with existing installation
+
+**Symptom**: Sysmon install fails or events are not captured.
+
+**Checklist**:
+1. Check if another Sysmon version is already installed: `Get-Service Sysmon64`
+2. Check for conflicting Sysmon configs: `Sysmon64.exe -c`
+
+**Fix**: Update the existing Sysmon with TinySocs config:
+
+```powershell
+Import-Module "$env:ProgramFiles\TinySocs\modules\TinySocs.Installer.psm1"
+Install-TinySocsSysmon  # Updates config on existing Sysmon installs
+```
+
+### 16. Rate limiting lockout on dashboard
+
+**Symptom**: Dashboard login returns HTTP 429 "Too many login attempts".
+
+**Cause**: 5+ failed login attempts within 60 seconds from the same IP.
+
+**Fix**: Wait 60 seconds for the rate limit window to expire, then try again with the correct password. The rate limit is in-memory and resets when the assistant service restarts.
+
+### 17. Compliance report shows empty data
+
+**Symptom**: Compliance report shows 0% coverage and no rule fire counts.
+
+**Checklist**:
+1. Verify OpenSearch is running and accessible
+2. Check that alerts exist: `curl.exe -k -u admin:PASSWORD "https://localhost:9201/tinysocs-alerts-*/_count"`
+3. Try a shorter time window or ensure the lookback period covers when alerts occurred
+
 ## Performance Issues
 
 ### OpenSearch using too much memory

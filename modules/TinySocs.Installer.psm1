@@ -8606,6 +8606,86 @@ function Ensure-TinySocsLocalCaAndServerCert {
   }
 }
 
+function New-TinySocsDashboardCert {
+  <#
+  .SYNOPSIS
+    Generate a TLS certificate for the TinySocs dashboard, signed by the existing TinySocs CA.
+  .DESCRIPTION
+    Creates a server cert with SANs for localhost, 127.0.0.1, and the machine hostname.
+    Exports cert.pem and key.pem (PKCS#8) to the output directory.
+    Reuses the TinySocs OpenSearch CA from LocalMachine\My.
+  .PARAMETER OutputDir
+    Directory to write dashboard-cert.pem and dashboard-key.pem.
+    Default: C:\ProgramData\TinySocs\Assistant\certs
+  #>
+  [CmdletBinding()]
+  param(
+    [string]$OutputDir = (Join-Path $env:ProgramData "TinySocs\Assistant\certs")
+  )
+
+  $caSubject   = "CN=TinySocs-OpenSearch-CA"
+  $dashSubject = "CN=TinySocs-Dashboard"
+
+  # Find existing CA
+  $caCert = Get-ChildItem -Path Cert:\LocalMachine\My -ErrorAction SilentlyContinue |
+    Where-Object { $_.Subject -eq $caSubject } |
+    Sort-Object NotAfter -Descending |
+    Select-Object -First 1
+
+  if (-not $caCert) {
+    throw "TinySocs CA ($caSubject) not found in LocalMachine\My. Run TinyBox install first."
+  }
+
+  # Build SAN list: localhost + hostname + machine IPs
+  $hostname = [System.Net.Dns]::GetHostName()
+  $sanParts = @("DNS=localhost", "DNS=$hostname", "IP=127.0.0.1")
+  try {
+    $ips = [System.Net.Dns]::GetHostAddresses($hostname) |
+      Where-Object { $_.AddressFamily -eq 'InterNetwork' } |
+      ForEach-Object { "IP=$($_.IPAddressToString)" }
+    if ($ips) { $sanParts += $ips }
+  } catch { }
+  $sanText = ($sanParts | Select-Object -Unique) -join "&"
+
+  # Generate dashboard server cert signed by CA
+  Write-TinySocsLog "Generating dashboard TLS certificate ($dashSubject) signed by $caSubject."
+  $dashCert = New-SelfSignedCertificate `
+    -Subject $dashSubject `
+    -CertStoreLocation "Cert:\LocalMachine\My" `
+    -KeyExportPolicy Exportable `
+    -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 `
+    -NotAfter (Get-Date).AddYears(3) `
+    -KeyUsage DigitalSignature,KeyEncipherment `
+    -Signer $caCert `
+    -TextExtension @(
+      "2.5.29.19={critical}{text}ca=false",
+      "2.5.29.17={text}$sanText"
+    )
+
+  New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
+  $certPemPath = Join-Path $OutputDir "dashboard-cert.pem"
+  $keyPemPath  = Join-Path $OutputDir "dashboard-key.pem"
+
+  # Export cert as PEM (base64 DER)
+  $certB64 = [Convert]::ToBase64String($dashCert.RawData, [System.Base64FormattingOptions]::InsertLineBreaks)
+  $certPem = "-----BEGIN CERTIFICATE-----`n$certB64`n-----END CERTIFICATE-----"
+  Set-Content -Path $certPemPath -Value $certPem -Encoding ASCII -Force
+
+  # Export private key as PKCS#8 PEM via CNG (.NET 4.6.2+)
+  try {
+    $rsa = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($dashCert)
+    $keyBytes = $rsa.Key.Export([System.Security.Cryptography.CngKeyBlobFormat]::Pkcs8PrivateBlob)
+    $keyB64 = [Convert]::ToBase64String($keyBytes, [System.Base64FormattingOptions]::InsertLineBreaks)
+    $keyPem = "-----BEGIN PRIVATE KEY-----`n$keyB64`n-----END PRIVATE KEY-----"
+    Set-Content -Path $keyPemPath -Value $keyPem -Encoding ASCII -Force
+  } catch {
+    throw "Failed to export dashboard private key as PEM (CNG/PKCS#8): $($_.Exception.Message)"
+  }
+
+  Write-TinySocsLog "Dashboard TLS cert generated: cert=$certPemPath key=$keyPemPath"
+  return @{ CertPath = $certPemPath; KeyPath = $keyPemPath }
+}
+
 function Write-TinySocsOpenSearchConfig {
   [CmdletBinding()]
   param(
@@ -14695,6 +14775,49 @@ function Test-TinySocsHealth {
     $results += @{ Check = "Email SMTP"; Status = "INFO"; Detail = $_.Exception.Message }
   }
 
+  # --- Phase 14: Sysmon and Dashboard TLS checks ---
+
+  # Check 15: Sysmon Service — optional component, INFO if not installed
+  try {
+    $sysmonSvc = Get-Service -Name "Sysmon64" -ErrorAction SilentlyContinue
+    if ($sysmonSvc) {
+      if ($sysmonSvc.Status -eq "Running") {
+        $results += @{ Check = "Sysmon Service"; Status = "PASS"; Detail = "Running" }
+      } else {
+        $results += @{ Check = "Sysmon Service"; Status = "WARN"; Detail = "Status: $($sysmonSvc.Status)" }
+      }
+    } else {
+      $results += @{ Check = "Sysmon Service"; Status = "INFO"; Detail = "Not installed (optional)" }
+    }
+  } catch {
+    $results += @{ Check = "Sysmon Service"; Status = "INFO"; Detail = $_.Exception.Message }
+  }
+
+  # Check 16: Dashboard TLS — validates cert present when network mode configured
+  try {
+    $envPath = Join-Path $env:ProgramData "TinySocs\Assistant\assistant.env"
+    $dashBind = "127.0.0.1"
+    $dashCert = ""
+    if (Test-Path -LiteralPath $envPath) {
+      foreach ($line in (Get-Content $envPath -ErrorAction SilentlyContinue)) {
+        if ($line -match '^DASHBOARD_BIND=(.+)') { $dashBind = $Matches[1].Trim() }
+        if ($line -match '^DASHBOARD_TLS_CERT=(.+)') { $dashCert = $Matches[1].Trim() }
+      }
+    }
+    if ($dashBind -ne "127.0.0.1") {
+      if ($dashCert -and (Test-Path -LiteralPath $dashCert)) {
+        $results += @{ Check = "Dashboard TLS"; Status = "PASS"; Detail = "Network mode with TLS cert present" }
+      } else {
+        $results += @{ Check = "Dashboard TLS"; Status = "FAIL"; Detail = "Network mode but no TLS cert found" }
+        $allPassed = $false
+      }
+    } else {
+      $results += @{ Check = "Dashboard TLS"; Status = "PASS"; Detail = "Localhost-only (TLS not required)" }
+    }
+  } catch {
+    $results += @{ Check = "Dashboard TLS"; Status = "WARN"; Detail = $_.Exception.Message }
+  }
+
   # Display results
   Write-Host ""
   foreach ($r in $results) {
@@ -15286,6 +15409,133 @@ function Register-TinySocsDailySummaryTask {
   } catch {
     Write-Warning "[TinySocs] Failed to register daily summary task: $($_.Exception.Message)"
     return $false
+  }
+}
+
+# -- Phase 14 M2: Sysmon auto-deployment ----------------------------------------
+
+function Install-TinySocsSysmon {
+  <#
+  .SYNOPSIS
+    Install or update Sysmon64 with the TinySocs configuration.
+  .DESCRIPTION
+    Locates Sysmon64.exe (bundled by installer or downloads from Sysinternals),
+    verifies the Microsoft Authenticode signature, and installs or updates
+    the Sysmon service with the TinySocs-specific configuration.
+  .PARAMETER SysmonExePath
+    Path to Sysmon64.exe. Default: {ProgramFiles}\TinySocs\bin\Sysmon64.exe
+  .PARAMETER ConfigPath
+    Path to sysmon-config.xml. Default: {ProgramData}\TinySocs\Sysmon\sysmon-config.xml
+  .PARAMETER DownloadIfMissing
+    Download Sysmon from Sysinternals if not found locally. Default: $true
+  #>
+  [CmdletBinding()]
+  param(
+    [string]$SysmonExePath = "",
+    [string]$ConfigPath = "",
+    [bool]$DownloadIfMissing = $true
+  )
+
+  # Resolve default paths
+  $appDir = Join-Path $env:ProgramFiles "TinySocs"
+  if (-not $SysmonExePath) {
+    $SysmonExePath = Join-Path $appDir "bin\Sysmon64.exe"
+  }
+  if (-not $ConfigPath) {
+    $ConfigPath = Join-Path $env:ProgramData "TinySocs\Sysmon\sysmon-config.xml"
+    if (-not (Test-Path $ConfigPath)) {
+      # Fallback: installer may place config alongside the binary
+      $altConfig = Join-Path (Split-Path -Parent $SysmonExePath) "sysmon-config.xml"
+      if (Test-Path $altConfig) { $ConfigPath = $altConfig }
+    }
+  }
+
+  # Download if missing
+  if (-not (Test-Path $SysmonExePath) -and $DownloadIfMissing) {
+    $binDir = Split-Path -Parent $SysmonExePath
+    New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+    $zipPath = Join-Path $binDir "Sysmon.zip"
+    $url = "https://download.sysinternals.com/files/Sysmon.zip"
+    Write-TinySocsLog "Downloading Sysmon from $url ..."
+    Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing
+    Expand-Archive -Path $zipPath -DestinationPath $binDir -Force
+    $candidate = Get-ChildItem -Recurse -File $binDir -Filter "Sysmon64.exe" | Select-Object -First 1
+    if (-not $candidate) { throw "Sysmon64.exe not found after extraction." }
+    if ($candidate.FullName -ne $SysmonExePath) {
+      Copy-Item $candidate.FullName $SysmonExePath -Force
+    }
+    Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+    Write-TinySocsLog "Sysmon64.exe downloaded to $SysmonExePath"
+  }
+
+  if (-not (Test-Path $SysmonExePath)) {
+    throw "Sysmon64.exe not found at $SysmonExePath and download disabled."
+  }
+
+  # Verify Microsoft signature
+  $sig = Get-AuthenticodeSignature -FilePath $SysmonExePath
+  if ($sig.Status -ne 'Valid' -or -not ($sig.SignerCertificate.Subject -like '*CN=Microsoft*')) {
+    throw "Sysmon64.exe signature invalid or not Microsoft-signed: Status=$($sig.Status)"
+  }
+
+  if (-not (Test-Path $ConfigPath)) {
+    throw "Sysmon config not found at $ConfigPath"
+  }
+
+  # Install or update
+  $svc = Get-Service -Name "Sysmon64" -ErrorAction SilentlyContinue
+  if ($svc) {
+    Write-TinySocsLog "Sysmon service found — updating configuration..."
+    & $SysmonExePath -c "$ConfigPath" 2>&1 | ForEach-Object { Write-Host $_ }
+  } else {
+    Write-TinySocsLog "Installing Sysmon..."
+    & $SysmonExePath -accepteula -i "$ConfigPath" 2>&1 | ForEach-Object { Write-Host $_ }
+  }
+
+  # Verify service is running
+  Start-Sleep -Seconds 2
+  $svc = Get-Service -Name "Sysmon64" -ErrorAction SilentlyContinue
+  if ($svc -and $svc.Status -eq "Running") {
+    Write-TinySocsLog "Sysmon service is running."
+  } else {
+    Write-TinySocsLog -Level "WARN" -Message "Sysmon service may not be running. Status: $($svc.Status)"
+  }
+}
+
+function Uninstall-TinySocsSysmon {
+  <#
+  .SYNOPSIS
+    Uninstall Sysmon64 service and driver.
+  #>
+  [CmdletBinding()]
+  param()
+
+  $svc = Get-Service -Name "Sysmon64" -ErrorAction SilentlyContinue
+  if (-not $svc) {
+    Write-TinySocsLog "Sysmon64 service not found. Nothing to uninstall."
+    return
+  }
+
+  # Find Sysmon exe in known locations
+  $exePaths = @(
+    (Join-Path $env:ProgramFiles "TinySocs\bin\Sysmon64.exe"),
+    (Join-Path $env:ProgramData "TinySocs\Sysmon\Sysmon64.exe"),
+    (Join-Path $env:SystemRoot "Sysmon64.exe")
+  )
+  $exe = $exePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+  if ($exe) {
+    Write-TinySocsLog "Uninstalling Sysmon via $exe ..."
+    & $exe -u force 2>&1 | ForEach-Object { Write-Host $_ }
+    Write-TinySocsLog "Sysmon uninstalled."
+  } else {
+    Write-TinySocsLog -Level "WARN" -Message "Sysmon64.exe not found for uninstall. Service may need manual removal."
+  }
+
+  # Clean up TinySocs Sysmon directory
+  $sysmonDir = Join-Path $env:ProgramData "TinySocs\Sysmon"
+  if (Test-Path $sysmonDir) {
+    Remove-Item -Path $sysmonDir -Recurse -Force -ErrorAction SilentlyContinue
+    Write-TinySocsLog "Removed $sysmonDir"
   }
 }
 

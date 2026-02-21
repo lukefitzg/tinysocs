@@ -33,8 +33,8 @@ A lightweight, privacy-first, federated SIEM assistant. Wraps OpenSearch and use
 1. Download `TinySocs-Setup.exe`
 2. Run as Administrator, select **TinyBox** role
 3. Follow the wizard (configure secrets, notifications)
-4. Verify: `Test-TinySocsHealth` (expect 14/14 PASS)
-5. Open dashboards: `https://localhost:5602`
+4. Verify: `Test-TinySocsHealth` (expect 16/16 PASS)
+5. Open dashboard: `http://localhost:8090` (or `https://<ip>:8090` in network mode)
 
 See the full [Getting Started Guide](docs/getting-started.md).
 
@@ -65,13 +65,16 @@ python -m tinysocs.api.bot   # start bot API (port 8090)
 - **Detection Engine**: YAML-based rules with KQL queries, threshold grouping, rDNS enrichment
 - **Multi-LLM Support**: Claude (Anthropic), GPT-4o (OpenAI), local models (Ollama)
 - **Action Execution**: `block_ip`, `disable_user`, `isolate_host` with dry-run and audit trail
-- **Operator Dashboards**: Alert timeline, detection rules, fleet health, event explorer
+- **Operator Dashboard**: HTTPS-capable web UI with alerts, detection rules, fleet health, event explorer, AI assistant
+- **Compliance Reports**: One-click NIST CSF, HIPAA, PCI DSS coverage reports
+- **Sysmon Integration**: Auto-deploy Sysmon with optimised configuration for enhanced endpoint telemetry
 - **Notifications**: Slack/Teams webhooks, SMTP email alerts with retry queue
 - **Daily Summaries**: Automated HTML email digests with alert trends
 - **Privacy-First**: Field redaction, hashing, truncation; data stays on-prem
 - **Federated**: Multi-node architecture with HMAC-authenticated evidence ledger
 - **Schema-Defined**: JSON Schema for events and alerts, with compliance tests
 - **40+ Detection Rules**: MITRE ATT&CK mapped across 8 categories
+- **CI/CD**: GitHub Actions with Windows + Linux test runners
 
 ## Documentation
 
@@ -79,6 +82,9 @@ python -m tinysocs.api.bot   # start bot API (port 8090)
 - [Operator Runbook](docs/operator-runbook.md) — Day-to-day operations reference
 - [Troubleshooting](docs/troubleshooting.md) — Common issues and fixes
 - [Detection Coverage](docs/detection-coverage.md) — Rules matrix with MITRE ATT&CK mapping
+- [Pilot Guide](docs/pilot-guide.md) — Pilot evaluation walkthrough
+- [FAQ](docs/faq.md) — Common questions and answers
+- [MSSP Guide](docs/mssp-guide.md) — Multi-client deployment for MSSPs
 - [Event Schema](schema/event-schema.json) — JSON Schema for `tinysocs-winlog-*` documents
 - [Alert Schema](schema/alert-schema.json) — JSON Schema for `tinysocs-alerts-*` documents
 

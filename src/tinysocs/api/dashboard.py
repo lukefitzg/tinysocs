@@ -23,8 +23,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import Body, FastAPI, Header, Query
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import Body, FastAPI, Header, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 dashboard_app = FastAPI(title="TinySocs Dashboard", docs_url=None, redoc_url=None)
 
@@ -93,9 +93,48 @@ def _validate_session(token: str) -> bool:
     return True
 
 
+# ---------------------------------------------------------------------------
+# Rate limiting for login endpoint (anti-brute-force) — Phase 14 M0
+# ---------------------------------------------------------------------------
+import time as _time_mod
+
+_login_attempts: Dict[str, list] = {}  # IP -> [timestamps]
+_RATE_LIMIT_WINDOW = 60   # seconds
+_RATE_LIMIT_MAX = 5       # max attempts per window
+
+
+def _check_rate_limit(ip: str) -> bool:
+    """Return True if the IP is rate-limited (should block)."""
+    now = _time_mod.time()
+    attempts = _login_attempts.get(ip, [])
+    attempts = [t for t in attempts if now - t < _RATE_LIMIT_WINDOW]
+    _login_attempts[ip] = attempts
+    return len(attempts) >= _RATE_LIMIT_MAX
+
+
+def _record_login_attempt(ip: str) -> None:
+    """Record a login attempt for rate limiting."""
+    now = _time_mod.time()
+    if ip not in _login_attempts:
+        _login_attempts[ip] = []
+    _login_attempts[ip].append(now)
+    # GC: prune stale IPs when dict grows large
+    if len(_login_attempts) > 1000:
+        cutoff = now - _RATE_LIMIT_WINDOW
+        stale = [k for k, v in _login_attempts.items() if not v or v[-1] < cutoff]
+        for k in stale:
+            _login_attempts.pop(k, None)
+
+
 @dashboard_app.post("/api/auth/login")
-def api_auth_login(body: Dict[str, Any] = Body(...)):
+def api_auth_login(request: Request, body: Dict[str, Any] = Body(...)):
     """Authenticate with the admin password (SIEM_PASS)."""
+    client_ip = request.client.host if request.client else "unknown"
+    if _check_rate_limit(client_ip):
+        return JSONResponse(status_code=429, content={
+            "error": "Too many login attempts. Try again in 60 seconds."
+        })
+    _record_login_attempt(client_ip)
     password = body.get("password", "")
     admin_pw = _get_admin_password()
     if not admin_pw:
@@ -2726,6 +2765,73 @@ def api_diag():
 
 
 # ---------------------------------------------------------------------------
+# Compliance report endpoints (Phase 14 M4)
+# ---------------------------------------------------------------------------
+@dashboard_app.get("/api/compliance/frameworks")
+def api_compliance_frameworks():
+    """List available compliance frameworks."""
+    try:
+        from tinysocs.reporting.compliance_report import list_frameworks, load_framework
+        names = list_frameworks()
+        frameworks = []
+        for name in names:
+            fw = load_framework(name)
+            frameworks.append({
+                "id": name,
+                "name": fw.get("name", name),
+                "version": fw.get("version", ""),
+                "description": fw.get("description", ""),
+            })
+        return {"ok": True, "frameworks": frameworks}
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
+
+
+@dashboard_app.get("/api/compliance/report")
+async def api_compliance_report(
+    framework: str = Query("nist_csf"),
+    hours: int = Query(720, ge=1, le=8760),
+):
+    """Generate compliance report data as JSON."""
+    try:
+        from tinysocs.reporting.compliance_report import generate_compliance_report
+        loop = asyncio.get_event_loop()
+        report = await loop.run_in_executor(
+            _os_executor, generate_compliance_report, framework, hours
+        )
+        return {"ok": True, **report}
+    except FileNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"ok": False, "error": str(exc)})
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
+
+
+@dashboard_app.get("/api/compliance/report/html")
+async def api_compliance_report_html(
+    framework: str = Query("nist_csf"),
+    hours: int = Query(720, ge=1, le=8760),
+):
+    """Generate and download compliance report as HTML."""
+    try:
+        from tinysocs.reporting.compliance_report import generate_compliance_report, render_html
+        loop = asyncio.get_event_loop()
+        report = await loop.run_in_executor(
+            _os_executor, generate_compliance_report, framework, hours
+        )
+        html = render_html(report)
+        fw_name = report["framework"]["name"].replace(" ", "_")
+        return Response(
+            content=html,
+            media_type="text/html",
+            headers={"Content-Disposition": f'attachment; filename="compliance_{fw_name}.html"'},
+        )
+    except FileNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"ok": False, "error": str(exc)})
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
+
+
+# ---------------------------------------------------------------------------
 # HTML dashboard (single page, inline everything)
 # ---------------------------------------------------------------------------
 @dashboard_app.get("/", response_class=HTMLResponse)
@@ -3318,6 +3424,41 @@ select { cursor: pointer; }
       </div>
 
       <div id="rules-content"><div class="loading">Loading...</div></div>
+    </div>
+
+    <!-- Compliance Reports (Phase 14 M4) -->
+    <div class="card full" id="compliance-card">
+      <div class="card-header-sticky" style="display:flex;align-items:center;gap:12px">
+        <h2 style="margin:0;white-space:nowrap">Compliance Coverage</h2>
+        <select id="complianceFramework" onchange="loadComplianceReport()" style="font-size:12px;padding:4px 8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px">
+          <option value="">Loading frameworks...</option>
+        </select>
+        <select id="complianceHours" onchange="loadComplianceReport()" style="font-size:12px;padding:4px 8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px">
+          <option value="168">7 days</option>
+          <option value="720" selected>30 days</option>
+          <option value="2160">90 days</option>
+        </select>
+        <a id="complianceDownload" href="#" style="display:none;font-size:11px;padding:4px 10px;background:var(--accent);color:#fff;border-radius:4px;text-decoration:none;margin-left:auto" download>Download Report</a>
+      </div>
+      <div id="compliance-summary" style="display:none;display:flex;gap:12px;margin:12px 0">
+        <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
+          <div id="comp-coverage" style="font-size:24px;font-weight:700;color:var(--text)">—</div>
+          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Coverage</div>
+        </div>
+        <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
+          <div id="comp-covered" style="font-size:24px;font-weight:700;color:#00b894">—</div>
+          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Covered</div>
+        </div>
+        <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
+          <div id="comp-notmapped" style="font-size:24px;font-weight:700;color:#b2bec3">—</div>
+          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Not Mapped</div>
+        </div>
+        <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
+          <div id="comp-total" style="font-size:24px;font-weight:700;color:var(--text)">—</div>
+          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Total Controls</div>
+        </div>
+      </div>
+      <div id="compliance-content"><div class="loading">Loading...</div></div>
     </div>
   </div>
 
@@ -4540,7 +4681,7 @@ function refreshAll() {
   // Load local data (rules) immediately — no SIEM dependency
   loadRules();
   // Load SIEM-dependent data; only refresh Event Explorer when Live is on
-  const tasks = [loadSummary(), loadTimeline(), loadDetections(), loadFleet()];
+  const tasks = [loadSummary(), loadTimeline(), loadDetections(), loadFleet(), loadComplianceReport()];
   if (_eventsLive) tasks.push(loadEvents(true));
   Promise.all(tasks)
     .then(() => {
@@ -5060,6 +5201,7 @@ function unlockDashboard() {
   document.getElementById('dashboardContent').style.display = 'block';
   checkLlmStatus();
   restoreChat();
+  loadComplianceFrameworks();
   refreshAll();
 }
 
@@ -5167,6 +5309,69 @@ saveSettings = async function() {
     else { statusEl.innerHTML = '<div class="status-msg ok">' + escapeHtml(d.message) + '</div>'; setTimeout(() => closeSettings(), 1200); }
   } catch(e) { statusEl.innerHTML = '<div class="status-msg err">' + escapeHtml(e.message) + '</div>'; }
 };
+
+// --- Compliance Reports (Phase 14 M4) ---
+async function loadComplianceFrameworks() {
+  try {
+    const r = await fetch(BASE + '/api/compliance/frameworks', {headers:{'Authorization':'Bearer '+_authToken}});
+    const d = await r.json();
+    if (!d.ok || !d.frameworks) return;
+    const sel = document.getElementById('complianceFramework');
+    sel.innerHTML = '';
+    d.frameworks.forEach(fw => {
+      const opt = document.createElement('option');
+      opt.value = fw.id;
+      opt.textContent = fw.name;
+      sel.appendChild(opt);
+    });
+    loadComplianceReport();
+  } catch(e) { console.log('compliance frameworks error:', e); }
+}
+
+async function loadComplianceReport() {
+  const fw = document.getElementById('complianceFramework').value;
+  if (!fw) return;
+  const hrs = document.getElementById('complianceHours').value;
+  const el = document.getElementById('compliance-content');
+  const sumEl = document.getElementById('compliance-summary');
+  el.innerHTML = '<div class="loading">Loading...</div>';
+  try {
+    const r = await fetch(BASE + '/api/compliance/report?framework=' + encodeURIComponent(fw) + '&hours=' + hrs, {headers:{'Authorization':'Bearer '+_authToken}});
+    const d = await r.json();
+    if (!d.ok) { el.innerHTML = '<div style="color:var(--muted);font-size:13px">Error: ' + escapeHtml(d.error||'Unknown') + '</div>'; return; }
+    // Update summary
+    sumEl.style.display = 'flex';
+    document.getElementById('comp-coverage').textContent = d.summary.coverage_pct + '%';
+    document.getElementById('comp-covered').textContent = d.summary.covered;
+    document.getElementById('comp-notmapped').textContent = d.summary.not_mapped;
+    document.getElementById('comp-total').textContent = d.summary.total_controls;
+    // Update download link
+    const dl = document.getElementById('complianceDownload');
+    dl.href = BASE + '/api/compliance/report/html?framework=' + encodeURIComponent(fw) + '&hours=' + hrs;
+    dl.style.display = 'inline-block';
+    // Build controls table
+    let html = '<table style="width:100%;border-collapse:collapse;font-size:12px">';
+    html += '<tr style="border-bottom:1px solid var(--border)"><th style="text-align:left;padding:6px 8px;color:var(--muted);font-size:10px;text-transform:uppercase">Control</th><th style="text-align:left;padding:6px 8px;color:var(--muted);font-size:10px;text-transform:uppercase">Name</th><th style="text-align:left;padding:6px 8px;color:var(--muted);font-size:10px;text-transform:uppercase">Status</th><th style="text-align:left;padding:6px 8px;color:var(--muted);font-size:10px;text-transform:uppercase">Rules</th><th style="text-align:right;padding:6px 8px;color:var(--muted);font-size:10px;text-transform:uppercase">Events</th></tr>';
+    (d.controls||[]).forEach(c => {
+      const statusColors = {active:'#00b894',deployed:'#fdcb6e',not_mapped:'#b2bec3'};
+      const statusLabels = {active:'Active',deployed:'Deployed',not_mapped:'Not Mapped'};
+      const sc = statusColors[c.status]||'#b2bec3';
+      const sl = statusLabels[c.status]||c.status;
+      const rules = c.mapped_rules && c.mapped_rules.length ? c.mapped_rules.join(', ') : '&mdash;';
+      html += '<tr style="border-bottom:1px solid var(--border)">';
+      html += '<td style="padding:6px 8px;font-weight:500">' + escapeHtml(c.id) + '</td>';
+      html += '<td style="padding:6px 8px" title="' + escapeHtml(c.description||'') + '">' + escapeHtml(c.name) + '</td>';
+      html += '<td style="padding:6px 8px"><span style="color:' + sc + ';font-weight:600">' + sl + '</span></td>';
+      html += '<td style="padding:6px 8px;font-size:11px;color:var(--muted)">' + rules + '</td>';
+      html += '<td style="padding:6px 8px;text-align:right">' + (c.fire_count||0) + '</td>';
+      html += '</tr>';
+    });
+    html += '</table>';
+    el.innerHTML = html;
+  } catch(e) {
+    el.innerHTML = '<div style="color:var(--muted);font-size:13px">Failed to load compliance data.</div>';
+  }
+}
 
 // Boot: check existing session
 checkExistingSession();

@@ -1,0 +1,99 @@
+name: "NIST Cybersecurity Framework 2.0"
+version: "2.0"
+description: "Mapping of TinySocs detections to NIST CSF 2.0 categories and subcategories."
+
+controls:
+  # ── IDENTIFY (ID) ──
+  - id: "ID.AM-01"
+    name: "Inventories of hardware managed by the organization are maintained"
+    description: "Asset inventory through endpoint agent deployment"
+    rules: []
+    required: false
+
+  # ── PROTECT (PR) ──
+  - id: "PR.AC-01"
+    name: "Identities and credentials are issued, managed, verified, revoked, and audited"
+    description: "Account lifecycle monitoring — creation, modification, deletion"
+    rules: ["local_admin_create", "TS-010"]
+    required: true
+
+  - id: "PR.AC-07"
+    name: "Users, devices, and other assets are authenticated"
+    description: "Authentication event monitoring and brute-force detection"
+    rules: ["auth_failed_burst", "rdp_brute_force", "TS-001", "TS-002", "TS-071"]
+    required: true
+
+  - id: "PR.AT-01"
+    name: "All users are informed and trained"
+    description: "Security awareness — not directly monitored by SIEM"
+    rules: []
+    required: false
+
+  - id: "PR.DS-01"
+    name: "Data-at-rest is protected"
+    description: "File integrity and access monitoring"
+    rules: ["ntds_dit_access", "TS-062"]
+    required: true
+
+  - id: "PR.PS-01"
+    name: "Configuration baselines are established and maintained"
+    description: "Registry and service configuration monitoring"
+    rules: ["registry_run_key", "service_install_suspicious", "TS-091", "TS-090"]
+    required: true
+
+  # ── DETECT (DE) ──
+  - id: "DE.CM-01"
+    name: "Networks and network services are monitored"
+    description: "Network connection monitoring and anomaly detection"
+    rules: ["large_outbound_transfer", "dns_tunnel_volume", "firewall_deny_burst", "TS-100", "TS-101"]
+    required: true
+
+  - id: "DE.CM-03"
+    name: "Personnel activity and technology usage are monitored"
+    description: "User behaviour monitoring, process execution, script logging"
+    rules: ["suspicious_powershell", "proc_creation_powershell_suspicious", "lolbin_execs", "ps_script_block", "scriptblock_base64", "TS-030", "TS-040", "TS-050"]
+    required: true
+
+  - id: "DE.CM-06"
+    name: "External service provider activity and services are monitored"
+    description: "Cloud and remote access monitoring"
+    rules: ["vpn_geo_impossible", "m365_mfa_fatigue", "m365_mail_forward_rule"]
+    required: false
+
+  - id: "DE.CM-09"
+    name: "Computing hardware and software, runtime environments, and their data are monitored"
+    description: "Endpoint process and file system monitoring via Sysmon"
+    rules: ["sysmon_proc_creation", "startup_folder_write", "timestomp_detected", "TS-050", "TS-092", "TS-083"]
+    required: true
+
+  - id: "DE.AE-02"
+    name: "Potentially adverse events are analyzed to better understand associated activities"
+    description: "Alert triage and correlation — detection rules fire and generate alerts"
+    rules: ["auth_failed_burst", "lsass_access", "psexec_usage", "event_log_cleared", "TS-001", "TS-060", "TS-070", "TS-080"]
+    required: true
+
+  - id: "DE.AE-03"
+    name: "Events are correlated from multiple sources and sensors"
+    description: "Multi-source event correlation (Windows Security, Sysmon, PowerShell, Defender)"
+    rules: ["credential_dumping_tools", "defender_tamper", "amsi_bypass", "TS-061", "TS-081", "TS-082"]
+    required: true
+
+  # ── RESPOND (RS) ──
+  - id: "RS.AN-01"
+    name: "Notifications from detection systems are investigated"
+    description: "Alert review and investigation through dashboard and AI assistant"
+    rules: []
+    required: false
+
+  - id: "RS.AN-03"
+    name: "Analysis is performed to establish what has taken place during an incident"
+    description: "Event explorer and KQL query capability for incident analysis"
+    rules: []
+    required: false
+
+  # ── RECOVER (RC) ──
+  - id: "RC.RP-01"
+    name: "The recovery plan is executed during or after a cybersecurity incident"
+    description: "Incident response — action staging and guided remediation"
+    rules: []
+    required: false

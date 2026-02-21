@@ -243,6 +243,14 @@ Source: "..\opensearch\programdata\security\*"; \
     Flags: ignoreversion recursesubdirs createallsubdirs onlyifdoesntexist
 #endif
 
+; Phase 14 M2: Sysmon binary + config (bundled during build, gitignored)
+#if FileExists('..\..\sysmon-bin\Sysmon64.exe')
+Source: "..\..\sysmon-bin\Sysmon64.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
+#endif
+Source: "..\..\integrations\sysmon\sysmon-config.xml"; \
+    DestDir: "{commonappdata}\TinySocs\Sysmon"; \
+    Flags: ignoreversion onlyifdoesntexist
+
 [Dirs]
 Name: "{commonappdata}\TinySocs"
 Name: "{commonappdata}\TinySocs\logs"; Permissions: users-modify
@@ -251,6 +259,7 @@ Name: "{commonappdata}\TinySocs\config"
 Name: "{commonappdata}\TinySocs\rules"
 Name: "{commonappdata}\TinySocs\anchors\state"
 Name: "{commonappdata}\TinySocs\ledger"
+Name: "{commonappdata}\TinySocs\Sysmon"
 
 ; TinySocs collector agent directories under ProgramData
 Name: "{commonappdata}\TinySocs\Collector"
@@ -320,6 +329,7 @@ var
   SecurityPage: TWizardPage;
   LlmPage: TWizardPage;
   NotifPage: TWizardPage;
+  DashAccessPage: TWizardPage;
 
   RoleNodeRadio: TRadioButton;
   RoleMasterRadio: TRadioButton;
@@ -344,6 +354,13 @@ var
   SmtpHostEdit: TNewEdit;
   EmailFromEdit: TNewEdit;
   EmailToEdit: TNewEdit;
+
+  DashLocalhostRadio: TRadioButton;
+  DashNetworkRadio: TRadioButton;
+  DashboardBind: String;
+
+  SysmonPage: TWizardPage;
+  SysmonInstallCheck: TNewCheckBox;
 
   SelectedRole: Integer;
   InstallTinyBox: Boolean;
@@ -1090,6 +1107,92 @@ begin
   EmailToEdit.Width := NotifPage.SurfaceWidth;
   EmailToEdit.Text := '';
 
+  { ---- Page 5: Dashboard Access (Phase 14 M0) ---- }
+  DashAccessPage := CreateCustomPage(NotifPage.ID, 'Dashboard Access',
+    'Choose how the dashboard can be accessed.');
+
+  L := TNewStaticText.Create(DashAccessPage.Surface);
+  L.Parent := DashAccessPage.Surface;
+  L.Left := 0;
+  L.Top := ScaleY(4);
+  L.Width := DashAccessPage.SurfaceWidth;
+  L.WordWrap := True;
+  L.AutoSize := True;
+  L.Caption := 'The TinySocs dashboard provides a web UI for managing alerts and detections. ' +
+    'Choose whether the dashboard should be accessible only from this machine or from the local network.';
+
+  DashLocalhostRadio := TRadioButton.Create(DashAccessPage.Surface);
+  DashLocalhostRadio.Parent := DashAccessPage.Surface;
+  DashLocalhostRadio.Left := 0;
+  DashLocalhostRadio.Top := ScaleY(48);
+  DashLocalhostRadio.Width := DashAccessPage.SurfaceWidth;
+  DashLocalhostRadio.Height := ScaleY(20);
+  DashLocalhostRadio.Caption := '&Localhost only (recommended)';
+  DashLocalhostRadio.Checked := True;
+
+  L := TNewStaticText.Create(DashAccessPage.Surface);
+  L.Parent := DashAccessPage.Surface;
+  L.Left := ScaleX(20);
+  L.Top := DashLocalhostRadio.Top + ScaleY(20);
+  L.Width := DashAccessPage.SurfaceWidth - ScaleX(20);
+  L.WordWrap := True;
+  L.AutoSize := True;
+  L.Caption := 'Dashboard accessible only from this machine (http://localhost:8090/dashboard). No TLS certificate required.';
+  L.Font.Color := $666666;
+
+  DashNetworkRadio := TRadioButton.Create(DashAccessPage.Surface);
+  DashNetworkRadio.Parent := DashAccessPage.Surface;
+  DashNetworkRadio.Left := 0;
+  DashNetworkRadio.Top := L.Top + ScaleY(36);
+  DashNetworkRadio.Width := DashAccessPage.SurfaceWidth;
+  DashNetworkRadio.Height := ScaleY(20);
+  DashNetworkRadio.Caption := '&Network accessible (generates TLS certificate)';
+
+  L := TNewStaticText.Create(DashAccessPage.Surface);
+  L.Parent := DashAccessPage.Surface;
+  L.Left := ScaleX(20);
+  L.Top := DashNetworkRadio.Top + ScaleY(20);
+  L.Width := DashAccessPage.SurfaceWidth - ScaleX(20);
+  L.WordWrap := True;
+  L.AutoSize := True;
+  L.Caption := 'Dashboard accessible from other machines on the network via HTTPS. ' +
+    'A TLS certificate will be generated automatically using the TinySocs CA.';
+  L.Font.Color := $666666;
+
+  { ---- Page 6: Sysmon (Phase 14 M2) ---- }
+  SysmonPage := CreateCustomPage(DashAccessPage.ID, 'Enhanced Detection',
+    'Install Sysmon for advanced endpoint visibility.');
+
+  L := TNewStaticText.Create(SysmonPage.Surface);
+  L.Parent := SysmonPage.Surface;
+  L.Left := 0;
+  L.Top := ScaleY(4);
+  L.Width := SysmonPage.SurfaceWidth;
+  L.WordWrap := True;
+  L.AutoSize := True;
+  L.Caption := 'Sysmon (System Monitor) provides detailed logging of process creation, ' +
+    'network connections, file changes, registry modifications, and DNS queries. ' +
+    'Many TinySocs detection rules depend on Sysmon events for full coverage.';
+
+  SysmonInstallCheck := TNewCheckBox.Create(SysmonPage.Surface);
+  SysmonInstallCheck.Parent := SysmonPage.Surface;
+  SysmonInstallCheck.Left := 0;
+  SysmonInstallCheck.Top := ScaleY(56);
+  SysmonInstallCheck.Width := SysmonPage.SurfaceWidth;
+  SysmonInstallCheck.Caption := '&Install Sysmon with TinySocs configuration (recommended)';
+  SysmonInstallCheck.Checked := True;
+
+  L := TNewStaticText.Create(SysmonPage.Surface);
+  L.Parent := SysmonPage.Surface;
+  L.Left := ScaleX(20);
+  L.Top := SysmonInstallCheck.Top + ScaleY(24);
+  L.Width := SysmonPage.SurfaceWidth - ScaleX(20);
+  L.WordWrap := True;
+  L.AutoSize := True;
+  L.Caption := 'Requires administrator rights. Sysmon can be removed later ' +
+    'via the uninstaller or by running: Uninstall-TinySocsSysmon';
+  L.Font.Color := $666666;
+
   { ---- Smart defaults ---- }
   SelectedRole := ROLE_TINYBOX;
   InstallTinyBox := True;
@@ -1111,6 +1214,7 @@ begin
   EmailFrom := '';
   EmailTo := '';
   EmailEnabled := False;
+  DashboardBind := '127.0.0.1';
   PsRunCounter := 0;
 end;
 
@@ -2136,6 +2240,63 @@ begin
       else
         Log('CurStepChanged: Daily summary scheduled task registered successfully.');
     end;
+
+    { ---- Phase 14 M0: Dashboard access mode ---- }
+    Log('CurStepChanged: Phase 14 — Dashboard access config');
+    if DashNetworkRadio.Checked then
+      DashboardBind := '0.0.0.0'
+    else
+      DashboardBind := '127.0.0.1';
+
+    if DashboardBind = '0.0.0.0' then
+    begin
+      Script :=
+        '$ErrorActionPreference = "Continue"' + CRLF +
+        'Import-Module "' + PsEscape(InstallerModule) + '" -Force' + CRLF +
+        'try {' + CRLF +
+        '  Write-Host "[TinySocs][Inno] Generating dashboard TLS certificate..."' + CRLF +
+        '  $certs = New-TinySocsDashboardCert' + CRLF +
+        '  $envFile = Join-Path $env:ProgramData "TinySocs\Assistant\assistant.env"' + CRLF +
+        '  if (Test-Path $envFile) {' + CRLF +
+        '    $lines = @(Get-Content $envFile)' + CRLF +
+        '    $lines = $lines | Where-Object { $_ -notmatch "^DASHBOARD_(BIND|TLS_CERT|TLS_KEY)=" }' + CRLF +
+        '    $lines += "DASHBOARD_BIND=0.0.0.0"' + CRLF +
+        '    $lines += ("DASHBOARD_TLS_CERT=" + $certs.CertPath)' + CRLF +
+        '    $lines += ("DASHBOARD_TLS_KEY=" + $certs.KeyPath)' + CRLF +
+        '    Set-Content -Path $envFile -Value $lines -Encoding UTF8' + CRLF +
+        '  }' + CRLF +
+        '  Write-Host "[TinySocs][Inno] Dashboard configured for network access with TLS."' + CRLF +
+        '} catch {' + CRLF +
+        '  Write-Warning ("[TinySocs][Inno] Dashboard TLS cert generation failed (non-fatal): " + $_.Exception.Message)' + CRLF +
+        '}' + CRLF;
+      if not RunPowerShellScript(Script) then
+        Log('CurStepChanged: Dashboard TLS cert generation failed (non-fatal).')
+      else
+        Log('CurStepChanged: Dashboard TLS cert generated successfully.');
+    end
+    else
+      Log('CurStepChanged: Dashboard configured for localhost-only access.');
+
+    { ---- Phase 14 M2: Sysmon deployment ---- }
+    if SysmonInstallCheck.Checked then
+    begin
+      Log('CurStepChanged: Phase 14 — Installing Sysmon');
+      Script :=
+        '$ErrorActionPreference = "Continue"' + CRLF +
+        'Import-Module "' + PsEscape(InstallerModule) + '" -Force' + CRLF +
+        'try {' + CRLF +
+        '  Install-TinySocsSysmon' + CRLF +
+        '  Write-Host "[TinySocs][Inno] Sysmon installed successfully."' + CRLF +
+        '} catch {' + CRLF +
+        '  Write-Warning ("[TinySocs][Inno] Sysmon install failed (non-fatal): " + $_.Exception.Message)' + CRLF +
+        '}' + CRLF;
+      if not RunPowerShellScript(Script) then
+        Log('CurStepChanged: Sysmon install failed (non-fatal).')
+      else
+        Log('CurStepChanged: Sysmon installed successfully.');
+    end
+    else
+      Log('CurStepChanged: Sysmon install skipped by user.');
 
     Log('CurStepChanged(ssPostInstall): end');
   except

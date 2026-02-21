@@ -5,10 +5,11 @@ This guide walks you through installing TinySocs and verifying a working system 
 ## Prerequisites
 
 - **Windows Server 2016+** or **Windows 10/11 Pro** (64-bit)
-- **4 GB RAM minimum** (8 GB recommended for TinyBox all-in-one mode)
+- **8 GB RAM minimum** (16 GB recommended for TinyBox all-in-one mode)
 - **PowerShell 5.1+** (PowerShell 7 recommended)
 - **Administrator access**
 - **.NET 8.0 Runtime** (bundled with agent)
+- **20 GB free disk space** (50 GB recommended)
 
 ## Step 1: Run the Installer
 
@@ -20,7 +21,9 @@ This guide walks you through installing TinySocs and verifying a working system 
 6. Configure notifications (optional):
    - **Webhook URL**: Paste a Slack/Teams webhook URL to get alert notifications
    - **Email**: Enter SMTP settings if you want email alerts
-7. Click **Install** and wait for the post-install steps to complete (~2-3 minutes)
+7. **Dashboard Access**: Choose "Localhost only" (default, HTTP) or "Network accessible" (auto-generates TLS certificates for HTTPS)
+8. **Enhanced Detection**: Leave "Install Sysmon" checked for detailed endpoint telemetry (recommended)
+9. Click **Install** and wait for the post-install steps to complete (~3 minutes)
 
 ## Step 2: Verify Health
 
@@ -31,25 +34,29 @@ Import-Module "$env:ProgramFiles\TinySocs\modules\TinySocs.Installer.psm1"
 Test-TinySocsHealth
 ```
 
-You should see **14/14 PASS**. If any checks fail, see the [Troubleshooting Guide](troubleshooting.md).
+You should see **16/16 PASS**. If any checks fail, see the [Troubleshooting Guide](troubleshooting.md).
 
-> **New in v0.8.0 (Phase 13)**: Health checks now include webhook delivery (#13) and email SMTP connectivity (#14).
+> **New in Phase 14**: Health checks now include Sysmon service status (#15) and Dashboard TLS configuration (#16).
 
 ## Step 3: Open Dashboards
 
-Open a browser and navigate to:
+Open a browser and navigate to the TinySocs operator dashboard:
 
-```
-https://localhost:5602
-```
+- **Localhost mode**: `http://localhost:8090`
+- **Network mode**: `https://<machine-ip>:8090` (accept the self-signed certificate warning)
 
-Log in with the SIEM credentials you configured during install (default user: `admin`).
+Log in with the dashboard password you set during install.
 
-You should see 4 pre-built dashboards:
-- **Alert Timeline** — Bar chart of alerts over time by severity
-- **Detection Rules** — Table of active rules with fire counts
+The dashboard includes:
+- **Alert Summary** — Severity breakdown and timeline
+- **Fired Detections** — Detection alerts with triage actions
 - **Fleet Health** — Agent heartbeat status and event throughput
-- **Event Explorer** — Browse raw Windows events
+- **Event Explorer** — Browse raw Windows events with KQL queries
+- **Alert Rules** — Manage detection rules, create custom rules
+- **Compliance Coverage** — NIST CSF, HIPAA, PCI DSS compliance reports
+- **AI Assistant** — Ask questions about your security posture in plain English
+
+You can also access OpenSearch Dashboards directly at `https://localhost:5602`.
 
 ## Step 4: Trigger a Test Alert
 
@@ -114,5 +121,8 @@ This generates test events, waits for the detection engine to process them, and 
 - Read the [Operator Runbook](operator-runbook.md) for day-to-day operations
 - Check [Troubleshooting](troubleshooting.md) if anything went wrong
 - Review the [Detection Coverage Matrix](detection-coverage.md) for rule details and MITRE ATT&CK mapping
+- Generate a [Compliance Report](pilot-guide.md#compliance-reporting) for NIST CSF, HIPAA, or PCI DSS
 - Review and customize detection rules in `C:\ProgramData\TinySocs\Collector\rules\rules.yml`
 - Review the JSON schemas in the `schema/` directory for event and alert document formats
+- See the [Pilot Guide](pilot-guide.md) for a week-1 evaluation checklist
+- See the [FAQ](faq.md) for common questions

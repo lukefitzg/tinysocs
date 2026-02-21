@@ -1,0 +1,66 @@
+name: "HIPAA Security Rule"
+version: "2013 (45 CFR Part 164)"
+description: "Mapping of TinySocs detections to HIPAA Security Rule technical safeguards."
+
+controls:
+  # ── Administrative Safeguards (164.308) ──
+  - id: "164.308(a)(1)(ii)(D)"
+    name: "Information System Activity Review"
+    description: "Regular review of audit logs, access reports, and security incident tracking"
+    rules: ["auth_failed_burst", "local_admin_create", "event_log_cleared", "TS-001", "TS-010", "TS-080"]
+    required: true
+
+  - id: "164.308(a)(5)(ii)(C)"
+    name: "Log-in Monitoring"
+    description: "Monitoring of login attempts to detect unauthorized access"
+    rules: ["auth_failed_burst", "rdp_brute_force", "TS-001", "TS-002", "TS-071"]
+    required: true
+
+  - id: "164.308(a)(6)(ii)"
+    name: "Response and Reporting"
+    description: "Security incident response procedures and documentation"
+    rules: []
+    required: false
+
+  # ── Technical Safeguards (164.312) ──
+  - id: "164.312(a)(1)"
+    name: "Access Control"
+    description: "Technical policies to allow access only to authorized persons"
+    rules: ["local_admin_create", "lsass_access", "credential_dumping_tools", "TS-010", "TS-060", "TS-061"]
+    required: true
+
+  - id: "164.312(a)(2)(i)"
+    name: "Unique User Identification"
+    description: "Assign a unique name/number to identify and track user identity"
+    rules: ["auth_failed_burst", "TS-001"]
+    required: true
+
+  - id: "164.312(a)(2)(iii)"
+    name: "Automatic Logoff"
+    description: "Session timeout monitoring"
+    rules: []
+    required: false
+
+  - id: "164.312(b)"
+    name: "Audit Controls"
+    description: "Hardware, software, and procedure mechanisms to record and examine activity"
+    rules: ["event_log_cleared", "defender_tamper", "ps_transcription_off", "TS-080", "TS-081"]
+    required: true
+
+  - id: "164.312(c)(1)"
+    name: "Integrity — Mechanism to authenticate ePHI"
+    description: "File integrity monitoring and tampering detection"
+    rules: ["timestomp_detected", "ntds_dit_access", "TS-083", "TS-062"]
+    required: true
+
+  - id: "164.312(d)"
+    name: "Person or Entity Authentication"
+    description: "Verify that a person seeking access to ePHI is who they claim to be"
+    rules: ["auth_failed_burst", "m365_mfa_fatigue", "TS-001", "TS-002"]
+    required: true
+
+  - id: "164.312(e)(1)"
+    name: "Transmission Security"
+    description: "Guard against unauthorized access to ePHI during electronic transmission"
+    rules: ["large_outbound_transfer", "dns_tunnel_volume", "TS-100", "TS-101"]
+    required: true

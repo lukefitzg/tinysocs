@@ -608,14 +608,38 @@ def cli():
     port = int(os.getenv("BOT_PORT", "8090"))
     workers = int(os.getenv("TINYSOCS_BOT_WORKERS", "1"))
     loglvl = os.getenv("UVICORN_LOG_LEVEL", "info")
+
+    # Dashboard TLS config (Phase 14 M0)
+    tls_cert = os.getenv("DASHBOARD_TLS_CERT", "").strip()
+    tls_key = os.getenv("DASHBOARD_TLS_KEY", "").strip()
+    bind_host = os.getenv("DASHBOARD_BIND", "0.0.0.0").strip()
+
+    ssl_kwargs: dict = {}
+    if tls_cert and tls_key:
+        if not Path(tls_cert).is_file():
+            raise SystemExit(f"DASHBOARD_TLS_CERT not found: {tls_cert}")
+        if not Path(tls_key).is_file():
+            raise SystemExit(f"DASHBOARD_TLS_KEY not found: {tls_key}")
+        ssl_kwargs = {"ssl_certfile": tls_cert, "ssl_keyfile": tls_key}
+        print(f"[bot] TLS enabled: cert={tls_cert}")
+    elif bind_host != "127.0.0.1":
+        raise SystemExit(
+            "DASHBOARD_TLS_CERT and DASHBOARD_TLS_KEY are required when "
+            "DASHBOARD_BIND is not 127.0.0.1. Generate certs with the installer "
+            "or set DASHBOARD_BIND=127.0.0.1 for localhost-only access."
+        )
+    else:
+        print("[bot] TLS not configured — running HTTP (localhost only)")
+
     # Use import-string to avoid spawn/pickle issues in frozen builds
     uvicorn.run(
         APP_IMPORT,
-        host="0.0.0.0",
+        host=bind_host,
         port=port,
         reload=False,
         workers=workers,
         log_level=loglvl,
+        **ssl_kwargs,
     )
 
 APP_IMPORT = "tinysocs.api.bot:app"

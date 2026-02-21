@@ -39,3 +39,44 @@ jobs:
 
       - name: Unit tests
         run: pytest --cov=tinysocs --cov-report=term-missing
+
+  # Phase 14 M1: Windows build + test job
+  windows-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up .NET 8.0
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install Python package + dev deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Python tests (Windows)
+        run: pytest --cov=tinysocs --cov-report=term-missing
+
+      - name: Build C# agent
+        run: dotnet publish src/TinySocs.Agent/TinySocs.Agent.csproj -c Release -r win-x64 --self-contained
+
+      - name: Pester tests (PowerShell module)
+        shell: pwsh
+        run: |
+          Install-Module -Name Pester -Force -Scope CurrentUser -MinimumVersion 5.0 -SkipPublisherCheck
+          Invoke-Pester -Path tests/Test-InstallerModule.ps1 -Output Detailed -CI

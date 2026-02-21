@@ -1,6 +1,6 @@
 # TinySocs Detection Coverage Matrix
 
-> Phase 13 M6 deliverable. Last updated: 2026-02-20.
+> Last updated: Phase 14. See also [Detection Efficacy](detection-efficacy.md) for Atomic Red Team validation results.
 
 ## Overview
 
@@ -123,7 +123,7 @@ For full detection coverage, ensure these Windows event sources are enabled:
 | Sysmon | 1, 2, 3, 10, 11, 13, 22 | endpoint, credential, lateral, persistence, exfiltration |
 | Windows Defender Operational | 5001 | evasion |
 
-**Sysmon is strongly recommended.** Without it, 14 rules (credential access, many persistence, exfiltration) will have no events to evaluate.
+**Sysmon is strongly recommended** and can be auto-deployed by the TinySocs installer (Phase 14). Without it, 14 rules (credential access, many persistence, exfiltration) will have no events to evaluate. See the [Getting Started Guide](getting-started.md) for Sysmon installation options.
 
 ---
 
@@ -177,3 +177,28 @@ Add to `packaging/detection/rules.yml` (or the deployed copy at
 ```
 
 Rules are hot-reloaded every 60 seconds (configurable via `detection.reload_interval_seconds`).
+
+---
+
+## Validation
+
+Detection coverage can be validated using Atomic Red Team techniques. Run:
+
+```powershell
+.\tests\Test-AtomicDetection.ps1 -DryRun   # list tests
+.\tests\Test-AtomicDetection.ps1            # full run
+```
+
+12 MITRE ATT&CK techniques are mapped to TinySocs rules. See [Detection Efficacy](detection-efficacy.md) for results.
+
+## Compliance Mapping
+
+Detection rules are mapped to compliance framework controls:
+
+| Framework | Controls Mapped | Rules Referenced |
+|-----------|----------------|-----------------|
+| NIST CSF 2.0 | 17 | 30+ |
+| HIPAA Security Rule | 11 | 25+ |
+| PCI DSS v4.0 | 12 | 28+ |
+
+Generate compliance reports from the dashboard or CLI. See the [Operator Runbook](operator-runbook.md#compliance-reports) for details.

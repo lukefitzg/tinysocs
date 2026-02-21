@@ -114,6 +114,27 @@ foreach ($s in $svc) {
 
 _KillOpenSearchJava
 
+# Phase 14 M2: Sysmon removal on full uninstall (not upgrade)
+if (-not $upgrade) {
+  $sysmonSvc = Get-Service -Name "Sysmon64" -ErrorAction SilentlyContinue
+  if ($sysmonSvc) {
+    _Log "Attempting Sysmon uninstall..."
+    $sysmonExe = Join-Path $appDir "bin\Sysmon64.exe"
+    if (Test-Path $sysmonExe) {
+      try {
+        & $sysmonExe -u force 2>&1 | Out-Null
+        _Log "Sysmon uninstalled."
+      } catch {
+        _Log "Sysmon uninstall failed (non-fatal): $($_.Exception.Message)"
+      }
+    } else {
+      _Log "Sysmon64.exe not found at $sysmonExe; skipping Sysmon removal."
+    }
+  } else {
+    _Log "Sysmon64 service not found; skipping Sysmon removal."
+  }
+}
+
 # DO NOT delete $appDir here.
 # The Inno uninstaller is running from {app}\unins*.exe and will remove {app} via [UninstallDelete].
 _Log "Skipping deletion of AppDir in script; Inno will remove {app} via [UninstallDelete]."

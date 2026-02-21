@@ -806,6 +806,12 @@ try {
             Remove-Item -LiteralPath $ks -Force
             Write-RunLog "Backed up + removed existing keystore: $bak"
           }
+          # Clean up stale .tmp file left by prior failed create attempts
+          $ksTmp = Join-Path $env:OPENSEARCH_PATH_CONF "opensearch.keystore.tmp"
+          if (Test-Path $ksTmp -PathType Leaf) {
+            Remove-Item -LiteralPath $ksTmp -Force
+            Write-RunLog "Removed stale keystore temp file: $ksTmp"
+          }
         } catch {
           throw "Failed to backup/remove existing keystore at ${ks}: $($_.Exception.Message)"
         }

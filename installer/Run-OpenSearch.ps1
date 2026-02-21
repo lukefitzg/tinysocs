@@ -810,7 +810,7 @@ try {
           throw "Failed to backup/remove existing keystore at ${ks}: $($_.Exception.Message)"
         }
 
-        $rCreate = _Invoke-OsKeystore -kbat $k -argLine "create -f" -timeoutMs 180000
+        $rCreate = _Invoke-OsKeystore -kbat $k -argLine "create" -timeoutMs 180000
         if (-not (Test-Path $ks -PathType Leaf)) {
           throw "Keystore create did not produce $ks (exit=$($rCreate.ExitCode))"
         }

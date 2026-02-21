@@ -2267,6 +2267,11 @@ begin
         '    Set-Content -Path $envFile -Value $lines -Encoding UTF8' + CRLF +
         '  }' + CRLF +
         '  Write-Host "[TinySocs][Inno] Dashboard configured for network access with TLS."' + CRLF +
+        '  # Re-register assistant service so NSSM bakes in the new TLS cert paths' + CRLF +
+        '  if (Get-Command Ensure-TinySocsAssistantService -ErrorAction SilentlyContinue) {' + CRLF +
+        '    Ensure-TinySocsAssistantService -InstallRoot "' + PsEscape(AppDir) + '"' + CRLF +
+        '    Write-Host "[TinySocs][Inno] Assistant service env updated with TLS cert paths."' + CRLF +
+        '  }' + CRLF +
         '} catch {' + CRLF +
         '  Write-Warning ("[TinySocs][Inno] Dashboard TLS cert generation failed (non-fatal): " + $_.Exception.Message)' + CRLF +
         '}' + CRLF;

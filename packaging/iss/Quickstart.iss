@@ -244,8 +244,12 @@ Source: "..\opensearch\programdata\security\*"; \
 #endif
 
 ; Phase 14 M2: Sysmon binary + config (bundled during build, gitignored)
+; Both x64 and ARM64 builds are bundled; Install-TinySocsSysmon picks the right one at runtime.
 #if FileExists('..\..\sysmon-bin\Sysmon64.exe')
 Source: "..\..\sysmon-bin\Sysmon64.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
+#endif
+#if FileExists('..\..\sysmon-bin\Sysmon64a.exe')
+Source: "..\..\sysmon-bin\Sysmon64a.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
 #endif
 Source: "..\..\integrations\sysmon\sysmon-config.xml"; \
     DestDir: "{commonappdata}\TinySocs\Sysmon"; \

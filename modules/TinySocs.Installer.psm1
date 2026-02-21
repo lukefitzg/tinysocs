@@ -15490,8 +15490,19 @@ function Install-TinySocsSysmon {
   # Install or update
   $svc = Get-Service -Name "Sysmon64" -ErrorAction SilentlyContinue
   if ($svc) {
-    Write-TinySocsLog "Sysmon service found — updating configuration..."
-    & $SysmonExePath -c "$ConfigPath" 2>&1 | ForEach-Object { Write-Host $_ }
+    if ($svc.Status -eq 'Running') {
+      Write-TinySocsLog "Sysmon service found and running -- updating configuration..."
+      & $SysmonExePath -c "$ConfigPath" 2>&1 | ForEach-Object { Write-Host $_ }
+    } else {
+      # Service exists but is not running -- likely a broken prior install where the
+      # kernel driver (SysmonDrv.sys) was never copied to C:\Windows\.
+      # Force-uninstall then do a clean fresh install.
+      Write-TinySocsLog "Sysmon service found but not running (Status: $($svc.Status)) -- force-reinstalling..."
+      & $SysmonExePath -u force 2>&1 | ForEach-Object { Write-Host $_ }
+      Start-Sleep -Seconds 3
+      Write-TinySocsLog "Installing Sysmon (fresh)..."
+      & $SysmonExePath -accepteula -i "$ConfigPath" 2>&1 | ForEach-Object { Write-Host $_ }
+    }
   } else {
     Write-TinySocsLog "Installing Sysmon..."
     & $SysmonExePath -accepteula -i "$ConfigPath" 2>&1 | ForEach-Object { Write-Host $_ }

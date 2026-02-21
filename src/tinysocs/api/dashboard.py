@@ -3112,11 +3112,6 @@ select { cursor: pointer; }
         <input type="password" id="s_SIEM_PASS" placeholder="(leave blank to keep current)">
       </div>
 
-      <div class="btn-row">
-        <button class="btn-cancel" onclick="closeSettings()">Cancel</button>
-        <button class="btn-save" onclick="saveSettings()">Save &amp; Apply</button>
-      </div>
-
       <div class="section-title" style="margin-top:24px">Change Dashboard Password</div>
       <p style="color:var(--muted);font-size:12px;margin-bottom:8px">This password protects both the dashboard and the SIEM datastore.</p>
       <div class="field">
@@ -3135,6 +3130,11 @@ select { cursor: pointer; }
       <div class="btn-row" style="margin-top:0">
         <div></div>
         <button class="btn-save" onclick="changePassword()" style="background:#e67e22">Change Password</button>
+      </div>
+
+      <div class="btn-row" style="margin-top:24px;border-top:1px solid var(--border);padding-top:16px">
+        <button class="btn-cancel" onclick="closeSettings()">Cancel</button>
+        <button class="btn-save" onclick="saveSettings()">Save &amp; Apply</button>
       </div>
     </div>
   </div>

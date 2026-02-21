@@ -14783,13 +14783,17 @@ function Test-TinySocsHealth {
   # --- Phase 14: Sysmon and Dashboard TLS checks ---
 
   # Check 15: Sysmon Service — optional component, INFO if not installed
+  # ARM64 installs register as "Sysmon64a"; x64 as "Sysmon64"
   try {
     $sysmonSvc = Get-Service -Name "Sysmon64" -ErrorAction SilentlyContinue
+    if (-not $sysmonSvc) {
+      $sysmonSvc = Get-Service -Name "Sysmon64a" -ErrorAction SilentlyContinue
+    }
     if ($sysmonSvc) {
       if ($sysmonSvc.Status -eq "Running") {
-        $results += @{ Check = "Sysmon Service"; Status = "PASS"; Detail = "Running" }
+        $results += @{ Check = "Sysmon Service"; Status = "PASS"; Detail = "Running ($($sysmonSvc.Name))" }
       } else {
-        $results += @{ Check = "Sysmon Service"; Status = "WARN"; Detail = "Status: $($sysmonSvc.Status)" }
+        $results += @{ Check = "Sysmon Service"; Status = "WARN"; Detail = "Status: $($sysmonSvc.Status) ($($sysmonSvc.Name))" }
       }
     } else {
       $results += @{ Check = "Sysmon Service"; Status = "INFO"; Detail = "Not installed (optional)" }
@@ -15494,17 +15498,18 @@ function Install-TinySocsSysmon {
     throw "Sysmon config not found at $ConfigPath"
   }
 
-  # Install or update
+  # Install or update — ARM64 registers as "Sysmon64a", x64 as "Sysmon64"
   $svc = Get-Service -Name "Sysmon64" -ErrorAction SilentlyContinue
+  if (-not $svc) { $svc = Get-Service -Name "Sysmon64a" -ErrorAction SilentlyContinue }
   if ($svc) {
     if ($svc.Status -eq 'Running') {
-      Write-TinySocsLog "Sysmon service found and running -- updating configuration..."
+      Write-TinySocsLog "Sysmon service ($($svc.Name)) found and running -- updating configuration..."
       & $SysmonExePath -c "$ConfigPath" 2>&1 | ForEach-Object { Write-Host $_ }
     } else {
       # Service exists but is not running -- likely a broken prior install where the
       # kernel driver (SysmonDrv.sys) was never copied to C:\Windows\.
       # Force-uninstall then do a clean fresh install.
-      Write-TinySocsLog "Sysmon service found but not running (Status: $($svc.Status)) -- force-reinstalling..."
+      Write-TinySocsLog "Sysmon service ($($svc.Name)) found but not running (Status: $($svc.Status)) -- force-reinstalling..."
       & $SysmonExePath -u force 2>&1 | ForEach-Object { Write-Host $_ }
       Start-Sleep -Seconds 3
       Write-TinySocsLog "Installing Sysmon (fresh)..."
@@ -15515,13 +15520,15 @@ function Install-TinySocsSysmon {
     & $SysmonExePath -accepteula -i "$ConfigPath" 2>&1 | ForEach-Object { Write-Host $_ }
   }
 
-  # Verify service is running
+  # Verify service is running — check both possible names
   Start-Sleep -Seconds 2
   $svc = Get-Service -Name "Sysmon64" -ErrorAction SilentlyContinue
+  if (-not $svc) { $svc = Get-Service -Name "Sysmon64a" -ErrorAction SilentlyContinue }
   if ($svc -and $svc.Status -eq "Running") {
-    Write-TinySocsLog "Sysmon service is running."
+    Write-TinySocsLog "Sysmon service ($($svc.Name)) is running."
   } else {
-    Write-TinySocsLog -Level "WARN" -Message "Sysmon service may not be running. Status: $($svc.Status)"
+    $detail = if ($svc) { $svc.Status } else { "not found" }
+    Write-TinySocsLog -Level "WARN" -Message "Sysmon service may not be running. Status: $detail"
   }
 }
 
@@ -15533,16 +15540,20 @@ function Uninstall-TinySocsSysmon {
   [CmdletBinding()]
   param()
 
+  # Check both x64 (Sysmon64) and ARM64 (Sysmon64a) service names
   $svc = Get-Service -Name "Sysmon64" -ErrorAction SilentlyContinue
+  if (-not $svc) { $svc = Get-Service -Name "Sysmon64a" -ErrorAction SilentlyContinue }
   if (-not $svc) {
-    Write-TinySocsLog "Sysmon64 service not found. Nothing to uninstall."
+    Write-TinySocsLog "Sysmon service not found (checked Sysmon64 and Sysmon64a). Nothing to uninstall."
     return
   }
 
-  # Find Sysmon exe in known locations
+  # Find Sysmon exe in known locations (both x64 and ARM64 variants)
   $exePaths = @(
+    (Join-Path $env:ProgramFiles "TinySocs\bin\Sysmon64a.exe"),
     (Join-Path $env:ProgramFiles "TinySocs\bin\Sysmon64.exe"),
     (Join-Path $env:ProgramData "TinySocs\Sysmon\Sysmon64.exe"),
+    (Join-Path $env:SystemRoot "Sysmon64a.exe"),
     (Join-Path $env:SystemRoot "Sysmon64.exe")
   )
   $exe = $exePaths | Where-Object { Test-Path $_ } | Select-Object -First 1

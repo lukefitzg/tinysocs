@@ -29,9 +29,17 @@ if (Test-Path $exePath) {
 }
 
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 Write-Host "[Download-Sysmon] Downloading Sysmon from $url..."
-Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing
+$downloaded = $false
+$curlExe = Get-Command curl.exe -ErrorAction SilentlyContinue
+if ($curlExe) {
+    & curl.exe -L --tlsv1.2 -o $zipPath $url
+    if ($LASTEXITCODE -eq 0 -and (Test-Path $zipPath)) { $downloaded = $true }
+}
+if (-not $downloaded) {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing
+}
 
 Write-Host "[Download-Sysmon] Extracting..."
 Expand-Archive -Path $zipPath -DestinationPath $OutputDir -Force

@@ -154,17 +154,30 @@ if (-not (Test-Path $osVendorCheck)) {
 
     if (-not (Test-Path $zipDest)) {
         Write-Host "  Downloading OpenSearch 3.3.2 (~300MB, one-time only)..."
-        try {
-            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-            $ProgressPreference = 'SilentlyContinue'
-            Invoke-WebRequest -Uri $zipUrl -OutFile $zipDest -UseBasicParsing
-            Write-Host "  Downloaded." -ForegroundColor Green
-        } catch {
-            Write-Host "  Download failed: $($_.Exception.Message)" -ForegroundColor Red
-            Write-Host "  Manual fix: download opensearch-3.3.2-windows-x64.zip from opensearch.org" -ForegroundColor Red
-            Write-Host "  and extract into vendor\opensearch-3.3.2-windows-x64\" -ForegroundColor Red
-            exit 1
+        $downloaded = $false
+        # Prefer curl.exe (built into Windows 10+) — handles TLS better than Invoke-WebRequest
+        $curlExe = Get-Command curl.exe -ErrorAction SilentlyContinue
+        if ($curlExe) {
+            try {
+                & curl.exe -L --tlsv1.2 -o $zipDest $zipUrl
+                if ($LASTEXITCODE -eq 0 -and (Test-Path $zipDest)) { $downloaded = $true }
+                else { Write-Host "  curl.exe failed (exit $LASTEXITCODE), trying fallback..." -ForegroundColor Yellow }
+            } catch { Write-Host "  curl.exe error: $($_.Exception.Message)" -ForegroundColor Yellow }
         }
+        if (-not $downloaded) {
+            try {
+                [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                $ProgressPreference = 'SilentlyContinue'
+                Invoke-WebRequest -Uri $zipUrl -OutFile $zipDest -UseBasicParsing
+                $downloaded = $true
+            } catch {
+                Write-Host "  Download failed: $($_.Exception.Message)" -ForegroundColor Red
+                Write-Host "  Manual fix: download opensearch-3.3.2-windows-x64.zip from opensearch.org" -ForegroundColor Red
+                Write-Host "  and extract into vendor\opensearch-3.3.2-windows-x64\" -ForegroundColor Red
+                exit 1
+            }
+        }
+        if ($downloaded) { Write-Host "  Downloaded." -ForegroundColor Green }
     }
 
     if (-not (Test-Path $extractDir)) {

@@ -1177,15 +1177,16 @@ begin
   SysmonInstallCheck := TNewCheckBox.Create(SysmonPage.Surface);
   SysmonInstallCheck.Parent := SysmonPage.Surface;
   SysmonInstallCheck.Left := 0;
-  SysmonInstallCheck.Top := ScaleY(56);
+  SysmonInstallCheck.Top := ScaleY(80);
   SysmonInstallCheck.Width := SysmonPage.SurfaceWidth;
+  SysmonInstallCheck.Height := ScaleY(22);
   SysmonInstallCheck.Caption := '&Install Sysmon with TinySocs configuration (recommended)';
   SysmonInstallCheck.Checked := True;
 
   L := TNewStaticText.Create(SysmonPage.Surface);
   L.Parent := SysmonPage.Surface;
   L.Left := ScaleX(20);
-  L.Top := SysmonInstallCheck.Top + ScaleY(24);
+  L.Top := SysmonInstallCheck.Top + ScaleY(28);
   L.Width := SysmonPage.SurfaceWidth - ScaleX(20);
   L.WordWrap := True;
   L.AutoSize := True;

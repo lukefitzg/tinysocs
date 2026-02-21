@@ -790,6 +790,7 @@ begin
     'try { ' +
     '$body = @{text=''TinySocs test webhook -- if you see this, notifications are working.''} | ConvertTo-Json -Compress; ' +
     '[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; ' +
+    '[Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}; ' +
     '$r = Invoke-RestMethod -Uri '''' + PsEscape(Url) + ''''' +
     ' -Method Post -ContentType ''application/json'' -Body $body -TimeoutSec 10; ' +
     'exit 0 ' +

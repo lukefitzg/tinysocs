@@ -272,11 +272,13 @@ Write-Step "STEP 5: Launching TinySocs-Setup.exe"
 
 $setupExe = Join-Path $RepoRoot 'packaging\iss\TinySocs-Setup.exe'
 if (Test-Path $setupExe) {
-    Write-Host "  Starting installer... Follow the 4-page wizard:"
+    Write-Host "  Starting installer... Follow the 6-page wizard:"
     Write-Host "    1. Role (TinyBox recommended)"
     Write-Host "    2. Security (shared secret + SIEM password)"
     Write-Host "    3. LLM Provider (OpenAI / Anthropic / Ollama / None)"
     Write-Host "    4. Notifications (webhook + email, optional)"
+    Write-Host "    5. Dashboard Access (Localhost or Network+HTTPS)"
+    Write-Host "    6. Enhanced Detection (Sysmon install, recommended)"
     Write-Host ""
     # Launch without -Wait and poll the process directly.
     # Start-Process -Wait hangs when Inno Setup's post-install scripts
@@ -387,6 +389,60 @@ if (Test-Path $envFile) {
     }
 } else {
     Write-Host "    assistant.env not found" -ForegroundColor Yellow
+}
+
+# Phase 14: Check Sysmon
+Write-Host ""
+Write-Host "  Sysmon:"
+$sysmonSvc = Get-Service -Name 'Sysmon64' -ErrorAction SilentlyContinue
+if (-not $sysmonSvc) { $sysmonSvc = Get-Service -Name 'Sysmon' -ErrorAction SilentlyContinue }
+if ($sysmonSvc -and $sysmonSvc.Status -eq 'Running') {
+    Write-Host "    Sysmon64 service: Running" -ForegroundColor Green
+} elseif ($sysmonSvc) {
+    Write-Host "    Sysmon64 service: $($sysmonSvc.Status)" -ForegroundColor Yellow
+} else {
+    Write-Host "    Sysmon not installed (skipped in wizard or not checked)" -ForegroundColor Yellow
+}
+
+# Phase 14: Check Dashboard TLS config
+Write-Host ""
+Write-Host "  Dashboard TLS:"
+$dashBind = (Get-Content $envFile -ErrorAction SilentlyContinue | Where-Object { $_ -match '^DASHBOARD_BIND=' }) -replace '^DASHBOARD_BIND=',''
+$dashCert = (Get-Content $envFile -ErrorAction SilentlyContinue | Where-Object { $_ -match '^DASHBOARD_TLS_CERT=' }) -replace '^DASHBOARD_TLS_CERT=',''
+if ($dashBind -and $dashBind -ne '127.0.0.1') {
+    if ($dashCert -and (Test-Path $dashCert)) {
+        Write-Host "    Network mode (DASHBOARD_BIND=$dashBind), cert present" -ForegroundColor Green
+    } elseif ($dashCert) {
+        Write-Host "    Network mode but cert NOT found at: $dashCert" -ForegroundColor Red
+    } else {
+        Write-Host "    Network mode but DASHBOARD_TLS_CERT not set!" -ForegroundColor Red
+    }
+} else {
+    Write-Host "    Localhost mode (no TLS needed)" -ForegroundColor Green
+}
+
+# Phase 14: Check compliance endpoint
+Write-Host ""
+Write-Host "  Compliance API:"
+try {
+    $compResp = Invoke-WebRequest -Uri 'http://localhost:8090/dashboard/api/compliance/frameworks' -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+    if ($compResp.StatusCode -eq 200) {
+        Write-Host "    /api/compliance/frameworks -> 200 OK" -ForegroundColor Green
+    } else {
+        Write-Host "    /api/compliance/frameworks -> $($compResp.StatusCode)" -ForegroundColor Yellow
+    }
+} catch {
+    Write-Host "    Compliance API not reachable (dashboard may require auth)" -ForegroundColor Yellow
+}
+
+# Phase 14: Run Test-TinySocsHealth
+Write-Host ""
+Write-Host "  Running Test-TinySocsHealth..."
+try {
+    Import-Module (Join-Path $env:ProgramFiles 'TinySocs\modules\TinySocs.Installer.psm1') -Force -ErrorAction Stop
+    Test-TinySocsHealth
+} catch {
+    Write-Host "    Test-TinySocsHealth failed: $($_.Exception.Message)" -ForegroundColor Yellow
 }
 
 Write-Host ""

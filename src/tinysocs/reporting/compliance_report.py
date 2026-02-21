@@ -30,7 +30,21 @@ _load_assistant_env()
 # ---------------------------------------------------------------------------
 # Framework loading
 # ---------------------------------------------------------------------------
-FRAMEWORKS_DIR = Path(__file__).parent / "frameworks"
+def _resolve_frameworks_dir() -> Path:
+    """Locate the frameworks directory, with PyInstaller bundle fallback."""
+    d = Path(__file__).parent / "frameworks"
+    if d.is_dir():
+        return d
+    # PyInstaller _MEIPASS fallback
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        d2 = Path(meipass) / "tinysocs" / "reporting" / "frameworks"
+        if d2.is_dir():
+            return d2
+    return d  # return original even if missing; callers handle gracefully
+
+
+FRAMEWORKS_DIR = _resolve_frameworks_dir()
 
 
 def load_framework(name: str) -> Dict[str, Any]:

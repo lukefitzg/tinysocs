@@ -3440,7 +3440,7 @@ select { cursor: pointer; }
         </select>
         <a id="complianceDownload" href="#" style="display:none;font-size:16px;padding:2px 8px;color:var(--muted);text-decoration:none;margin-left:auto;cursor:pointer" title="Download HTML report" download>&#x2B07;</a>
       </div>
-      <div id="compliance-summary" style="display:none;display:flex;gap:12px;margin:12px 0">
+      <div id="compliance-summary" style="display:none;gap:12px;margin:12px 0">
         <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
           <div id="comp-coverage" style="font-size:24px;font-weight:700;color:var(--text)">—</div>
           <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Coverage</div>
@@ -5202,6 +5202,7 @@ function unlockDashboard() {
   checkLlmStatus();
   restoreChat();
   loadComplianceFrameworks();
+  loadEvents();
   refreshAll();
 }
 
@@ -5315,7 +5316,15 @@ async function loadComplianceFrameworks() {
   try {
     const r = await fetch(BASE + '/api/compliance/frameworks', {headers:{'Authorization':'Bearer '+_authToken}});
     const d = await r.json();
-    if (!d.ok || !d.frameworks) return;
+    if (!d.ok || !d.frameworks) {
+      document.getElementById('compliance-content').innerHTML = '<div class="empty">Could not load compliance frameworks.</div>';
+      return;
+    }
+    if (d.frameworks.length === 0) {
+      document.getElementById('complianceFramework').innerHTML = '<option value="">No frameworks</option>';
+      document.getElementById('compliance-content').innerHTML = '<div class="empty">No compliance frameworks available. Framework YAML files may be missing from the installation.</div>';
+      return;
+    }
     const sel = document.getElementById('complianceFramework');
     sel.innerHTML = '';
     d.frameworks.forEach(fw => {
@@ -5325,7 +5334,10 @@ async function loadComplianceFrameworks() {
       sel.appendChild(opt);
     });
     loadComplianceReport();
-  } catch(e) { console.log('compliance frameworks error:', e); }
+  } catch(e) {
+    console.log('compliance frameworks error:', e);
+    document.getElementById('compliance-content').innerHTML = '<div class="empty">Failed to load compliance data.</div>';
+  }
 }
 
 let _complianceControls = [];

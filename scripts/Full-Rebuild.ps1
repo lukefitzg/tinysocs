@@ -218,6 +218,28 @@ $ErrorActionPreference = 'Stop'
 Set-Location $savedLocation
 
 # ============================================================
+# STEP 3b: Download Sysmon (Phase 14 M2)
+# ============================================================
+$sysmonScript = Join-Path $RepoRoot 'scripts\Download-Sysmon.ps1'
+$sysmonExe = Join-Path $RepoRoot 'sysmon-bin\Sysmon64.exe'
+if (Test-Path $sysmonScript) {
+    if (-not (Test-Path $sysmonExe)) {
+        Write-Step "STEP 3b: Downloading Sysmon for installer bundle"
+        try {
+            & $sysmonScript -OutputDir (Join-Path $RepoRoot 'sysmon-bin')
+            Write-Host "  Sysmon downloaded." -ForegroundColor Green
+        } catch {
+            Write-Host "  Sysmon download failed: $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-Host "  Installer will still work — Sysmon will be downloaded at install time." -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "  Sysmon64.exe already present in sysmon-bin/." -ForegroundColor Green
+    }
+} else {
+    Write-Host "  Download-Sysmon.ps1 not found — skipping Sysmon pre-bundle." -ForegroundColor Yellow
+}
+
+# ============================================================
 # STEP 4: Compile Inno Setup installer
 # ============================================================
 Write-Step "STEP 4: Compiling Inno Setup installer"

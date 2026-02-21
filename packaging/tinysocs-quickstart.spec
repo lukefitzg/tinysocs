@@ -18,6 +18,16 @@ if not os.path.isfile(SCRIPT):
 
 datas = collect_data_files("tinysocs", includes=["**/*.yaml","**/*.yml"])
 
+# Explicit fallback: collect_data_files may miss files when tinysocs isn't pip-installed.
+# Walk PKG_SRC for YAML/YML files and add any that aren't already in datas.
+import glob as _glob
+_existing_srcs = {os.path.normpath(s) for s, _ in datas}
+for _pattern in ("**/*.yaml", "**/*.yml"):
+    for _f in _glob.glob(os.path.join(PKG_SRC, _pattern), recursive=True):
+        if os.path.normpath(_f) not in _existing_srcs:
+            _rel = os.path.relpath(os.path.dirname(_f), SRC_DIR)
+            datas.append((_f, _rel))
+
 hiddenimports = []
 try: hiddenimports += collect_submodules("tinysocs")
 except Exception: pass

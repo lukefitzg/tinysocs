@@ -10586,6 +10586,11 @@ function Install-TinySocsLocalSiem {
 
   # --- Stage + bootstrap OpenSearch index templates ---
   try {
+    # Ensure _OsInvoke can authenticate: set process-level env vars
+    # (Set-MachineEnv above only sets SIEM_URL/SSL_VERIFY, not creds)
+    [Environment]::SetEnvironmentVariable("SIEM_USER", $SiemUser, "Process")
+    [Environment]::SetEnvironmentVariable("SIEM_PASS", $SiemPass, "Process")
+
     $installRoot = "C:\Program Files\TinySocs"
     $pdTemplates = Join-Path $env:ProgramData "TinySocs\OpenSearch\templates"
     Ensure-TinySocsOpenSearchTemplatesStaged -InstallRoot $installRoot -ProgramDataTemplatesDir $pdTemplates

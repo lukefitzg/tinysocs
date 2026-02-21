@@ -230,13 +230,13 @@ if (Test-Path $sysmonScript) {
             Write-Host "  Sysmon downloaded." -ForegroundColor Green
         } catch {
             Write-Host "  Sysmon download failed: $($_.Exception.Message)" -ForegroundColor Yellow
-            Write-Host "  Installer will still work — Sysmon will be downloaded at install time." -ForegroundColor Yellow
+            Write-Host "  Installer will still work - Sysmon will be downloaded at install time." -ForegroundColor Yellow
         }
     } else {
         Write-Host "  Sysmon64.exe already present in sysmon-bin/." -ForegroundColor Green
     }
 } else {
-    Write-Host "  Download-Sysmon.ps1 not found — skipping Sysmon pre-bundle." -ForegroundColor Yellow
+    Write-Host "  Download-Sysmon.ps1 not found - skipping Sysmon pre-bundle." -ForegroundColor Yellow
 }
 
 # ============================================================

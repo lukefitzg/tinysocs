@@ -2417,8 +2417,15 @@ def api_test_webhook(body: Dict[str, Any] = Body(...)):
         return JSONResponse(status_code=400, content={"error": "No webhook URL configured."})
 
     payload = {"text": "[TinySocs] Test notification — webhook delivery verified."}
+    # Use certifi CA bundle if available (handles Windows PyInstaller SSL cert store gaps).
+    # Fall back to verify=False so the test is never blocked by local cert issues.
     try:
-        resp = _req.post(url, json=payload, timeout=10)
+        import certifi as _certifi
+        _ssl_verify: Any = _certifi.where()
+    except ImportError:
+        _ssl_verify = False
+    try:
+        resp = _req.post(url, json=payload, timeout=10, verify=_ssl_verify)
         if 200 <= resp.status_code < 300:
             return {"ok": True, "message": f"Webhook test successful (HTTP {resp.status_code})."}
         else:
@@ -2482,13 +2489,23 @@ def api_test_email(body: Dict[str, Any] = Body(...)):
     msg["From"] = email_from
     msg["To"] = email_to
 
+    # Build SSL context using certifi CA bundle if available (handles Windows PyInstaller gaps).
+    import ssl as _ssl
+    try:
+        import certifi as _certifi
+        _ssl_ctx = _ssl.create_default_context(cafile=_certifi.where())
+    except ImportError:
+        _ssl_ctx = _ssl.create_default_context()
+        _ssl_ctx.check_hostname = False
+        _ssl_ctx.verify_mode = _ssl.CERT_NONE
+
     try:
         server = smtplib.SMTP(smtp_host, smtp_port, timeout=10)
         try:
             server.ehlo()
             if smtp_port in (587, 465):
                 try:
-                    server.starttls()
+                    server.starttls(context=_ssl_ctx)
                     server.ehlo()
                 except smtplib.SMTPNotSupportedError:
                     pass  # Server doesn't support STARTTLS, continue unencrypted
@@ -3092,7 +3109,7 @@ select { cursor: pointer; }
       </div>
       <div class="field">
         <label>SIEM Password</label>
-        <input type="text" id="s_SIEM_PASS" placeholder="(unchanged)">
+        <input type="password" id="s_SIEM_PASS" placeholder="(leave blank to keep current)">
       </div>
 
       <div class="btn-row">
@@ -3115,7 +3132,10 @@ select { cursor: pointer; }
         <input type="password" id="changePwConfirm" placeholder="Confirm new password">
       </div>
       <div id="changePwStatus" style="min-height:20px;margin:8px 0"></div>
-      <button class="btn-save" onclick="changePassword()" style="background:#e67e22">Change Password</button>
+      <div class="btn-row" style="margin-top:0">
+        <div></div>
+        <button class="btn-save" onclick="changePassword()" style="background:#e67e22">Change Password</button>
+      </div>
     </div>
   </div>
 </div>
@@ -4804,9 +4824,10 @@ async function loadSettings() {
 
 function populateSettings(d) {
   const s = d.settings || {};
+  // SIEM_PASS excluded — field always starts blank (password type, never pre-filled)
   const fields = ['LLM_MODE','OPENAI_API_KEY','OPENAI_MODEL','ANTHROPIC_API_KEY','ANTHROPIC_MODEL',
     'OFFLINE_LLM_URL','OFFLINE_LLM_MODEL','WEBHOOK_URL','WEBHOOK_ENABLED',
-    'SIEM_URL','SIEM_USER','SIEM_PASS'];
+    'SIEM_URL','SIEM_USER'];
   for (const f of fields) {
     const el = document.getElementById('s_' + f);
     if (el) {
@@ -5095,6 +5116,13 @@ async function changePassword() {
 const _origOpenSettings = openSettings;
 openSettings = function() {
   document.getElementById('settingsOverlay').classList.add('open');
+  // Clear stale status messages and password fields on every open
+  ['changePwStatus','changePasswordStatus','settingsStatus','webhookTestStatus','emailTestStatus'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.innerHTML = '';
+  });
+  ['changePwCurrent','changePwNew','changePwConfirm'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.value = '';
+  });
   if (_authToken) {
     // Skip password prompt — use session token
     (async () => {

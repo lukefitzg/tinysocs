@@ -2968,7 +2968,8 @@ tr:hover { background: rgba(74, 144, 217, 0.05); }
 .rule-row:last-child { border-bottom: none; }
 .rule-row-header { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .rule-row-header:hover { opacity: 0.85; }
-.rule-row .rule-id { font-family: monospace; font-size: 12px; color: var(--accent); min-width: 160px; }
+.rule-row .rule-id { font-family: monospace; font-size: 12px; color: var(--accent);
+  width: 260px; flex-shrink: 0; flex-grow: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rule-row .rule-desc { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rule-row .rule-meta { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .rule-detail { display: none; padding: 8px 0 4px 0; font-size: 12px; }

@@ -292,7 +292,7 @@ Name: "{app}\OpenSearch\config-template"; Flags: uninsneveruninstall
 [Run]
 ; Post-install configuration is handled in the [Code] ssPostInstall step.
 ; "Launch Dashboard" checkbox shown on the finish page (postinstall flag).
-Filename: "http://localhost:8090/dashboard/"; Description: "Open TinySocs Dashboard"; \
+Filename: "{code:GetDashboardUrl}"; Description: "Open TinySocs Dashboard"; \
   Flags: postinstall nowait shellexec skipifsilent
 
 [UninstallRun]
@@ -315,7 +315,7 @@ Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
 Type: filesandordirs; Name: "{app}"
 
 [Icons]
-Name: "{group}\TinySocs Dashboard"; Filename: "http://localhost:8090/dashboard/"; IconFilename: "{sys}\shell32.dll"; IconIndex: 13
+Name: "{group}\TinySocs Dashboard"; Filename: "{code:GetDashboardUrl}"; IconFilename: "{sys}\shell32.dll"; IconIndex: 13
 Name: "{group}\Operator README"; Filename: "{app}\modules\OPERATOR-README.txt"; WorkingDir: "{app}\modules"
 
 [Code]
@@ -468,6 +468,16 @@ begin
     Result := 'True'
   else
     Result := 'False';
+end;
+
+{ Scripted constant: returns the dashboard URL with the correct scheme.
+  TinyBox installs always get HTTPS (certs generated); Node-only gets HTTP. }
+function GetDashboardUrl(Param: String): String;
+begin
+  if InstallTinyBox then
+    Result := 'https://localhost:8090/dashboard/'
+  else
+    Result := 'http://localhost:8090/dashboard/';
 end;
 
 function GetPowerShellExePath: String;
@@ -1141,7 +1151,7 @@ begin
   L.Width := DashAccessPage.SurfaceWidth - ScaleX(20);
   L.WordWrap := True;
   L.AutoSize := True;
-  L.Caption := 'Dashboard accessible only from this machine (http://localhost:8090/dashboard). No TLS certificate required.';
+  L.Caption := 'Dashboard accessible only from this machine (https://localhost:8090/dashboard). TLS certificate generated automatically.';
   L.Font.Color := $666666;
 
   DashNetworkRadio := TRadioButton.Create(DashAccessPage.Surface);
@@ -2253,7 +2263,9 @@ begin
     else
       DashboardBind := '127.0.0.1';
 
-    if DashboardBind = '0.0.0.0' then
+    { Generate dashboard TLS cert for ALL TinyBox installs (localhost and network).
+      Per Phase 14 M0: "Clean TinyBox install -> dashboard accessible at https://localhost:8090" }
+    if InstallTinyBox then
     begin
       Script :=
         '$ErrorActionPreference = "Continue"' + CRLF +
@@ -2265,12 +2277,12 @@ begin
         '  if (Test-Path $envFile) {' + CRLF +
         '    $lines = @(Get-Content $envFile)' + CRLF +
         '    $lines = $lines | Where-Object { $_ -notmatch "^DASHBOARD_(BIND|TLS_CERT|TLS_KEY)=" }' + CRLF +
-        '    $lines += "DASHBOARD_BIND=0.0.0.0"' + CRLF +
+        '    $lines += "DASHBOARD_BIND=' + DashboardBind + '"' + CRLF +
         '    $lines += ("DASHBOARD_TLS_CERT=" + $certs.CertPath)' + CRLF +
         '    $lines += ("DASHBOARD_TLS_KEY=" + $certs.KeyPath)' + CRLF +
         '    Set-Content -Path $envFile -Value $lines -Encoding UTF8' + CRLF +
         '  }' + CRLF +
-        '  Write-Host "[TinySocs][Inno] Dashboard configured for network access with TLS."' + CRLF +
+        '  Write-Host "[TinySocs][Inno] Dashboard configured with TLS (bind=' + DashboardBind + ')."' + CRLF +
         '  # Re-register assistant service so NSSM bakes in the new TLS cert paths' + CRLF +
         '  if (Get-Command Ensure-TinySocsAssistantService -ErrorAction SilentlyContinue) {' + CRLF +
         '    Ensure-TinySocsAssistantService -InstallRoot "' + PsEscape(AppDir) + '"' + CRLF +
@@ -2285,7 +2297,7 @@ begin
         Log('CurStepChanged: Dashboard TLS cert generated successfully.');
     end
     else
-      Log('CurStepChanged: Dashboard configured for localhost-only access.');
+      Log('CurStepChanged: Non-TinyBox install — skipping dashboard TLS cert.');
 
     { ---- Phase 14 M2: Sysmon deployment ---- }
     if SysmonInstallCheck.Checked then

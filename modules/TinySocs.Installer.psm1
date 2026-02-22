@@ -15523,15 +15523,28 @@ function Install-TinySocsSysmon {
     & $SysmonExePath -accepteula -i "$ConfigPath" 2>&1 | ForEach-Object { Write-Host $_ }
   }
 
-  # Verify service is running — check both possible names
+  # Verify service is running — check both possible names.
+  # Sysmon -i sometimes registers the service without starting it, so explicitly start if needed.
   Start-Sleep -Seconds 2
   $svc = Get-Service -Name "Sysmon64" -ErrorAction SilentlyContinue
   if (-not $svc) { $svc = Get-Service -Name "Sysmon64a" -ErrorAction SilentlyContinue }
+  if ($svc -and $svc.Status -ne "Running") {
+    Write-TinySocsLog "Sysmon service ($($svc.Name)) not running after install (Status: $($svc.Status)) -- starting explicitly..."
+    try {
+      Start-Service -Name $svc.Name -ErrorAction Stop
+      Start-Sleep -Seconds 2
+      $svc.Refresh()
+      Write-TinySocsLog "Sysmon service ($($svc.Name)) started successfully."
+    } catch {
+      Write-TinySocsLog -Level "WARN" -Message "Failed to start Sysmon service: $($_.Exception.Message)"
+    }
+  }
   if ($svc -and $svc.Status -eq "Running") {
     Write-TinySocsLog "Sysmon service ($($svc.Name)) is running."
+  } elseif ($svc) {
+    Write-TinySocsLog -Level "WARN" -Message "Sysmon service ($($svc.Name)) is not running. Status: $($svc.Status)"
   } else {
-    $detail = if ($svc) { $svc.Status } else { "not found" }
-    Write-TinySocsLog -Level "WARN" -Message "Sysmon service may not be running. Status: $detail"
+    Write-TinySocsLog -Level "WARN" -Message "Sysmon service not found after installation."
   }
 }
 

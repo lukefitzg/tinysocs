@@ -349,14 +349,37 @@ try {
     Write-Host "    Could not reach OpenSearch (may still be starting)" -ForegroundColor Yellow
 }
 
-# Check Dashboard
+# Check Dashboard (try HTTPS first, fall back to HTTP)
 Write-Host ""
 Write-Host "  Dashboard:"
+$dashUrl = $null
 try {
-    $resp = Invoke-WebRequest -Uri 'http://localhost:8090/dashboard/' -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
-    Write-Host "    http://localhost:8090/dashboard/ -> $($resp.StatusCode) OK" -ForegroundColor Green
+    # Skip cert validation for self-signed CA
+    if (-not ([System.Management.Automation.PSTypeName]'TrustAll').Type) {
+        Add-Type @"
+using System.Net;
+using System.Net.Security;
+using System.Security.Cryptography.X509Certificates;
+public class TrustAll {
+    public static void Enable() {
+        ServicePointManager.ServerCertificateValidationCallback = delegate { return true; };
+    }
+}
+"@
+    }
+    [TrustAll]::Enable()
+    $resp = Invoke-WebRequest -Uri 'https://localhost:8090/dashboard/' -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+    Write-Host "    https://localhost:8090/dashboard/ -> $($resp.StatusCode) OK" -ForegroundColor Green
+    $dashUrl = 'https://localhost:8090/dashboard/'
 } catch {
-    Write-Host "    Dashboard not responding yet (assistant service may still be starting)" -ForegroundColor Yellow
+    try {
+        $resp = Invoke-WebRequest -Uri 'http://localhost:8090/dashboard/' -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+        Write-Host "    http://localhost:8090/dashboard/ -> $($resp.StatusCode) OK" -ForegroundColor Green
+        $dashUrl = 'http://localhost:8090/dashboard/'
+    } catch {
+        Write-Host "    Dashboard not responding yet (assistant service may still be starting)" -ForegroundColor Yellow
+        $dashUrl = 'https://localhost:8090/dashboard/'
+    }
 }
 
 # Check assistant.env
@@ -462,7 +485,8 @@ if ($dashBind -and $dashBind -ne '127.0.0.1') {
 Write-Host ""
 Write-Host "  Compliance API:"
 try {
-    $compResp = Invoke-WebRequest -Uri 'http://localhost:8090/dashboard/api/compliance/frameworks' -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+    $compUrl = if ($dashUrl -and $dashUrl.StartsWith('https')) { 'https://localhost:8090/dashboard/api/compliance/frameworks' } else { 'http://localhost:8090/dashboard/api/compliance/frameworks' }
+    $compResp = Invoke-WebRequest -Uri $compUrl -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
     if ($compResp.StatusCode -eq 200) {
         Write-Host "    /api/compliance/frameworks -> 200 OK" -ForegroundColor Green
     } else {
@@ -484,5 +508,6 @@ try {
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Green
-Write-Host "  Done! Open http://localhost:8090/dashboard/" -ForegroundColor Green
+if (-not $dashUrl) { $dashUrl = 'https://localhost:8090/dashboard/' }
+Write-Host "  Done! Open $dashUrl" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green

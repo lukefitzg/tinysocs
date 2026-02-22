@@ -5209,6 +5209,12 @@ function unlockDashboard() {
   loadComplianceFrameworks();
   loadEvents();
   refreshAll();
+  // Fixed-position assistant panel needs a layout pass after display:none→block
+  // transition before flex heights resolve. Force chat scroll after paint.
+  setTimeout(() => {
+    const el = document.getElementById('chatMessages');
+    if (el) el.scrollTop = 0;
+  }, 150);
 }
 
 async function checkExistingSession() {

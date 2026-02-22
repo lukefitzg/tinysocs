@@ -2897,8 +2897,8 @@ a { color: var(--accent); text-decoration: none; }
 .card-header-sticky { background: var(--surface); margin: -16px -16px 12px -16px; padding: 12px 16px 8px 16px;
   border-bottom: 1px solid var(--border); }
 .card.full { grid-column: 1 / -1; }
-.card.assistant-card { height: 100%; max-height: 100%;
-                       overflow: visible; display: flex; flex-direction: column; }
+.card.assistant-card { height: 100%; max-height: 100%; box-sizing: border-box;
+                       display: flex; flex-direction: column; }
 
 .explorer-toolbar { display: flex; gap: 6px; margin-bottom: 6px; align-items: stretch; }
 .explorer-toolbar select { width: auto; flex-shrink: 0; margin-bottom: 0;
@@ -3000,7 +3000,7 @@ tr:hover { background: rgba(74, 144, 217, 0.05); }
   border-left: 3px solid var(--accent); border-radius: 4px; font-size: 12px;
   white-space: pre-wrap; word-wrap: break-word; line-height: 1.5; }
 
-.chat-container { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
+.chat-container { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .chat-messages { flex: 1; min-height: 0; max-height: calc(100vh - 240px); overflow-y: auto; padding: 8px;
                  background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
                  margin-bottom: 8px; font-size: 13px; }
@@ -5204,17 +5204,14 @@ async function doLogin() {
 function unlockDashboard() {
   document.getElementById('loginGate').style.display = 'none';
   document.getElementById('dashboardContent').style.display = 'block';
+  // Force synchronous reflow so fixed-position assistant panel
+  // gets correct flex dimensions before any JS reads layout.
+  void document.getElementById('dashboardContent').offsetHeight;
   checkLlmStatus();
   restoreChat();
   loadComplianceFrameworks();
   loadEvents();
   refreshAll();
-  // Fixed-position assistant panel needs a layout pass after display:none→block
-  // transition before flex heights resolve. Force chat scroll after paint.
-  setTimeout(() => {
-    const el = document.getElementById('chatMessages');
-    if (el) el.scrollTop = 0;
-  }, 150);
 }
 
 async function checkExistingSession() {

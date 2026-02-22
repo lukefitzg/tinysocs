@@ -292,7 +292,7 @@ Name: "{app}\OpenSearch\config-template"; Flags: uninsneveruninstall
 [Run]
 ; Post-install configuration is handled in the [Code] ssPostInstall step.
 ; "Launch Dashboard" checkbox shown on the finish page (postinstall flag).
-Filename: "{code:GetDashboardUrl}"; Description: "Open TinySocs Dashboard"; \
+Filename: "{code:GetDashboardUrl}"; Description: "{code:GetDashboardDescription}"; \
   Flags: postinstall nowait shellexec skipifsilent
 
 [UninstallRun]
@@ -362,6 +362,7 @@ var
   DashLocalhostRadio: TRadioButton;
   DashNetworkRadio: TRadioButton;
   DashboardBind: String;
+  DashboardLanUrl: String;
 
   SysmonPage: TWizardPage;
   SysmonInstallCheck: TNewCheckBox;
@@ -471,13 +472,29 @@ begin
 end;
 
 { Scripted constant: returns the dashboard URL with the correct scheme.
-  TinyBox installs always get HTTPS (certs generated); Node-only gets HTTP. }
+  TinyBox installs always get HTTPS (certs generated); Node-only gets HTTP.
+  Network-mode returns hostname-based URL so it works from other machines. }
 function GetDashboardUrl(Param: String): String;
 begin
   if InstallTinyBox then
-    Result := 'https://localhost:8090/dashboard/'
+  begin
+    if DashboardLanUrl <> '' then
+      Result := DashboardLanUrl
+    else
+      Result := 'https://localhost:8090/dashboard/';
+  end
   else
     Result := 'http://localhost:8090/dashboard/';
+end;
+
+{ Scripted constant: finish-page description showing the dashboard URL.
+  Network-mode includes the LAN URL + CA cert hint. }
+function GetDashboardDescription(Param: String): String;
+begin
+  if DashboardLanUrl <> '' then
+    Result := 'Open TinySocs Dashboard (' + DashboardLanUrl + ')'
+  else
+    Result := 'Open TinySocs Dashboard';
 end;
 
 function GetPowerShellExePath: String;
@@ -2259,9 +2276,15 @@ begin
     { ---- Phase 14 M0: Dashboard access mode ---- }
     Log('CurStepChanged: Phase 14 — Dashboard access config');
     if DashNetworkRadio.Checked then
-      DashboardBind := '0.0.0.0'
+    begin
+      DashboardBind := '0.0.0.0';
+      DashboardLanUrl := 'https://' + GetEnv('COMPUTERNAME') + ':8090/dashboard/';
+    end
     else
+    begin
       DashboardBind := '127.0.0.1';
+      DashboardLanUrl := '';
+    end;
 
     { Generate dashboard TLS cert for ALL TinyBox installs (localhost and network).
       Per Phase 14 M0: "Clean TinyBox install -> dashboard accessible at https://localhost:8090" }
@@ -2298,6 +2321,43 @@ begin
     end
     else
       Log('CurStepChanged: Non-TinyBox install — skipping dashboard TLS cert.');
+
+    { ---- Phase 14 M0b: Network-mode extras (firewall rule + CA cert export) ---- }
+    if (InstallTinyBox) and (DashNetworkRadio.Checked) then
+    begin
+      Log('CurStepChanged: Phase 14 — Network access: firewall rule + CA cert export');
+      Script :=
+        '$ErrorActionPreference = "Continue"' + CRLF +
+        'try {' + CRLF +
+        '  # Create inbound firewall rule for dashboard port (idempotent)' + CRLF +
+        '  if (-not (Get-NetFirewallRule -DisplayName "TinySocs Dashboard" -ErrorAction SilentlyContinue)) {' + CRLF +
+        '    New-NetFirewallRule -DisplayName "TinySocs Dashboard" -Direction Inbound -Protocol TCP -LocalPort 8090 -Action Allow -Description "Allow inbound access to TinySocs Dashboard (HTTPS)" | Out-Null' + CRLF +
+        '    Write-Host "[TinySocs][Inno] Firewall rule created: TinySocs Dashboard (TCP 8090 inbound)"' + CRLF +
+        '  } else {' + CRLF +
+        '    Write-Host "[TinySocs][Inno] Firewall rule already exists: TinySocs Dashboard"' + CRLF +
+        '  }' + CRLF +
+        '} catch {' + CRLF +
+        '  Write-Warning ("[TinySocs][Inno] Firewall rule creation failed (non-fatal): " + $_.Exception.Message)' + CRLF +
+        '}' + CRLF +
+        'try {' + CRLF +
+        '  # Copy CA certificate to a user-friendly location for distribution' + CRLF +
+        '  $caSrc = Join-Path $env:ProgramData "TinySocs\OpenSearch\certs\ca.cer"' + CRLF +
+        '  $caDst = Join-Path $env:ProgramData "TinySocs\certs\TinySocs-CA.crt"' + CRLF +
+        '  if (Test-Path $caSrc) {' + CRLF +
+        '    New-Item -ItemType Directory -Force -Path (Split-Path $caDst) | Out-Null' + CRLF +
+        '    Copy-Item -Force $caSrc $caDst' + CRLF +
+        '    Write-Host "[TinySocs][Inno] CA certificate exported to: $caDst"' + CRLF +
+        '  } else {' + CRLF +
+        '    Write-Host "[TinySocs][Inno] CA cert source not found at $caSrc (skipping export)"' + CRLF +
+        '  }' + CRLF +
+        '} catch {' + CRLF +
+        '  Write-Warning ("[TinySocs][Inno] CA cert export failed (non-fatal): " + $_.Exception.Message)' + CRLF +
+        '}' + CRLF;
+      if not RunPowerShellScript(Script) then
+        Log('CurStepChanged: Network access extras failed (non-fatal).')
+      else
+        Log('CurStepChanged: Network access extras completed (firewall + CA cert).');
+    end;
 
     { ---- Phase 14 M2: Sysmon deployment ---- }
     if SysmonInstallCheck.Checked then

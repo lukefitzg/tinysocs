@@ -8682,8 +8682,21 @@ function New-TinySocsDashboardCert {
     throw "Failed to export dashboard private key as PEM (CNG/PKCS#8): $($_.Exception.Message)"
   }
 
-  Write-TinySocsLog "Dashboard TLS cert generated: cert=$certPemPath key=$keyPemPath"
-  return @{ CertPath = $certPemPath; KeyPath = $keyPemPath }
+  # Collect LAN IPs for caller (firewall rule messaging, finish-page URL, etc.)
+  $lanIps = @()
+  try {
+    $lanIps = @([System.Net.Dns]::GetHostAddresses($hostname) |
+      Where-Object { $_.AddressFamily -eq 'InterNetwork' -and $_.IPAddressToString -ne '127.0.0.1' } |
+      ForEach-Object { $_.IPAddressToString })
+  } catch { }
+
+  Write-TinySocsLog "Dashboard TLS cert generated: cert=$certPemPath key=$keyPemPath hostname=$hostname lanIPs=$($lanIps -join ',')"
+  return @{
+    CertPath = $certPemPath
+    KeyPath  = $keyPemPath
+    Hostname = $hostname
+    LanIPs   = $lanIps
+  }
 }
 
 function Write-TinySocsOpenSearchConfig {

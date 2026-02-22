@@ -135,6 +135,12 @@ if (-not $upgrade) {
   }
 }
 
+# Remove dashboard firewall rule (if exists)
+_Log "Removing TinySocs Dashboard firewall rule"
+try {
+  Remove-NetFirewallRule -DisplayName 'TinySocs Dashboard' -ErrorAction SilentlyContinue
+} catch { }
+
 # DO NOT delete $appDir here.
 # The Inno uninstaller is running from {app}\unins*.exe and will remove {app} via [UninstallDelete].
 _Log "Skipping deletion of AppDir in script; Inno will remove {app} via [UninstallDelete]."

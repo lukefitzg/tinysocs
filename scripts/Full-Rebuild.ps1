@@ -529,4 +529,25 @@ Write-Host ""
 Write-Host "========================================" -ForegroundColor Green
 if (-not $dashUrl) { $dashUrl = 'https://localhost:8090/dashboard/' }
 Write-Host "  Done! Open $dashUrl" -ForegroundColor Green
+
+# Show LAN URL + CA cert path if network mode is configured
+$envFile = Join-Path $env:ProgramData 'TinySocs\Assistant\assistant.env'
+if (Test-Path $envFile) {
+    $bind = ((Get-Content $envFile | Where-Object { $_ -match '^DASHBOARD_BIND=' }) -replace '^DASHBOARD_BIND=','').Trim()
+    if ($bind -eq '0.0.0.0') {
+        try {
+            $lanIp = ([System.Net.Dns]::GetHostAddresses([System.Net.Dns]::GetHostName()) |
+                Where-Object { $_.AddressFamily -eq 'InterNetwork' -and $_.IPAddressToString -ne '127.0.0.1' } |
+                Select-Object -First 1).IPAddressToString
+            if ($lanIp) {
+                Write-Host "  LAN:  https://${lanIp}:8090/dashboard/" -ForegroundColor Cyan
+            }
+        } catch { }
+        $caCrt = Join-Path $env:ProgramData 'TinySocs\certs\TinySocs-CA.crt'
+        if (Test-Path $caCrt) {
+            Write-Host "  CA cert: $caCrt" -ForegroundColor Cyan
+        }
+    }
+}
+
 Write-Host "========================================" -ForegroundColor Green

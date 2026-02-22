@@ -15451,7 +15451,7 @@ function Install-TinySocsSysmon {
   # Resolve default paths — use Sysmon64a.exe on ARM64 hosts (x64 driver won't load on ARM64 kernel)
   $appDir = Join-Path $env:ProgramFiles "TinySocs"
   if (-not $SysmonExePath) {
-    $isArm64 = $env:PROCESSOR_ARCHITECTURE -eq 'ARM64'
+    $isArm64 = ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') -or ($env:PROCESSOR_ARCHITEW6432 -eq 'ARM64')
     $arm64Exe = Join-Path $appDir "bin\Sysmon64a.exe"
     if ($isArm64 -and (Test-Path $arm64Exe)) {
       $SysmonExePath = $arm64Exe

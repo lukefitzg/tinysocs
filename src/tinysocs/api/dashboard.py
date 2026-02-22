@@ -1042,7 +1042,7 @@ async def api_host_timeline(
         "query": {
             "bool": {
                 "must": [
-                    {"term": {"winlog.computer_name.keyword": hostname}},
+                    {"term": {"winlog.computer_name": hostname}},
                     {"range": {"@timestamp": {"gte": f"now-{hours}h", "lte": "now"}}},
                 ]
             }
@@ -1060,7 +1060,7 @@ async def api_host_timeline(
                 },
                 "aggs": {
                     "by_channel": {
-                        "terms": {"field": "winlog.channel.keyword", "size": 10},
+                        "terms": {"field": "winlog.channel", "size": 10},
                     }
                 },
             }
@@ -1188,12 +1188,12 @@ async def api_fleet_health():
         "query": {"range": {"@timestamp": {"gte": "now-24h", "lte": "now"}}},
         "aggs": {
             "by_host": {
-                "terms": {"field": "winlog.computer_name.keyword", "size": 50},
+                "terms": {"field": "winlog.computer_name", "size": 50},
                 "aggs": {
                     "last_seen": {"max": {"field": "@timestamp"}},
                     "first_seen": {"min": {"field": "@timestamp"}},
                     "event_count": {"value_count": {"field": "@timestamp"}},
-                    "top_channels": {"terms": {"field": "winlog.channel.keyword", "size": 5}},
+                    "top_channels": {"terms": {"field": "winlog.channel", "size": 5}},
                     "top_event_ids": {"terms": {"field": "event.code", "size": 5}},
                 },
             }

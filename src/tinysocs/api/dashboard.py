@@ -3439,6 +3439,12 @@ select { cursor: pointer; }
           <option value="720" selected>30 days</option>
           <option value="2160">90 days</option>
         </select>
+        <select id="complianceStatus" onchange="_filterCompliancePage()" style="font-size:12px;padding:4px 8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px">
+          <option value="">All Statuses</option>
+          <option value="active">Active</option>
+          <option value="deployed">Deployed</option>
+          <option value="not_mapped">Not Mapped</option>
+        </select>
         <a id="complianceDownload" href="#" style="display:none;font-size:16px;padding:2px 8px;color:var(--muted);text-decoration:none;margin-left:auto;cursor:pointer" title="Download HTML report" download>&#x2B07;</a>
       </div>
       <div id="compliance-summary" style="display:none;gap:12px;margin:12px 0">
@@ -5345,9 +5351,26 @@ async function loadComplianceFrameworks() {
   }
 }
 
+let _complianceAllControls = [];
 let _complianceControls = [];
 let _compliancePage = 0;
 const _compliancePageSize = 10;
+
+function _filterCompliancePage() {
+  const status = document.getElementById('complianceStatus').value;
+  _complianceControls = status ? _complianceAllControls.filter(c => c.status === status) : [..._complianceAllControls];
+  _compliancePage = 0;
+  // Recalculate summary stats for filtered view
+  const total = _complianceControls.length;
+  const notMapped = _complianceControls.filter(c => c.status === 'not_mapped').length;
+  const covered = total - notMapped;
+  const pct = total > 0 ? Math.round((covered / total) * 100) : 0;
+  document.getElementById('comp-coverage').textContent = pct + '%';
+  document.getElementById('comp-covered').textContent = covered;
+  document.getElementById('comp-notmapped').textContent = notMapped;
+  document.getElementById('comp-total').textContent = total;
+  _renderCompliancePage();
+}
 
 function _renderCompliancePage() {
   const el = document.getElementById('compliance-content');
@@ -5395,16 +5418,12 @@ async function loadComplianceReport() {
     const d = await r.json();
     if (!d.ok) { el.innerHTML = '<div style="color:var(--muted);font-size:13px">Error: ' + escapeHtml(d.error||'Unknown') + '</div>'; return; }
     sumEl.style.display = 'flex';
-    document.getElementById('comp-coverage').textContent = d.summary.coverage_pct + '%';
-    document.getElementById('comp-covered').textContent = d.summary.covered;
-    document.getElementById('comp-notmapped').textContent = d.summary.not_mapped;
-    document.getElementById('comp-total').textContent = d.summary.total_controls;
     const dl = document.getElementById('complianceDownload');
     dl.href = BASE + '/api/compliance/report/html?framework=' + encodeURIComponent(fw) + '&hours=' + hrs;
     dl.style.display = 'inline-block';
-    _complianceControls = d.controls || [];
-    _compliancePage = 0;
-    _renderCompliancePage();
+    _complianceAllControls = d.controls || [];
+    document.getElementById('complianceStatus').value = '';
+    _filterCompliancePage();
   } catch(e) {
     el.innerHTML = '<div style="color:var(--muted);font-size:13px">Failed to load compliance data.</div>';
   }

@@ -3088,7 +3088,7 @@ select { cursor: pointer; }
   </div>
 </div>
 
-<div id="dashboardContent" style="display:none">
+<div id="dashboardContent" style="visibility:hidden">
 <div class="header">
   <div>
     <h1>TinySocs Dashboard</h1>
@@ -5203,10 +5203,7 @@ async function doLogin() {
 
 function unlockDashboard() {
   document.getElementById('loginGate').style.display = 'none';
-  document.getElementById('dashboardContent').style.display = 'block';
-  // Force synchronous reflow so fixed-position assistant panel
-  // gets correct flex dimensions before any JS reads layout.
-  void document.getElementById('dashboardContent').offsetHeight;
+  document.getElementById('dashboardContent').style.visibility = 'visible';
   checkLlmStatus();
   restoreChat();
   loadComplianceFrameworks();
@@ -5230,7 +5227,7 @@ async function checkExistingSession() {
 
 function showLoginGate() {
   document.getElementById('loginGate').style.display = 'flex';
-  document.getElementById('dashboardContent').style.display = 'none';
+  document.getElementById('dashboardContent').style.visibility = 'hidden';
   document.getElementById('loginPassword').value = '';
   setTimeout(() => document.getElementById('loginPassword').focus(), 100);
 }

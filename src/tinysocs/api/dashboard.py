@@ -2943,8 +2943,13 @@ tr:hover { background: rgba(74, 144, 217, 0.05); }
 .btn-reject:hover { opacity: 0.85; }
 .btn-sm:disabled { opacity: 0.4; cursor: not-allowed; }
 
-/* Event Explorer: prevent layout jump on refresh */
+/* Event Explorer: collapsible body */
+#event-explorer-body { overflow: hidden; transition: max-height 0.25s ease; }
+#event-explorer-body.collapsed { max-height: 0 !important; }
+#event-explorer-body:not(.collapsed) { max-height: 2000px; }
 #events-content { min-height: 420px; }
+.collapse-chevron { cursor:pointer; font-size:16px; color:var(--muted); transition:transform 0.25s ease; user-select:none; padding:4px 8px; }
+.collapse-chevron.collapsed { transform: rotate(-90deg); }
 
 /* Host Timeline inline widget */
 .timeline-card { min-height: 200px; height: auto; overflow: visible; }
@@ -3304,31 +3309,36 @@ select { cursor: pointer; }
     <!-- Event Explorer -->
     <div class="card full" id="event-explorer-card">
       <div class="card-header-sticky" style="display:flex;align-items:center;justify-content:space-between">
-        <h2 style="margin:0">Event Explorer</h2>
+        <div style="display:flex;align-items:center;gap:4px">
+          <span class="collapse-chevron collapsed" onclick="toggleExplorerCollapse()" id="explorerChevron">&#x25BC;</span>
+          <h2 style="margin:0;cursor:pointer" onclick="toggleExplorerCollapse()">Event Explorer</h2>
+        </div>
         <button style="font-size:11px;padding:2px 8px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer" onclick="toggleSchema()">Schema</button>
       </div>
-      <div class="explorer-toolbar">
-        <select id="eventIndex" onchange="loadEvents()">
-          <option value="tinysocs-winlog-*">tinysocs-winlog-*</option>
-          <option value="tinysocs-alerts-*">tinysocs-alerts-*</option>
-        </select>
-        <select id="eventTimeRange" onchange="loadEvents()">
-          <option value="">All time</option>
-          <option value="5m">Last 5 min</option>
-          <option value="15m">Last 15 min</option>
-          <option value="1h">Last 1 hour</option>
-          <option value="6h">Last 6 hours</option>
-          <option value="24h" selected>Last 24 hours</option>
-          <option value="7d">Last 7 days</option>
-        </select>
-        <input type="text" id="eventQuery" placeholder="KQL filter (e.g. winlog.event_id:4625)" onkeydown="if(event.key==='Enter')loadEvents()">
-        <button onclick="loadEvents()">Search</button>
-        <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--muted);cursor:pointer;margin-left:6px;white-space:nowrap;user-select:none">
-          <input type="checkbox" id="eventsLiveToggle" onchange="toggleEventsLive(this.checked)" style="accent-color:var(--accent);cursor:pointer"> Live
-        </label>
+      <div id="event-explorer-body" class="collapsed">
+        <div class="explorer-toolbar">
+          <select id="eventIndex" onchange="loadEvents()">
+            <option value="tinysocs-winlog-*">tinysocs-winlog-*</option>
+            <option value="tinysocs-alerts-*">tinysocs-alerts-*</option>
+          </select>
+          <select id="eventTimeRange" onchange="loadEvents()">
+            <option value="">All time</option>
+            <option value="5m">Last 5 min</option>
+            <option value="15m">Last 15 min</option>
+            <option value="1h">Last 1 hour</option>
+            <option value="6h">Last 6 hours</option>
+            <option value="24h" selected>Last 24 hours</option>
+            <option value="7d">Last 7 days</option>
+          </select>
+          <input type="text" id="eventQuery" placeholder="KQL filter (e.g. winlog.event_id:4625)" onkeydown="if(event.key==='Enter')loadEvents()">
+          <button onclick="loadEvents()">Search</button>
+          <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--muted);cursor:pointer;margin-left:6px;white-space:nowrap;user-select:none">
+            <input type="checkbox" id="eventsLiveToggle" onchange="toggleEventsLive(this.checked)" style="accent-color:var(--accent);cursor:pointer"> Live
+          </label>
+        </div>
+        <div id="schema-panel" style="display:none;max-height:200px;overflow-y:auto;margin-bottom:8px;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;font-size:12px"></div>
+        <div id="events-content"><div class="loading">Loading...</div></div>
       </div>
-      <div id="schema-panel" style="display:none;max-height:200px;overflow-y:auto;margin-bottom:8px;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;font-size:12px"></div>
-      <div id="events-content"><div class="loading">Loading...</div></div>
     </div>
 
     <!-- Alert Rules -->
@@ -3960,6 +3970,7 @@ function showInLogs(idx) {
 
   // Scroll Event Explorer into view
   const explorer = document.getElementById('event-explorer-card');
+  _ensureExplorerExpanded();
   if (explorer) explorer.scrollIntoView({behavior: 'smooth', block: 'start'});
 }
 
@@ -4080,6 +4091,7 @@ function viewHostLogs(hostname) {
   document.getElementById('eventTimeRange').value = '24h';
   loadEvents();
   const explorer = document.getElementById('event-explorer-card');
+  _ensureExplorerExpanded();
   if (explorer) explorer.scrollIntoView({behavior: 'smooth', block: 'start'});
 }
 
@@ -4089,6 +4101,7 @@ function viewHostAlerts(hostname) {
   document.getElementById('eventTimeRange').value = '24h';
   loadEvents();
   const explorer = document.getElementById('event-explorer-card');
+  _ensureExplorerExpanded();
   if (explorer) explorer.scrollIntoView({behavior: 'smooth', block: 'start'});
 }
 
@@ -4188,6 +4201,22 @@ let _eventsLive = false;
 const _EVENTS_PER_PAGE = 15;
 
 function toggleEventsLive(on) { _eventsLive = on; }
+
+function toggleExplorerCollapse() {
+  const body = document.getElementById('event-explorer-body');
+  const chevron = document.getElementById('explorerChevron');
+  body.classList.toggle('collapsed');
+  chevron.classList.toggle('collapsed');
+}
+
+function _ensureExplorerExpanded() {
+  const body = document.getElementById('event-explorer-body');
+  const chevron = document.getElementById('explorerChevron');
+  if (body && body.classList.contains('collapsed')) {
+    body.classList.remove('collapsed');
+    chevron.classList.remove('collapsed');
+  }
+}
 
 async function loadEvents(background) {
   const el = document.getElementById('events-content');
@@ -4680,6 +4709,7 @@ function testRuleInExplorer(idx) {
   document.getElementById('eventTimeRange').value = '24h';
   loadEvents();
   const explorer = document.getElementById('event-explorer-card');
+  _ensureExplorerExpanded();
   if (explorer) explorer.scrollIntoView({behavior: 'smooth', block: 'start'});
 }
 

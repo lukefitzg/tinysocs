@@ -15508,28 +15508,49 @@ function Install-TinySocsSysmon {
     if ($svc.Status -eq 'Running') {
       Write-TinySocsLog "Sysmon service ($($svc.Name)) found and running -- updating configuration..."
       & $SysmonExePath -c "$ConfigPath" 2>&1 | ForEach-Object { Write-Host $_ }
+      Write-TinySocsLog "Sysmon -c exit code: $LASTEXITCODE"
     } else {
       # Service exists but is not running -- likely a broken prior install where the
       # kernel driver (SysmonDrv.sys) was never copied to C:\Windows\.
       # Force-uninstall then do a clean fresh install.
       Write-TinySocsLog "Sysmon service ($($svc.Name)) found but not running (Status: $($svc.Status)) -- force-reinstalling..."
       & $SysmonExePath -u force 2>&1 | ForEach-Object { Write-Host $_ }
+      Write-TinySocsLog "Sysmon -u force exit code: $LASTEXITCODE"
       Start-Sleep -Seconds 3
       Write-TinySocsLog "Installing Sysmon (fresh)..."
       & $SysmonExePath -accepteula -i "$ConfigPath" 2>&1 | ForEach-Object { Write-Host $_ }
+      Write-TinySocsLog "Sysmon -i exit code: $LASTEXITCODE"
     }
   } else {
     Write-TinySocsLog "Installing Sysmon..."
     & $SysmonExePath -accepteula -i "$ConfigPath" 2>&1 | ForEach-Object { Write-Host $_ }
+    Write-TinySocsLog "Sysmon -i exit code: $LASTEXITCODE"
   }
 
   # Verify service is running — check both possible names.
   # Sysmon -i sometimes registers the service without starting it, so explicitly start if needed.
-  Start-Sleep -Seconds 2
+  Start-Sleep -Seconds 3
   $svc = Get-Service -Name "Sysmon64" -ErrorAction SilentlyContinue
   if (-not $svc) { $svc = Get-Service -Name "Sysmon64a" -ErrorAction SilentlyContinue }
   if ($svc -and $svc.Status -ne "Running") {
-    Write-TinySocsLog "Sysmon service ($($svc.Name)) not running after install (Status: $($svc.Status)) -- starting explicitly..."
+    Write-TinySocsLog "Sysmon service ($($svc.Name)) not running after install (Status: $($svc.Status)) -- attempting recovery..."
+
+    # Step 1: Check if the SysmonDrv kernel driver is registered and try starting it first
+    $drv = Get-Service -Name "SysmonDrv" -ErrorAction SilentlyContinue
+    if ($drv -and $drv.Status -ne "Running") {
+      Write-TinySocsLog "SysmonDrv driver status: $($drv.Status) -- starting driver..."
+      try {
+        Start-Service -Name "SysmonDrv" -ErrorAction Stop
+        Start-Sleep -Seconds 2
+        Write-TinySocsLog "SysmonDrv driver started."
+      } catch {
+        Write-TinySocsLog -Level "WARN" -Message "Failed to start SysmonDrv driver: $($_.Exception.Message)"
+      }
+    } elseif (-not $drv) {
+      Write-TinySocsLog -Level "WARN" -Message "SysmonDrv driver service not found (driver may not have loaded)."
+    }
+
+    # Step 2: Try starting the Sysmon user-mode service
     try {
       Start-Service -Name $svc.Name -ErrorAction Stop
       Start-Sleep -Seconds 2
@@ -15537,12 +15558,23 @@ function Install-TinySocsSysmon {
       Write-TinySocsLog "Sysmon service ($($svc.Name)) started successfully."
     } catch {
       Write-TinySocsLog -Level "WARN" -Message "Failed to start Sysmon service: $($_.Exception.Message)"
+      # Log any recent Sysmon-related errors from System event log for diagnostics
+      try {
+        $evts = Get-WinEvent -FilterHashtable @{LogName='System'; Level=2; StartTime=(Get-Date).AddMinutes(-5)} -MaxEvents 5 -ErrorAction SilentlyContinue |
+                Where-Object { $_.Message -match 'Sysmon|SysmonDrv' }
+        foreach ($evt in $evts) {
+          Write-TinySocsLog -Level "WARN" -Message "System event log: $($evt.Message.Substring(0, [Math]::Min(200, $evt.Message.Length)))"
+        }
+      } catch { }
     }
   }
+
+  # Final status report
+  if ($svc) { $svc.Refresh() }
   if ($svc -and $svc.Status -eq "Running") {
     Write-TinySocsLog "Sysmon service ($($svc.Name)) is running."
   } elseif ($svc) {
-    Write-TinySocsLog -Level "WARN" -Message "Sysmon service ($($svc.Name)) is not running. Status: $($svc.Status)"
+    Write-TinySocsLog -Level "WARN" -Message "Sysmon service ($($svc.Name)) is not running. Status: $($svc.Status). The kernel driver may not be compatible with this system (common in ARM64 VMs). Sysmon-dependent detection rules will not fire."
   } else {
     Write-TinySocsLog -Level "WARN" -Message "Sysmon service not found after installation."
   }

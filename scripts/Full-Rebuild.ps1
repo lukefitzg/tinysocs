@@ -455,11 +455,30 @@ if (Test-Path $envFile) {
 Write-Host ""
 Write-Host "  Sysmon:"
 $sysmonSvc = Get-Service -Name 'Sysmon64' -ErrorAction SilentlyContinue
+if (-not $sysmonSvc) { $sysmonSvc = Get-Service -Name 'Sysmon64a' -ErrorAction SilentlyContinue }
 if (-not $sysmonSvc) { $sysmonSvc = Get-Service -Name 'Sysmon' -ErrorAction SilentlyContinue }
 if ($sysmonSvc -and $sysmonSvc.Status -eq 'Running') {
-    Write-Host "    Sysmon64 service: Running" -ForegroundColor Green
+    Write-Host "    $($sysmonSvc.Name) service: Running" -ForegroundColor Green
 } elseif ($sysmonSvc) {
-    Write-Host "    Sysmon64 service: $($sysmonSvc.Status)" -ForegroundColor Yellow
+    Write-Host "    $($sysmonSvc.Name) service: $($sysmonSvc.Status)" -ForegroundColor Yellow
+    # Show driver status for diagnostics
+    $drv = Get-Service -Name 'SysmonDrv' -ErrorAction SilentlyContinue
+    if ($drv) {
+        Write-Host "    SysmonDrv driver: $($drv.Status)" -ForegroundColor Yellow
+    } else {
+        Write-Host "    SysmonDrv driver: not registered (driver failed to load)" -ForegroundColor Red
+    }
+    # Check installer log for Sysmon errors
+    $logFile = Join-Path $env:ProgramData 'TinySocs\logs\installer.log'
+    if (Test-Path $logFile) {
+        $sysmonLines = Get-Content $logFile -Tail 50 | Where-Object { $_ -match 'Sysmon' } | Select-Object -Last 5
+        if ($sysmonLines) {
+            Write-Host "    Recent Sysmon log entries:" -ForegroundColor Yellow
+            foreach ($line in $sysmonLines) {
+                Write-Host "      $line" -ForegroundColor Gray
+            }
+        }
+    }
 } else {
     Write-Host "    Sysmon not installed (skipped in wizard or not checked)" -ForegroundColor Yellow
 }

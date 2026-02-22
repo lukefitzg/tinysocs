@@ -3001,7 +3001,7 @@ tr:hover { background: rgba(74, 144, 217, 0.05); }
   white-space: pre-wrap; word-wrap: break-word; line-height: 1.5; }
 
 .chat-container { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
-.chat-messages { flex: 1; overflow-y: auto; padding: 8px; background: var(--bg);
+.chat-messages { flex: 1; min-height: 0; overflow-y: auto; padding: 8px; background: var(--bg);
                  border: 1px solid var(--border); border-radius: 4px; margin-bottom: 8px;
                  font-size: 13px; }
 .chat-msg { margin-bottom: 8px; padding: 6px 10px; border-radius: 6px; max-width: 85%;
@@ -4494,15 +4494,15 @@ function renderRules() {
       const enabled = r.enabled !== false;
       const opacStyle = enabled ? '' : 'opacity:0.5;';
       const srcBadge = r.source === 'built-in'
-        ? '<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:#34495e;color:#bdc3c7;flex-shrink:0">BUILT-IN</span>'
-        : `<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:#8e44ad;color:#fff;flex-shrink:0">${escapeHtml(r.source || 'CUSTOM')}</span>`;
+        ? '<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:#34495e;color:#bdc3c7;flex-shrink:0;min-width:52px;text-align:center;display:inline-block;box-sizing:border-box">BUILT-IN</span>'
+        : `<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:#8e44ad;color:#fff;flex-shrink:0;min-width:52px;text-align:center;display:inline-block;box-sizing:border-box">${escapeHtml(r.source || 'CUSTOM')}</span>`;
       const sevColors = {critical:'#e74c3c',high:'#e67e22',medium:'#f39c12',low:'#3498db',info:'#95a5a6'};
       const sevColor = sevColors[r.severity] || '#95a5a6';
 
       html += `<div class="rule-row" style="${opacStyle}">`;
       html += `<div class="rule-row-header" onclick="toggleRuleDetail(${idx})">`;
       html += srcBadge;
-      html += `<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:${sevColor};color:#fff;flex-shrink:0">${escapeHtml(r.severity || 'medium')}</span>`;
+      html += `<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:${sevColor};color:#fff;flex-shrink:0;min-width:48px;text-align:center;display:inline-block;box-sizing:border-box">${escapeHtml(r.severity || 'medium')}</span>`;
       html += `<span class="rule-id">${escapeHtml(r.id)}</span>`;
       html += `<span class="rule-desc">${escapeHtml(r.description || '')}</span>`;
       html += `<span class="rule-meta">threshold: ${r.threshold || 1}</span>`;
@@ -4753,6 +4753,10 @@ async function restoreChat() {
       }
     }
   } catch(e) { /* server may not have history */ }
+
+  // No prior session restored — scroll the default welcome message to top
+  const el = document.getElementById('chatMessages');
+  if (el) el.scrollTop = 0;
 }
 
 function clearChat() {

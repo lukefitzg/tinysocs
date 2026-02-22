@@ -2898,7 +2898,7 @@ a { color: var(--accent); text-decoration: none; }
   border-bottom: 1px solid var(--border); }
 .card.full { grid-column: 1 / -1; }
 .card.assistant-card { height: 100%; max-height: 100%;
-                       overflow: hidden; display: flex; flex-direction: column; }
+                       overflow: visible; display: flex; flex-direction: column; }
 
 .explorer-toolbar { display: flex; gap: 6px; margin-bottom: 6px; align-items: stretch; }
 .explorer-toolbar select { width: auto; flex-shrink: 0; margin-bottom: 0;
@@ -3001,9 +3001,9 @@ tr:hover { background: rgba(74, 144, 217, 0.05); }
   white-space: pre-wrap; word-wrap: break-word; line-height: 1.5; }
 
 .chat-container { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
-.chat-messages { flex: 1; min-height: 0; overflow-y: auto; padding: 8px; background: var(--bg);
-                 border: 1px solid var(--border); border-radius: 4px; margin-bottom: 8px;
-                 font-size: 13px; }
+.chat-messages { flex: 1; min-height: 0; max-height: calc(100vh - 240px); overflow-y: auto; padding: 8px;
+                 background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+                 margin-bottom: 8px; font-size: 13px; }
 .chat-msg { margin-bottom: 8px; padding: 6px 10px; border-radius: 6px; max-width: 85%;
             white-space: pre-wrap; word-wrap: break-word; }
 .chat-msg.user { background: rgba(74,144,217,0.15); margin-left: auto; text-align: right; }

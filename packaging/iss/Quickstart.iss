@@ -2341,7 +2341,7 @@ begin
         '}' + CRLF +
         'try {' + CRLF +
         '  # Copy CA certificate to a user-friendly location for distribution' + CRLF +
-        '  $caSrc = Join-Path $env:ProgramData "TinySocs\OpenSearch\certs\ca.cer"' + CRLF +
+        '  $caSrc = Join-Path $env:ProgramData "TinySocs\OpenSearch\config\certs\ca.cer"' + CRLF +
         '  $caDst = Join-Path $env:ProgramData "TinySocs\certs\TinySocs-CA.crt"' + CRLF +
         '  if (Test-Path $caSrc) {' + CRLF +
         '    New-Item -ItemType Directory -Force -Path (Split-Path $caDst) | Out-Null' + CRLF +

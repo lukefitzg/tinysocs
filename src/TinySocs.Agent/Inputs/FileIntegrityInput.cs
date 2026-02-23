@@ -501,7 +501,7 @@ namespace TinySocs.Agent.Inputs
                 Body = body,
             };
 
-            _queueWriter.Enqueue(agentEvent);
+            _ = _queueWriter.EnqueueAsync(agentEvent, CancellationToken.None);
             _logger.LogInformation("FIM event: {ChangeType} {FilePath} (event_id={EventId})",
                 changeType, filePath, eventId);
         }

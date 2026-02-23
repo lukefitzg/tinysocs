@@ -90,6 +90,51 @@ Get-Process -Name 'TinySocs-Quickstart' -ErrorAction SilentlyContinue |
 # Brief pause to let file handles release after process kills
 Start-Sleep -Seconds 2
 
+# Uninstall Sysmon BEFORE deleting TinySocs directories.
+# If we delete the binary first, the service/driver are left in a stale
+# state that prevents clean reinstall (exit code 13 / driver not found).
+$sysmonExe = $null
+foreach ($name in @('Sysmon64a.exe','Sysmon64.exe')) {
+    $p = Join-Path $env:ProgramFiles "TinySocs\bin\$name"
+    if (Test-Path $p) { $sysmonExe = $p; break }
+}
+if (-not $sysmonExe) {
+    # Check if Sysmon is in Windows root (older installs)
+    foreach ($name in @('Sysmon64a.exe','Sysmon64.exe')) {
+        $p = Join-Path $env:SystemRoot $name
+        if (Test-Path $p) { $sysmonExe = $p; break }
+    }
+}
+if ($sysmonExe) {
+    Write-Host "  Uninstalling Sysmon ($sysmonExe) before purge..."
+    try {
+        $output = & $sysmonExe -u force 2>&1
+        $output | ForEach-Object { Write-Host "    $_" }
+    } catch {
+        Write-Host "    Sysmon uninstall warning: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+    Start-Sleep -Seconds 2
+    Write-Host "  Sysmon uninstalled." -ForegroundColor Green
+} else {
+    # No binary found, but service might still be registered — try sc.exe cleanup
+    foreach ($svcName in @('Sysmon64','Sysmon64a')) {
+        $svc = Get-Service -Name $svcName -ErrorAction SilentlyContinue
+        if ($svc) {
+            Write-Host "  Removing stale Sysmon service: $svcName"
+            Stop-Service -Name $svcName -Force -ErrorAction SilentlyContinue
+            sc.exe delete $svcName 2>$null | Out-Null
+        }
+    }
+    foreach ($drvName in @('SysmonDrv')) {
+        $drv = Get-Service -Name $drvName -ErrorAction SilentlyContinue
+        if ($drv) {
+            Write-Host "  Removing stale SysmonDrv driver"
+            sc.exe stop $drvName 2>$null | Out-Null
+            sc.exe delete $drvName 2>$null | Out-Null
+        }
+    }
+}
+
 # Purge install directory
 $installDir = Join-Path $env:ProgramFiles 'TinySocs'
 if (Test-Path $installDir) {

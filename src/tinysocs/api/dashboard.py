@@ -3288,7 +3288,7 @@ select { cursor: pointer; }
         <p style="color:var(--muted);font-size:13px;margin-bottom:12px">Enter admin password to access settings</p>
         <input type="password" id="adminPassword" placeholder="Admin password" onkeydown="if(event.key==='Enter')settingsAuth()">
         <button class="btn-save" onclick="settingsAuth()">Unlock</button>
-        <div id="loginError"></div>
+        <div id="settingsLoginError"></div>
       </div>
     </div>
     <!-- First-time password setup view -->
@@ -5234,7 +5234,7 @@ async function openSettings() {
   // Password is set — show login
   document.getElementById('settingsLogin').style.display = 'block';
   document.getElementById('adminPassword').value = '';
-  document.getElementById('loginError').innerHTML = '';
+  document.getElementById('settingsLoginError').innerHTML = '';
   setTimeout(() => document.getElementById('adminPassword').focus(), 100);
 }
 
@@ -5292,7 +5292,7 @@ async function settingsAuth() {
     const d = await r.json();
     if (d.error) {
       const msg = d.error === 'password_not_set' ? 'No password configured.' : d.error;
-      document.getElementById('loginError').innerHTML = `<div class="status-msg err" style="margin-top:8px">${escapeHtml(msg)}</div>`;
+      document.getElementById('settingsLoginError').innerHTML = `<div class="status-msg err" style="margin-top:8px">${escapeHtml(msg)}</div>`;
       return;
     }
     settingsPassword = pw;
@@ -5300,7 +5300,7 @@ async function settingsAuth() {
     document.getElementById('settingsForm').style.display = 'block';
     populateSettings(d);
   } catch(e) {
-    document.getElementById('loginError').innerHTML = `<div class="status-msg err" style="margin-top:8px">${escapeHtml(e.message)}</div>`;
+    document.getElementById('settingsLoginError').innerHTML = `<div class="status-msg err" style="margin-top:8px">${escapeHtml(e.message)}</div>`;
   }
 }
 
@@ -5589,12 +5589,14 @@ setInterval(() => { if (_authToken) refreshAll(); }, 30000);
 let _authToken = null;
 
 async function doLogin() {
-  const pw = document.getElementById('loginPassword').value;
-  const errEl = document.getElementById('loginError');
-  errEl.textContent = '';
-  if (!pw) { errEl.textContent = 'Please enter a password'; return; }
   try {
-    const r = await fetch(BASE + '/api/auth/login', {
+    const pw = document.getElementById('loginPassword').value;
+    const errEl = document.getElementById('loginError');
+    errEl.textContent = '';
+    if (!pw) { errEl.textContent = 'Please enter a password'; return; }
+    errEl.textContent = 'Signing in\u2026';
+    const url = BASE + '/api/auth/login';
+    const r = await fetch(url, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({password: pw}),
@@ -5604,7 +5606,12 @@ async function doLogin() {
     _authToken = d.token;
     try { sessionStorage.setItem('tinysocs_auth', _authToken); } catch(e) {}
     unlockDashboard();
-  } catch(e) { errEl.textContent = 'Connection error: ' + e.message; }
+  } catch(e) {
+    var el = document.getElementById('loginError');
+    var msg = 'Login error: ' + (e.message || String(e)) + ' [BASE=' + BASE + ']';
+    if (el) el.textContent = msg;
+    else document.title = msg;
+  }
 }
 
 function unlockDashboard() {

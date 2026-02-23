@@ -473,7 +473,7 @@ end;
 
 { Scripted constant: returns the dashboard URL with the correct scheme.
   TinyBox installs always get HTTPS (certs generated); Node-only gets HTTP.
-  Network-mode returns hostname-based URL so it works from other machines. }
+  Network-mode returns the LAN IP-based URL so it resolves from other machines. }
 function GetDashboardUrl(Param: String): String;
 begin
   if InstallTinyBox then
@@ -573,6 +573,37 @@ begin
 
   { Last-ditch: rely on PATH }
   Result := 'powershell.exe';
+end;
+
+{ Resolve the first non-loopback IPv4 address for this machine.
+  Falls back to COMPUTERNAME if resolution fails. Used for the
+  network-mode dashboard URL so it actually resolves from other machines. }
+function GetLocalIPv4: String;
+var
+  TmpFile: String;
+  ResultCode: Integer;
+  Lines: TArrayOfString;
+  I: Integer;
+  PsCmd: String;
+begin
+  Result := GetEnv('COMPUTERNAME');
+  TmpFile := ExpandConstant('{tmp}\localip.txt');
+  PsCmd := '-NoProfile -Command "try { $ip = [System.Net.Dns]::GetHostAddresses($env:COMPUTERNAME) | Where-Object { $_.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork -and $_.ToString() -ne ''127.0.0.1'' } | Select-Object -First 1; if ($ip) { $ip.ToString() } else { $env:COMPUTERNAME } } catch { $env:COMPUTERNAME } | Out-File -Encoding ASCII ''' + TmpFile + '''"';
+  if Exec(GetPowerShellExePath, PsCmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  begin
+    if LoadStringsFromFile(TmpFile, Lines) then
+    begin
+      for I := 0 to GetArrayLength(Lines) - 1 do
+      begin
+        if Trim(Lines[I]) <> '' then
+        begin
+          Result := Trim(Lines[I]);
+          Break;
+        end;
+      end;
+    end;
+  end;
+  Log('GetLocalIPv4: resolved to ' + Result);
 end;
 
 procedure CopyToClipboard(const Text: String);
@@ -2278,7 +2309,7 @@ begin
     if DashNetworkRadio.Checked then
     begin
       DashboardBind := '0.0.0.0';
-      DashboardLanUrl := 'https://' + GetEnv('COMPUTERNAME') + ':8090/dashboard/';
+      DashboardLanUrl := 'https://' + GetLocalIPv4 + ':8090/dashboard/';
     end
     else
     begin

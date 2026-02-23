@@ -515,6 +515,103 @@ try {
     Write-Host "    Compliance API not reachable (dashboard may require auth)" -ForegroundColor Yellow
 }
 
+# Phase 15: Check version manifest
+Write-Host ""
+Write-Host "  Version manifest:"
+$versionManifest = Join-Path $env:ProgramData 'TinySocs\version-manifest.json'
+if (Test-Path $versionManifest) {
+    try {
+        $manifest = Get-Content $versionManifest -Raw | ConvertFrom-Json
+        Write-Host "    current_version: $($manifest.current_version)" -ForegroundColor Green
+        Write-Host "    minimum_compatible: $($manifest.minimum_compatible)" -ForegroundColor Green
+    } catch {
+        Write-Host "    version-manifest.json exists but failed to parse" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "    version-manifest.json not found (expected at $versionManifest)" -ForegroundColor Yellow
+}
+
+# Phase 15: Check FIM rules deployed
+Write-Host ""
+Write-Host "  FIM rules (Phase 15):"
+$rulesFile = Join-Path $env:ProgramData 'TinySocs\Collector\rules\rules.yml'
+if (Test-Path $rulesFile) {
+    $fimRules = Select-String -Path $rulesFile -Pattern 'TS-11[0-5]' -SimpleMatch | Select-Object -ExpandProperty Line
+    $fimCount = ($fimRules | Measure-Object).Count
+    if ($fimCount -ge 6) {
+        Write-Host "    $fimCount FIM rules deployed (TS-110 through TS-115)" -ForegroundColor Green
+    } elseif ($fimCount -gt 0) {
+        Write-Host "    Only $fimCount/6 FIM rules found in rules.yml" -ForegroundColor Yellow
+    } else {
+        Write-Host "    No FIM rules (TS-110-115) found in rules.yml" -ForegroundColor Yellow
+    }
+    # Check MITRE annotations on rules
+    $mitreCount = (Select-String -Path $rulesFile -Pattern 'technique_id:' | Measure-Object).Count
+    Write-Host "    $mitreCount rules with MITRE annotations" -ForegroundColor $(if ($mitreCount -ge 20) { 'Green' } else { 'Yellow' })
+} else {
+    Write-Host "    rules.yml not found" -ForegroundColor Yellow
+}
+
+# Phase 15: Check MITRE coverage API
+Write-Host ""
+Write-Host "  MITRE ATT&CK API:"
+try {
+    $mitreUrl = if ($dashUrl -and $dashUrl.StartsWith('https')) { 'https://localhost:8090/dashboard/api/mitre/coverage' } else { 'http://localhost:8090/dashboard/api/mitre/coverage' }
+    $mitreResp = Invoke-WebRequest -Uri $mitreUrl -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+    if ($mitreResp.StatusCode -eq 200) {
+        $mitreData = $mitreResp.Content | ConvertFrom-Json
+        if ($mitreData.ok) {
+            Write-Host "    /api/mitre/coverage -> 200 OK" -ForegroundColor Green
+            if ($mitreData.total_techniques) {
+                Write-Host "    Techniques: $($mitreData.total_techniques), Tactics: $($mitreData.total_tactics)" -ForegroundColor Green
+            }
+        } else {
+            Write-Host "    /api/mitre/coverage -> 200 but ok=false" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "    /api/mitre/coverage -> $($mitreResp.StatusCode)" -ForegroundColor Yellow
+    }
+} catch {
+    Write-Host "    MITRE API not reachable (dashboard may require auth)" -ForegroundColor Yellow
+}
+
+# Phase 15: Check version status API
+Write-Host ""
+Write-Host "  Version status API:"
+try {
+    $verUrl = if ($dashUrl -and $dashUrl.StartsWith('https')) { 'https://localhost:8090/dashboard/api/version/status' } else { 'http://localhost:8090/dashboard/api/version/status' }
+    $verResp = Invoke-WebRequest -Uri $verUrl -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+    if ($verResp.StatusCode -eq 200) {
+        Write-Host "    /api/version/status -> 200 OK" -ForegroundColor Green
+    } else {
+        Write-Host "    /api/version/status -> $($verResp.StatusCode)" -ForegroundColor Yellow
+    }
+} catch {
+    Write-Host "    Version API not reachable (dashboard may require auth)" -ForegroundColor Yellow
+}
+
+# Phase 15: Check threat intel provider config
+Write-Host ""
+Write-Host "  Threat intel providers:"
+if (Test-Path $envFile) {
+    $tiKeys = @('ABUSEIPDB_API_KEY', 'OTX_API_KEY', 'GREYNOISE_API_KEY')
+    $configured = 0
+    foreach ($k in $tiKeys) {
+        $val = (Get-Content $envFile | Where-Object { $_ -match "^${k}=" }) -replace "^${k}=",''
+        if ($val -and $val -ne 'your_key_here' -and $val.Length -gt 5) {
+            Write-Host "    $k : configured" -ForegroundColor Green
+            $configured++
+        } else {
+            Write-Host "    $k : not set (optional)" -ForegroundColor Gray
+        }
+    }
+    if ($configured -eq 0) {
+        Write-Host "    No threat intel providers configured (enrichment disabled -- add keys to assistant.env)" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "    assistant.env not found" -ForegroundColor Yellow
+}
+
 # Phase 14: Run Test-TinySocsHealth
 Write-Host ""
 Write-Host "  Running Test-TinySocsHealth..."

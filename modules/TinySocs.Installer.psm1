@@ -15513,13 +15513,40 @@ function Install-TinySocsSysmon {
   # Resolve default paths — use Sysmon64a.exe on ARM64 hosts (x64 driver won't load on ARM64 kernel)
   $appDir = Join-Path $env:ProgramFiles "TinySocs"
   if (-not $SysmonExePath) {
-    $isArm64 = ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') -or ($env:PROCESSOR_ARCHITEW6432 -eq 'ARM64')
+    # ARM64 detection: env vars are unreliable when PowerShell runs under x64
+    # emulation (Inno Setup is x64, so child processes may inherit x64 context
+    # where PROCESSOR_ARCHITECTURE=AMD64 and PROCESSOR_ARCHITEW6432 is empty).
+    # Use WMI/CIM as the authoritative source, with env vars as fallback.
+    $isArm64 = $false
+    try {
+      $cpuArch = (Get-CimInstance Win32_Processor -ErrorAction Stop | Select-Object -First 1).Architecture
+      # Architecture values: 12 = ARM64, 9 = x64, 5 = ARM, 0 = x86
+      $isArm64 = ($cpuArch -eq 12)
+      Write-TinySocsLog "CIM CPU Architecture: $cpuArch (ARM64=$isArm64)"
+    } catch {
+      Write-TinySocsLog "CIM query failed, falling back to env vars: $($_.Exception.Message)"
+    }
+    if (-not $isArm64) {
+      $isArm64 = ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') -or ($env:PROCESSOR_ARCHITEW6432 -eq 'ARM64')
+    }
+    # Also check OS architecture via .NET as a belt-and-suspenders check
+    if (-not $isArm64) {
+      try {
+        $osArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+        $isArm64 = ($osArch -eq 'Arm64')
+        Write-TinySocsLog ".NET OSArchitecture: $osArch (ARM64=$isArm64)"
+      } catch { }
+    }
+
     $arm64Exe = Join-Path $appDir "bin\Sysmon64a.exe"
     if ($isArm64 -and (Test-Path $arm64Exe)) {
       $SysmonExePath = $arm64Exe
       Write-TinySocsLog "ARM64 host detected -- using Sysmon64a.exe"
     } else {
       $SysmonExePath = Join-Path $appDir "bin\Sysmon64.exe"
+      if ($isArm64) {
+        Write-TinySocsLog -Level "WARN" -Message "ARM64 host detected but Sysmon64a.exe not found at $arm64Exe -- falling back to Sysmon64.exe (kernel driver will likely fail)"
+      }
     }
   }
   if (-not $ConfigPath) {

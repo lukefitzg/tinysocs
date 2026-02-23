@@ -74,6 +74,12 @@ controls:
     rules: ["psexec_usage", "remote_service_install", "large_outbound_transfer", "TS-070", "TS-072", "TS-101"]
     required: true
 
+  - id: "11.5"
+    name: "File integrity monitoring (FIM) deployed to detect unauthorized changes to critical files"
+    description: "SHA-256 hash-based file integrity monitoring for critical system files and configurations"
+    rules: ["fim_critical_file_modified", "fim_mass_modification", "fim_config_tampered", "fim_sensitive_file_deleted", "TS-110", "TS-111", "TS-112", "TS-113", "TS-114", "TS-115"]
+    required: true
+
   - id: "11.5.1.1"
     name: "Intrusion detection and prevention methods detect, alert on, and address covert malware communication channels"
     description: "DNS tunnelling and exfiltration detection"

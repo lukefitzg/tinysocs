@@ -73,7 +73,11 @@ python -m tinysocs.api.bot   # start bot API (port 8090)
 - **Privacy-First**: Field redaction, hashing, truncation; data stays on-prem
 - **Federated**: Multi-node architecture with HMAC-authenticated evidence ledger
 - **Schema-Defined**: JSON Schema for events and alerts, with compliance tests
-- **40+ Detection Rules**: MITRE ATT&CK mapped across 8 categories
+- **Threat Intelligence**: AbuseIPDB, AlienVault OTX, GreyNoise enrichment with SQLite cache
+- **File Integrity Monitoring**: SHA-256 baseline + real-time change detection for critical system files
+- **MITRE ATT&CK Coverage**: 32 techniques across 11 tactics with dashboard heatmap and Navigator layer export
+- **Version Awareness**: Agent version drift detection with fleet health badges and alerting
+- **50+ Detection Rules**: MITRE ATT&CK mapped across 11 tactics with Atomic Red Team validation
 - **CI/CD**: GitHub Actions with Windows + Linux test runners
 
 ## Documentation
@@ -81,7 +85,7 @@ python -m tinysocs.api.bot   # start bot API (port 8090)
 - [Getting Started](docs/getting-started.md) — Install and verify in <15 minutes
 - [Operator Runbook](docs/operator-runbook.md) — Day-to-day operations reference
 - [Troubleshooting](docs/troubleshooting.md) — Common issues and fixes
-- [Detection Coverage](docs/detection-coverage.md) — Rules matrix with MITRE ATT&CK mapping
+- [Detection Coverage](docs/detection-coverage.md) — Auto-generated MITRE ATT&CK coverage matrix
 - [Pilot Guide](docs/pilot-guide.md) — Pilot evaluation walkthrough
 - [FAQ](docs/faq.md) — Common questions and answers
 - [MSSP Guide](docs/mssp-guide.md) — Multi-client deployment for MSSPs

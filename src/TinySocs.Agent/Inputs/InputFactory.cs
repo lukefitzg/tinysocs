@@ -52,6 +52,16 @@ namespace TinySocs.Agent.Inputs
                         "Created dev-only FakeInput '{Name}' (agent.debug_fake_input = true).",
                         inputConfig.Name);
                 }
+                else if (string.Equals(inputConfig.Type, "fim", StringComparison.OrdinalIgnoreCase))
+                {
+                    var fimCfg = inputConfig.Fim ?? new Configuration.FimConfig();
+                    var fimLogger = loggerFactory.CreateLogger<FileIntegrityInput>();
+                    var input = new FileIntegrityInput(fimLogger, config, queueWriter, fimCfg);
+                    results.Add(input);
+                    factoryLogger.LogInformation(
+                        "Created FIM input monitoring {PathCount} paths.",
+                        fimCfg.Paths.Count);
+                }
                 else
                 {
                     factoryLogger.LogWarning(

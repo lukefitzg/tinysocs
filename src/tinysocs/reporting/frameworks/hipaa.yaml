@@ -50,7 +50,13 @@ controls:
   - id: "164.312(c)(1)"
     name: "Integrity — Mechanism to authenticate ePHI"
     description: "File integrity monitoring and tampering detection"
-    rules: ["timestomp_detected", "ntds_dit_access", "TS-083", "TS-062"]
+    rules: ["timestomp_detected", "ntds_dit_access", "fim_critical_file_modified", "fim_config_tampered", "TS-083", "TS-062", "TS-110", "TS-111", "TS-112"]
+    required: true
+
+  - id: "164.312(c)(2)"
+    name: "Integrity Controls — Mechanism to corroborate that ePHI has not been altered or destroyed"
+    description: "File integrity monitoring with hash-based change detection"
+    rules: ["fim_critical_file_modified", "fim_mass_modification", "fim_sensitive_file_deleted", "TS-110", "TS-113", "TS-114"]
     required: true
 
   - id: "164.312(d)"

@@ -35,6 +35,12 @@ controls:
     rules: ["ntds_dit_access", "TS-062"]
     required: true
 
+  - id: "PR.DS-06"
+    name: "Integrity checking mechanisms are used to verify software, firmware, and information integrity"
+    description: "File integrity monitoring (FIM) for critical system files and configurations"
+    rules: ["fim_critical_file_modified", "fim_config_tampered", "fim_mass_modification", "TS-110", "TS-111", "TS-112", "TS-113"]
+    required: true
+
   - id: "PR.PS-01"
     name: "Configuration baselines are established and maintained"
     description: "Registry and service configuration monitoring"

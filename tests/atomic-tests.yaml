@@ -107,3 +107,61 @@ tests:
     sysmon_required: false
     timeout_seconds: 180
     notes: "Accesses ntds.dit. Generates event 4663. Requires domain controller or simulated access."
+
+  # ── Phase 15 M3/M4: Gap-Coverage Techniques ─────────────────────────
+
+  - atomic_technique: "T1087.001"
+    technique_name: "Account Discovery — Local Account"
+    atomic_test_number: 1
+    expected_rules: ["TS-130", "account_discovery"]
+    sysmon_required: false
+    timeout_seconds: 120
+    notes: "Runs net user/localgroup/whoami. Generates 4688 events."
+
+  - atomic_technique: "T1018"
+    technique_name: "Remote System Discovery"
+    atomic_test_number: 1
+    expected_rules: ["TS-131", "system_network_discovery"]
+    sysmon_required: false
+    timeout_seconds: 120
+    notes: "Runs ipconfig/netstat/arp/route. Generates 4688 events."
+
+  - atomic_technique: "T1105"
+    technique_name: "Ingress Tool Transfer"
+    atomic_test_number: 1
+    expected_rules: ["TS-132", "ingress_tool_transfer", "powershell_web_dl"]
+    sysmon_required: false
+    timeout_seconds: 120
+    notes: "Downloads file via certutil/bitsadmin/PowerShell. Generates 4688/4104."
+
+  - atomic_technique: "T1055"
+    technique_name: "Process Injection"
+    atomic_test_number: 1
+    expected_rules: ["TS-133", "process_injection_sysmon"]
+    sysmon_required: true
+    timeout_seconds: 120
+    notes: "CreateRemoteThread injection. Requires Sysmon Event 8."
+
+  - atomic_technique: "T1027"
+    technique_name: "Obfuscated Files or Information"
+    atomic_test_number: 1
+    expected_rules: ["TS-134", "obfuscated_command_line", "scriptblock_base64"]
+    sysmon_required: false
+    timeout_seconds: 120
+    notes: "Encoded/obfuscated PowerShell commands. Generates 4688 and 4104."
+
+  - atomic_technique: "T1565.001"
+    technique_name: "Data Manipulation — Stored Data Manipulation"
+    atomic_test_number: 1
+    expected_rules: ["TS-110", "fim_critical_file_modified"]
+    sysmon_required: false
+    timeout_seconds: 180
+    notes: "Modifies hosts file or SAM hive. Detected by FIM (TinySocs-FIM channel, event 1002)."
+
+  - atomic_technique: "T1047"
+    technique_name: "Windows Management Instrumentation"
+    atomic_test_number: 1
+    expected_rules: ["wmi_process_creation"]
+    sysmon_required: false
+    timeout_seconds: 120
+    notes: "WMI-spawned process. Parent is wmiprvse.exe. Generates 4688."

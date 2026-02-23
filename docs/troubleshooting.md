@@ -256,6 +256,54 @@ Check if the detection rules are too broad:
 2. Increase `reload_interval_seconds` in `agent-config.yml`
 3. Reduce event channel verbosity (e.g., set Application to `warning` instead of `information`)
 
+## Phase 15 Issues
+
+### Threat intelligence enrichment shows "unconfigured"
+
+**Symptom**: Threat badges don't appear on alerts; Settings shows all providers as unconfigured.
+
+**Fix**: Add API keys in the dashboard Settings > Threat Intelligence section, or directly in `assistant.env`:
+
+```
+ABUSEIPDB_API_KEY=your_key_here
+OTX_API_KEY=your_key_here
+GREYNOISE_API_KEY=your_key_here
+```
+
+Restart the assistant service after editing `assistant.env`.
+
+### FIM not generating alerts
+
+**Symptom**: File Integrity Monitoring rules (TS-110 through TS-115) never fire.
+
+**Fix**:
+1. Verify FIM input is enabled in `agent-config.yml`:
+   ```yaml
+   inputs:
+     - type: fim
+       fim:
+         paths:
+           - C:\Windows\System32\drivers\etc\hosts
+           - C:\Windows\System32\config\SAM
+   ```
+2. Check `C:\ProgramData\TinySocs\Agent\fim-baseline.json` exists (created on first run)
+3. Restart the agent: `Restart-Service TinySocsAgent`
+
+### MITRE coverage widget shows 0 techniques
+
+**Symptom**: MITRE ATT&CK Coverage card shows 0 techniques and 0 tactics.
+
+**Fix**: This means rules files could not be loaded. Check:
+1. `packaging/detection/rules.yml` exists and has `mitre:` annotations
+2. `src/tinysocs/agent/detections/rules.yaml` exists with `mitre:` fields
+3. Run `python -m tinysocs.reporting.mitre_coverage` to verify locally
+
+### Agent version drift banner keeps appearing
+
+**Symptom**: Orange "Agent version drift detected" banner persists despite agents being current.
+
+**Fix**: Update `config/version-manifest.json` with the correct `current_version` and `minimum_compatible` values matching your deployed agent versions.
+
 ## Getting Help
 
 If none of the above resolves your issue:

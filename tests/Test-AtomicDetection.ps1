@@ -34,7 +34,8 @@ param(
     [string]$ConfigPath,
     [switch]$SkipInstall,
     [Nullable[bool]]$SysmonAvailable,
-    [switch]$DryRun
+    [switch]$DryRun,
+    [string]$OutputJson
 )
 
 $ErrorActionPreference = "Stop"
@@ -43,6 +44,7 @@ $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 if (-not $ConfigPath) { $ConfigPath = Join-Path $repoRoot "tests\atomic-tests.yaml" }
 $outputDoc = Join-Path $repoRoot "docs\detection-efficacy.md"
+if (-not $OutputJson) { $OutputJson = Join-Path $repoRoot "tests\atomic-results.json" }
 
 # ---------------------------------------------------------------------------
 # Prerequisites
@@ -383,6 +385,31 @@ try {
     Write-Host "[*] Report written to: $outputDoc"
 } catch {
     Write-Warning "Failed to write report: $($_.Exception.Message)"
+}
+
+# Generate atomic-results.json for Navigator layer colouring
+$jsonResults = @{
+    generated_at = (Get-Date -Format "o")
+    total_tests  = $results.Count
+    efficacy_pct = $efficacy
+    results      = @($results | ForEach-Object {
+        @{
+            technique_id = $_.Technique
+            technique_name = $_.Name
+            status = $_.Status
+            reason = $_.Reason
+            expected_rules = ($_.Rules -split ", ")
+            detected_rules = @($_.Detected)
+        }
+    })
+}
+
+try {
+    $jsonStr = $jsonResults | ConvertTo-Json -Depth 4
+    Set-Content -Path $OutputJson -Value $jsonStr -Encoding UTF8
+    Write-Host "[*] JSON results written to: $OutputJson"
+} catch {
+    Write-Warning "Failed to write JSON results: $($_.Exception.Message)"
 }
 
 Write-Host ""

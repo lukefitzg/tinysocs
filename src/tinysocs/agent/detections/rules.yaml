@@ -19,6 +19,10 @@
   threshold: 5
   severity: medium
   category: auth
+  mitre:
+    technique_id: "T1110.001"
+    technique_name: "Brute Force: Password Guessing"
+    tactic: "credential-access"
   tuning_envvars:
     - AUTH_FAIL_THRESHOLD
 
@@ -34,6 +38,10 @@
   threshold: 10
   severity: medium
   category: powershell
+  mitre:
+    technique_id: "T1059.001"
+    technique_name: "Command and Scripting Interpreter: PowerShell"
+    tactic: "execution"
 
 - id: sysmon_proc_creation
   description: Sysmon process creation events (ID 1)
@@ -46,6 +54,10 @@
   threshold: 10
   severity: low
   category: endpoint
+  mitre:
+    technique_id: "T1106"
+    technique_name: "Native API"
+    tactic: "execution"
 
 - id: ps_script_block
   description: PowerShell ScriptBlock logging (ID 4104)
@@ -59,6 +71,10 @@
   threshold: 3
   severity: medium
   category: powershell
+  mitre:
+    technique_id: "T1059.001"
+    technique_name: "Command and Scripting Interpreter: PowerShell"
+    tactic: "execution"
 
 - id: proc_creation_powershell_suspicious
   description: PowerShell with suspicious flags (4688 / Sysmon ID 1)
@@ -79,6 +95,10 @@
   threshold: 1
   severity: high
   category: powershell
+  mitre:
+    technique_id: "T1059.001"
+    technique_name: "Command and Scripting Interpreter: PowerShell"
+    tactic: "execution"
 
 - id: proc_creation_lolbins
   description: Possible LOLBIN execution (4688 / Sysmon 1) — rundll32, regsvr32, mshta, wmic, certutil
@@ -95,6 +115,10 @@
   threshold: 2
   severity: high
   category: endpoint
+  mitre:
+    technique_id: "T1218"
+    technique_name: "System Binary Proxy Execution"
+    tactic: "defense-evasion"
 
 - id: suspicious_powershell
   description: Suspicious PowerShell flags (NoProfile, EncodedCommand, Hidden, Bypass)
@@ -115,6 +139,10 @@
   threshold: 1
   severity: high
   category: powershell
+  mitre:
+    technique_id: "T1059.001"
+    technique_name: "Command and Scripting Interpreter: PowerShell"
+    tactic: "execution"
 
 - id: lolbin_execs
   description: Multiple LOLBIN executions in short window
@@ -131,6 +159,10 @@
   threshold: 3
   severity: medium
   category: endpoint
+  mitre:
+    technique_id: "T1218"
+    technique_name: "System Binary Proxy Execution"
+    tactic: "defense-evasion"
 
 # New additions (unaltered logic but kept robust where relevant)
 
@@ -143,6 +175,10 @@
   threshold: 1
   severity: high
   category: identity
+  mitre:
+    technique_id: "T1136.001"
+    technique_name: "Create Account: Local Account"
+    tactic: "persistence"
 
 - id: scheduled_task_creation
   description: Scheduled task created (4698)
@@ -153,6 +189,10 @@
   threshold: 1
   severity: medium
   category: persistence
+  mitre:
+    technique_id: "T1053.005"
+    technique_name: "Scheduled Task/Job: Scheduled Task"
+    tactic: "persistence"
 
 - id: wmi_process_creation
   description: WMI-spawned process (4688 parent is WmiPrvSE or process is wmic.exe)
@@ -169,6 +209,10 @@
   threshold: 1
   severity: medium
   category: lateral
+  mitre:
+    technique_id: "T1047"
+    technique_name: "Windows Management Instrumentation"
+    tactic: "execution"
 
 - id: suspicious_svchost
   description: svchost.exe spawning scripting/LOL processes
@@ -187,6 +231,10 @@
   threshold: 1
   severity: high
   category: endpoint
+  mitre:
+    technique_id: "T1055"
+    technique_name: "Process Injection"
+    tactic: "defense-evasion"
 
 - id: powershell_web_dl
   description: PowerShell web download usage (Invoke-WebRequest/DownloadString)
@@ -202,6 +250,10 @@
   threshold: 1
   severity: medium
   category: powershell
+  mitre:
+    technique_id: "T1105"
+    technique_name: "Ingress Tool Transfer"
+    tactic: "command-and-control"
 
 - id: ps_transcription_off
   description: PowerShell transcription disabled
@@ -214,6 +266,10 @@
   threshold: 1
   severity: medium
   category: powershell
+  mitre:
+    technique_id: "T1562.001"
+    technique_name: "Impair Defenses: Disable or Modify Tools"
+    tactic: "defense-evasion"
 
 - id: scriptblock_base64
   description: Large base64 chunk observed in ScriptBlock
@@ -226,6 +282,10 @@
   threshold: 1
   severity: medium
   category: powershell
+  mitre:
+    technique_id: "T1027"
+    technique_name: "Obfuscated Files or Information"
+    tactic: "defense-evasion"
 
 - id: vpn_geo_impossible
   description: Logins from far-apart locations in short time (post-process correlation may apply)
@@ -236,6 +296,10 @@
   threshold: 2
   severity: medium
   category: network
+  mitre:
+    technique_id: "T1078"
+    technique_name: "Valid Accounts"
+    tactic: "initial-access"
 
 - id: firewall_deny_burst
   description: Burst of firewall denies to same destination
@@ -246,6 +310,10 @@
   threshold: 5
   severity: low
   category: network
+  mitre:
+    technique_id: "T1046"
+    technique_name: "Network Service Discovery"
+    tactic: "discovery"
 
 - id: m365_mfa_fatigue
   description: Multiple MFA denials for the same user (Microsoft 365)
@@ -256,6 +324,10 @@
   threshold: 3
   severity: medium
   category: cloud
+  mitre:
+    technique_id: "T1621"
+    technique_name: "Multi-Factor Authentication Request Generation"
+    tactic: "credential-access"
 
 - id: m365_mail_forward_rule
   description: Mailbox forwarding rule created
@@ -266,6 +338,10 @@
   threshold: 1
   severity: medium
   category: cloud
+  mitre:
+    technique_id: "T1114.003"
+    technique_name: "Email Collection: Email Forwarding Rule"
+    tactic: "collection"
 
 
 # ===== Phase 13 — Detection Coverage Expansion =====
@@ -283,6 +359,10 @@
   threshold: 1
   severity: critical
   category: credential_access
+  mitre:
+    technique_id: "T1003.001"
+    technique_name: "OS Credential Dumping: LSASS Memory"
+    tactic: "credential-access"
 
 - id: credential_dumping_tools
   description: Known credential dumping tool names in process creation (mimikatz, procdump, secretsdump)
@@ -301,6 +381,10 @@
   threshold: 1
   severity: critical
   category: credential_access
+  mitre:
+    technique_id: "T1003.001"
+    technique_name: "OS Credential Dumping: LSASS Memory"
+    tactic: "credential-access"
 
 - id: ntds_dit_access
   description: Access to ntds.dit or SYSTEM hive (credential theft from domain controller)
@@ -317,6 +401,10 @@
   threshold: 1
   severity: critical
   category: credential_access
+  mitre:
+    technique_id: "T1003.003"
+    technique_name: "OS Credential Dumping: NTDS"
+    tactic: "credential-access"
 
 # Lateral Movement
 
@@ -336,6 +424,10 @@
   threshold: 1
   severity: high
   category: lateral
+  mitre:
+    technique_id: "T1021.002"
+    technique_name: "Remote Services: SMB/Windows Admin Shares"
+    tactic: "lateral-movement"
 
 - id: rdp_brute_force
   description: Multiple RDP logon failures (4625 LogonType 10)
@@ -348,6 +440,10 @@
   threshold: 5
   severity: high
   category: lateral
+  mitre:
+    technique_id: "T1110.001"
+    technique_name: "Brute Force: Password Guessing"
+    tactic: "credential-access"
 
 - id: remote_service_install
   description: Service installed remotely (Event 7045 — suspicious service paths)
@@ -360,6 +456,10 @@
   threshold: 1
   severity: high
   category: lateral
+  mitre:
+    technique_id: "T1021.002"
+    technique_name: "Remote Services: SMB/Windows Admin Shares"
+    tactic: "lateral-movement"
 
 # Defence Evasion
 
@@ -373,6 +473,10 @@
   threshold: 1
   severity: high
   category: evasion
+  mitre:
+    technique_id: "T1070.001"
+    technique_name: "Indicator Removal: Clear Windows Event Logs"
+    tactic: "defense-evasion"
 
 - id: defender_tamper
   description: Windows Defender real-time protection disabled or exclusion added
@@ -385,6 +489,10 @@
   threshold: 1
   severity: high
   category: evasion
+  mitre:
+    technique_id: "T1562.001"
+    technique_name: "Impair Defenses: Disable or Modify Tools"
+    tactic: "defense-evasion"
 
 - id: amsi_bypass
   description: AMSI bypass patterns detected in PowerShell ScriptBlock
@@ -400,6 +508,10 @@
   threshold: 1
   severity: critical
   category: evasion
+  mitre:
+    technique_id: "T1562.001"
+    technique_name: "Impair Defenses: Disable or Modify Tools"
+    tactic: "defense-evasion"
 
 - id: timestomp_detected
   description: File creation time modified (Sysmon Event 2 — timestomping)
@@ -412,6 +524,10 @@
   threshold: 1
   severity: medium
   category: evasion
+  mitre:
+    technique_id: "T1070.006"
+    technique_name: "Indicator Removal: Timestomp"
+    tactic: "defense-evasion"
 
 # Persistence
 
@@ -428,6 +544,10 @@
   threshold: 1
   severity: high
   category: persistence
+  mitre:
+    technique_id: "T1543.003"
+    technique_name: "Create or Modify System Process: Windows Service"
+    tactic: "persistence"
 
 - id: registry_run_key
   description: Run/RunOnce registry modification (Sysmon Event 13)
@@ -443,6 +563,10 @@
   threshold: 1
   severity: high
   category: persistence
+  mitre:
+    technique_id: "T1547.001"
+    technique_name: "Boot or Logon Autostart Execution: Registry Run Keys / Startup Folder"
+    tactic: "persistence"
 
 - id: startup_folder_write
   description: File written to Startup folder (Sysmon Event 11)
@@ -458,6 +582,10 @@
   threshold: 1
   severity: high
   category: persistence
+  mitre:
+    technique_id: "T1547.001"
+    technique_name: "Boot or Logon Autostart Execution: Registry Run Keys / Startup Folder"
+    tactic: "persistence"
 
 # Exfiltration
 
@@ -472,6 +600,10 @@
   threshold: 50
   severity: high
   category: exfiltration
+  mitre:
+    technique_id: "T1071.004"
+    technique_name: "Application Layer Protocol: DNS"
+    tactic: "command-and-control"
 
 - id: large_outbound_transfer
   description: Unusual outbound network connection volume (Sysmon Event 3)
@@ -486,6 +618,116 @@
   threshold: 100
   severity: medium
   category: exfiltration
+  mitre:
+    technique_id: "T1048"
+    technique_name: "Exfiltration Over Alternative Protocol"
+    tactic: "exfiltration"
+
+
+# ===== Phase 15 M3 — Gap-Coverage Rules =====
+
+- id: account_discovery
+  description: Account/group enumeration commands (net user, net localgroup, whoami /all)
+  index: "tinysocs-winlog-*"
+  time_field: "@timestamp"
+  kql: >
+    (event.code:(4688 OR 1) OR winlog.event_id:(4688 OR 1))
+    AND (
+      process.name:(net.exe net1.exe whoami.exe)
+      OR process.executable:(*\\net.exe *\\net1.exe *\\whoami.exe)
+      OR winlog.event_data.NewProcessName:(*\\net.exe *\\net1.exe *\\whoami.exe)
+    )
+    AND (
+      process.command_line:(*user* OR *localgroup* OR */all*)
+      OR winlog.event_data.CommandLine:(*user* OR *localgroup* OR */all*)
+    )
+  group_by: ["host.name","user.name"]
+  threshold: 3
+  severity: medium
+  category: discovery
+  mitre:
+    technique_id: "T1087.001"
+    technique_name: "Account Discovery: Local Account"
+    tactic: "discovery"
+
+- id: system_network_discovery
+  description: Network enumeration commands (ipconfig, netstat, arp, route, nslookup)
+  index: "tinysocs-winlog-*"
+  time_field: "@timestamp"
+  kql: >
+    (event.code:(4688 OR 1) OR winlog.event_id:(4688 OR 1))
+    AND (
+      process.name:(ipconfig.exe netstat.exe arp.exe route.exe nslookup.exe systeminfo.exe)
+      OR process.executable:(*\\ipconfig.exe *\\netstat.exe *\\arp.exe *\\route.exe *\\nslookup.exe *\\systeminfo.exe)
+      OR winlog.event_data.NewProcessName:(*\\ipconfig.exe *\\netstat.exe *\\arp.exe *\\route.exe *\\nslookup.exe *\\systeminfo.exe)
+    )
+  group_by: ["host.name","user.name"]
+  threshold: 4
+  severity: low
+  category: discovery
+  mitre:
+    technique_id: "T1018"
+    technique_name: "Remote System Discovery"
+    tactic: "discovery"
+
+- id: ingress_tool_transfer
+  description: File download via certutil, bitsadmin, or curl
+  index: "tinysocs-winlog-*"
+  time_field: "@timestamp"
+  kql: >
+    (event.code:(4688 OR 1) OR winlog.event_id:(4688 OR 1))
+    AND (
+      (process.name:(certutil.exe bitsadmin.exe curl.exe)
+       OR process.executable:(*\\certutil.exe *\\bitsadmin.exe *\\curl.exe)
+       OR winlog.event_data.NewProcessName:(*\\certutil.exe *\\bitsadmin.exe *\\curl.exe))
+      AND (
+        process.command_line:(*urlcache* OR *transfer* OR *-o* OR *download*)
+        OR winlog.event_data.CommandLine:(*urlcache* OR *transfer* OR *-o* OR *download*)
+      )
+    )
+  group_by: ["host.name","process.name"]
+  threshold: 1
+  severity: high
+  category: c2
+  mitre:
+    technique_id: "T1105"
+    technique_name: "Ingress Tool Transfer"
+    tactic: "command-and-control"
+
+- id: process_injection_sysmon
+  description: CreateRemoteThread detected (Sysmon Event 8 — process injection)
+  index: "tinysocs-winlog-*"
+  time_field: "@timestamp"
+  kql: >
+    (event.code:8 OR winlog.event_id:8)
+    AND (provider.name:"Microsoft-Windows-Sysmon" OR winlog.provider_name:"Microsoft-Windows-Sysmon")
+  group_by: ["host.name","winlog.event_data.SourceImage"]
+  threshold: 1
+  severity: high
+  category: evasion
+  mitre:
+    technique_id: "T1055"
+    technique_name: "Process Injection"
+    tactic: "defense-evasion"
+
+- id: obfuscated_command_line
+  description: Obfuscated command line (excessive caret, tick, or variable substitution)
+  index: "tinysocs-winlog-*"
+  time_field: "@timestamp"
+  kql: >
+    (event.code:(4688 OR 1) OR winlog.event_id:(4688 OR 1))
+    AND (
+      process.command_line:(*^^* OR *``* OR *$env:* OR *-join* OR *char]*)
+      OR winlog.event_data.CommandLine:(*^^* OR *``* OR *$env:* OR *-join* OR *char]*)
+    )
+  group_by: ["host.name","user.name"]
+  threshold: 1
+  severity: medium
+  category: evasion
+  mitre:
+    technique_id: "T1027"
+    technique_name: "Obfuscated Files or Information"
+    tactic: "defense-evasion"
 
 
 # ===== Lab-only, low-threshold kickers =====
@@ -500,6 +742,10 @@
   threshold: 1
   severity: medium
   category: auth
+  mitre:
+    technique_id: "T1110.001"
+    technique_name: "Brute Force: Password Guessing"
+    tactic: "credential-access"
 
 - id: ps_script_block_lab
   description: PowerShell ScriptBlock (4104) — lab, group by host only
@@ -512,6 +758,10 @@
   threshold: 1
   severity: medium
   category: powershell
+  mitre:
+    technique_id: "T1059.001"
+    technique_name: "Command and Scripting Interpreter: PowerShell"
+    tactic: "execution"
 
 - id: proc_creation_powershell_suspicious_lab
   description: PowerShell suspicious flags (4688 or Sysmon 1) — lab, threshold 1
@@ -532,6 +782,10 @@
   threshold: 1
   severity: high
   category: powershell
+  mitre:
+    technique_id: "T1059.001"
+    technique_name: "Command and Scripting Interpreter: PowerShell"
+    tactic: "execution"
 
 - id: proc_creation_lolbins_lab
   description: LOLBIN executions (4688 or Sysmon 1) — lab, threshold 1
@@ -548,6 +802,10 @@
   threshold: 1
   severity: high
   category: endpoint
+  mitre:
+    technique_id: "T1218"
+    technique_name: "System Binary Proxy Execution"
+    tactic: "defense-evasion"
 
 - id: lolbin_execs_lab
   description: Multiple LOLBINs in short window — lab, threshold 2
@@ -564,3 +822,73 @@
   threshold: 2
   severity: medium
   category: endpoint
+  mitre:
+    technique_id: "T1218"
+    technique_name: "System Binary Proxy Execution"
+    tactic: "defense-evasion"
+
+# ── File Integrity Monitoring (Phase 15 M2) ──────────────────────────
+
+- id: fim_critical_file_modified
+  description: Critical system file (hosts, SAM, boot config) modified
+  index: "tinysocs-winlog-*"
+  time_field: "@timestamp"
+  kql: >
+    winlog.channel:"TinySocs-FIM" AND winlog.event_id:1002
+    AND (FilePath:(*hosts* OR *SAM* OR *SECURITY* OR *SYSTEM* OR *BCD*))
+  group_by: ["host.name","FilePath"]
+  threshold: 1
+  severity: critical
+  category: fim
+  mitre:
+    technique_id: "T1565.001"
+    technique_name: "Data Manipulation: Stored Data Manipulation"
+    tactic: "impact"
+
+- id: fim_mass_modification
+  description: Mass file modification (>20 in 60s) — possible ransomware activity
+  index: "tinysocs-winlog-*"
+  time_field: "@timestamp"
+  kql: >
+    winlog.channel:"TinySocs-FIM" AND winlog.event_id:1002
+  group_by: ["host.name"]
+  threshold: 20
+  window_minutes: 1
+  severity: critical
+  category: fim
+  mitre:
+    technique_id: "T1486"
+    technique_name: "Data Encrypted for Impact"
+    tactic: "impact"
+
+- id: fim_config_tampered
+  description: TinySocs configuration file modified outside of installer
+  index: "tinysocs-winlog-*"
+  time_field: "@timestamp"
+  kql: >
+    winlog.channel:"TinySocs-FIM" AND winlog.event_id:1002
+    AND FilePath:(*TinySocs* AND (*.yml OR *.yaml OR *.env))
+  group_by: ["host.name","FilePath"]
+  threshold: 1
+  severity: high
+  category: fim
+  mitre:
+    technique_id: "T1565.001"
+    technique_name: "Data Manipulation: Stored Data Manipulation"
+    tactic: "impact"
+
+- id: fim_sensitive_file_deleted
+  description: Sensitive system file deletion attempt
+  index: "tinysocs-winlog-*"
+  time_field: "@timestamp"
+  kql: >
+    winlog.channel:"TinySocs-FIM" AND winlog.event_id:1003
+    AND (FilePath:(*SAM* OR *SECURITY* OR *SYSTEM* OR *hosts*))
+  group_by: ["host.name","FilePath"]
+  threshold: 1
+  severity: critical
+  category: fim
+  mitre:
+    technique_id: "T1485"
+    technique_name: "Data Destruction"
+    tactic: "impact"

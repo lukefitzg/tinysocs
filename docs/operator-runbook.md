@@ -106,12 +106,15 @@ Access at `http://localhost:8090` (localhost mode) or `https://<ip>:8090` (netwo
 |---------|---------|
 | Alert Summary | Severity breakdown with 24h/48h/7d time range |
 | Alert Timeline | Alerts over time by severity |
-| Fired Detections | Detection alerts with triage (acknowledge/dismiss) |
-| Fleet Health | Agent heartbeat status and event throughput |
+| Fired Detections | Detection alerts with triage and threat intel badges |
+| Fleet Health | Agent heartbeat status, event throughput, version drift |
 | Event Explorer | Browse raw events with KQL queries |
 | Alert Rules | Manage rules, create custom rules, upload rule packs |
 | Compliance Coverage | NIST CSF, HIPAA, PCI DSS compliance reports |
+| MITRE ATT&CK Coverage | Tactic heatmap with Navigator layer download |
 | AI Assistant | Natural language security analysis |
+
+All dashboard cards are collapsible — click the chevron or heading to collapse/expand. State persists across sessions via localStorage.
 
 ### Dashboard TLS Configuration
 
@@ -389,6 +392,143 @@ Test detection coverage against known attack techniques:
 ```
 
 Results are written to `docs/detection-efficacy.md`. See [Detection Efficacy](detection-efficacy.md) for details.
+
+## Threat Intelligence
+
+### Configure Providers
+
+Add API keys to `C:\ProgramData\TinySocs\Assistant\assistant.env`:
+
+```
+ABUSEIPDB_API_KEY=your_key_here
+OTX_API_KEY=your_key_here
+GREYNOISE_API_KEY=your_key_here
+```
+
+Restart the assistant service after changes:
+
+```powershell
+Restart-Service TinySocsAssistant
+```
+
+All providers are optional. Enrichment works with any combination of configured providers. Unconfigured providers are silently skipped.
+
+### Test Enrichment
+
+```powershell
+python -m tinysocs.agent.threat_intel --ip 185.220.101.34
+```
+
+### Cache Management
+
+Enrichment results are cached in SQLite at `C:\ProgramData\TinySocs\Assistant\threat_cache.db`. TTL: 24 hours for IP lookups, 7 days for domain/hash lookups.
+
+### Dashboard Integration
+
+Alert cards display colored threat badges when enrichment data is available. Click the badge to see provider details (reputation score, report count, country, ISP, tags). Configure providers from Settings > Threat Intelligence.
+
+## File Integrity Monitoring (FIM)
+
+### Check FIM Status
+
+```powershell
+# Verify FIM baseline exists
+Test-Path "C:\ProgramData\TinySocs\Agent\fim-baseline.json"
+
+# Check agent logs for FIM activity
+Select-String "FIM" "C:\ProgramData\TinySocs\Collector\logs\TinySocsAgent.out.log" | Select-Object -Last 10
+```
+
+### Configure Monitored Paths
+
+Edit `C:\ProgramData\TinySocs\Collector\agent-config.yml`:
+
+```yaml
+inputs:
+  - type: fim
+    fim:
+      paths:
+        - C:\Windows\System32\drivers\etc\hosts
+        - C:\Windows\System32\config\SAM
+        - C:\Windows\System32\GroupPolicy\**
+        - C:\ProgramData\TinySocs\**\*.yml
+      exclude:
+        - "**\\*.log"
+        - "**\\*.tmp"
+      scan_interval_minutes: 15
+      max_file_size_mb: 50
+```
+
+Restart the agent after changes:
+
+```powershell
+Restart-Service TinySocsAgent
+```
+
+### FIM Detection Rules
+
+| Rule | Description | Severity |
+|------|-------------|----------|
+| TS-110 | Critical file modified (hosts, SAM, boot config) | Critical |
+| TS-111 | Executable replaced in Program Files | High |
+| TS-112 | TinySocs config file tampered | High |
+| TS-113 | Mass file modification (>20 in 60s — ransomware indicator) | Critical |
+| TS-114 | Sensitive file deleted (SAM, SECURITY, SYSTEM hive) | Critical |
+| TS-115 | Permission change on monitored path | Medium |
+
+## MITRE ATT&CK Coverage
+
+### View Coverage Summary
+
+```powershell
+python -m tinysocs.reporting.mitre_coverage
+```
+
+### Generate Navigator Layer
+
+```powershell
+python -m tinysocs.reporting.mitre_coverage --output navigator-layer.json
+```
+
+Import the JSON file into [ATT&CK Navigator](https://mitre-attack.github.io/attack-navigator/) for visualization. The layer can also be downloaded from the dashboard MITRE ATT&CK Coverage widget.
+
+### Regenerate Detection Coverage Docs
+
+```powershell
+python -m tinysocs.reporting.mitre_coverage --output-md docs/detection-coverage.md
+```
+
+### Coverage with Atomic Test Results
+
+```powershell
+python -m tinysocs.reporting.mitre_coverage --output navigator-layer.json --atomic-results tests/atomic-results.json
+```
+
+This produces a three-color layer: dark green (detected in Atomic test), light green (rule exists but untested), grey (no coverage).
+
+## Version Awareness
+
+### Check Version Status
+
+The version manifest is at `C:\ProgramData\TinySocs\version-manifest.json`. It contains the expected agent version and minimum compatible version.
+
+### Version Drift Detection
+
+The fleet health widget shows colour-coded version badges for each agent:
+- **Green**: Agent version matches expected version
+- **Yellow**: Minor version drift
+- **Red**: Major drift or version older than minimum compatible
+
+Rule `TS-120` fires when an agent reports a version older than `minimum_compatible` from the manifest.
+
+### Update Version Manifest
+
+After deploying new agent versions, update the manifest:
+
+```powershell
+# Edit the manifest to reflect the new version
+notepad "C:\ProgramData\TinySocs\version-manifest.json"
+```
 
 ## Data Retention
 

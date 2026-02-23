@@ -34,6 +34,25 @@ inputs:
   - type: fake
     name: fake-test
 
+  - type: fim
+    name: file-integrity
+    fim:
+      paths:
+        - "C:\\Windows\\System32\\drivers\\etc\\hosts"
+        - "C:\\Windows\\System32\\config\\SAM"
+        - "C:\\Windows\\System32\\config\\SECURITY"
+        - "C:\\Windows\\System32\\config\\SYSTEM"
+        - "C:\\Windows\\System32\\GroupPolicy\\**"
+        - "C:\\ProgramData\\TinySocs\\**\\*.yml"
+        - "C:\\ProgramData\\TinySocs\\**\\*.yaml"
+      exclude:
+        - "**\\*.log"
+        - "**\\*.tmp"
+        - "**\\*.etl"
+      scan_interval_minutes: 15
+      max_file_size_mb: 50
+      baseline_path: "C:\\ProgramData\\TinySocs\\Agent\\fim-baseline.json"
+
 queue:
   path: C:\ProgramData\TinySocs\Collector\agent\queue
   segment_max_bytes: 10485760        # 10 MB

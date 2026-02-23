@@ -49,12 +49,17 @@ Log in with the dashboard password you set during install.
 
 The dashboard includes:
 - **Alert Summary** — Severity breakdown and timeline
-- **Fired Detections** — Detection alerts with triage actions
-- **Fleet Health** — Agent heartbeat status and event throughput
+- **Fired Detections** — Detection alerts with threat intelligence enrichment
+- **Fleet Health** — Agent heartbeat status, event throughput, and version drift alerts
 - **Event Explorer** — Browse raw Windows events with KQL queries
 - **Alert Rules** — Manage detection rules, create custom rules
 - **Compliance Coverage** — NIST CSF, HIPAA, PCI DSS compliance reports
+- **MITRE ATT&CK Coverage** — Tactic heatmap with Navigator layer export
 - **AI Assistant** — Ask questions about your security posture in plain English
+
+All dashboard cards are collapsible — click the chevron or heading to collapse/expand. State persists across sessions.
+
+> **New in Phase 15**: Threat intelligence enrichment (AbuseIPDB, OTX, GreyNoise), File Integrity Monitoring, MITRE ATT&CK coverage widget, agent version awareness, and 19 Atomic Red Team test mappings.
 
 You can also access OpenSearch Dashboards directly at `https://localhost:5602`.
 

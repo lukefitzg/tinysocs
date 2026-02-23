@@ -22,6 +22,10 @@ rules:
     severity: "high"
     enabled: true
     type: threshold_by_key
+    mitre:
+      technique_id: "T1110.001"
+      technique_name: "Brute Force: Password Guessing"
+      tactic: "credential-access"
     condition:
       event_id: 4625
       channel: Security
@@ -38,6 +42,10 @@ rules:
     severity: "high"
     enabled: true
     type: threshold_by_key
+    mitre:
+      technique_id: "T1110.001"
+      technique_name: "Brute Force: Password Guessing"
+      tactic: "credential-access"
     condition:
       event_id: 4625
       channel: Security
@@ -56,6 +64,10 @@ rules:
     severity: "high"
     enabled: true
     type: threshold_by_key
+    mitre:
+      technique_id: "T1136.001"
+      technique_name: "Create Account: Local Account"
+      tactic: "persistence"
     condition:
       event_id: 4720
       channel: Security
@@ -74,6 +86,10 @@ rules:
     severity: "medium"
     enabled: true
     type: threshold_by_key
+    mitre:
+      technique_id: "T1053.005"
+      technique_name: "Scheduled Task/Job: Scheduled Task"
+      tactic: "persistence"
     condition:
       event_id: 4698
       channel: Security
@@ -92,6 +108,10 @@ rules:
     severity: "medium"
     enabled: true
     type: threshold_by_key
+    mitre:
+      technique_id: "T1059.001"
+      technique_name: "Command and Scripting Interpreter: PowerShell"
+      tactic: "execution"
     condition:
       event_id: 4104
       channel: "Microsoft-Windows-PowerShell/Operational"
@@ -110,6 +130,10 @@ rules:
     severity: "low"
     enabled: true
     type: threshold_by_key
+    mitre:
+      technique_id: "T1106"
+      technique_name: "Native API"
+      tactic: "execution"
     condition:
       event_id: 4688
       channel: Security
@@ -128,6 +152,10 @@ rules:
     severity: "low"
     enabled: true
     type: threshold_by_key
+    mitre:
+      technique_id: "T1106"
+      technique_name: "Native API"
+      tactic: "execution"
     condition:
       event_id: 1
       channel: "Microsoft-Windows-Sysmon/Operational"
@@ -146,6 +174,10 @@ rules:
     severity: "critical"
     enabled: true
     type: threshold_by_key
+    mitre:
+      technique_id: "T1003.001"
+      technique_name: "OS Credential Dumping: LSASS Memory"
+      tactic: "credential-access"
     condition:
       event_id: 10
       channel: "Microsoft-Windows-Sysmon/Operational"
@@ -162,6 +194,10 @@ rules:
     severity: "critical"
     enabled: true
     type: threshold_by_key
+    mitre:
+      technique_id: "T1003.001"
+      technique_name: "OS Credential Dumping: LSASS Memory"
+      tactic: "credential-access"
     condition:
       event_id: 4688
       channel: Security
@@ -178,6 +214,10 @@ rules:
     severity: "critical"
     enabled: true
     type: threshold_by_key
+    mitre:
+      technique_id: "T1003.003"
+      technique_name: "OS Credential Dumping: NTDS"
+      tactic: "credential-access"
     condition:
       event_id: 4663
       channel: Security
@@ -196,6 +236,10 @@ rules:
     severity: "high"
     enabled: true
     type: threshold_by_key
+    mitre:
+      technique_id: "T1021.002"
+      technique_name: "Remote Services: SMB/Windows Admin Shares"
+      tactic: "lateral-movement"
     condition:
       event_id: 7045
       channel: System
@@ -212,6 +256,10 @@ rules:
     severity: "high"
     enabled: true
     type: threshold_by_key
+    mitre:
+      technique_id: "T1110.001"
+      technique_name: "Brute Force: Password Guessing"
+      tactic: "credential-access"
     condition:
       event_id: 4625
       channel: Security
@@ -228,6 +276,10 @@ rules:
     severity: "high"
     enabled: true
     type: threshold_by_key
+    mitre:
+      technique_id: "T1021.002"
+      technique_name: "Remote Services: SMB/Windows Admin Shares"
+      tactic: "lateral-movement"
     condition:
       event_id: 7045
       channel: System
@@ -246,6 +298,10 @@ rules:
     severity: "high"
     enabled: true
     type: threshold_by_key
+    mitre:
+      technique_id: "T1070.001"
+      technique_name: "Indicator Removal: Clear Windows Event Logs"
+      tactic: "defense-evasion"
     condition:
       event_id: 1102
       channel: Security
@@ -262,6 +318,10 @@ rules:
     severity: "high"
     enabled: true
     type: threshold_by_key
+    mitre:
+      technique_id: "T1562.001"
+      technique_name: "Impair Defenses: Disable or Modify Tools"
+      tactic: "defense-evasion"
     condition:
       event_id: 5001
       channel: "Microsoft-Windows-Windows Defender/Operational"
@@ -278,6 +338,10 @@ rules:
     severity: "critical"
     enabled: true
     type: threshold_by_key
+    mitre:
+      technique_id: "T1059.001"
+      technique_name: "Command and Scripting Interpreter: PowerShell"
+      tactic: "execution"
     condition:
       event_id: 4104
       channel: "Microsoft-Windows-PowerShell/Operational"
@@ -294,6 +358,10 @@ rules:
     severity: "medium"
     enabled: true
     type: threshold_by_key
+    mitre:
+      technique_id: "T1070.006"
+      technique_name: "Indicator Removal: Timestomp"
+      tactic: "defense-evasion"
     condition:
       event_id: 2
       channel: "Microsoft-Windows-Sysmon/Operational"
@@ -312,6 +380,10 @@ rules:
     severity: "high"
     enabled: true
     type: threshold_by_key
+    mitre:
+      technique_id: "T1543.003"
+      technique_name: "Create or Modify System Process: Windows Service"
+      tactic: "persistence"
     condition:
       event_id: 7045
       channel: System
@@ -328,6 +400,10 @@ rules:
     severity: "high"
     enabled: true
     type: threshold_by_key
+    mitre:
+      technique_id: "T1547.001"
+      technique_name: "Boot or Logon Autostart Execution: Registry Run Keys / Startup Folder"
+      tactic: "persistence"
     condition:
       event_id: 13
       channel: "Microsoft-Windows-Sysmon/Operational"
@@ -344,6 +420,10 @@ rules:
     severity: "high"
     enabled: true
     type: threshold_by_key
+    mitre:
+      technique_id: "T1547.001"
+      technique_name: "Boot or Logon Autostart Execution: Registry Run Keys / Startup Folder"
+      tactic: "persistence"
     condition:
       event_id: 11
       channel: "Microsoft-Windows-Sysmon/Operational"
@@ -362,6 +442,10 @@ rules:
     severity: "high"
     enabled: true
     type: threshold_by_key
+    mitre:
+      technique_id: "T1071"
+      technique_name: "Application Layer Protocol"
+      tactic: "command-and-control"
     condition:
       event_id: 22
       channel: "Microsoft-Windows-Sysmon/Operational"
@@ -378,6 +462,10 @@ rules:
     severity: "medium"
     enabled: true
     type: threshold_by_key
+    mitre:
+      technique_id: "T1048"
+      technique_name: "Exfiltration Over Alternative Protocol"
+      tactic: "exfiltration"
     condition:
       event_id: 3
       channel: "Microsoft-Windows-Sysmon/Operational"
@@ -396,6 +484,10 @@ rules:
     severity: "medium"
     enabled: true
     type: threshold_by_key
+    mitre:
+      technique_id: "T1110.001"
+      technique_name: "Brute Force: Password Guessing"
+      tactic: "credential-access"
     condition:
       event_id: 4625
       channel: Security
@@ -412,12 +504,262 @@ rules:
     severity: "medium"
     enabled: true
     type: threshold_by_key
+    mitre:
+      technique_id: "T1059.001"
+      technique_name: "Command and Scripting Interpreter: PowerShell"
+      tactic: "execution"
     condition:
       event_id: 4104
       channel: "Microsoft-Windows-PowerShell/Operational"
       group_by: "winlog.computer_name"
       threshold: 2
       window_minutes: 10
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  # ── File Integrity Monitoring (Phase 15 M2) ──────────────────────────
+
+  - id: "TS-110"
+    name: "fim_critical_file_modified"
+    description: "Critical system file modified (hosts, SAM, boot config)"
+    severity: "critical"
+    enabled: true
+    type: threshold_by_key
+    mitre:
+      technique_id: "T1565.001"
+      technique_name: "Data Manipulation: Stored Data Manipulation"
+      tactic: "impact"
+    condition:
+      event_id: 1002
+      channel: TinySocs-FIM
+      group_by: "FilePath"
+      threshold: 1
+      window_minutes: 60
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  - id: "TS-111"
+    name: "fim_executable_replaced"
+    description: "Executable or DLL in Program Files modified"
+    severity: "high"
+    enabled: true
+    type: threshold_by_key
+    mitre:
+      technique_id: "T1565.001"
+      technique_name: "Data Manipulation: Stored Data Manipulation"
+      tactic: "impact"
+    condition:
+      event_id: 1002
+      channel: TinySocs-FIM
+      group_by: "FilePath"
+      threshold: 1
+      window_minutes: 60
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  - id: "TS-112"
+    name: "fim_config_tampered"
+    description: "TinySocs configuration file modified outside of installer"
+    severity: "high"
+    enabled: true
+    type: threshold_by_key
+    mitre:
+      technique_id: "T1565.001"
+      technique_name: "Data Manipulation: Stored Data Manipulation"
+      tactic: "impact"
+    condition:
+      event_id: 1002
+      channel: TinySocs-FIM
+      group_by: "FilePath"
+      threshold: 1
+      window_minutes: 60
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  - id: "TS-113"
+    name: "fim_mass_modification"
+    description: "Mass file modification detected (>20 files in 60 seconds) — ransomware indicator"
+    severity: "critical"
+    enabled: true
+    type: threshold_by_key
+    mitre:
+      technique_id: "T1486"
+      technique_name: "Data Encrypted for Impact"
+      tactic: "impact"
+    condition:
+      event_id: 1002
+      channel: TinySocs-FIM
+      group_by: "winlog.computer_name"
+      threshold: 20
+      window_minutes: 1
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  - id: "TS-114"
+    name: "fim_sensitive_file_deleted"
+    description: "Sensitive system file deletion attempt (SAM, SECURITY, SYSTEM hive)"
+    severity: "critical"
+    enabled: true
+    type: threshold_by_key
+    mitre:
+      technique_id: "T1485"
+      technique_name: "Data Destruction"
+      tactic: "impact"
+    condition:
+      event_id: 1003
+      channel: TinySocs-FIM
+      group_by: "FilePath"
+      threshold: 1
+      window_minutes: 60
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  - id: "TS-115"
+    name: "fim_permission_change"
+    description: "ACL or permission modification on monitored critical file"
+    severity: "medium"
+    enabled: true
+    type: threshold_by_key
+    mitre:
+      technique_id: "T1222"
+      technique_name: "File and Directory Permissions Modification"
+      tactic: "defense-evasion"
+    condition:
+      event_id: 1004
+      channel: TinySocs-FIM
+      group_by: "FilePath"
+      threshold: 1
+      window_minutes: 60
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  # ── Phase 15 M3: Gap-Coverage Rules ────────────────────────────────
+
+  - id: "TS-130"
+    name: "account_discovery"
+    description: "Account enumeration commands (net user, net localgroup, whoami /all)"
+    severity: "medium"
+    enabled: true
+    type: threshold_by_key
+    mitre:
+      technique_id: "T1087.001"
+      technique_name: "Account Discovery: Local Account"
+      tactic: "discovery"
+    condition:
+      event_id: 4688
+      channel: Security
+      group_by: "winlog.event_data.SubjectUserName"
+      threshold: 3
+      window_minutes: 5
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  - id: "TS-131"
+    name: "system_network_discovery"
+    description: "Network enumeration commands (ipconfig, netstat, arp, route)"
+    severity: "low"
+    enabled: true
+    type: threshold_by_key
+    mitre:
+      technique_id: "T1018"
+      technique_name: "Remote System Discovery"
+      tactic: "discovery"
+    condition:
+      event_id: 4688
+      channel: Security
+      group_by: "winlog.event_data.SubjectUserName"
+      threshold: 4
+      window_minutes: 5
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  - id: "TS-132"
+    name: "ingress_tool_transfer"
+    description: "File download via certutil, bitsadmin, or PowerShell (process creation)"
+    severity: "high"
+    enabled: true
+    type: threshold_by_key
+    mitre:
+      technique_id: "T1105"
+      technique_name: "Ingress Tool Transfer"
+      tactic: "command-and-control"
+    condition:
+      event_id: 4688
+      channel: Security
+      group_by: "winlog.event_data.NewProcessName"
+      threshold: 1
+      window_minutes: 5
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  - id: "TS-133"
+    name: "process_injection_sysmon"
+    description: "Process injection detected via Sysmon CreateRemoteThread (Event 8)"
+    severity: "high"
+    enabled: true
+    type: threshold_by_key
+    mitre:
+      technique_id: "T1055"
+      technique_name: "Process Injection"
+      tactic: "defense-evasion"
+    condition:
+      event_id: 8
+      channel: "Microsoft-Windows-Sysmon/Operational"
+      group_by: "winlog.event_data.SourceImage"
+      threshold: 1
+      window_minutes: 5
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  - id: "TS-134"
+    name: "obfuscated_command"
+    description: "Obfuscated or encoded command detected in process creation"
+    severity: "medium"
+    enabled: true
+    type: threshold_by_key
+    mitre:
+      technique_id: "T1027"
+      technique_name: "Obfuscated Files or Information"
+      tactic: "defense-evasion"
+    condition:
+      event_id: 4688
+      channel: Security
+      group_by: "winlog.event_data.SubjectUserName"
+      threshold: 1
+      window_minutes: 5
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  # ── Version Drift (Phase 15 M5) ──────────────────────────────────────
+
+  - id: "TS-120"
+    name: "agent_version_drift"
+    description: "Agent heartbeat reports a version older than minimum compatible"
+    severity: "medium"
+    enabled: true
+    type: threshold_by_key
+    mitre:
+      technique_id: "T1195.002"
+      technique_name: "Supply Chain Compromise: Compromise Software Supply Chain"
+      tactic: "initial-access"
+    condition:
+      event_id: 0
+      channel: heartbeat
+      group_by: "agent_version"
+      threshold: 1
+      window_minutes: 1440
     actions:
       - write_alert_doc
       - append_alert_log

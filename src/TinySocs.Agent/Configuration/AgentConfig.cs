@@ -32,12 +32,15 @@ public sealed class AgentSection
 /// </summary>
 public sealed class InputConfig
 {
-    public string Type { get; set; } = "eventlog";   // "eventlog", "fake", etc.
+    public string Type { get; set; } = "eventlog";   // "eventlog", "fake", "fim"
     public string Name { get; set; } = "win-events";
 
     // eventlog-specific; these will be null/unused for inputs like "fake"
     public List<EventLogChannelConfig>? Channels { get; set; }
     public BookmarksConfig? Bookmarks { get; set; }
+
+    // fim-specific; populated when type = "fim"
+    public FimConfig? Fim { get; set; }
 }
 
 public sealed class EventLogChannelConfig

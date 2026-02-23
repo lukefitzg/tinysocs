@@ -1304,6 +1304,74 @@ async def api_fleet_health():
     return {"hosts": hosts, "error": resp.get("error")}
 
 
+# ---------------------------------------------------------------------------
+# Version status API (Phase 15 M5)
+# ---------------------------------------------------------------------------
+@dashboard_app.get("/api/version/status")
+async def api_version_status():
+    """Return manifest data + fleet version comparison."""
+    from tinysocs.reporting.version_check import (
+        load_version_manifest,
+        check_fleet_versions,
+    )
+    manifest = load_version_manifest()
+    # Fetch fleet health for version comparison
+    fleet_data = await api_fleet_health()
+    hosts = fleet_data.get("hosts", [])
+    fleet_versions = check_fleet_versions(hosts, manifest) if manifest else []
+    # Build summary counts
+    summary = {"current": 0, "outdated_minor": 0, "outdated_major": 0, "unknown": 0}
+    for fv in fleet_versions:
+        key = fv["status"].replace("-", "_")
+        summary[key] = summary.get(key, 0) + 1
+    return {
+        "manifest": {k: v for k, v in manifest.items() if k != "_source_path"},
+        "fleet_versions": fleet_versions,
+        "summary": summary,
+        "has_outdated": summary["outdated_minor"] + summary["outdated_major"] > 0,
+    }
+
+
+# ---------------------------------------------------------------------------
+# MITRE ATT&CK Coverage API (Phase 15 M3)
+# ---------------------------------------------------------------------------
+
+@dashboard_app.get("/api/mitre/coverage")
+async def api_mitre_coverage():
+    """Return MITRE ATT&CK coverage summary from detection rules."""
+    try:
+        from tinysocs.reporting.mitre_coverage import (
+            load_all_rules, extract_mitre_annotations, calculate_coverage,
+        )
+        rules = load_all_rules()
+        annotations = extract_mitre_annotations(rules)
+        coverage = calculate_coverage(annotations)
+        return {"ok": True, **coverage}
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
+
+
+@dashboard_app.get("/api/mitre/navigator-layer")
+async def api_mitre_navigator_layer():
+    """Download ATT&CK Navigator JSON layer."""
+    try:
+        from tinysocs.reporting.mitre_coverage import (
+            load_all_rules, extract_mitre_annotations, calculate_coverage,
+            generate_navigator_layer,
+        )
+        rules = load_all_rules()
+        annotations = extract_mitre_annotations(rules)
+        coverage = calculate_coverage(annotations)
+        layer = generate_navigator_layer(coverage)
+        return Response(
+            content=json.dumps(layer, indent=2),
+            media_type="application/json",
+            headers={"Content-Disposition": 'attachment; filename="tinysocs-navigator-layer.json"'},
+        )
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
+
+
 @dashboard_app.get("/api/indices")
 def api_indices():
     """Discover available indices and their field mappings."""
@@ -2229,10 +2297,14 @@ _SETTINGS_KEYS = [
     "SIEM_SSL_VERIFY", "SIEM_CA_CERT",
     "WEBHOOK_URL", "WEBHOOK_ENABLED",
     "NOTIFY_SLACK", "SLACK_WEBHOOK_URL",
+    "ABUSEIPDB_API_KEY", "OTX_API_KEY", "GREYNOISE_API_KEY",
 ]
 
 # Keys whose values should be masked in GET responses
-_SECRET_KEYS = {"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "SIEM_PASS"}
+_SECRET_KEYS = {
+    "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "SIEM_PASS",
+    "ABUSEIPDB_API_KEY", "OTX_API_KEY", "GREYNOISE_API_KEY",
+}
 
 
 def _find_assistant_env() -> Optional[Path]:
@@ -2832,6 +2904,86 @@ async def api_compliance_report_html(
 
 
 # ---------------------------------------------------------------------------
+# Threat Intelligence API (Phase 15 M0)
+# ---------------------------------------------------------------------------
+
+@dashboard_app.get("/api/threat-intel/status")
+async def api_threat_intel_status():
+    """Return status of configured threat intel providers and cache stats."""
+    try:
+        from tinysocs.agent.threat_intel import get_providers
+        from tinysocs.agent.threat_cache import ThreatCache
+        providers = []
+        for p in get_providers():
+            providers.append({
+                "name": p.name,
+                "configured": p.is_configured(),
+                "available": p.is_available(),
+                "quota_remaining": p.quota_remaining(),
+            })
+        try:
+            cache = ThreatCache()
+            cache_stats = cache.stats()
+        except Exception:
+            cache_stats = {"total_entries": 0, "error": "cache unavailable"}
+        return {"ok": True, "providers": providers, "cache": cache_stats}
+    except Exception as exc:
+        return {"ok": False, "providers": [], "cache": {}, "error": str(exc)}
+
+
+@dashboard_app.get("/api/threat-intel/enrich")
+async def api_threat_intel_enrich(
+    ip: str = Query(None),
+    domain: str = Query(None),
+    file_hash: str = Query(None),
+):
+    """Enrich a single IOC (IP, domain, or hash) on demand."""
+    try:
+        from tinysocs.agent.threat_intel import enrich_ioc, get_available_providers
+        from tinysocs.agent.threat_cache import ThreatCache
+        providers = get_available_providers()
+        if not providers:
+            return {"ok": False, "error": "No threat intel providers configured"}
+        cache = ThreatCache()
+        results = {}
+        if ip:
+            r = await enrich_ioc("ip", ip, providers, cache)
+            results[ip] = r.to_dict()
+        if domain:
+            r = await enrich_ioc("domain", domain, providers, cache)
+            results[domain] = r.to_dict()
+        if file_hash:
+            r = await enrich_ioc("hash", file_hash, providers, cache)
+            results[file_hash] = r.to_dict()
+        return {"ok": True, "enrichment": results}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@dashboard_app.post("/api/threat-intel/test")
+async def api_threat_intel_test():
+    """Test configured providers by querying a known-benign IP (8.8.8.8)."""
+    try:
+        from tinysocs.agent.threat_intel import get_providers
+        results = {}
+        for p in get_providers():
+            if not p.is_configured():
+                results[p.name] = {"status": "not_configured"}
+                continue
+            try:
+                health = await p.health_check()
+                results[p.name] = {
+                    "status": "ok" if health.get("available") else "unavailable",
+                    "quota_remaining": health.get("quota_remaining", 0),
+                }
+            except Exception as e:
+                results[p.name] = {"status": "error", "error": str(e)}
+        return {"ok": True, "results": results}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
 # HTML dashboard (single page, inline everything)
 # ---------------------------------------------------------------------------
 @dashboard_app.get("/", response_class=HTMLResponse)
@@ -2943,13 +3095,23 @@ tr:hover { background: rgba(74, 144, 217, 0.05); }
 .btn-reject:hover { opacity: 0.85; }
 .btn-sm:disabled { opacity: 0.4; cursor: not-allowed; }
 
-/* Event Explorer: collapsible body */
-#event-explorer-body { overflow: hidden; transition: max-height 0.25s ease; }
-#event-explorer-body.collapsed { max-height: 0 !important; }
-#event-explorer-body:not(.collapsed) { max-height: 2000px; }
+/* Collapsible card bodies */
+.card-body { overflow: hidden; transition: max-height 0.25s ease; }
+.card-body.collapsed { max-height: 0 !important; padding-top: 0; padding-bottom: 0; }
+.card-body:not(.collapsed) { max-height: 4000px; }
 #events-content { min-height: 420px; }
 .collapse-chevron { cursor:pointer; font-size:16px; color:var(--muted); transition:transform 0.25s ease; user-select:none; padding:4px 8px; }
 .collapse-chevron.collapsed { transform: rotate(-90deg); }
+
+/* Threat intelligence badges */
+.threat-badge { display:inline-flex; align-items:center; gap:3px; font-size:10px; padding:1px 6px; border-radius:3px; cursor:pointer; font-weight:600; }
+.threat-badge.threat-high { background:#e74c3c; color:#fff; }
+.threat-badge.threat-medium { background:#e67e22; color:#fff; }
+.threat-badge.threat-low { background:#f1c40f; color:#222; }
+.threat-badge.threat-none { background:#27ae60; color:#fff; }
+.threat-popover { position:absolute; z-index:100; background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:12px; font-size:12px; max-width:340px; box-shadow:0 4px 12px rgba(0,0,0,0.4); }
+.threat-popover td { padding:2px 8px; }
+.threat-popover .provider-label { font-weight:600; color:var(--accent); text-transform:uppercase; font-size:10px; letter-spacing:.5px; }
 
 /* Host Timeline inline widget */
 .timeline-card { min-height: 200px; height: auto; overflow: visible; }
@@ -3111,6 +3273,11 @@ select { cursor: pointer; }
   </div>
 </div>
 
+<!-- Version Drift Banner (Phase 15 M5) -->
+<div id="versionDriftBanner" style="display:none;background:#e67e22;color:#fff;padding:8px 24px;font-size:13px;font-weight:500;text-align:center;cursor:pointer" onclick="ensureCardExpanded('fleet');document.getElementById('body-fleet').scrollIntoView({behavior:'smooth'})">
+  <span id="versionDriftText"></span>
+</div>
+
 <!-- Settings Modal -->
 <div class="modal-overlay" id="settingsOverlay" onclick="if(event.target===this)closeSettings()">
   <div class="modal" id="settingsModal">
@@ -3210,6 +3377,25 @@ select { cursor: pointer; }
         <span id="emailTestStatus" style="font-size:12px;margin-left:8px"></span>
       </div>
 
+      <div class="section-title">Threat Intelligence (Optional)</div>
+      <p style="color:var(--muted);font-size:12px;margin-bottom:8px">API keys for automatic alert enrichment. Leave blank to disable a provider.</p>
+      <div class="field">
+        <label>AbuseIPDB API Key</label>
+        <input type="text" id="s_ABUSEIPDB_API_KEY" placeholder="(free: 1,000 checks/day)">
+      </div>
+      <div class="field">
+        <label>AlienVault OTX API Key</label>
+        <input type="text" id="s_OTX_API_KEY" placeholder="(free: unlimited)">
+      </div>
+      <div class="field">
+        <label>GreyNoise Community API Key</label>
+        <input type="text" id="s_GREYNOISE_API_KEY" placeholder="(free: 5,000/day)">
+      </div>
+      <div class="field">
+        <button class="btn-save" onclick="testThreatIntel()" style="width:auto;background:var(--surface);color:var(--accent);border:1px solid var(--accent)">Test Providers</button>
+        <span id="threatIntelTestStatus" style="font-size:12px;margin-left:8px"></span>
+      </div>
+
       <div class="section-title">SIEM Connection</div>
       <div class="field">
         <label>SIEM URL</label>
@@ -3256,21 +3442,32 @@ select { cursor: pointer; }
   <div class="left-panels">
     <!-- Alert Summary -->
     <div class="card">
-      <div class="card-header-sticky"><h2 style="margin:0">Alert Summary</h2></div>
-      <div id="summary-content"><div class="loading">Loading...</div></div>
+      <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
+        <span class="collapse-chevron" onclick="toggleCardCollapse('summary')" id="chevron-summary">&#x25BC;</span>
+        <h2 style="margin:0;cursor:pointer;flex:1" onclick="toggleCardCollapse('summary')">Alert Summary</h2>
+      </div>
+      <div class="card-body" id="body-summary">
+        <div id="summary-content"><div class="loading">Loading...</div></div>
+      </div>
     </div>
 
     <!-- Alert Timeline -->
     <div class="card">
-      <div class="card-header-sticky"><h2 style="margin:0">Alert Timeline</h2></div>
-      <div id="timeline-content"><div class="loading">Loading...</div></div>
+      <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
+        <span class="collapse-chevron" onclick="toggleCardCollapse('timeline')" id="chevron-timeline">&#x25BC;</span>
+        <h2 style="margin:0;cursor:pointer;flex:1" onclick="toggleCardCollapse('timeline')">Alert Timeline</h2>
+      </div>
+      <div class="card-body" id="body-timeline">
+        <div id="timeline-content"><div class="loading">Loading...</div></div>
+      </div>
     </div>
 
     <!-- Fired Detections (full width) -->
     <div class="card full detections-card">
-      <div class="card-header-sticky" style="display:flex;align-items:center;gap:12px">
-        <h2 style="margin:0;white-space:nowrap">Fired Detections</h2>
-        <select id="detStatusFilter" style="font-size:11px;padding:2px 6px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;max-width:200px" onchange="_detectionsPage=0;_openDetectionIdx=-1;renderDetections()">
+      <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
+        <span class="collapse-chevron" onclick="toggleCardCollapse('detections')" id="chevron-detections">&#x25BC;</span>
+        <h2 style="margin:0;white-space:nowrap;cursor:pointer" onclick="toggleCardCollapse('detections')">Fired Detections</h2>
+        <select id="detStatusFilter" style="font-size:11px;padding:2px 6px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;max-width:200px;margin-left:8px" onchange="_detectionsPage=0;_openDetectionIdx=-1;renderDetections()">
           <option value="active" selected>Active (new + ack)</option>
           <option value="all">All</option>
           <option value="new">New only</option>
@@ -3278,13 +3475,20 @@ select { cursor: pointer; }
           <option value="dismissed">Dismissed</option>
         </select>
       </div>
-      <div id="detections-content"><div class="loading">Loading...</div></div>
+      <div class="card-body" id="body-detections">
+        <div id="detections-content"><div class="loading">Loading...</div></div>
+      </div>
     </div>
 
     <!-- Fleet Health (full width) -->
     <div class="card full">
-      <div class="card-header-sticky"><h2 style="margin:0">Fleet Health</h2></div>
-      <div id="fleet-content"><div class="loading">Loading...</div></div>
+      <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
+        <span class="collapse-chevron" onclick="toggleCardCollapse('fleet')" id="chevron-fleet">&#x25BC;</span>
+        <h2 style="margin:0;cursor:pointer;flex:1" onclick="toggleCardCollapse('fleet')">Fleet Health</h2>
+      </div>
+      <div class="card-body" id="body-fleet">
+        <div id="fleet-content"><div class="loading">Loading...</div></div>
+      </div>
     </div>
 
     <!-- Host Event Timeline (inline widget, hidden until a host is clicked) -->
@@ -3308,14 +3512,12 @@ select { cursor: pointer; }
 
     <!-- Event Explorer -->
     <div class="card full" id="event-explorer-card">
-      <div class="card-header-sticky" style="display:flex;align-items:center;justify-content:space-between">
-        <div style="display:flex;align-items:center;gap:4px">
-          <span class="collapse-chevron collapsed" onclick="toggleExplorerCollapse()" id="explorerChevron">&#x25BC;</span>
-          <h2 style="margin:0;cursor:pointer" onclick="toggleExplorerCollapse()">Event Explorer</h2>
-        </div>
+      <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
+        <span class="collapse-chevron" onclick="toggleCardCollapse('explorer')" id="chevron-explorer">&#x25BC;</span>
+        <h2 style="margin:0;cursor:pointer;flex:1" onclick="toggleCardCollapse('explorer')">Event Explorer</h2>
         <button style="font-size:11px;padding:2px 8px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer" onclick="toggleSchema()">Schema</button>
       </div>
-      <div id="event-explorer-body" class="collapsed">
+      <div class="card-body" id="body-explorer">
         <div class="explorer-toolbar">
           <select id="eventIndex" onchange="loadEvents()">
             <option value="tinysocs-winlog-*">tinysocs-winlog-*</option>
@@ -3343,9 +3545,10 @@ select { cursor: pointer; }
 
     <!-- Alert Rules -->
     <div class="card full rules-card" id="rules-card">
-      <div class="card-header-sticky" style="display:flex;align-items:center;gap:12px">
-        <h2 style="margin:0;white-space:nowrap">Alert Rules</h2>
-        <select id="rulesFilter" onchange="filterRules()" style="flex:1;margin-bottom:0;height:32px">
+      <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
+        <span class="collapse-chevron" onclick="toggleCardCollapse('rules')" id="chevron-rules">&#x25BC;</span>
+        <h2 style="margin:0;white-space:nowrap;cursor:pointer" onclick="toggleCardCollapse('rules')">Alert Rules</h2>
+        <select id="rulesFilter" onchange="filterRules()" style="flex:1;margin-bottom:0;height:32px;margin-left:8px">
           <option value="all">All Rules</option>
           <option value="builtin">Built-in</option>
           <option value="custom">Custom</option>
@@ -3357,6 +3560,7 @@ select { cursor: pointer; }
           <button onclick="toggleRuleUpload()" class="rules-btn rules-btn-purple">Upload Pack</button>
         </div>
       </div>
+      <div class="card-body" id="body-rules">
 
       <!-- Quick Rule Builder (hidden by default) -->
       <div id="ruleBuilder" style="display:none;margin-bottom:12px;padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px">
@@ -3435,13 +3639,15 @@ select { cursor: pointer; }
       </div>
 
       <div id="rules-content"><div class="loading">Loading...</div></div>
+      </div>
     </div>
 
     <!-- Compliance Reports (Phase 14 M4) -->
     <div class="card full" id="compliance-card">
-      <div class="card-header-sticky" style="display:flex;align-items:center;gap:12px">
-        <h2 style="margin:0;white-space:nowrap">Compliance Coverage</h2>
-        <select id="complianceFramework" onchange="loadComplianceReport()" style="font-size:12px;padding:4px 8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px">
+      <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
+        <span class="collapse-chevron" onclick="toggleCardCollapse('compliance')" id="chevron-compliance">&#x25BC;</span>
+        <h2 style="margin:0;white-space:nowrap;cursor:pointer" onclick="toggleCardCollapse('compliance')">Compliance Coverage</h2>
+        <select id="complianceFramework" onchange="loadComplianceReport()" style="font-size:12px;padding:4px 8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;margin-left:8px">
           <option value="">Loading frameworks...</option>
         </select>
         <select id="complianceHours" onchange="loadComplianceReport()" style="font-size:12px;padding:4px 8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px">
@@ -3457,6 +3663,7 @@ select { cursor: pointer; }
         </select>
         <a id="complianceDownload" href="#" style="display:none;font-size:16px;padding:2px 8px;color:var(--muted);text-decoration:none;margin-left:auto;cursor:pointer" title="Download HTML report" download>&#x2B07;</a>
       </div>
+      <div class="card-body" id="body-compliance">
       <div id="compliance-summary" style="display:none;gap:12px;margin:12px 0">
         <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
           <div id="comp-coverage" style="font-size:24px;font-weight:700;color:var(--text)">—</div>
@@ -3476,6 +3683,33 @@ select { cursor: pointer; }
         </div>
       </div>
       <div id="compliance-content"><div class="loading">Loading...</div></div>
+      </div>
+    </div>
+
+    <!-- MITRE ATT&CK Coverage (Phase 15 M3) -->
+    <div class="card full" id="mitre-card">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <span class="collapse-chevron" onclick="toggleCardCollapse('mitre')" id="chevron-mitre">&#x25BC;</span>
+        <h2 style="margin:0;cursor:pointer" onclick="toggleCardCollapse('mitre')">MITRE ATT&CK Coverage</h2>
+        <a id="mitreDownload" href="#" style="font-size:16px;padding:2px 8px;color:var(--muted);text-decoration:none;margin-left:auto;cursor:pointer" title="Download Navigator layer JSON" onclick="downloadNavigatorLayer(event)">&#x2B07;</a>
+      </div>
+      <div class="card-body" id="body-mitre">
+      <div id="mitre-summary" style="display:none;gap:12px;margin:12px 0">
+        <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
+          <div id="mitre-techniques" style="font-size:24px;font-weight:700;color:#27ae60">—</div>
+          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Techniques</div>
+        </div>
+        <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
+          <div id="mitre-tactics" style="font-size:24px;font-weight:700;color:#3498db">—</div>
+          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Tactics</div>
+        </div>
+        <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
+          <div id="mitre-rules" style="font-size:24px;font-weight:700;color:var(--text)">—</div>
+          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Annotated Rules</div>
+        </div>
+      </div>
+      <div id="mitre-heatmap" style="margin-top:12px"></div>
+      </div>
     </div>
   </div>
 
@@ -3661,6 +3895,51 @@ async function loadTimeline() {
   el.innerHTML = svg + legend;
 }
 
+// ---- Threat Intel Enrichment ----
+let _enrichmentCache = {};  // ioc_value -> enrichment data
+
+async function enrichIP(ip) {
+  if (_enrichmentCache[ip]) return _enrichmentCache[ip];
+  try {
+    const d = await fetchJSON(`/api/threat-intel/enrich?ip=${encodeURIComponent(ip)}`);
+    if (d.ok && d.enrichment && d.enrichment[ip]) {
+      _enrichmentCache[ip] = d.enrichment[ip];
+      return d.enrichment[ip];
+    }
+  } catch(e) {}
+  return null;
+}
+
+function threatBadgeHtml(enrichment, ioc) {
+  if (!enrichment) return '';
+  const level = enrichment.threat_level || 'none';
+  const icons = {high:'&#x1F6E1;', medium:'&#x1F6E1;', low:'&#x1F6E1;', none:'&#x2705;'};
+  return `<span class="threat-badge threat-${level}" onclick="event.stopPropagation(); showThreatPopover(event, '${escapeHtml(ioc)}')" title="Threat level: ${level}">${icons[level] || ''} ${level}</span>`;
+}
+
+function showThreatPopover(evt, ioc) {
+  // Remove existing popover
+  const existing = document.getElementById('threatPopover');
+  if (existing) existing.remove();
+  const data = _enrichmentCache[ioc];
+  if (!data) return;
+  let html = `<div class="threat-popover" id="threatPopover">`;
+  html += `<div style="font-weight:600;margin-bottom:8px">${escapeHtml(ioc)} &mdash; Threat Level: ${(data.threat_level || 'none').toUpperCase()}</div>`;
+  html += '<table>';
+  for (const [provider, pdata] of Object.entries(data)) {
+    if (provider === 'threat_level' || typeof pdata !== 'object') continue;
+    html += `<tr><td colspan="2" class="provider-label" style="padding-top:6px">${escapeHtml(provider)}</td></tr>`;
+    for (const [k, v] of Object.entries(pdata)) {
+      html += `<tr><td style="color:var(--muted)">${escapeHtml(k)}</td><td>${escapeHtml(String(v))}</td></tr>`;
+    }
+  }
+  html += '</table>';
+  html += `<div style="text-align:right;margin-top:8px"><button onclick="document.getElementById('threatPopover').remove()" style="font-size:11px;padding:2px 10px;background:var(--bg);color:var(--muted);border:1px solid var(--border);border-radius:4px;cursor:pointer">Close</button></div>`;
+  html += '</div>';
+  const container = evt.target.closest('.detection-row') || document.body;
+  container.insertAdjacentHTML('beforeend', html);
+}
+
 // ---- Fired Detections ----
 let _detectionCache = [];
 let _openDetectionIdx = -1;       // which row is currently expanded
@@ -3739,6 +4018,23 @@ function renderDetections() {
     html += `<tr><td>First Seen</td><td>${det.first_seen ? new Date(det.first_seen).toLocaleString() : 'N/A'}</td></tr>`;
     html += `<tr><td>Last Seen</td><td>${det.last_seen ? new Date(det.last_seen).toLocaleString() : 'N/A'}</td></tr>`;
     html += `<tr><td>Timestamp</td><td>${det.timestamp ? new Date(det.timestamp).toLocaleString() : 'N/A'}</td></tr>`;
+    // Threat intel enrichment row (populated async)
+    const srcIp = det.source_ip || det.group_key || '';
+    if (srcIp && /^[0-9]{1,3}[.][0-9]{1,3}[.][0-9]{1,3}[.][0-9]{1,3}$/.test(srcIp)) {
+      const cached = _enrichmentCache[srcIp];
+      const badge = cached ? threatBadgeHtml(cached, srcIp) : `<span id="enrich-${i}" style="font-size:11px;color:var(--muted)">Loading...</span>`;
+      html += `<tr><td>Threat Intel</td><td>${escapeHtml(srcIp)} ${badge}</td></tr>`;
+      if (!cached) {
+        // Fire async enrichment
+        (function(idx, ip) {
+          enrichIP(ip).then(data => {
+            const el = document.getElementById('enrich-' + idx);
+            if (el && data) el.outerHTML = threatBadgeHtml(data, ip);
+            else if (el) el.textContent = 'No data';
+          });
+        })(i, srcIp);
+      }
+    }
     html += '</table>';
 
     // Action buttons row 1: investigate
@@ -3970,7 +4266,7 @@ function showInLogs(idx) {
 
   // Scroll Event Explorer into view
   const explorer = document.getElementById('event-explorer-card');
-  _ensureExplorerExpanded();
+  ensureCardExpanded('explorer');
   if (explorer) explorer.scrollIntoView({behavior: 'smooth', block: 'start'});
 }
 
@@ -3978,12 +4274,40 @@ let _fleetCache = [];
 let _openFleetIdx = -1;
 let _fleetPage = 0;
 const _FLEET_PER_PAGE = 10;
+let _fleetVersionMap = {};
 
 async function loadFleet() {
   const el = document.getElementById('fleet-content');
   const d = await fetchJSON('/api/fleet/health');
   if (d.error && !d.hosts?.length) { el.innerHTML = `<div class="empty">${d.error}</div>`; return; }
   _fleetCache = d.hosts || [];
+  // Fetch version status for drift badges and banner
+  try {
+    const vs = await fetchJSON('/api/version/status');
+    _fleetVersionMap = {};
+    if (vs.fleet_versions) {
+      for (const fv of vs.fleet_versions) {
+        _fleetVersionMap[fv.hostname] = fv.status;
+      }
+    }
+    // Show/hide version drift banner
+    const banner = document.getElementById('versionDriftBanner');
+    const bannerText = document.getElementById('versionDriftText');
+    if (banner && vs.has_outdated) {
+      const minor = vs.summary?.outdated_minor || 0;
+      const major = vs.summary?.outdated_major || 0;
+      const parts = [];
+      if (major > 0) parts.push(major + ' major');
+      if (minor > 0) parts.push(minor + ' minor');
+      bannerText.textContent = 'Version drift detected: ' + parts.join(', ') + ' outdated agent(s). Expected: ' + (vs.manifest?.current_version || '?') + '. Click to view fleet details.';
+      banner.style.display = 'block';
+      banner.style.background = major > 0 ? 'var(--red)' : 'var(--orange)';
+    } else if (banner) {
+      banner.style.display = 'none';
+    }
+  } catch(e) {
+    _fleetVersionMap = {};
+  }
   renderFleet();
 }
 
@@ -4000,7 +4324,7 @@ function renderFleet() {
   const pageStart = _fleetPage * _FLEET_PER_PAGE;
   const pageHosts = hosts.slice(pageStart, pageStart + _FLEET_PER_PAGE);
 
-  let html = '<table><tr><th>Host</th><th>Events (24h)</th><th>Alerts</th><th>Last Seen</th></tr>';
+  let html = '<table><tr><th>Host</th><th>Events (24h)</th><th>Alerts</th><th>Version</th><th>Last Seen</th></tr>';
   for (let pi = 0; pi < pageHosts.length; pi++) {
     const i = pageStart + pi;  // index into _fleetCache
     const h = pageHosts[pi];
@@ -4008,17 +4332,22 @@ function renderFleet() {
     const alertBadge = h.alert_count > 0
       ? `<span style="background:var(--red);color:#fff;padding:1px 6px;border-radius:4px;font-size:11px">${h.alert_count}</span>`
       : `<span style="color:var(--muted)">0</span>`;
+    const verStatus = _fleetVersionMap[h.hostname] || 'unknown';
+    const verColor = verStatus === 'current' ? 'var(--green)' : verStatus === 'outdated-minor' ? 'var(--yellow)' : verStatus === 'outdated-major' ? 'var(--red)' : 'var(--muted)';
+    const verLabel = h.agent_version || 'N/A';
+    const versionBadge = `<span style="background:${verColor};color:#fff;padding:1px 6px;border-radius:4px;font-size:11px">${escapeHtml(verLabel)}</span>`;
     html += `<tr style="cursor:pointer" onclick="toggleFleetDetail(${i})">`;
     html += `<td style="font-weight:600"><a href="#" style="color:var(--accent);text-decoration:none" onclick="event.stopPropagation(); event.preventDefault(); openHostTimeline('${escapeHtml(h.hostname)}')">${escapeHtml(h.hostname)}</a></td>`;
     html += `<td>${h.event_count}</td>`;
     html += `<td>${alertBadge}</td>`;
+    html += `<td>${versionBadge}</td>`;
     html += `<td>${ago}</td>`;
     html += `</tr>`;
 
     // Expandable detail row
     const isOpen = (_openFleetIdx === i);
     html += `<tr id="fleet-detail-${i}" style="display:${isOpen ? 'table-row' : 'none'}">`;
-    html += `<td colspan="4" style="padding:10px 16px;background:var(--bg);border-bottom:1px solid var(--border)">`;
+    html += `<td colspan="5" style="padding:10px 16px;background:var(--bg);border-bottom:1px solid var(--border)">`;
 
     const firstAgo = h.first_seen ? timeAgo(h.first_seen) : 'N/A';
     const hbAgo = h.heartbeat_ts ? timeAgo(h.heartbeat_ts) : 'No heartbeat';
@@ -4091,7 +4420,7 @@ function viewHostLogs(hostname) {
   document.getElementById('eventTimeRange').value = '24h';
   loadEvents();
   const explorer = document.getElementById('event-explorer-card');
-  _ensureExplorerExpanded();
+  ensureCardExpanded('explorer');
   if (explorer) explorer.scrollIntoView({behavior: 'smooth', block: 'start'});
 }
 
@@ -4101,7 +4430,7 @@ function viewHostAlerts(hostname) {
   document.getElementById('eventTimeRange').value = '24h';
   loadEvents();
   const explorer = document.getElementById('event-explorer-card');
-  _ensureExplorerExpanded();
+  ensureCardExpanded('explorer');
   if (explorer) explorer.scrollIntoView({behavior: 'smooth', block: 'start'});
 }
 
@@ -4202,19 +4531,38 @@ const _EVENTS_PER_PAGE = 15;
 
 function toggleEventsLive(on) { _eventsLive = on; }
 
-function toggleExplorerCollapse() {
-  const body = document.getElementById('event-explorer-body');
-  const chevron = document.getElementById('explorerChevron');
+function toggleCardCollapse(id) {
+  const body = document.getElementById('body-' + id);
+  const chevron = document.getElementById('chevron-' + id);
+  if (!body || !chevron) return;
   body.classList.toggle('collapsed');
   chevron.classList.toggle('collapsed');
+  const collapsed = JSON.parse(localStorage.getItem('tinysocs_collapsed') || '{}');
+  collapsed[id] = body.classList.contains('collapsed');
+  localStorage.setItem('tinysocs_collapsed', JSON.stringify(collapsed));
 }
 
-function _ensureExplorerExpanded() {
-  const body = document.getElementById('event-explorer-body');
-  const chevron = document.getElementById('explorerChevron');
+function restoreCollapseState() {
+  const collapsed = JSON.parse(localStorage.getItem('tinysocs_collapsed') || '{}');
+  for (const [id, isCollapsed] of Object.entries(collapsed)) {
+    if (isCollapsed) {
+      const body = document.getElementById('body-' + id);
+      const chevron = document.getElementById('chevron-' + id);
+      if (body) body.classList.add('collapsed');
+      if (chevron) chevron.classList.add('collapsed');
+    }
+  }
+}
+
+function ensureCardExpanded(id) {
+  const body = document.getElementById('body-' + id);
+  const chevron = document.getElementById('chevron-' + id);
   if (body && body.classList.contains('collapsed')) {
     body.classList.remove('collapsed');
-    chevron.classList.remove('collapsed');
+    if (chevron) chevron.classList.remove('collapsed');
+    const collapsed = JSON.parse(localStorage.getItem('tinysocs_collapsed') || '{}');
+    collapsed[id] = false;
+    localStorage.setItem('tinysocs_collapsed', JSON.stringify(collapsed));
   }
 }
 
@@ -4709,7 +5057,7 @@ function testRuleInExplorer(idx) {
   document.getElementById('eventTimeRange').value = '24h';
   loadEvents();
   const explorer = document.getElementById('event-explorer-card');
-  _ensureExplorerExpanded();
+  ensureCardExpanded('explorer');
   if (explorer) explorer.scrollIntoView({behavior: 'smooth', block: 'start'});
 }
 
@@ -5148,6 +5496,28 @@ async function testEmail() {
   }
 }
 
+async function testThreatIntel() {
+  const statusEl = document.getElementById('threatIntelTestStatus');
+  statusEl.innerHTML = '<span style="color:var(--muted)">Testing providers...</span>';
+  try {
+    const r = await fetch(BASE + '/api/threat-intel/test', {method: 'POST'});
+    const d = await r.json();
+    if (d.ok) {
+      const parts = [];
+      for (const [name, info] of Object.entries(d.results || {})) {
+        if (info.status === 'ok') parts.push(`<span style="color:var(--green)">${escapeHtml(name)}: OK (${info.quota_remaining} remaining)</span>`);
+        else if (info.status === 'not_configured') parts.push(`<span style="color:var(--muted)">${escapeHtml(name)}: not configured</span>`);
+        else parts.push(`<span style="color:var(--red)">${escapeHtml(name)}: ${escapeHtml(info.error || info.status)}</span>`);
+      }
+      statusEl.innerHTML = parts.join(' &bull; ');
+    } else {
+      statusEl.innerHTML = `<span style="color:var(--red)">${escapeHtml(d.error)}</span>`;
+    }
+  } catch(e) {
+    statusEl.innerHTML = `<span style="color:var(--red)">${escapeHtml(e.message)}</span>`;
+  }
+}
+
 // ---- LLM status tracking ----
 let _llmConfigured = true;  // assume yes until checked
 let _llmReason = '';
@@ -5240,9 +5610,11 @@ async function doLogin() {
 function unlockDashboard() {
   document.getElementById('loginGate').style.display = 'none';
   document.getElementById('dashboardContent').style.visibility = 'visible';
+  restoreCollapseState();
   checkLlmStatus();
   restoreChat();
   loadComplianceFrameworks();
+  loadMitreCoverage();
   loadEvents();
   refreshAll();
 }
@@ -5457,6 +5829,72 @@ async function loadComplianceReport() {
   } catch(e) {
     el.innerHTML = '<div style="color:var(--muted);font-size:13px">Failed to load compliance data.</div>';
   }
+}
+
+// ── MITRE ATT&CK Coverage (Phase 15 M3) ──────────────────────────────
+
+async function loadMitreCoverage() {
+  try {
+    const r = await fetch(BASE + '/api/mitre/coverage', {headers:{'Authorization':'Bearer '+_authToken}});
+    const d = await r.json();
+    if (!d.ok) return;
+    const sumEl = document.getElementById('mitre-summary');
+    sumEl.style.display = 'flex';
+    document.getElementById('mitre-techniques').textContent = d.total_techniques || 0;
+    document.getElementById('mitre-tactics').textContent = (d.total_tactics || 0) + '/14';
+    // Count total annotated rules
+    let ruleCount = 0;
+    for (const tid of Object.keys(d.techniques || {})) {
+      ruleCount += (d.techniques[tid].rules || []).length;
+    }
+    document.getElementById('mitre-rules').textContent = ruleCount;
+    // Build tactic heatmap
+    const heatmap = document.getElementById('mitre-heatmap');
+    let html = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px">';
+    for (const ts of (d.tactic_summary || [])) {
+      const count = ts.techniques_covered || 0;
+      const bg = count === 0 ? 'var(--bg)' : count <= 2 ? '#2d5a3d' : count <= 5 ? '#27ae60' : '#1e8449';
+      const border = count === 0 ? '1px solid var(--border)' : 'none';
+      html += '<div style="background:' + bg + ';border:' + border + ';border-radius:6px;padding:10px 12px;cursor:pointer" onclick="toggleMitreTacticDetail(this,\'' + escapeHtml(ts.tactic) + '\',' + JSON.stringify(ts.technique_ids||[]).replace(/"/g,'&quot;') + ')" title="' + escapeHtml(ts.label) + '">';
+      html += '<div style="font-size:12px;font-weight:600;color:' + (count > 0 ? '#fff' : 'var(--muted)') + '">' + escapeHtml(ts.label) + '</div>';
+      html += '<div style="font-size:18px;font-weight:700;color:' + (count > 0 ? '#fff' : 'var(--muted)') + ';margin-top:4px">' + count + '</div>';
+      html += '<div style="font-size:10px;color:' + (count > 0 ? 'rgba(255,255,255,0.7)' : 'var(--muted)') + '">techniques</div>';
+      html += '</div>';
+    }
+    html += '</div>';
+    heatmap.innerHTML = html;
+  } catch(e) {
+    console.error('MITRE coverage load error:', e);
+  }
+}
+
+function toggleMitreTacticDetail(el, tactic, techIds) {
+  const existing = el.querySelector('.mitre-detail');
+  if (existing) { existing.remove(); return; }
+  if (!techIds || techIds.length === 0) return;
+  const detail = document.createElement('div');
+  detail.className = 'mitre-detail';
+  detail.style.cssText = 'margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.2);font-size:11px;color:rgba(255,255,255,0.85)';
+  detail.innerHTML = techIds.map(function(t){ return '<div style="padding:2px 0">' + escapeHtml(t) + '</div>'; }).join('');
+  el.appendChild(detail);
+}
+
+function downloadNavigatorLayer(e) {
+  e.preventDefault();
+  const a = document.createElement('a');
+  a.href = BASE + '/api/mitre/navigator-layer';
+  a.download = 'tinysocs-navigator-layer.json';
+  // Add auth header via fetch + blob
+  fetch(BASE + '/api/mitre/navigator-layer', {headers:{'Authorization':'Bearer '+_authToken}})
+    .then(function(r){ return r.blob(); })
+    .then(function(blob){
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'tinysocs-navigator-layer.json';
+      link.click();
+      URL.revokeObjectURL(url);
+    });
 }
 
 // Boot: check existing session

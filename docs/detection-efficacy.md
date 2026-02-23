@@ -7,7 +7,7 @@
 
 | Metric | Value |
 |--------|-------|
-| Total Tests | 12 |
+| Total Tests | 19 |
 | Detected | — |
 | Missed | — |
 | Skipped | — |
@@ -30,6 +30,18 @@
 | T1136.001 | Create Local Account | TS-010, local_admin_create | No |
 | T1218.011 | Rundll32 | proc_creation_lolbins, lolbin_execs | No |
 | T1003.003 | NTDS | TS-062, ntds_dit_access | No |
+| T1087.001 | Account Discovery — Local Account | TS-130, account_discovery | No |
+| T1018 | Remote System Discovery | TS-131, system_network_discovery | No |
+| T1105 | Ingress Tool Transfer | TS-132, ingress_tool_transfer, powershell_web_dl | No |
+| T1055 | Process Injection | TS-133, process_injection_sysmon | Yes |
+| T1027 | Obfuscated Files or Information | TS-134, obfuscated_command_line, scriptblock_base64 | No |
+| T1565.001 | Data Manipulation — Stored Data | TS-110, fim_critical_file_modified | No |
+| T1047 | Windows Management Instrumentation | wmi_process_creation | No |
+
+## Output Files
+
+- `docs/detection-efficacy.md` — This report (auto-generated)
+- `tests/atomic-results.json` — Machine-readable results for Navigator layer colouring
 
 ## How to Run
 
@@ -42,6 +54,9 @@
 
 # Skip ART install (if already installed)
 .\tests\Test-AtomicDetection.ps1 -SkipInstall
+
+# Specify custom JSON output path
+.\tests\Test-AtomicDetection.ps1 -OutputJson "C:\results\atomic-results.json"
 ```
 
 ## Prerequisites
@@ -51,3 +66,18 @@
 3. PowerShell 5.1+ (elevated / Administrator)
 4. Internet access (for Invoke-AtomicRedTeam download on first run)
 5. Sysmon installed (optional — some tests require it)
+
+## Navigator Layer Integration
+
+Pass the `atomic-results.json` file to the MITRE coverage tool for colour-coded Navigator layers:
+
+```bash
+python -m tinysocs.reporting.mitre_coverage \
+    --output navigator-layer.json \
+    --atomic-results tests/atomic-results.json
+```
+
+Colour coding in the Navigator layer:
+- **Dark green** (#27ae60): Technique detected in Atomic test
+- **Light green** (#82e0aa): Rule exists but untested
+- **Grey** (#bdc3c7): No coverage

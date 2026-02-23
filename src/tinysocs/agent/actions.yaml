@@ -221,3 +221,61 @@ large_outbound_transfer:
     cmd: Get-WinEvent -FilterHashtable @{LogName="Microsoft-Windows-Sysmon/Operational"; Id=3} | Where-Object {$_.Properties[6].Value -eq "<image>"} | Select-Object -First 50 | Format-List
   - label: Block outbound for process
     cmd: netsh advfirewall firewall add rule name="TinySOCS Block Egress <image>" dir=out action=block program="<image>"
+
+# ── Phase 15: File Integrity Monitoring ──
+
+fim_critical_file_modified:
+  - label: Compare file hash with known-good
+    cmd: Get-FileHash -Path "<filepath>" -Algorithm SHA256
+  - label: Restore from backup
+    cmd: Copy-Item -Path "<backup_path>" -Destination "<filepath>" -Force
+
+fim_mass_modification:
+  - label: Isolate host immediately
+    cmd: netsh advfirewall set allprofiles firewallpolicy blockinbound,blockoutbound
+  - label: List recently modified files
+    cmd: Get-ChildItem -Path "<monitored_path>" -Recurse | Where-Object {$_.LastWriteTime -gt (Get-Date).AddMinutes(-5)} | Select-Object FullName, LastWriteTime
+
+fim_config_tampered:
+  - label: Review TinySocs config changes
+    cmd: Get-Content -Path "<filepath>" | Select-Object -First 50
+  - label: Restore TinySocs config from installer backup
+    cmd: Copy-Item -Path "C:\ProgramData\TinySocs\backup\<configname>" -Destination "<filepath>" -Force
+
+fim_sensitive_file_deleted:
+  - label: Check Windows backup/VSS for recovery
+    cmd: vssadmin list shadows
+  - label: Verify file is truly missing
+    cmd: Test-Path -Path "<filepath>"
+
+# ── Phase 15 M3: Gap-Coverage ──
+
+account_discovery:
+  - label: Review recent account enumeration
+    cmd: Get-WinEvent -FilterHashtable @{LogName="Security"; Id=4688} -MaxEvents 100 | Where-Object {$_.Properties[5].Value -match "net\.exe|whoami\.exe"} | Format-List
+  - label: Check for suspicious user sessions
+    cmd: query user
+
+system_network_discovery:
+  - label: Review network enumeration commands
+    cmd: Get-WinEvent -FilterHashtable @{LogName="Security"; Id=4688} -MaxEvents 100 | Where-Object {$_.Properties[5].Value -match "ipconfig|netstat|arp|route"} | Format-List
+  - label: Check for reconnaissance tools
+    cmd: Get-Process | Where-Object {$_.ProcessName -match "nmap|masscan|angry"}
+
+ingress_tool_transfer:
+  - label: Check recent file downloads
+    cmd: Get-WinEvent -FilterHashtable @{LogName="Security"; Id=4688} -MaxEvents 50 | Where-Object {$_.Properties[5].Value -match "certutil|bitsadmin|curl"} | Format-List
+  - label: Block download utility
+    cmd: netsh advfirewall firewall add rule name="TinySOCS Block <tool>" dir=out action=block program="C:\Windows\System32\<tool>.exe"
+
+process_injection_sysmon:
+  - label: Identify injection source process
+    cmd: Get-WinEvent -FilterHashtable @{LogName="Microsoft-Windows-Sysmon/Operational"; Id=8} -MaxEvents 20 | Format-List
+  - label: Kill suspicious source process
+    cmd: Stop-Process -Name "<processname>" -Force
+
+obfuscated_command_line:
+  - label: Decode and review command
+    cmd: Get-WinEvent -FilterHashtable @{LogName="Security"; Id=4688} -MaxEvents 50 | Where-Object {$_.Properties[8].Value -match '\^|``|\$env:'} | Format-List
+  - label: Block suspicious script execution
+    cmd: Set-MpPreference -AttackSurfaceReductionRules_Ids D4F940AB-401B-4EFC-AADC-AD5F3C50688A -AttackSurfaceReductionRules_Actions Enabled

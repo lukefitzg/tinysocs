@@ -597,34 +597,16 @@ var
 begin
   Result := GetEnv('COMPUTERNAME');
   TmpFile := ExpandConstant('{tmp}\localip.txt');
+  { IMPORTANT: No # comments in this one-liner — everything is on a single
+    command line, so # would comment out the rest of the script. Use semicolons
+    as statement separators. }
   PsCmd :=
     '-NoProfile -Command "' +
     'try {' +
     '  $r = $null;' +
-    '  # Method 1: UDP socket trick (most reliable)' +
-    '  try {' +
-    '    $u = New-Object System.Net.Sockets.UdpClient;' +
-    '    $u.Connect(''8.8.8.8'', 53);' +
-    '    $r = $u.Client.LocalEndPoint.Address.IPAddressToString;' +
-    '    $u.Close();' +
-    '    if ($r -eq ''0.0.0.0'' -or $r -eq ''127.0.0.1'') { $r = $null }' +
-    '  } catch { $r = $null }' +
-    '  # Method 2: Get-NetIPAddress (direct adapter enumeration)' +
-    '  if (-not $r) {' +
-    '    try {' +
-    '      $r = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |' +
-    '            Where-Object { $_.IPAddress -ne ''127.0.0.1'' -and $_.PrefixOrigin -ne ''WellKnown'' } |' +
-    '            Select-Object -First 1).IPAddress' +
-    '    } catch { $r = $null }' +
-    '  }' +
-    '  # Method 3: DNS resolution (original fallback)' +
-    '  if (-not $r) {' +
-    '    try {' +
-    '      $r = ([System.Net.Dns]::GetHostAddresses($env:COMPUTERNAME) |' +
-    '            Where-Object { $_.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork -and $_.ToString() -ne ''127.0.0.1'' } |' +
-    '            Select-Object -First 1).ToString()' +
-    '    } catch { $r = $null }' +
-    '  }' +
+    '  try { $u = New-Object System.Net.Sockets.UdpClient; $u.Connect(''8.8.8.8'', 53); $r = $u.Client.LocalEndPoint.Address.IPAddressToString; $u.Close(); if ($r -eq ''0.0.0.0'' -or $r -eq ''127.0.0.1'') { $r = $null } } catch { $r = $null };' +
+    '  if (-not $r) { try { $r = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop | Where-Object { $_.IPAddress -ne ''127.0.0.1'' -and $_.PrefixOrigin -ne ''WellKnown'' } | Select-Object -First 1).IPAddress } catch { $r = $null } };' +
+    '  if (-not $r) { try { $r = ([System.Net.Dns]::GetHostAddresses($env:COMPUTERNAME) | Where-Object { $_.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork -and $_.ToString() -ne ''127.0.0.1'' } | Select-Object -First 1).ToString() } catch { $r = $null } };' +
     '  if ($r) { $r } else { $env:COMPUTERNAME }' +
     '} catch { $env:COMPUTERNAME }' +
     ' | Out-File -Encoding ASCII ''' + TmpFile + '''"';

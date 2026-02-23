@@ -15586,6 +15586,14 @@ function Install-TinySocsSysmon {
     }
   }
 
+  # Log architecture for diagnostics
+  $archInfo = "PROCESSOR_ARCHITECTURE=$($env:PROCESSOR_ARCHITECTURE) PROCESSOR_ARCHITEW6432=$($env:PROCESSOR_ARCHITEW6432)"
+  Write-TinySocsLog "System architecture: $archInfo  SysmonExe: $SysmonExePath"
+
+  # Track install exit code in a variable (_PurgeStaleSysmonServices runs sc.exe
+  # which overwrites $LASTEXITCODE, so we can't rely on it after cleanup calls).
+  $sysmonInstallExitCode = 0
+
   # Install or update — ARM64 registers as "Sysmon64a", x64 as "Sysmon64"
   $svc = Get-Service -Name "Sysmon64" -ErrorAction SilentlyContinue
   if (-not $svc) { $svc = Get-Service -Name "Sysmon64a" -ErrorAction SilentlyContinue }
@@ -15593,7 +15601,8 @@ function Install-TinySocsSysmon {
     if ($svc.Status -eq 'Running') {
       Write-TinySocsLog "Sysmon service ($($svc.Name)) found and running -- updating configuration..."
       & $SysmonExePath -c "$ConfigPath" 2>&1 | ForEach-Object { Write-Host $_ }
-      Write-TinySocsLog "Sysmon -c exit code: $LASTEXITCODE"
+      $sysmonInstallExitCode = $LASTEXITCODE
+      Write-TinySocsLog "Sysmon -c exit code: $sysmonInstallExitCode"
     } else {
       # Service exists but is not running -- likely a broken prior install where the
       # kernel driver (SysmonDrv.sys) was never copied to C:\Windows\.
@@ -15607,7 +15616,8 @@ function Install-TinySocsSysmon {
       Start-Sleep -Seconds 1
       Write-TinySocsLog "Installing Sysmon (fresh)..."
       & $SysmonExePath -accepteula -i "$ConfigPath" 2>&1 | ForEach-Object { Write-Host $_ }
-      Write-TinySocsLog "Sysmon -i exit code: $LASTEXITCODE"
+      $sysmonInstallExitCode = $LASTEXITCODE
+      Write-TinySocsLog "Sysmon -i exit code: $sysmonInstallExitCode"
     }
   } else {
     # No service found, but stale driver registrations might still block install.
@@ -15615,18 +15625,20 @@ function Install-TinySocsSysmon {
     _PurgeStaleSysmonServices
     Write-TinySocsLog "Installing Sysmon..."
     & $SysmonExePath -accepteula -i "$ConfigPath" 2>&1 | ForEach-Object { Write-Host $_ }
-    Write-TinySocsLog "Sysmon -i exit code: $LASTEXITCODE"
+    $sysmonInstallExitCode = $LASTEXITCODE
+    Write-TinySocsLog "Sysmon -i exit code: $sysmonInstallExitCode"
   }
 
   # If install failed (non-zero exit), try one more time after full cleanup
-  if ($LASTEXITCODE -ne 0) {
-    Write-TinySocsLog -Level "WARN" -Message "Sysmon install exited with code $LASTEXITCODE -- attempting full cleanup and retry..."
+  if ($sysmonInstallExitCode -ne 0) {
+    Write-TinySocsLog -Level "WARN" -Message "Sysmon install exited with code $sysmonInstallExitCode -- attempting full cleanup and retry..."
     try { & $SysmonExePath -u force 2>&1 | Out-Null } catch { }
     Start-Sleep -Seconds 2
     _PurgeStaleSysmonServices
     Start-Sleep -Seconds 2
     & $SysmonExePath -accepteula -i "$ConfigPath" 2>&1 | ForEach-Object { Write-Host $_ }
-    Write-TinySocsLog "Sysmon retry -i exit code: $LASTEXITCODE"
+    $sysmonInstallExitCode = $LASTEXITCODE
+    Write-TinySocsLog "Sysmon retry -i exit code: $sysmonInstallExitCode"
   }
 
   # Verify service is running — check both possible names.

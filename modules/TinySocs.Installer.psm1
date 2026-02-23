@@ -13108,10 +13108,59 @@ function Ensure-TinySocsAssistantService {
   # Configure service recovery
   sc.exe failure $ServiceName reset= 60 actions= restart/3000/restart/5000/""/0 | Out-Null
 
-  # Start the service
+  # Start the service and verify it stays running
   try { & $nssm start $ServiceName | Out-Null } catch { }
 
-  Write-Host "[TinySocs] Assistant service ($ServiceName) installed and started."
+  # Wait up to 10 seconds for the service to become Running. If it crashes
+  # on startup (e.g., missing TLS cert, invalid env var), NSSM will report
+  # SERVICE_PAUSED or SERVICE_STOPPED after the process exits.
+  $ready = $false
+  for ($attempt = 0; $attempt -lt 10; $attempt++) {
+    Start-Sleep -Seconds 1
+    $svcCheck = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if ($svcCheck -and $svcCheck.Status -eq 'Running') {
+      $ready = $true
+      break
+    }
+  }
+
+  if ($ready) {
+    # Final check: probe the HTTP(S) endpoint to confirm Uvicorn actually started.
+    $dashBind = "127.0.0.1"
+    $dashCert = ""
+    if (Test-Path $EnvFile) {
+      foreach ($line in (Get-Content $EnvFile -ErrorAction SilentlyContinue)) {
+        if ($line -match '^DASHBOARD_BIND=(.+)') { $dashBind = $Matches[1].Trim() }
+        if ($line -match '^DASHBOARD_TLS_CERT=(.+)') { $dashCert = $Matches[1].Trim() }
+      }
+    }
+    $scheme = if ($dashCert) { "https" } else { "http" }
+    $probeUrl = "${scheme}://127.0.0.1:8090/dashboard/api/auth/check"
+    $probeOk = $false
+    for ($p = 0; $p -lt 5; $p++) {
+      try {
+        $resp = curl.exe -sk --max-time 3 --connect-timeout 2 -o NUL -w "%{http_code}" $probeUrl 2>$null
+        if ($resp -match '2\d\d|401|403') { $probeOk = $true; break }
+      } catch { }
+      Start-Sleep -Seconds 2
+    }
+    if ($probeOk) {
+      Write-Host "[TinySocs] Assistant service ($ServiceName) installed, started, and responding."
+    } else {
+      Write-Warning "[TinySocs] Assistant service ($ServiceName) is running but not responding on port 8090. Check $appDir\TinySocsAssistant.err.log for errors."
+    }
+  } else {
+    Write-Warning "[TinySocs] Assistant service ($ServiceName) failed to start. Check $appDir\TinySocsAssistant.err.log for errors."
+    # Dump last 20 lines of stderr log if available for diagnostics
+    $errLog = Join-Path $appDir "TinySocsAssistant.err.log"
+    if (Test-Path $errLog) {
+      $tail = Get-Content $errLog -Tail 20 -ErrorAction SilentlyContinue
+      if ($tail) {
+        Write-Host "[TinySocs] Last lines from err.log:"
+        $tail | ForEach-Object { Write-Host "  $_" }
+      }
+    }
+  }
 }
 
 # -- Scheduled task helpers (PowerShell ScheduledTasks API) ---------------------
@@ -15514,6 +15563,29 @@ function Install-TinySocsSysmon {
     throw "Sysmon config not found at $ConfigPath"
   }
 
+  # Helper: forcibly purge stale Sysmon service/driver registrations via sc.exe.
+  # Sysmon -u sometimes leaves orphaned SCM entries when the driver binary was
+  # deleted before uninstall, preventing fresh installs (exit code 13).
+  function _PurgeStaleSysmonServices {
+    foreach ($name in @('Sysmon64','Sysmon64a','SysmonDrv')) {
+      $s = Get-Service -Name $name -ErrorAction SilentlyContinue
+      if ($s) {
+        Write-TinySocsLog "Purging stale service registration: $name (Status: $($s.Status))"
+        Stop-Service -Name $name -Force -ErrorAction SilentlyContinue
+        sc.exe delete $name 2>$null | Out-Null
+        Start-Sleep -Milliseconds 500
+      }
+    }
+    # Also remove stale driver binary from Windows root (left by prior installs)
+    foreach ($drvFile in @('SysmonDrv.sys')) {
+      $drvPath = Join-Path $env:SystemRoot "System32\drivers\$drvFile"
+      if (Test-Path $drvPath) {
+        Write-TinySocsLog "Removing stale driver file: $drvPath"
+        Remove-Item $drvPath -Force -ErrorAction SilentlyContinue
+      }
+    }
+  }
+
   # Install or update — ARM64 registers as "Sysmon64a", x64 as "Sysmon64"
   $svc = Get-Service -Name "Sysmon64" -ErrorAction SilentlyContinue
   if (-not $svc) { $svc = Get-Service -Name "Sysmon64a" -ErrorAction SilentlyContinue }
@@ -15527,17 +15599,34 @@ function Install-TinySocsSysmon {
       # kernel driver (SysmonDrv.sys) was never copied to C:\Windows\.
       # Force-uninstall then do a clean fresh install.
       Write-TinySocsLog "Sysmon service ($($svc.Name)) found but not running (Status: $($svc.Status)) -- force-reinstalling..."
-      & $SysmonExePath -u force 2>&1 | ForEach-Object { Write-Host $_ }
+      try { & $SysmonExePath -u force 2>&1 | ForEach-Object { Write-Host $_ } } catch { }
       Write-TinySocsLog "Sysmon -u force exit code: $LASTEXITCODE"
-      Start-Sleep -Seconds 3
+      # If -u force failed or left stale registrations, purge via sc.exe
+      Start-Sleep -Seconds 2
+      _PurgeStaleSysmonServices
+      Start-Sleep -Seconds 1
       Write-TinySocsLog "Installing Sysmon (fresh)..."
       & $SysmonExePath -accepteula -i "$ConfigPath" 2>&1 | ForEach-Object { Write-Host $_ }
       Write-TinySocsLog "Sysmon -i exit code: $LASTEXITCODE"
     }
   } else {
+    # No service found, but stale driver registrations might still block install.
+    # Clean up before attempting fresh install.
+    _PurgeStaleSysmonServices
     Write-TinySocsLog "Installing Sysmon..."
     & $SysmonExePath -accepteula -i "$ConfigPath" 2>&1 | ForEach-Object { Write-Host $_ }
     Write-TinySocsLog "Sysmon -i exit code: $LASTEXITCODE"
+  }
+
+  # If install failed (non-zero exit), try one more time after full cleanup
+  if ($LASTEXITCODE -ne 0) {
+    Write-TinySocsLog -Level "WARN" -Message "Sysmon install exited with code $LASTEXITCODE -- attempting full cleanup and retry..."
+    try { & $SysmonExePath -u force 2>&1 | Out-Null } catch { }
+    Start-Sleep -Seconds 2
+    _PurgeStaleSysmonServices
+    Start-Sleep -Seconds 2
+    & $SysmonExePath -accepteula -i "$ConfigPath" 2>&1 | ForEach-Object { Write-Host $_ }
+    Write-TinySocsLog "Sysmon retry -i exit code: $LASTEXITCODE"
   }
 
   # Verify service is running — check both possible names.

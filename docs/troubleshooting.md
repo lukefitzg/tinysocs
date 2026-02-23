@@ -220,6 +220,64 @@ Import-Module "$env:ProgramFiles\TinySocs\modules\TinySocs.Installer.psm1"
 Install-TinySocsSysmon  # Updates config on existing Sysmon installs
 ```
 
+### 15b. Sysmon fails to start after reinstall (exit code 13)
+
+**Symptom**: Sysmon install fails with exit code 13 or "driver not found" errors after a Full-Rebuild or reinstall.
+
+**Cause**: A previous install left stale service/driver registrations in the SCM or an orphaned `SysmonDrv.sys` in `C:\Windows\System32\drivers\`.
+
+**Fix**: Manually clean up, then reinstall:
+
+```powershell
+# Remove stale service registrations
+sc.exe stop Sysmon64 2>$null; sc.exe delete Sysmon64 2>$null
+sc.exe stop Sysmon64a 2>$null; sc.exe delete Sysmon64a 2>$null
+sc.exe stop SysmonDrv 2>$null; sc.exe delete SysmonDrv 2>$null
+
+# Remove stale driver file
+Remove-Item "$env:SystemRoot\System32\drivers\SysmonDrv.sys" -Force -ErrorAction SilentlyContinue
+
+# Reinstall
+Import-Module "$env:ProgramFiles\TinySocs\modules\TinySocs.Installer.psm1"
+Install-TinySocsSysmon
+```
+
+### 15c. Dashboard URL shows ERR_CONNECTION_REFUSED after install
+
+**Symptom**: The finish-page URL (e.g., `https://192.168.x.x:8090/dashboard/`) returns ERR_CONNECTION_REFUSED in the browser.
+
+**Checklist**:
+1. **Is the service running?**
+   ```powershell
+   Get-Service TinySocsAssistant
+   ```
+2. **Check the error log**:
+   ```powershell
+   Get-Content "$env:ProgramData\TinySocs\Assistant\TinySocsAssistant.err.log" -Tail 30
+   ```
+3. **Verify env config**:
+   ```powershell
+   Get-Content "$env:ProgramData\TinySocs\Assistant\assistant.env" | Select-String "DASHBOARD_"
+   ```
+4. **Verify TLS certs exist** (if using network mode):
+   ```powershell
+   Test-Path "$env:ProgramData\TinySocs\Assistant\certs\dashboard-cert.pem"
+   Test-Path "$env:ProgramData\TinySocs\Assistant\certs\dashboard-key.pem"
+   ```
+
+**Common causes**:
+- TLS cert generation failed silently — the service expects certs when `DASHBOARD_BIND=0.0.0.0` but they don't exist. Fix: re-run cert generation:
+  ```powershell
+  Import-Module "$env:ProgramFiles\TinySocs\modules\TinySocs.Installer.psm1"
+  $certs = New-TinySocsDashboardCert
+  # Then re-register the service
+  Ensure-TinySocsAssistantService -InstallRoot "$env:ProgramFiles\TinySocs"
+  ```
+- Firewall blocking port 8090 — verify the inbound rule exists:
+  ```powershell
+  Get-NetFirewallRule -DisplayName "TinySocs Dashboard"
+  ```
+
 ### 16. Rate limiting lockout on dashboard
 
 **Symptom**: Dashboard login returns HTTP 429 "Too many login attempts".

@@ -577,7 +577,16 @@ end;
 
 { Resolve the first non-loopback IPv4 address for this machine.
   Falls back to COMPUTERNAME if resolution fails. Used for the
-  network-mode dashboard URL so it actually resolves from other machines. }
+  network-mode dashboard URL so it actually resolves from other machines.
+
+  Strategy (most to least reliable):
+    1. UDP socket trick: open a UDP "connection" to 8.8.8.8:53 and read
+       the local endpoint — works even without actual internet because
+       no data is sent; the OS just picks the right outbound interface.
+    2. Get-NetIPAddress cmdlet: enumerates adapters directly (works on
+       machines with no DNS registration for their hostname).
+    3. GetHostAddresses (original method) as last resort.
+    4. Fall back to COMPUTERNAME if everything fails. }
 function GetLocalIPv4: String;
 var
   TmpFile: String;
@@ -588,7 +597,37 @@ var
 begin
   Result := GetEnv('COMPUTERNAME');
   TmpFile := ExpandConstant('{tmp}\localip.txt');
-  PsCmd := '-NoProfile -Command "try { $ip = [System.Net.Dns]::GetHostAddresses($env:COMPUTERNAME) | Where-Object { $_.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork -and $_.ToString() -ne ''127.0.0.1'' } | Select-Object -First 1; if ($ip) { $ip.ToString() } else { $env:COMPUTERNAME } } catch { $env:COMPUTERNAME } | Out-File -Encoding ASCII ''' + TmpFile + '''"';
+  PsCmd :=
+    '-NoProfile -Command "' +
+    'try {' +
+    '  $r = $null;' +
+    '  # Method 1: UDP socket trick (most reliable)' +
+    '  try {' +
+    '    $u = New-Object System.Net.Sockets.UdpClient;' +
+    '    $u.Connect(''8.8.8.8'', 53);' +
+    '    $r = $u.Client.LocalEndPoint.Address.IPAddressToString;' +
+    '    $u.Close();' +
+    '    if ($r -eq ''0.0.0.0'' -or $r -eq ''127.0.0.1'') { $r = $null }' +
+    '  } catch { $r = $null }' +
+    '  # Method 2: Get-NetIPAddress (direct adapter enumeration)' +
+    '  if (-not $r) {' +
+    '    try {' +
+    '      $r = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |' +
+    '            Where-Object { $_.IPAddress -ne ''127.0.0.1'' -and $_.PrefixOrigin -ne ''WellKnown'' } |' +
+    '            Select-Object -First 1).IPAddress' +
+    '    } catch { $r = $null }' +
+    '  }' +
+    '  # Method 3: DNS resolution (original fallback)' +
+    '  if (-not $r) {' +
+    '    try {' +
+    '      $r = ([System.Net.Dns]::GetHostAddresses($env:COMPUTERNAME) |' +
+    '            Where-Object { $_.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork -and $_.ToString() -ne ''127.0.0.1'' } |' +
+    '            Select-Object -First 1).ToString()' +
+    '    } catch { $r = $null }' +
+    '  }' +
+    '  if ($r) { $r } else { $env:COMPUTERNAME }' +
+    '} catch { $env:COMPUTERNAME }' +
+    ' | Out-File -Encoding ASCII ''' + TmpFile + '''"';
   if Exec(GetPowerShellExePath, PsCmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
   begin
     if LoadStringsFromFile(TmpFile, Lines) then

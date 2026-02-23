@@ -115,24 +115,31 @@ if ($sysmonExe) {
     }
     Start-Sleep -Seconds 2
     Write-Host "  Sysmon uninstalled." -ForegroundColor Green
-} else {
-    # No binary found, but service might still be registered — try sc.exe cleanup
-    foreach ($svcName in @('Sysmon64','Sysmon64a')) {
-        $svc = Get-Service -Name $svcName -ErrorAction SilentlyContinue
-        if ($svc) {
-            Write-Host "  Removing stale Sysmon service: $svcName"
-            Stop-Service -Name $svcName -Force -ErrorAction SilentlyContinue
-            sc.exe delete $svcName 2>$null | Out-Null
-        }
+}
+
+# Always scrub any remaining Sysmon service/driver registrations after -u force.
+# Sysmon -u can leave orphaned SCM entries that block fresh installs (exit code 13).
+foreach ($svcName in @('Sysmon64','Sysmon64a')) {
+    $svc = Get-Service -Name $svcName -ErrorAction SilentlyContinue
+    if ($svc) {
+        Write-Host "  Removing stale Sysmon service: $svcName"
+        Stop-Service -Name $svcName -Force -ErrorAction SilentlyContinue
+        sc.exe delete $svcName 2>$null | Out-Null
     }
-    foreach ($drvName in @('SysmonDrv')) {
-        $drv = Get-Service -Name $drvName -ErrorAction SilentlyContinue
-        if ($drv) {
-            Write-Host "  Removing stale SysmonDrv driver"
-            sc.exe stop $drvName 2>$null | Out-Null
-            sc.exe delete $drvName 2>$null | Out-Null
-        }
+}
+foreach ($drvName in @('SysmonDrv')) {
+    $drv = Get-Service -Name $drvName -ErrorAction SilentlyContinue
+    if ($drv) {
+        Write-Host "  Removing stale SysmonDrv driver"
+        sc.exe stop $drvName 2>$null | Out-Null
+        sc.exe delete $drvName 2>$null | Out-Null
     }
+}
+# Remove stale driver binary from System32\drivers (prevents exit code 13 on reinstall)
+$sysmonDrvPath = Join-Path $env:SystemRoot "System32\drivers\SysmonDrv.sys"
+if (Test-Path $sysmonDrvPath) {
+    Write-Host "  Removing stale driver file: $sysmonDrvPath"
+    Remove-Item $sysmonDrvPath -Force -ErrorAction SilentlyContinue
 }
 
 # Purge install directory

@@ -171,7 +171,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    port = 8090
+    port = 9999
     server = HTTPServer(("0.0.0.0", port), Handler)
     print(f"Dashboard test server running on http://localhost:{port}/dashboard/")
     print(f"Password: {PASSWORD}")

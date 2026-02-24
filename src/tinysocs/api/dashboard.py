@@ -5867,7 +5867,7 @@ async function loadMitreCoverage() {
       const count = ts.techniques_covered || 0;
       const bg = count === 0 ? 'var(--bg)' : count <= 2 ? '#2d5a3d' : count <= 5 ? '#27ae60' : '#1e8449';
       const border = count === 0 ? '1px solid var(--border)' : 'none';
-      html += '<div style="background:' + bg + ';border:' + border + ';border-radius:6px;padding:10px 12px;cursor:pointer" onclick="toggleMitreTacticDetail(this,\'' + escapeHtml(ts.tactic) + '\',' + JSON.stringify(ts.technique_ids||[]).replace(/"/g,'&quot;') + ')" title="' + escapeHtml(ts.label) + '">';
+      html += '<div style="background:' + bg + ';border:' + border + ';border-radius:6px;padding:10px 12px;cursor:pointer" onclick="toggleMitreTacticDetail(this,\\'' + escapeHtml(ts.tactic) + '\\',' + JSON.stringify(ts.technique_ids||[]).replace(/"/g,'&quot;') + ')" title="' + escapeHtml(ts.label) + '">';
       html += '<div style="font-size:12px;font-weight:600;color:' + (count > 0 ? '#fff' : 'var(--muted)') + '">' + escapeHtml(ts.label) + '</div>';
       html += '<div style="font-size:18px;font-weight:700;color:' + (count > 0 ? '#fff' : 'var(--muted)') + ';margin-top:4px">' + count + '</div>';
       html += '<div style="font-size:10px;color:' + (count > 0 ? 'rgba(255,255,255,0.7)' : 'var(--muted)') + '">techniques</div>';

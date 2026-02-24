@@ -5663,41 +5663,51 @@ window.addEventListener('scroll', alignAssistantPanel);
 // ---- M0: Dashboard Login Gate ----
 // Sync auth token from the self-contained login script (runs before this).
 let _authToken = window._tsAuthToken || null;
-setInterval(() => { if (_authToken) refreshAll(); }, 30000);
+let _dashboardUnlocked = false;
 
 // Full unlock: hides login gate, shows dashboard, loads all widgets.
-// Called by the self-contained login script via window.unlockDashboard().
 function unlockDashboard() {
+  if (_dashboardUnlocked) return;
+  _dashboardUnlocked = true;
   _authToken = window._tsAuthToken || _authToken;
   document.getElementById('loginGate').style.display = 'none';
   document.getElementById('dashboardContent').style.visibility = 'visible';
-  restoreCollapseState();
-  checkLlmStatus();
-  restoreChat();
-  loadComplianceFrameworks();
-  loadMitreCoverage();
-  loadEvents();
-  refreshAll();
+  try { restoreCollapseState(); } catch(e) {}
+  try { checkLlmStatus(); } catch(e) {}
+  try { restoreChat(); } catch(e) {}
+  try { loadComplianceFrameworks(); } catch(e) {}
+  try { loadMitreCoverage(); } catch(e) {}
+  try { loadEvents(); } catch(e) {}
+  try { refreshAll(); } catch(e) {}
 }
 
-// doLogin / checkExistingSession / showLoginGate are now handled by the
-// self-contained login script above the dashboardContent div. These thin
-// wrappers exist so any code that still calls them continues to work.
+// Failsafe timer: if auth token exists but dashboard never unlocked, force it.
+// Also handles periodic 30s data refresh once unlocked.
+setInterval(function() {
+  if (!_authToken) _authToken = window._tsAuthToken || null;
+  if (_authToken && !_dashboardUnlocked) {
+    try { unlockDashboard(); } catch(e) {}
+  }
+  if (_authToken && _dashboardUnlocked) {
+    try { refreshAll(); } catch(e) {}
+  }
+}, 3000);
+
+// Wrappers — delegate to the self-contained login script.
 async function doLogin() { return window._tsDoLogin(); }
 function showLoginGate() { return window._tsShowLoginGate(); }
 async function checkExistingSession() {
-  // The self-contained login script may have already authenticated.
-  // If so, just unlock the dashboard with full widget loading.
+  // If the self-contained login already authenticated, unlock immediately.
   if (window._tsLoginDone && window._tsAuthToken) {
     _authToken = window._tsAuthToken;
     unlockDashboard();
     return;
   }
-  // Otherwise check sessionStorage for a prior session
+  // Check sessionStorage for a prior session
   try { _authToken = sessionStorage.getItem('tinysocs_auth'); } catch(e) {}
   if (!_authToken) { showLoginGate(); return; }
   try {
-    const r = await fetch(BASE + '/api/auth/check', {
+    var r = await fetch(BASE + '/api/auth/check', {
       headers: {'Authorization': 'Bearer ' + _authToken},
     });
     if (r.ok) { unlockDashboard(); return; }
@@ -5709,6 +5719,7 @@ async function checkExistingSession() {
 
 function doLogout() {
   _authToken = null;
+  _dashboardUnlocked = false;
   window._tsAuthToken = null;
   try { sessionStorage.removeItem('tinysocs_auth'); } catch(e) {}
   showLoginGate();

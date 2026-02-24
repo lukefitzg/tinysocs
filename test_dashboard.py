@@ -12,13 +12,14 @@ import re
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
-# Extract the HTML from dashboard.py
+# Extract the HTML from dashboard.py by executing the assignment
 _src = Path(__file__).with_name("src") / "tinysocs" / "api" / "dashboard.py"
 _raw = _src.read_text(encoding="utf-8")
-_m = re.search(r'_DASHBOARD_HTML\s*=\s*"""\\\n(.*?)"""', _raw, re.DOTALL)
-if not _m:
-    raise RuntimeError("Could not extract _DASHBOARD_HTML from dashboard.py")
-DASHBOARD_HTML = _m.group(1)
+_start = _raw.index('_DASHBOARD_HTML = """\\')
+_end = _raw.index('"""', _start + len('_DASHBOARD_HTML = """\\') + 1) + 3
+_ns: dict = {}
+exec(_raw[_start:_end], _ns)
+DASHBOARD_HTML = _ns["_DASHBOARD_HTML"]
 
 # Fake session token
 FAKE_TOKEN = "test-session-token-12345"

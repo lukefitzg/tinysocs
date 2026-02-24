@@ -15668,11 +15668,19 @@ function Install-TinySocsSysmon {
     Write-TinySocsLog "Sysmon retry -i exit code: $sysmonInstallExitCode"
   }
 
-  # Verify service is running — check both possible names.
-  # Sysmon -i sometimes registers the service without starting it, so explicitly start if needed.
+  # Verify service is running — check both possible names.  ARM64 installs
+  # create "Sysmon64a" while x64 installs create "Sysmon64".  A stale
+  # registration for the wrong arch may still be present (sc.exe delete is
+  # async), so prefer the Running service.
   Start-Sleep -Seconds 3
-  $svc = Get-Service -Name "Sysmon64" -ErrorAction SilentlyContinue
-  if (-not $svc) { $svc = Get-Service -Name "Sysmon64a" -ErrorAction SilentlyContinue }
+  $svc = $null
+  $allSysmon = @()
+  foreach ($name in @('Sysmon64','Sysmon64a')) {
+    $s = Get-Service -Name $name -ErrorAction SilentlyContinue
+    if ($s) { $allSysmon += $s }
+  }
+  $svc = $allSysmon | Where-Object { $_.Status -eq 'Running' } | Select-Object -First 1
+  if (-not $svc) { $svc = $allSysmon | Select-Object -First 1 }
   if ($svc -and $svc.Status -ne "Running") {
     Write-TinySocsLog "Sysmon service ($($svc.Name)) not running after install (Status: $($svc.Status)) -- attempting recovery..."
 

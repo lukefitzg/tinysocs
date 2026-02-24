@@ -473,26 +473,23 @@ end;
 
 { Scripted constant: returns the dashboard URL with the correct scheme.
   TinyBox installs always get HTTPS (certs generated); Node-only gets HTTP.
-  Network-mode returns the LAN IP-based URL so it resolves from other machines. }
+  Always opens localhost — the local machine should never use the LAN/hostname
+  URL because GetLocalIPv4 can fall back to COMPUTERNAME which may not resolve. }
 function GetDashboardUrl(Param: String): String;
 begin
   if InstallTinyBox then
-  begin
-    if DashboardLanUrl <> '' then
-      Result := DashboardLanUrl
-    else
-      Result := 'https://localhost:8090/dashboard/';
-  end
+    Result := 'https://localhost:8090/dashboard/'
   else
     Result := 'http://localhost:8090/dashboard/';
 end;
 
 { Scripted constant: finish-page description showing the dashboard URL.
-  Network-mode includes the LAN URL + CA cert hint. }
+  Network-mode shows the LAN URL as info so the user can share it with
+  other machines, but the shellexec always opens localhost (see above). }
 function GetDashboardDescription(Param: String): String;
 begin
   if DashboardLanUrl <> '' then
-    Result := 'Open TinySocs Dashboard (' + DashboardLanUrl + ')'
+    Result := 'Open TinySocs Dashboard (LAN: ' + DashboardLanUrl + ')'
   else
     Result := 'Open TinySocs Dashboard';
 end;

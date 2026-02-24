@@ -503,12 +503,19 @@ if (Test-Path $envFile) {
     Write-Host "    assistant.env not found" -ForegroundColor Yellow
 }
 
-# Phase 14: Check Sysmon
+# Phase 14: Check Sysmon — prefer the Running service (ARM64 may have both
+# Sysmon64 [Stopped/stale] and Sysmon64a [Running]).
 Write-Host ""
 Write-Host "  Sysmon:"
-$sysmonSvc = Get-Service -Name 'Sysmon64' -ErrorAction SilentlyContinue
-if (-not $sysmonSvc) { $sysmonSvc = Get-Service -Name 'Sysmon64a' -ErrorAction SilentlyContinue }
-if (-not $sysmonSvc) { $sysmonSvc = Get-Service -Name 'Sysmon' -ErrorAction SilentlyContinue }
+$sysmonSvc = $null
+$sysmonAll = @()
+foreach ($name in @('Sysmon64','Sysmon64a','Sysmon')) {
+    $s = Get-Service -Name $name -ErrorAction SilentlyContinue
+    if ($s) { $sysmonAll += $s }
+}
+# Pick the Running service first; fall back to any found service
+$sysmonSvc = $sysmonAll | Where-Object { $_.Status -eq 'Running' } | Select-Object -First 1
+if (-not $sysmonSvc) { $sysmonSvc = $sysmonAll | Select-Object -First 1 }
 if ($sysmonSvc -and $sysmonSvc.Status -eq 'Running') {
     Write-Host "    $($sysmonSvc.Name) service: Running" -ForegroundColor Green
 } elseif ($sysmonSvc) {

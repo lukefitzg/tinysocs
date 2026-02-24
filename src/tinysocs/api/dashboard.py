@@ -3260,6 +3260,24 @@ select { cursor: pointer; }
 <script>
 (function() {
   var LOGIN_BASE = window.location.pathname.replace(/\\/$/, '');
+  window._tsLoginDone = false;
+
+  // Helper: try to call unlockDashboard() (defined in main script).
+  // If not available yet, poll every 200ms up to 5s.  This handles the
+  // race where login completes before the main <script> has executed.
+  function _tryUnlock(attempt) {
+    if (typeof unlockDashboard === 'function') {
+      unlockDashboard();
+      return;
+    }
+    // Fallback: show content immediately so the user isn't stuck on the gate
+    document.getElementById('loginGate').style.display = 'none';
+    document.getElementById('dashboardContent').style.visibility = 'visible';
+    // Keep retrying — the main script may still be loading
+    if ((attempt || 0) < 25) {
+      setTimeout(function() { _tryUnlock((attempt || 0) + 1); }, 200);
+    }
+  }
 
   window._tsDoLogin = async function() {
     var pw = document.getElementById('loginPassword').value;
@@ -3276,14 +3294,9 @@ select { cursor: pointer; }
       var d = await r.json();
       if (d.error) { errEl.textContent = d.error; return; }
       window._tsAuthToken = d.token;
+      window._tsLoginDone = true;
       try { sessionStorage.setItem('tinysocs_auth', d.token); } catch(e) {}
-      // If the main dashboard JS loaded, call its unlock; otherwise just hide the gate
-      if (typeof unlockDashboard === 'function') {
-        unlockDashboard();
-      } else {
-        document.getElementById('loginGate').style.display = 'none';
-        document.getElementById('dashboardContent').style.visibility = 'visible';
-      }
+      _tryUnlock(0);
     } catch(e) {
       errEl.textContent = 'Login error: ' + (e.message || String(e));
     }
@@ -3307,12 +3320,8 @@ select { cursor: pointer; }
       });
       if (r.ok) {
         window._tsAuthToken = token;
-        if (typeof unlockDashboard === 'function') {
-          unlockDashboard();
-        } else {
-          document.getElementById('loginGate').style.display = 'none';
-          document.getElementById('dashboardContent').style.visibility = 'visible';
-        }
+        window._tsLoginDone = true;
+        _tryUnlock(0);
         return;
       }
     } catch(e) {}
@@ -5677,8 +5686,14 @@ function unlockDashboard() {
 async function doLogin() { return window._tsDoLogin(); }
 function showLoginGate() { return window._tsShowLoginGate(); }
 async function checkExistingSession() {
-  // The self-contained script already ran session check on page load.
-  // If we got here, the main script loaded OK — re-check and unlock properly.
+  // The self-contained login script may have already authenticated.
+  // If so, just unlock the dashboard with full widget loading.
+  if (window._tsLoginDone && window._tsAuthToken) {
+    _authToken = window._tsAuthToken;
+    unlockDashboard();
+    return;
+  }
+  // Otherwise check sessionStorage for a prior session
   try { _authToken = sessionStorage.getItem('tinysocs_auth'); } catch(e) {}
   if (!_authToken) { showLoginGate(); return; }
   try {

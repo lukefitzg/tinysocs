@@ -3249,87 +3249,11 @@ select { cursor: pointer; }
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:40px 36px;max-width:360px;width:100%;text-align:center;box-shadow:0 4px 24px rgba(0,0,0,0.3)">
     <h1 style="font-size:22px;margin-bottom:6px">TinySocs Dashboard</h1>
     <div style="color:var(--muted);font-size:13px;margin-bottom:24px">Enter your admin password to continue</div>
-    <input type="password" id="loginPassword" placeholder="Password" style="width:100%;max-width:280px;margin:0 auto 12px auto;display:block" onkeydown="if(event.key==='Enter')window._tsDoLogin()">
-    <button onclick="window._tsDoLogin()" style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:10px 32px;font-size:14px;cursor:pointer;font-weight:500">Sign In</button>
+    <input type="password" id="loginPassword" placeholder="Password" style="width:100%;max-width:280px;margin:0 auto 12px auto;display:block" onkeydown="if(event.key==='Enter')doLogin()">
+    <button onclick="doLogin()" style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:10px 32px;font-size:14px;cursor:pointer;font-weight:500">Sign In</button>
     <div id="loginError" style="color:var(--red);font-size:13px;margin-top:8px;min-height:20px"></div>
   </div>
 </div>
-
-<!-- Self-contained login script — runs BEFORE the main dashboard JS so the
-     login gate always works, even if the large dashboard script has errors. -->
-<script>
-(function() {
-  var LOGIN_BASE = window.location.pathname.replace(/\\/$/, '');
-  window._tsLoginDone = false;
-
-  // Helper: try to call unlockDashboard() (defined in main script).
-  // If not available yet, poll every 200ms up to 5s.  This handles the
-  // race where login completes before the main <script> has executed.
-  function _tryUnlock(attempt) {
-    if (typeof unlockDashboard === 'function') {
-      unlockDashboard();
-      return;
-    }
-    // Fallback: show content immediately so the user isn't stuck on the gate
-    document.getElementById('loginGate').style.display = 'none';
-    document.getElementById('dashboardContent').style.visibility = 'visible';
-    // Keep retrying — the main script may still be loading
-    if ((attempt || 0) < 25) {
-      setTimeout(function() { _tryUnlock((attempt || 0) + 1); }, 200);
-    }
-  }
-
-  window._tsDoLogin = async function() {
-    var pw = document.getElementById('loginPassword').value;
-    var errEl = document.getElementById('loginError');
-    errEl.textContent = '';
-    if (!pw) { errEl.textContent = 'Please enter a password'; return; }
-    errEl.textContent = 'Signing in\\u2026';
-    try {
-      var r = await fetch(LOGIN_BASE + '/api/auth/login', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({password: pw}),
-      });
-      var d = await r.json();
-      if (d.error) { errEl.textContent = d.error; return; }
-      window._tsAuthToken = d.token;
-      window._tsLoginDone = true;
-      try { sessionStorage.setItem('tinysocs_auth', d.token); } catch(e) {}
-      _tryUnlock(0);
-    } catch(e) {
-      errEl.textContent = 'Login error: ' + (e.message || String(e));
-    }
-  };
-
-  window._tsShowLoginGate = function() {
-    document.getElementById('loginGate').style.display = 'flex';
-    document.getElementById('dashboardContent').style.visibility = 'hidden';
-    document.getElementById('loginPassword').value = '';
-    setTimeout(function() { document.getElementById('loginPassword').focus(); }, 100);
-  };
-
-  // Auto-check existing session on page load
-  (async function() {
-    var token = null;
-    try { token = sessionStorage.getItem('tinysocs_auth'); } catch(e) {}
-    if (!token) { window._tsShowLoginGate(); return; }
-    try {
-      var r = await fetch(LOGIN_BASE + '/api/auth/check', {
-        headers: {'Authorization': 'Bearer ' + token},
-      });
-      if (r.ok) {
-        window._tsAuthToken = token;
-        window._tsLoginDone = true;
-        _tryUnlock(0);
-        return;
-      }
-    } catch(e) {}
-    try { sessionStorage.removeItem('tinysocs_auth'); } catch(e) {}
-    window._tsShowLoginGate();
-  })();
-})();
-</script>
 
 <div id="dashboardContent" style="visibility:hidden">
 <div class="header">
@@ -5661,15 +5585,37 @@ window.addEventListener('resize', alignAssistantPanel);
 window.addEventListener('scroll', alignAssistantPanel);
 
 // ---- M0: Dashboard Login Gate ----
-// Sync auth token from the self-contained login script (runs before this).
-let _authToken = window._tsAuthToken || null;
+let _authToken = null;
 let _dashboardUnlocked = false;
 
-// Full unlock: hides login gate, shows dashboard, loads all widgets.
+async function doLogin() {
+  try {
+    const pw = document.getElementById('loginPassword').value;
+    const errEl = document.getElementById('loginError');
+    errEl.textContent = '';
+    if (!pw) { errEl.textContent = 'Please enter a password'; return; }
+    errEl.textContent = 'Signing in\u2026';
+    const url = BASE + '/api/auth/login';
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({password: pw}),
+    });
+    const d = await r.json();
+    if (d.error) { errEl.textContent = d.error; return; }
+    _authToken = d.token;
+    try { sessionStorage.setItem('tinysocs_auth', _authToken); } catch(e) {}
+    unlockDashboard();
+  } catch(e) {
+    var el = document.getElementById('loginError');
+    var msg = 'Login error: ' + (e.message || String(e));
+    if (el) el.textContent = msg;
+  }
+}
+
 function unlockDashboard() {
   if (_dashboardUnlocked) return;
   _dashboardUnlocked = true;
-  _authToken = window._tsAuthToken || _authToken;
   document.getElementById('loginGate').style.display = 'none';
   document.getElementById('dashboardContent').style.visibility = 'visible';
   try { restoreCollapseState(); } catch(e) {}
@@ -5681,33 +5627,14 @@ function unlockDashboard() {
   try { refreshAll(); } catch(e) {}
 }
 
-// Failsafe timer: if auth token exists but dashboard never unlocked, force it.
-// Also handles periodic 30s data refresh once unlocked.
-setInterval(function() {
-  if (!_authToken) _authToken = window._tsAuthToken || null;
-  if (_authToken && !_dashboardUnlocked) {
-    try { unlockDashboard(); } catch(e) {}
-  }
-  if (_authToken && _dashboardUnlocked) {
-    try { refreshAll(); } catch(e) {}
-  }
-}, 3000);
+// Periodic data refresh (every 30s once unlocked)
+setInterval(function() { if (_authToken && _dashboardUnlocked) { try { refreshAll(); } catch(e) {} } }, 30000);
 
-// Wrappers — delegate to the self-contained login script.
-async function doLogin() { return window._tsDoLogin(); }
-function showLoginGate() { return window._tsShowLoginGate(); }
 async function checkExistingSession() {
-  // If the self-contained login already authenticated, unlock immediately.
-  if (window._tsLoginDone && window._tsAuthToken) {
-    _authToken = window._tsAuthToken;
-    unlockDashboard();
-    return;
-  }
-  // Check sessionStorage for a prior session
   try { _authToken = sessionStorage.getItem('tinysocs_auth'); } catch(e) {}
   if (!_authToken) { showLoginGate(); return; }
   try {
-    var r = await fetch(BASE + '/api/auth/check', {
+    const r = await fetch(BASE + '/api/auth/check', {
       headers: {'Authorization': 'Bearer ' + _authToken},
     });
     if (r.ok) { unlockDashboard(); return; }
@@ -5717,10 +5644,16 @@ async function checkExistingSession() {
   showLoginGate();
 }
 
+function showLoginGate() {
+  document.getElementById('loginGate').style.display = 'flex';
+  document.getElementById('dashboardContent').style.visibility = 'hidden';
+  document.getElementById('loginPassword').value = '';
+  setTimeout(function() { document.getElementById('loginPassword').focus(); }, 100);
+}
+
 function doLogout() {
   _authToken = null;
   _dashboardUnlocked = false;
-  window._tsAuthToken = null;
   try { sessionStorage.removeItem('tinysocs_auth'); } catch(e) {}
   showLoginGate();
 }

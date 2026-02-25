@@ -65,9 +65,12 @@ function Install-AtomicRedTeam {
 
 function Test-SysmonInstalled {
     if ($null -ne $SysmonAvailable) { return $SysmonAvailable }
-    $svc = Get-Service -Name "Sysmon64" -ErrorAction SilentlyContinue
-    if (-not $svc) { $svc = Get-Service -Name "Sysmon" -ErrorAction SilentlyContinue }
-    return ($null -ne $svc -and $svc.Status -eq "Running")
+    # TinySocs installs Sysmon as Sysmon64a; also check standard names
+    foreach ($name in @("Sysmon64a", "Sysmon64", "Sysmon")) {
+        $svc = Get-Service -Name $name -ErrorAction SilentlyContinue
+        if ($svc -and $svc.Status -eq "Running") { return $true }
+    }
+    return $false
 }
 
 # ---------------------------------------------------------------------------

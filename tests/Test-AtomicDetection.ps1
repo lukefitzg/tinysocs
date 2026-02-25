@@ -88,10 +88,8 @@ function Install-AtomicRedTeam {
     }
 
     # Install module to user's PS module path
-    $modDest = Join-Path ($env:PSModulePath -split ';' | Where-Object { $_ -like "*$env:USERPROFILE*" } | Select-Object -First 1) "Invoke-AtomicRedTeam"
-    if (-not $modDest -or $modDest -eq "Invoke-AtomicRedTeam") {
-        $modDest = Join-Path "$env:USERPROFILE\Documents\WindowsPowerShell\Modules" "Invoke-AtomicRedTeam"
-    }
+    $userModDir = Join-Path $env:USERPROFILE "Documents\WindowsPowerShell\Modules"
+    $modDest = Join-Path $userModDir "Invoke-AtomicRedTeam"
     Write-Host "[*] Installing module to $modDest"
     if (-not (Test-Path $modDest)) { New-Item -ItemType Directory -Path $modDest -Force | Out-Null }
     Copy-Item -Path (Join-Path $artModSrc "*") -Destination $modDest -Recurse -Force

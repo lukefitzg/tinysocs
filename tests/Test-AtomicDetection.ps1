@@ -88,22 +88,30 @@ function Install-AtomicRedTeam {
     }
 
     # Install module to user's PS module path
+    # The actual module is in a subdirectory of the cloned repo
     $userModDir = Join-Path $env:USERPROFILE "Documents\WindowsPowerShell\Modules"
     $modDest = Join-Path $userModDir "Invoke-AtomicRedTeam"
-    Write-Host "[*] Installing module to $modDest"
+    $modSrcDir = Join-Path $artModSrc "Invoke-AtomicRedTeam"
+    if (-not (Test-Path $modSrcDir)) {
+        # Fallback: module files might be at repo root
+        $modSrcDir = $artModSrc
+    }
+    Write-Host "[*] Installing module from $modSrcDir to $modDest"
     if (-not (Test-Path $modDest)) { New-Item -ItemType Directory -Path $modDest -Force | Out-Null }
-    Copy-Item -Path (Join-Path $artModSrc "*") -Destination $modDest -Recurse -Force
+    Copy-Item -Path (Join-Path $modSrcDir "*") -Destination $modDest -Recurse -Force
 
-    # Copy atomics to expected location
-    $atomicsDest = Join-Path $modDest "atomics"
+    # Copy atomics to expected location (default: C:\AtomicRedTeam\atomics)
+    $atomicsDefault = "C:\AtomicRedTeam\atomics"
     $atomicsSrcDir = Join-Path $atomicsSrc "atomics"
     if (Test-Path $atomicsSrcDir) {
-        Write-Host "[*] Copying atomics library..."
-        if (-not (Test-Path $atomicsDest)) { New-Item -ItemType Directory -Path $atomicsDest -Force | Out-Null }
-        Copy-Item -Path (Join-Path $atomicsSrcDir "*") -Destination $atomicsDest -Recurse -Force
+        Write-Host "[*] Copying atomics library to $atomicsDefault..."
+        if (-not (Test-Path $atomicsDefault)) { New-Item -ItemType Directory -Path $atomicsDefault -Force | Out-Null }
+        Copy-Item -Path (Join-Path $atomicsSrcDir "*") -Destination $atomicsDefault -Recurse -Force
     }
 
-    Write-Host "[*] Invoke-AtomicRedTeam installed successfully"
+    # Verify module loads
+    Import-Module Invoke-AtomicRedTeam -Force -ErrorAction Stop
+    Write-Host "[*] Invoke-AtomicRedTeam installed and loaded successfully"
 }
 
 function Test-SysmonInstalled {

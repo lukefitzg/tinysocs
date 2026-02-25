@@ -59,7 +59,33 @@ function Install-AtomicRedTeam {
         return
     }
     Write-Host "[*] Installing Invoke-AtomicRedTeam..."
-    IEX (Invoke-WebRequest -Uri "https://raw.githubusercontent.com/redcanaryco/invoke-atomicredteam/master/install-atomicredteam.ps1" -UseBasicParsing).Content
+    $artUrl = "https://raw.githubusercontent.com/redcanaryco/invoke-atomicredteam/master/install-atomicredteam.ps1"
+    $artScript = $null
+
+    # Try PS Invoke-WebRequest first
+    try {
+        $artScript = (Invoke-WebRequest -Uri $artUrl -UseBasicParsing -ErrorAction Stop).Content
+    } catch {
+        Write-Host "[*] PS web request failed, trying Python download..."
+        # Fallback: use Python (handles TLS better than .NET 4.x)
+        $pyCmd = $null
+        $venvPy = Join-Path $repoRoot ".venv-win\Scripts\python.exe"
+        if (Test-Path $venvPy) { $pyCmd = $venvPy }
+        elseif (Get-Command python -ErrorAction SilentlyContinue) { $pyCmd = "python" }
+
+        if ($pyCmd) {
+            $artScript = & $pyCmd -c "import urllib.request; print(urllib.request.urlopen('$artUrl').read().decode())" 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                Write-Error "Python download also failed: $artScript"
+                return
+            }
+        } else {
+            Write-Error "Cannot download ART installer -- no working download method"
+            return
+        }
+    }
+
+    IEX $artScript
     Install-AtomicRedTeam -getAtomics -Force
 }
 

@@ -222,7 +222,13 @@ namespace TinySocs.Agent.Detection
                         WindowStart = windowStart.ToString("o")
                     },
                     Source = source,
-                    MatchedEvents = window.Count
+                    MatchedEvents = window.Count,
+                    Mitre = rule.Mitre != null ? new MitreAlertInfo
+                    {
+                        TechniqueId = rule.Mitre.TechniqueId,
+                        TechniqueName = rule.Mitre.TechniqueName,
+                        Tactic = rule.Mitre.Tactic
+                    } : null
                 };
 
                 // Clear the window so we don't fire duplicate alerts

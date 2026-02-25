@@ -22,6 +22,7 @@ namespace TinySocs.Agent.Detection
 
             _deserializer = new DeserializerBuilder()
                 .WithNamingConvention(UnderscoredNamingConvention.Instance)
+                .IgnoreUnmatchedProperties()
                 .Build();
         }
 

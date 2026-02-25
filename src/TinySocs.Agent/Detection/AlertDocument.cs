@@ -12,6 +12,14 @@ namespace TinySocs.Agent.Detection
         public AlertInfo Alert { get; set; } = new();
         public Dictionary<string, object?> Source { get; set; } = new();
         public int MatchedEvents { get; set; }
+        public MitreAlertInfo? Mitre { get; set; }
+    }
+
+    public sealed class MitreAlertInfo
+    {
+        public string TechniqueId { get; set; } = string.Empty;
+        public string TechniqueName { get; set; } = string.Empty;
+        public string Tactic { get; set; } = string.Empty;
     }
 
     public sealed class AlertInfo

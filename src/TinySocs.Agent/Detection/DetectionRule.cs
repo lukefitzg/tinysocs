@@ -15,6 +15,17 @@ namespace TinySocs.Agent.Detection
         public string Type { get; set; } = string.Empty;  // threshold_by_key, match_single, cardinality
         public RuleCondition Condition { get; set; } = new();
         public List<string> Actions { get; set; } = new();
+        public MitreInfo? Mitre { get; set; }
+    }
+
+    /// <summary>
+    /// MITRE ATT&CK mapping for a detection rule.
+    /// </summary>
+    public sealed class MitreInfo
+    {
+        public string TechniqueId { get; set; } = string.Empty;
+        public string TechniqueName { get; set; } = string.Empty;
+        public string Tactic { get; set; } = string.Empty;
     }
 
     public sealed class RuleCondition

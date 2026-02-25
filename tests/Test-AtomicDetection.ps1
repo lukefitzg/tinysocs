@@ -145,6 +145,9 @@ function Query-TinySocsAlerts {
 # ---------------------------------------------------------------------------
 # Main execution
 # ---------------------------------------------------------------------------
+# Ensure TLS 1.2 for all outbound HTTPS (PS 5.1 defaults to old TLS)
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
 Write-Host ""
 Write-Host "=============================================="
 Write-Host "  TinySocs Atomic Red Team Detection Validator"

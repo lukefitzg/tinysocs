@@ -87,9 +87,27 @@ function Install-AtomicRedTeam {
         }
     }
 
-    # Install module to user's PS module path
-    # The actual module is in a subdirectory of the cloned repo
+    # Install powershell-yaml dependency (ART requires it)
     $userModDir = Join-Path $env:USERPROFILE "Documents\WindowsPowerShell\Modules"
+    $yamlModDest = Join-Path $userModDir "powershell-yaml"
+    if (-not (Test-Path (Join-Path $yamlModDest "powershell-yaml.psd1"))) {
+        $yamlSrc = Join-Path $artBase "powershell-yaml"
+        if (-not (Test-Path $yamlSrc)) {
+            Write-Host "[*] Cloning powershell-yaml..."
+            $null = (git clone --depth 1 "https://github.com/cloudbase/powershell-yaml.git" $yamlSrc 2>&1)
+        }
+        if (Test-Path $yamlSrc) {
+            Write-Host "[*] Installing powershell-yaml module..."
+            if (-not (Test-Path $yamlModDest)) { New-Item -ItemType Directory -Path $yamlModDest -Force | Out-Null }
+            Copy-Item -Path (Join-Path $yamlSrc "*") -Destination $yamlModDest -Recurse -Force
+            $yamlPsd1 = Join-Path $yamlModDest "powershell-yaml.psd1"
+            if (Test-Path $yamlPsd1) { Import-Module $yamlPsd1 -Force }
+        }
+    } else {
+        Import-Module (Join-Path $yamlModDest "powershell-yaml.psd1") -Force -ErrorAction SilentlyContinue
+    }
+
+    # Install ART module to user's PS module path
     $modDest = Join-Path $userModDir "Invoke-AtomicRedTeam"
     $modSrcDir = Join-Path $artModSrc "Invoke-AtomicRedTeam"
     if (-not (Test-Path $modSrcDir)) {

@@ -5848,16 +5848,19 @@ async function loadComplianceReport() {
 async function loadMitreCoverage() {
   try {
     const r = await fetch(BASE + '/api/mitre/coverage', {headers:{'Authorization':'Bearer '+_authToken}});
+    if (!r.ok) { document.getElementById('mitre-heatmap').innerHTML = '<div class="empty">Failed to load MITRE coverage (HTTP ' + r.status + ')</div>'; return; }
     const d = await r.json();
-    if (!d.ok) return;
+    if (d.ok === false) { document.getElementById('mitre-heatmap').innerHTML = '<div class="empty">MITRE coverage error: ' + escapeHtml(d.error || 'unknown') + '</div>'; return; }
     const sumEl = document.getElementById('mitre-summary');
     sumEl.style.display = 'flex';
     document.getElementById('mitre-techniques').textContent = d.total_techniques || 0;
     document.getElementById('mitre-tactics').textContent = (d.total_tactics || 0) + '/14';
     // Count total annotated rules
     let ruleCount = 0;
-    for (const tid of Object.keys(d.techniques || {})) {
-      ruleCount += (d.techniques[tid].rules || []).length;
+    var techs = d.techniques || {};
+    if (Array.isArray(techs)) techs = {};
+    for (const tid of Object.keys(techs)) {
+      ruleCount += (techs[tid].rules || []).length;
     }
     document.getElementById('mitre-rules').textContent = ruleCount;
     // Build tactic heatmap
@@ -5877,6 +5880,7 @@ async function loadMitreCoverage() {
     heatmap.innerHTML = html;
   } catch(e) {
     console.error('MITRE coverage load error:', e);
+    document.getElementById('mitre-heatmap').innerHTML = '<div class="empty">Failed to load MITRE coverage</div>';
   }
 }
 

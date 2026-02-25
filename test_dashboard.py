@@ -26,6 +26,55 @@ FAKE_TOKEN = "test-session-token-12345"
 PASSWORD = "test"
 
 
+def _mitre_coverage_data():
+    """Return MITRE coverage from real rules if importable, else a realistic mock."""
+    import sys
+    src_dir = str(Path(__file__).with_name("src"))
+    if src_dir not in sys.path:
+        sys.path.insert(0, src_dir)
+    try:
+        from tinysocs.reporting.mitre_coverage import (
+            load_all_rules, extract_mitre_annotations, calculate_coverage,
+        )
+        rules = load_all_rules()
+        annotations = extract_mitre_annotations(rules)
+        coverage = calculate_coverage(annotations)
+        return {"ok": True, **coverage}
+    except Exception:
+        # Fallback: realistic mock so the widget renders
+        return {
+            "ok": True,
+            "total_techniques": 17,
+            "total_tactics": 8,
+            "techniques": {
+                "T1110.001": {"technique_id": "T1110.001", "technique_name": "Brute Force: Password Guessing", "tactic": "credential-access", "rules": ["TS-001", "TS-002"]},
+                "T1003.001": {"technique_id": "T1003.001", "technique_name": "LSASS Memory", "tactic": "credential-access", "rules": ["TS-060"]},
+                "T1059.001": {"technique_id": "T1059.001", "technique_name": "PowerShell", "tactic": "execution", "rules": ["TS-030"]},
+                "T1053.005": {"technique_id": "T1053.005", "technique_name": "Scheduled Task", "tactic": "persistence", "rules": ["TS-020"]},
+                "T1547.001": {"technique_id": "T1547.001", "technique_name": "Registry Run Keys", "tactic": "persistence", "rules": ["TS-091", "TS-092"]},
+                "T1070.001": {"technique_id": "T1070.001", "technique_name": "Clear Event Logs", "tactic": "defense-evasion", "rules": ["TS-080"]},
+                "T1562.001": {"technique_id": "T1562.001", "technique_name": "Disable Defender", "tactic": "defense-evasion", "rules": ["TS-081"]},
+                "T1021.002": {"technique_id": "T1021.002", "technique_name": "SMB/Admin Shares", "tactic": "lateral-movement", "rules": ["TS-070"]},
+            },
+            "tactic_summary": [
+                {"tactic": "reconnaissance", "label": "Reconnaissance", "techniques_covered": 0, "technique_ids": []},
+                {"tactic": "resource-development", "label": "Resource Development", "techniques_covered": 0, "technique_ids": []},
+                {"tactic": "initial-access", "label": "Initial Access", "techniques_covered": 0, "technique_ids": []},
+                {"tactic": "execution", "label": "Execution", "techniques_covered": 1, "technique_ids": ["T1059.001"]},
+                {"tactic": "persistence", "label": "Persistence", "techniques_covered": 2, "technique_ids": ["T1053.005", "T1547.001"]},
+                {"tactic": "privilege-escalation", "label": "Privilege Escalation", "techniques_covered": 0, "technique_ids": []},
+                {"tactic": "defense-evasion", "label": "Defense Evasion", "techniques_covered": 2, "technique_ids": ["T1070.001", "T1562.001"]},
+                {"tactic": "credential-access", "label": "Credential Access", "techniques_covered": 2, "technique_ids": ["T1110.001", "T1003.001"]},
+                {"tactic": "discovery", "label": "Discovery", "techniques_covered": 0, "technique_ids": []},
+                {"tactic": "lateral-movement", "label": "Lateral Movement", "techniques_covered": 1, "technique_ids": ["T1021.002"]},
+                {"tactic": "collection", "label": "Collection", "techniques_covered": 0, "technique_ids": []},
+                {"tactic": "command-and-control", "label": "Command and Control", "techniques_covered": 0, "technique_ids": []},
+                {"tactic": "exfiltration", "label": "Exfiltration", "techniques_covered": 0, "technique_ids": []},
+                {"tactic": "impact", "label": "Impact", "techniques_covered": 0, "technique_ids": []},
+            ],
+        }
+
+
 class Handler(BaseHTTPRequestHandler):
     def _json(self, code, obj):
         body = json.dumps(obj).encode()
@@ -94,9 +143,9 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"frameworks": []})
             return
 
-        # MITRE coverage
+        # MITRE coverage — use real rule data if available, else realistic mock
         if path == "/dashboard/api/mitre/coverage":
-            self._json(200, {"techniques": [], "coverage_pct": 0})
+            self._json(200, _mitre_coverage_data())
             return
 
         # LLM status

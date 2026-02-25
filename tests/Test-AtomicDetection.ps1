@@ -70,7 +70,7 @@ function Install-AtomicRedTeam {
     # Clone invoke-atomicredteam module
     if (-not (Test-Path $artModSrc)) {
         Write-Host "[*] Cloning invoke-atomicredteam..."
-        $null = (git clone --depth 1 "https://github.com/redcanaryco/invoke-atomicredteam.git" $artModSrc 2>&1)
+        cmd /c "git clone --depth 1 `"https://github.com/redcanaryco/invoke-atomicredteam.git`" `"$artModSrc`" 2>nul"
         if ($LASTEXITCODE -ne 0) {
             Write-Error "Failed to clone invoke-atomicredteam"
             return
@@ -80,7 +80,7 @@ function Install-AtomicRedTeam {
     # Clone atomics library
     if (-not (Test-Path $atomicsSrc)) {
         Write-Host "[*] Cloning atomic-red-team (atomics)..."
-        $null = (git clone --depth 1 "https://github.com/redcanaryco/atomic-red-team.git" $atomicsSrc 2>&1)
+        cmd /c "git clone --depth 1 `"https://github.com/redcanaryco/atomic-red-team.git`" `"$atomicsSrc`" 2>nul"
         if ($LASTEXITCODE -ne 0) {
             Write-Error "Failed to clone atomic-red-team"
             return
@@ -94,7 +94,7 @@ function Install-AtomicRedTeam {
         $yamlSrc = Join-Path $artBase "powershell-yaml"
         if (-not (Test-Path $yamlSrc)) {
             Write-Host "[*] Cloning powershell-yaml..."
-            $null = (git clone --depth 1 "https://github.com/cloudbase/powershell-yaml.git" $yamlSrc 2>&1)
+            cmd /c "git clone --depth 1 `"https://github.com/cloudbase/powershell-yaml.git`" `"$yamlSrc`" 2>nul"
         }
         if (Test-Path $yamlSrc) {
             Write-Host "[*] Installing powershell-yaml module..."

@@ -109,9 +109,15 @@ function Install-AtomicRedTeam {
         Copy-Item -Path (Join-Path $atomicsSrcDir "*") -Destination $atomicsDefault -Recurse -Force
     }
 
-    # Verify module loads
-    Import-Module Invoke-AtomicRedTeam -Force -ErrorAction Stop
-    Write-Host "[*] Invoke-AtomicRedTeam installed and loaded successfully"
+    # Verify module loads (use full path in case PSModulePath doesn't include user modules)
+    $psd1 = Join-Path $modDest "Invoke-AtomicRedTeam.psd1"
+    if (Test-Path $psd1) {
+        Import-Module $psd1 -Force -ErrorAction Stop
+        Write-Host "[*] Invoke-AtomicRedTeam installed and loaded successfully"
+    } else {
+        Write-Error "Module manifest not found at $psd1 -- install may have failed"
+        return
+    }
 }
 
 function Test-SysmonInstalled {
@@ -279,7 +285,11 @@ Write-Host "[*] Sysmon available: $hasSysmon"
 # Install ART
 if (-not $DryRun) {
     Install-AtomicRedTeam
-    Import-Module Invoke-AtomicRedTeam -ErrorAction SilentlyContinue
+    # Ensure module is loaded (use explicit path as fallback)
+    if (-not (Get-Command Invoke-AtomicTest -ErrorAction SilentlyContinue)) {
+        $artPsd1 = Join-Path $env:USERPROFILE "Documents\WindowsPowerShell\Modules\Invoke-AtomicRedTeam\Invoke-AtomicRedTeam.psd1"
+        if (Test-Path $artPsd1) { Import-Module $artPsd1 -Force }
+    }
 }
 
 # Run tests

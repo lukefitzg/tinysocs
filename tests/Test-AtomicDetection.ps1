@@ -70,7 +70,7 @@ function Install-AtomicRedTeam {
     # Clone invoke-atomicredteam module
     if (-not (Test-Path $artModSrc)) {
         Write-Host "[*] Cloning invoke-atomicredteam..."
-        git clone --depth 1 "https://github.com/redcanaryco/invoke-atomicredteam.git" $artModSrc 2>&1
+        git clone --depth 1 "https://github.com/redcanaryco/invoke-atomicredteam.git" $artModSrc 2>$null
         if ($LASTEXITCODE -ne 0) {
             Write-Error "Failed to clone invoke-atomicredteam"
             return
@@ -80,7 +80,7 @@ function Install-AtomicRedTeam {
     # Clone atomics library
     if (-not (Test-Path $atomicsSrc)) {
         Write-Host "[*] Cloning atomic-red-team (atomics)..."
-        git clone --depth 1 "https://github.com/redcanaryco/atomic-red-team.git" $atomicsSrc 2>&1
+        git clone --depth 1 "https://github.com/redcanaryco/atomic-red-team.git" $atomicsSrc 2>$null
         if ($LASTEXITCODE -ne 0) {
             Write-Error "Failed to clone atomic-red-team"
             return

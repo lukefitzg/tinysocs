@@ -154,17 +154,70 @@ if (-not (Test-Path $ConfigPath)) {
     exit 1
 }
 
-# Parse YAML (requires powershell-yaml or manual parse)
+# Parse YAML — try powershell-yaml first, fall back to Python's yaml module
+$yamlLoaded = $false
 try {
     Import-Module powershell-yaml -ErrorAction Stop
+    $yamlLoaded = $true
+    Write-Host "[*] Using powershell-yaml module"
 } catch {
-    Write-Host "[*] Installing powershell-yaml module..."
-    Install-Module -Name powershell-yaml -Force -Scope CurrentUser -AllowClobber
-    Import-Module powershell-yaml
+    Write-Host "[*] powershell-yaml not available, trying to install..."
+    try {
+        Install-Module -Name powershell-yaml -Force -Scope CurrentUser -AllowClobber -ErrorAction Stop
+        Import-Module powershell-yaml -ErrorAction Stop
+        $yamlLoaded = $true
+        Write-Host "[*] Installed and loaded powershell-yaml"
+    } catch {
+        Write-Host "[*] powershell-yaml install failed — falling back to Python yaml parser"
+    }
 }
 
-$config = Get-Content $ConfigPath -Raw | ConvertFrom-Yaml
-$tests = $config.tests
+if ($yamlLoaded) {
+    $config = Get-Content $ConfigPath -Raw | ConvertFrom-Yaml
+    $tests = $config.tests
+} else {
+    # Fallback: use Python (from .venv-win or system) to convert YAML → JSON
+    $pythonCmd = $null
+    $venvPython = Join-Path $repoRoot ".venv-win\Scripts\python.exe"
+    if (Test-Path $venvPython) {
+        $pythonCmd = $venvPython
+    } elseif (Get-Command python -ErrorAction SilentlyContinue) {
+        $pythonCmd = "python"
+    } elseif (Get-Command python3 -ErrorAction SilentlyContinue) {
+        $pythonCmd = "python3"
+    }
+
+    if (-not $pythonCmd) {
+        Write-Error "Neither powershell-yaml nor Python is available. Cannot parse YAML config."
+        exit 1
+    }
+
+    Write-Host "[*] Using Python ($pythonCmd) to parse YAML config"
+    $pyScript = @"
+import sys, json, yaml
+with open(sys.argv[1], encoding='utf-8') as f:
+    data = yaml.safe_load(f)
+print(json.dumps(data))
+"@
+    $pyScriptFile = Join-Path $env:TEMP "tinysocs_yaml2json.py"
+    Set-Content -Path $pyScriptFile -Value $pyScript -Encoding UTF8
+
+    try {
+        $jsonOut = & $pythonCmd $pyScriptFile $ConfigPath 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "Python YAML parse failed: $jsonOut"
+            exit 1
+        }
+        $config = $jsonOut | ConvertFrom-Json
+        $tests = $config.tests
+    } catch {
+        Write-Error "Failed to parse YAML via Python: $($_.Exception.Message)"
+        exit 1
+    } finally {
+        Remove-Item $pyScriptFile -ErrorAction SilentlyContinue
+    }
+}
+
 Write-Host "[*] Loaded $($tests.Count) test mappings from $ConfigPath"
 
 # Check Sysmon

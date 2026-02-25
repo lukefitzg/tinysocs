@@ -64,3 +64,39 @@ try:
         break  # just check first index
 except Exception as e:
     print(f"  Error: {e}")
+
+# 4. Aggregate by channel and event code
+print("\n=== EVENTS BY CHANNEL ===")
+try:
+    result = query("/tinysocs-winlog-*/_search", {
+        "size": 0,
+        "aggs": {"channels": {"terms": {"field": "winlog.channel", "size": 20}}}
+    })
+    for b in result.get("aggregations", {}).get("channels", {}).get("buckets", []):
+        print(f"  {b['key']:55s}  {b['doc_count']:>6} events")
+except Exception as e:
+    print(f"  Error: {e}")
+
+print("\n=== TOP 20 EVENT CODES (event.code) ===")
+try:
+    result = query("/tinysocs-winlog-*/_search", {
+        "size": 0,
+        "aggs": {"codes": {"terms": {"field": "event.code", "size": 20}}}
+    })
+    for b in result.get("aggregations", {}).get("codes", {}).get("buckets", []):
+        print(f"  event.code={b['key']:>6}  {b['doc_count']:>6} events")
+except Exception as e:
+    print(f"  Error: {e}")
+
+# 5. Specifically check for our target event codes
+print("\n=== TARGET EVENT CODES (4698, 1102, 13) via event.code ===")
+for eid in [4698, 1102, 13, 1, 4625, 4624]:
+    try:
+        result = query("/tinysocs-winlog-*/_search", {
+            "size": 0,
+            "query": {"term": {"event.code": eid}}
+        })
+        total = result.get("hits", {}).get("total", {}).get("value", 0)
+        print(f"  event.code={eid:>6}  {total:>6} events")
+    except Exception as e:
+        print(f"  event.code={eid:>6}  Error: {e}")

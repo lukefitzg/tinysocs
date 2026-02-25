@@ -1,63 +1,66 @@
 #!/usr/bin/env python3
-"""Quick diagnostic: check if specific event IDs exist in OpenSearch."""
-import json, ssl, urllib.request
+"""Quick diagnostic: check actual event structure in OpenSearch."""
+import json, ssl, urllib.request, base64
 
 ctx = ssl._create_unverified_context()
-url = "https://localhost:9201/tinysocs-winlog-*/_search"
-headers = {
-    "Content-Type": "application/json",
-    "Authorization": "Basic " + __import__("base64").b64encode(b"admin:secret").decode(),
-}
+base_url = "https://localhost:9201"
+auth = "Basic " + base64.b64encode(b"admin:secret").decode()
+headers = {"Content-Type": "application/json", "Authorization": auth}
 
-# Search for the 3 event IDs that should have fired during ART tests
-query = {
-    "query": {
-        "bool": {
-            "should": [
-                {"match": {"winlog.event_id": 4698}},
-                {"match": {"winlog.event_id": 1102}},
-                {"match": {"winlog.event_id": 13}},
-            ],
-            "minimum_should_match": 1,
-        }
-    },
-    "size": 5,
-    "sort": [{"@timestamp": {"order": "desc"}}],
-}
 
-req = urllib.request.Request(url, data=json.dumps(query).encode(), headers=headers)
-try:
+def query(path, body=None):
+    url = base_url + path
+    data = json.dumps(body).encode() if body else None
+    req = urllib.request.Request(url, data=data, headers=headers)
     resp = urllib.request.urlopen(req, context=ctx, timeout=10)
-    data = json.loads(resp.read())
-    hits = data.get("hits", {}).get("hits", [])
-    total = data.get("hits", {}).get("total", {})
-    print(f"Total matching events: {total}")
-    print(f"Returned: {len(hits)} events\n")
-    for h in hits:
-        src = h.get("_source", {})
-        eid = src.get("winlog", {}).get("event_id", "?")
-        chan = src.get("winlog", {}).get("channel", "?")
-        ts = src.get("@timestamp", "?")
-        host = src.get("host", {}).get("name", "?")
-        print(f"  EventID={eid}  Channel={chan}  Host={host}  Time={ts}")
-    if not hits:
-        print("No events found for IDs 4698, 1102, or 13.")
-        print("\nChecking what event IDs DO exist...")
-        # Get top event IDs via aggregation
-        agg_query = {
-            "size": 0,
-            "aggs": {
-                "top_event_ids": {
-                    "terms": {"field": "winlog.event_id", "size": 20}
-                }
-            },
-        }
-        req2 = urllib.request.Request(url, data=json.dumps(agg_query).encode(), headers=headers)
-        resp2 = urllib.request.urlopen(req2, context=ctx, timeout=10)
-        data2 = json.loads(resp2.read())
-        buckets = data2.get("aggregations", {}).get("top_event_ids", {}).get("buckets", [])
-        print(f"\nTop {len(buckets)} event IDs in OpenSearch:")
-        for b in buckets:
-            print(f"  EventID {b['key']:>6} : {b['doc_count']} events")
+    return json.loads(resp.read())
+
+
+# 1. What indices exist?
+print("=== INDICES ===")
+try:
+    indices = query("/_cat/indices/tinysocs-*?format=json&h=index,docs.count,store.size")
+    for idx in sorted(indices, key=lambda x: x.get("index", "")):
+        print(f"  {idx.get('index', '?'):50s}  docs={idx.get('docs.count', '?'):>8s}  size={idx.get('store.size', '?')}")
 except Exception as e:
-    print(f"Error: {e}")
+    print(f"  Error: {e}")
+
+# 2. Get a sample event to see the actual field structure
+print("\n=== SAMPLE EVENT (first 1 from tinysocs-winlog-*) ===")
+try:
+    result = query("/tinysocs-winlog-*/_search", {"size": 1, "sort": [{"@timestamp": {"order": "desc"}}]})
+    hits = result.get("hits", {}).get("hits", [])
+    total = result.get("hits", {}).get("total", {})
+    print(f"Total docs in tinysocs-winlog-*: {total}")
+    if hits:
+        src = hits[0].get("_source", {})
+        print(f"\nFull event source (keys): {sorted(src.keys())}")
+        print(f"\nFull event JSON:")
+        print(json.dumps(src, indent=2, default=str)[:3000])
+    else:
+        print("No events found!")
+except Exception as e:
+    print(f"  Error: {e}")
+
+# 3. Check field mapping for event_id
+print("\n=== FIELD MAPPING for 'event_id' and 'event.code' ===")
+try:
+    mapping = query("/tinysocs-winlog-*/_mapping")
+    for idx_name, idx_data in mapping.items():
+        props = idx_data.get("mappings", {}).get("properties", {})
+        # Check for winlog.event_id
+        winlog = props.get("winlog", {}).get("properties", {})
+        if "event_id" in winlog:
+            print(f"  {idx_name}: winlog.event_id = {winlog['event_id']}")
+        # Check for event.code
+        event = props.get("event", {}).get("properties", {})
+        if "code" in event:
+            print(f"  {idx_name}: event.code = {event['code']}")
+        # Check for EventId at root
+        if "EventId" in props:
+            print(f"  {idx_name}: EventId = {props['EventId']}")
+        if "event_id" in props:
+            print(f"  {idx_name}: event_id = {props['event_id']}")
+        break  # just check first index
+except Exception as e:
+    print(f"  Error: {e}")

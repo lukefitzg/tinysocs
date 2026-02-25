@@ -193,12 +193,14 @@ if ($yamlLoaded) {
     }
 
     Write-Host "[*] Using Python ($pythonCmd) to parse YAML config"
-    $pyScript = "import sys, json, yaml`nwith open(sys.argv[1], encoding='utf-8') as f:`n    data = yaml.safe_load(f)`nprint(json.dumps(data))"
-    $pyScriptFile = Join-Path $env:TEMP "tinysocs_yaml2json.py"
-    Set-Content -Path $pyScriptFile -Value $pyScript -Encoding UTF8
+    $helperScript = Join-Path $PSScriptRoot "yaml2json.py"
+    if (-not (Test-Path $helperScript)) {
+        Write-Error "Helper script not found: $helperScript"
+        exit 1
+    }
 
     try {
-        $jsonOut = & $pythonCmd $pyScriptFile $ConfigPath 2>&1
+        $jsonOut = & $pythonCmd $helperScript $ConfigPath 2>&1
         if ($LASTEXITCODE -ne 0) {
             Write-Error "Python YAML parse failed: $jsonOut"
             exit 1
@@ -208,8 +210,6 @@ if ($yamlLoaded) {
     } catch {
         Write-Error "Failed to parse YAML via Python: $($_.Exception.Message)"
         exit 1
-    } finally {
-        Remove-Item $pyScriptFile -ErrorAction SilentlyContinue
     }
 }
 

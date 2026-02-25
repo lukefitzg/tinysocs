@@ -133,6 +133,56 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"agents": [], "total": 0})
             return
 
+        # Fleet health
+        if path == "/dashboard/api/fleet/health":
+            self._json(200, {"hosts": [
+                {
+                    "hostname": "TINYBOX-01",
+                    "event_count": 1284,
+                    "last_seen": "2026-02-25T09:00:00Z",
+                    "first_seen": "2026-02-25T01:00:00Z",
+                    "alert_count": 3,
+                    "alert_severities": {"high": 1, "medium": 2},
+                    "active_detections": ["auth_failed_burst", "fim_critical_file_modified"],
+                    "top_channels": [
+                        {"channel": "Security", "count": 820},
+                        {"channel": "Microsoft-Windows-Sysmon/Operational", "count": 380},
+                        {"channel": "TinySocs-FIM", "count": 84},
+                    ],
+                    "top_event_ids": [{"event_id": "4625", "count": 312}, {"event_id": "1", "count": 245}],
+                    "agent_version": "0.8.0",
+                    "uptime": "3d 14h",
+                    "events_shipped": 12840,
+                    "queue_files": 0,
+                    "last_ship_time": "2026-02-25T08:59:50Z",
+                    "heartbeat_ts": "2026-02-25T09:00:00Z",
+                },
+            ]})
+            return
+
+        # Version status
+        if path == "/dashboard/api/version/status":
+            self._json(200, {
+                "ok": True, "has_outdated": False,
+                "manifest": {"current_version": "0.8.0"},
+                "fleet_versions": [{"hostname": "TINYBOX-01", "agent_version": "0.8.0", "status": "current"}],
+                "summary": {"current": 1, "outdated_minor": 0, "outdated_major": 0},
+            })
+            return
+
+        # Threat intel status
+        if path == "/dashboard/api/threat-intel/status":
+            self._json(200, {
+                "ok": True,
+                "providers": [
+                    {"name": "AbuseIPDB", "configured": True, "available": True, "quota_remaining": 847},
+                    {"name": "AlienVault OTX", "configured": True, "available": True, "quota_remaining": 99900},
+                    {"name": "GreyNoise Community", "configured": False, "available": False, "quota_remaining": 0},
+                ],
+                "cache": {"total_entries": 42, "valid_entries": 38, "expired_entries": 4},
+            })
+            return
+
         # Rules
         if path == "/dashboard/api/rules":
             self._json(200, {"rules": [], "total": 0})

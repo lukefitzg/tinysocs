@@ -4275,6 +4275,7 @@ let _openFleetIdx = -1;
 let _fleetPage = 0;
 const _FLEET_PER_PAGE = 10;
 let _fleetVersionMap = {};
+let _threatIntelStatus = null;
 
 async function loadFleet() {
   const el = document.getElementById('fleet-content');
@@ -4307,6 +4308,13 @@ async function loadFleet() {
     }
   } catch(e) {
     _fleetVersionMap = {};
+  }
+  // Fetch threat intel provider status
+  try {
+    const ti = await fetchJSON('/api/threat-intel/status');
+    _threatIntelStatus = ti.ok ? ti : null;
+  } catch(e) {
+    _threatIntelStatus = null;
   }
   renderFleet();
 }
@@ -4371,6 +4379,19 @@ function renderFleet() {
     html += `<div><span style="color:var(--muted)">Alerts by Severity:</span> ${escapeHtml(sevStr)}</div>`;
     const dets = (h.active_detections || []).map(d => escapeHtml(d)).join(', ') || 'None';
     html += `<div><span style="color:var(--muted)">Active Detections:</span> ${dets}</div>`;
+    // FIM status — check if host has TinySocs-FIM channel events
+    const fimChannel = (h.top_channels || []).find(c => c.channel === 'TinySocs-FIM');
+    const fimLabel = fimChannel ? '<span style="color:var(--green)">Active</span> (' + fimChannel.count + ' events)' : '<span style="color:var(--muted)">No FIM events</span>';
+    html += `<div><span style="color:var(--muted)">FIM Status:</span> ${fimLabel}</div>`;
+    // Threat intel status (global, same for all hosts)
+    var tiLabel = '<span style="color:var(--muted)">Not configured</span>';
+    if (_threatIntelStatus) {
+      const configured = (_threatIntelStatus.providers || []).filter(function(p){ return p.configured; });
+      if (configured.length > 0) {
+        tiLabel = '<span style="color:var(--green)">' + configured.length + ' provider(s)</span> (' + configured.map(function(p){ return escapeHtml(p.name); }).join(', ') + ')';
+      }
+    }
+    html += `<div><span style="color:var(--muted)">Threat Intel:</span> ${tiLabel}</div>`;
     html += `</div>`;
 
     html += `<div style="margin-top:8px;display:flex;gap:6px">`;

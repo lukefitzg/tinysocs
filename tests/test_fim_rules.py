@@ -16,6 +16,8 @@ FIM_RULE_IDS_PYTHON = [
     "fim_mass_modification",
     "fim_config_tampered",
     "fim_sensitive_file_deleted",
+    "fim_executable_replaced",
+    "fim_permission_change",
 ]
 
 FIM_RULE_IDS_CSHARP = [

@@ -892,3 +892,34 @@
     technique_id: "T1485"
     technique_name: "Data Destruction"
     tactic: "impact"
+
+- id: fim_executable_replaced
+  description: Executable or DLL in Program Files modified
+  index: "tinysocs-winlog-*"
+  time_field: "@timestamp"
+  kql: >
+    winlog.channel:"TinySocs-FIM" AND winlog.event_id:1002
+    AND FilePath:(*Program\ Files* AND (*.exe OR *.dll))
+  group_by: ["host.name","FilePath"]
+  threshold: 1
+  severity: high
+  category: fim
+  mitre:
+    technique_id: "T1565.001"
+    technique_name: "Data Manipulation: Stored Data Manipulation"
+    tactic: "impact"
+
+- id: fim_permission_change
+  description: ACL or permission modification on monitored critical file
+  index: "tinysocs-winlog-*"
+  time_field: "@timestamp"
+  kql: >
+    winlog.channel:"TinySocs-FIM" AND winlog.event_id:1004
+  group_by: ["host.name","FilePath"]
+  threshold: 1
+  severity: medium
+  category: fim
+  mitre:
+    technique_id: "T1222"
+    technique_name: "File and Directory Permissions Modification"
+    tactic: "defense-evasion"

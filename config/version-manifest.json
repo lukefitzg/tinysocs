@@ -1,0 +1,12 @@
+{
+  "current_version": "0.8.0",
+  "minimum_compatible": "0.7.0",
+  "installed_at": "",
+  "components": {
+    "agent": "0.8.0",
+    "assistant": "0.8.0",
+    "opensearch": "2.13.0",
+    "sysmon": "15.15"
+  },
+  "changelog_url": "https://github.com/lukefitzg/tinysocs/releases"
+}

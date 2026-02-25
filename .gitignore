@@ -140,6 +140,7 @@ opensearch-*/
 config/*
 !config/agent-config.yml
 !config/agent-config.example.yml
+!config/version-manifest.json
 !config/.gitkeep
 
 # Dev/test ledger artefacts created when running from repo

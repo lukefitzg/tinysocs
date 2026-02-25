@@ -193,12 +193,7 @@ if ($yamlLoaded) {
     }
 
     Write-Host "[*] Using Python ($pythonCmd) to parse YAML config"
-    $pyScript = @"
-import sys, json, yaml
-with open(sys.argv[1], encoding='utf-8') as f:
-    data = yaml.safe_load(f)
-print(json.dumps(data))
-"@
+    $pyScript = "import sys, json, yaml`nwith open(sys.argv[1], encoding='utf-8') as f:`n    data = yaml.safe_load(f)`nprint(json.dumps(data))"
     $pyScriptFile = Join-Path $env:TEMP "tinysocs_yaml2json.py"
     Set-Content -Path $pyScriptFile -Value $pyScript -Encoding UTF8
 

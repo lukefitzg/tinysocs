@@ -359,6 +359,11 @@ var
   EmailFromEdit: TNewEdit;
   EmailToEdit: TNewEdit;
 
+  ThreatIntelPage: TWizardPage;
+  AbuseIPDBKeyEdit: TNewEdit;
+  OTXKeyEdit: TNewEdit;
+  GreyNoiseKeyEdit: TNewEdit;
+
   DashLocalhostRadio: TRadioButton;
   DashNetworkRadio: TRadioButton;
   DashboardBind: String;
@@ -384,6 +389,10 @@ var
   LlmMode: String;
   LlmApiKey: String;
   OllamaUrl: String;
+
+  AbuseIPDBKey: String;
+  OTXKey: String;
+  GreyNoiseKey: String;
 
   WebhookUrl: String;
   SmtpHost: String;
@@ -1187,8 +1196,65 @@ begin
   EmailToEdit.Width := NotifPage.SurfaceWidth;
   EmailToEdit.Text := '';
 
-  { ---- Page 5: Dashboard Access (Phase 14 M0) ---- }
-  DashAccessPage := CreateCustomPage(NotifPage.ID, 'Dashboard Access',
+  { ---- Page 5: Threat Intelligence (Phase 15 M5) ---- }
+  ThreatIntelPage := CreateCustomPage(NotifPage.ID, 'Threat Intelligence (Optional)',
+    'Enrich alerts with external reputation data. All keys are optional.');
+
+  L := TNewStaticText.Create(ThreatIntelPage.Surface);
+  L.Parent := ThreatIntelPage.Surface;
+  L.Left := 0;
+  L.Top := ScaleY(4);
+  L.Width := ThreatIntelPage.SurfaceWidth;
+  L.Caption := 'AbuseIPDB API key (free: 1,000 lookups/day):';
+
+  AbuseIPDBKeyEdit := TNewEdit.Create(ThreatIntelPage.Surface);
+  AbuseIPDBKeyEdit.Parent := ThreatIntelPage.Surface;
+  AbuseIPDBKeyEdit.Left := 0;
+  AbuseIPDBKeyEdit.Top := L.Top + ScaleY(18);
+  AbuseIPDBKeyEdit.Width := ThreatIntelPage.SurfaceWidth;
+  AbuseIPDBKeyEdit.PasswordChar := '*';
+  AbuseIPDBKeyEdit.Text := '';
+
+  L := TNewStaticText.Create(ThreatIntelPage.Surface);
+  L.Parent := ThreatIntelPage.Surface;
+  L.Left := 0;
+  L.Top := AbuseIPDBKeyEdit.Top + ScaleY(32);
+  L.Width := ThreatIntelPage.SurfaceWidth;
+  L.Caption := 'AlienVault OTX API key (free: unlimited):';
+
+  OTXKeyEdit := TNewEdit.Create(ThreatIntelPage.Surface);
+  OTXKeyEdit.Parent := ThreatIntelPage.Surface;
+  OTXKeyEdit.Left := 0;
+  OTXKeyEdit.Top := L.Top + ScaleY(18);
+  OTXKeyEdit.Width := ThreatIntelPage.SurfaceWidth;
+  OTXKeyEdit.PasswordChar := '*';
+  OTXKeyEdit.Text := '';
+
+  L := TNewStaticText.Create(ThreatIntelPage.Surface);
+  L.Parent := ThreatIntelPage.Surface;
+  L.Left := 0;
+  L.Top := OTXKeyEdit.Top + ScaleY(32);
+  L.Width := ThreatIntelPage.SurfaceWidth;
+  L.Caption := 'GreyNoise Community API key (free: 5,000 lookups/day):';
+
+  GreyNoiseKeyEdit := TNewEdit.Create(ThreatIntelPage.Surface);
+  GreyNoiseKeyEdit.Parent := ThreatIntelPage.Surface;
+  GreyNoiseKeyEdit.Left := 0;
+  GreyNoiseKeyEdit.Top := L.Top + ScaleY(18);
+  GreyNoiseKeyEdit.Width := ThreatIntelPage.SurfaceWidth;
+  GreyNoiseKeyEdit.PasswordChar := '*';
+  GreyNoiseKeyEdit.Text := '';
+
+  L := TNewStaticText.Create(ThreatIntelPage.Surface);
+  L.Parent := ThreatIntelPage.Surface;
+  L.Left := 0;
+  L.Top := GreyNoiseKeyEdit.Top + ScaleY(36);
+  L.Width := ThreatIntelPage.SurfaceWidth;
+  L.Font.Color := clGray;
+  L.Caption := 'Leave blank to skip. Keys can also be configured later in Dashboard Settings.';
+
+  { ---- Page 6: Dashboard Access (Phase 14 M0) ---- }
+  DashAccessPage := CreateCustomPage(ThreatIntelPage.ID, 'Dashboard Access',
     'Choose how the dashboard can be accessed.');
 
   L := TNewStaticText.Create(DashAccessPage.Surface);
@@ -1412,6 +1478,12 @@ begin
     SmtpPort := '587';
     EmailFrom := Trim(EmailFromEdit.Text);
     EmailTo := Trim(EmailToEdit.Text);
+  end
+  else if CurPageID = ThreatIntelPage.ID then
+  begin
+    AbuseIPDBKey := Trim(AbuseIPDBKeyEdit.Text);
+    OTXKey := Trim(OTXKeyEdit.Text);
+    GreyNoiseKey := Trim(GreyNoiseKeyEdit.Text);
   end;
 end;
 
@@ -2198,8 +2270,11 @@ begin
         '  if (''' + PsEscape(WebhookUrl) + ''' -ne '''') {' + CRLF +
         '    $content = $content -replace ''(?m)^WEBHOOK_ENABLED=.*$'', ''WEBHOOK_ENABLED=1''' + CRLF +
         '  }' + CRLF +
+        '  $content = $content -replace ''(?m)^ABUSEIPDB_API_KEY=.*$'', (''ABUSEIPDB_API_KEY='' + ''' + PsEscape(AbuseIPDBKey) + ''')' + CRLF +
+        '  $content = $content -replace ''(?m)^OTX_API_KEY=.*$'', (''OTX_API_KEY='' + ''' + PsEscape(OTXKey) + ''')' + CRLF +
+        '  $content = $content -replace ''(?m)^GREYNOISE_API_KEY=.*$'', (''GREYNOISE_API_KEY='' + ''' + PsEscape(GreyNoiseKey) + ''')' + CRLF +
         '  Set-Content -Path $envFile -Value $content -Force' + CRLF +
-        '  Write-Host ''[TinySocs][Inno] assistant.env updated with SIEM + LLM + webhook credentials''' + CRLF +
+        '  Write-Host ''[TinySocs][Inno] assistant.env updated with SIEM + LLM + webhook + threat-intel credentials''' + CRLF +
         '}' + CRLF +
         '' + CRLF +
         '# Reconcile SIEM_PASS with CredMan (Phase 10 credential probe may have' + CRLF +

@@ -248,6 +248,18 @@ fim_sensitive_file_deleted:
   - label: Verify file is truly missing
     cmd: Test-Path -Path "<filepath>"
 
+fim_executable_replaced:
+  - label: Check file signature and hash
+    cmd: Get-AuthenticodeSignature -FilePath "<filepath>"; Get-FileHash -Path "<filepath>"
+  - label: Compare with known-good backup
+    cmd: vssadmin list shadows
+
+fim_permission_change:
+  - label: Review current ACL on the file
+    cmd: Get-Acl -Path "<filepath>" | Format-List
+  - label: Check who modified permissions recently
+    cmd: Get-WinEvent -FilterHashtable @{LogName="Security"; Id=4670} -MaxEvents 20 | Format-List
+
 # ── Phase 15 M3: Gap-Coverage ──
 
 account_discovery:

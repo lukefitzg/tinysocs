@@ -154,7 +154,7 @@ if (-not (Test-Path $ConfigPath)) {
     exit 1
 }
 
-# Parse YAML — try powershell-yaml first, fall back to Python's yaml module
+# Parse YAML -- try powershell-yaml first, fall back to Python's yaml module
 $yamlLoaded = $false
 try {
     Import-Module powershell-yaml -ErrorAction Stop
@@ -168,7 +168,7 @@ try {
         $yamlLoaded = $true
         Write-Host "[*] Installed and loaded powershell-yaml"
     } catch {
-        Write-Host "[*] powershell-yaml install failed — falling back to Python yaml parser"
+        Write-Host "[*] powershell-yaml install failed -- falling back to Python yaml parser"
     }
 }
 
@@ -176,7 +176,7 @@ if ($yamlLoaded) {
     $config = Get-Content $ConfigPath -Raw | ConvertFrom-Yaml
     $tests = $config.tests
 } else {
-    # Fallback: use Python (from .venv-win or system) to convert YAML → JSON
+    # Fallback: use Python (from .venv-win or system) to convert YAML -> JSON
     $pythonCmd = $null
     $venvPython = Join-Path $repoRoot ".venv-win\Scripts\python.exe"
     if (Test-Path $venvPython) {

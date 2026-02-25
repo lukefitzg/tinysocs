@@ -1,0 +1,256 @@
+﻿{
+    "generated_at":  "2026-02-25T19:33:50.6588905+00:00",
+    "efficacy_pct":  0,
+    "total_tests":  19,
+    "results":  [
+                    {
+                        "technique_name":  "Brute Force — Password Guessing",
+                        "detected_rules":  [
+
+                                           ],
+                        "expected_rules":  [
+                                               "TS-001",
+                                               "auth_failed_burst"
+                                           ],
+                        "reason":  "No alerts within timeout",
+                        "status":  "MISSED",
+                        "technique_id":  "T1110.001"
+                    },
+                    {
+                        "technique_name":  "OS Credential Dumping — LSASS Memory",
+                        "detected_rules":  [
+
+                                           ],
+                        "expected_rules":  [
+                                               "TS-060",
+                                               "lsass_access"
+                                           ],
+                        "reason":  "Exception calling \"Start\" with \"0\" argument(s): \"Access is denied\"",
+                        "status":  "ERROR",
+                        "technique_id":  "T1003.001"
+                    },
+                    {
+                        "technique_name":  "Command and Scripting Interpreter — PowerShell",
+                        "detected_rules":  [
+
+                                           ],
+                        "expected_rules":  [
+                                               "TS-030",
+                                               "suspicious_powershell",
+                                               "ps_script_block"
+                                           ],
+                        "reason":  "Exception calling \"Start\" with \"0\" argument(s): \"Access is denied\"",
+                        "status":  "ERROR",
+                        "technique_id":  "T1059.001"
+                    },
+                    {
+                        "technique_name":  "Scheduled Task/Job — Scheduled Task",
+                        "detected_rules":  [
+
+                                           ],
+                        "expected_rules":  [
+                                               "TS-020",
+                                               "scheduled_task_creation"
+                                           ],
+                        "reason":  "No alerts within timeout",
+                        "status":  "MISSED",
+                        "technique_id":  "T1053.005"
+                    },
+                    {
+                        "technique_name":  "Boot or Logon Autostart Execution — Registry Run Keys",
+                        "detected_rules":  [
+
+                                           ],
+                        "expected_rules":  [
+                                               "TS-091",
+                                               "registry_run_key"
+                                           ],
+                        "reason":  "No alerts within timeout",
+                        "status":  "MISSED",
+                        "technique_id":  "T1547.001"
+                    },
+                    {
+                        "technique_name":  "Create or Modify System Process — Windows Service",
+                        "detected_rules":  [
+
+                                           ],
+                        "expected_rules":  [
+                                               "TS-090",
+                                               "service_install_suspicious"
+                                           ],
+                        "reason":  "No alerts within timeout",
+                        "status":  "MISSED",
+                        "technique_id":  "T1543.003"
+                    },
+                    {
+                        "technique_name":  "Indicator Removal — Clear Windows Event Logs",
+                        "detected_rules":  [
+
+                                           ],
+                        "expected_rules":  [
+                                               "TS-080",
+                                               "event_log_cleared"
+                                           ],
+                        "reason":  "No alerts within timeout",
+                        "status":  "MISSED",
+                        "technique_id":  "T1070.001"
+                    },
+                    {
+                        "technique_name":  "Impair Defenses — Disable or Modify Tools",
+                        "detected_rules":  [
+
+                                           ],
+                        "expected_rules":  [
+                                               "TS-081",
+                                               "defender_tamper"
+                                           ],
+                        "reason":  "No alerts within timeout",
+                        "status":  "MISSED",
+                        "technique_id":  "T1562.001"
+                    },
+                    {
+                        "technique_name":  "Remote Services — SMB/Windows Admin Shares",
+                        "detected_rules":  [
+
+                                           ],
+                        "expected_rules":  [
+                                               "TS-070",
+                                               "psexec_usage"
+                                           ],
+                        "reason":  "No alerts within timeout",
+                        "status":  "MISSED",
+                        "technique_id":  "T1021.002"
+                    },
+                    {
+                        "technique_name":  "Create Account — Local Account",
+                        "detected_rules":  [
+
+                                           ],
+                        "expected_rules":  [
+                                               "TS-010",
+                                               "local_admin_create"
+                                           ],
+                        "reason":  "No alerts within timeout",
+                        "status":  "MISSED",
+                        "technique_id":  "T1136.001"
+                    },
+                    {
+                        "technique_name":  "System Binary Proxy Execution — Rundll32",
+                        "detected_rules":  [
+
+                                           ],
+                        "expected_rules":  [
+                                               "proc_creation_lolbins",
+                                               "lolbin_execs"
+                                           ],
+                        "reason":  "Exception calling \"Start\" with \"0\" argument(s): \"Access is denied\"",
+                        "status":  "ERROR",
+                        "technique_id":  "T1218.011"
+                    },
+                    {
+                        "technique_name":  "OS Credential Dumping — NTDS",
+                        "detected_rules":  [
+
+                                           ],
+                        "expected_rules":  [
+                                               "TS-062",
+                                               "ntds_dit_access"
+                                           ],
+                        "reason":  "No alerts within timeout",
+                        "status":  "MISSED",
+                        "technique_id":  "T1003.003"
+                    },
+                    {
+                        "technique_name":  "Account Discovery — Local Account",
+                        "detected_rules":  [
+
+                                           ],
+                        "expected_rules":  [
+                                               "TS-130",
+                                               "account_discovery"
+                                           ],
+                        "reason":  "No alerts within timeout",
+                        "status":  "MISSED",
+                        "technique_id":  "T1087.001"
+                    },
+                    {
+                        "technique_name":  "Remote System Discovery",
+                        "detected_rules":  [
+
+                                           ],
+                        "expected_rules":  [
+                                               "TS-131",
+                                               "system_network_discovery"
+                                           ],
+                        "reason":  "No alerts within timeout",
+                        "status":  "MISSED",
+                        "technique_id":  "T1018"
+                    },
+                    {
+                        "technique_name":  "Ingress Tool Transfer",
+                        "detected_rules":  [
+
+                                           ],
+                        "expected_rules":  [
+                                               "TS-132",
+                                               "ingress_tool_transfer",
+                                               "powershell_web_dl"
+                                           ],
+                        "reason":  "No alerts within timeout",
+                        "status":  "MISSED",
+                        "technique_id":  "T1105"
+                    },
+                    {
+                        "technique_name":  "Process Injection",
+                        "detected_rules":  [
+
+                                           ],
+                        "expected_rules":  [
+                                               "TS-133",
+                                               "process_injection_sysmon"
+                                           ],
+                        "reason":  "No alerts within timeout",
+                        "status":  "MISSED",
+                        "technique_id":  "T1055"
+                    },
+                    {
+                        "technique_name":  "Obfuscated Files or Information",
+                        "detected_rules":  [
+
+                                           ],
+                        "expected_rules":  [
+                                               "TS-134",
+                                               "obfuscated_command_line",
+                                               "scriptblock_base64"
+                                           ],
+                        "reason":  "No alerts within timeout",
+                        "status":  "MISSED",
+                        "technique_id":  "T1027"
+                    },
+                    {
+                        "technique_name":  "Data Manipulation — Stored Data Manipulation",
+                        "detected_rules":  [
+
+                                           ],
+                        "expected_rules":  [
+                                               "TS-110",
+                                               "fim_critical_file_modified"
+                                           ],
+                        "reason":  "No alerts within timeout",
+                        "status":  "MISSED",
+                        "technique_id":  "T1565.001"
+                    },
+                    {
+                        "technique_name":  "Windows Management Instrumentation",
+                        "detected_rules":  [
+
+                                           ],
+                        "expected_rules":  [
+                                               "wmi_process_creation"
+                                           ],
+                        "reason":  "No alerts within timeout",
+                        "status":  "MISSED",
+                        "technique_id":  "T1047"
+                    }
+                ]
+}

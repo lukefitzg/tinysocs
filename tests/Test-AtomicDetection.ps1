@@ -85,6 +85,8 @@ function Install-AtomicRedTeam {
         }
     }
 
+    # Ensure script content is a single string (Python output may be an array of lines)
+    if ($artScript -is [array]) { $artScript = $artScript -join "`n" }
     IEX $artScript
     Install-AtomicRedTeam -getAtomics -Force
 }

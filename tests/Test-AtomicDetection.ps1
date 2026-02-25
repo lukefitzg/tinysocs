@@ -363,7 +363,7 @@ Write-Host "  Efficacy:     $efficacy% ($($detected.Count)/$executed executed)" 
 $md = @"
 # Detection Efficacy Report
 
-Generated: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC" -AsUTC)
+Generated: $([System.DateTime]::UtcNow.ToString("yyyy-MM-dd HH:mm:ss")) UTC
 
 ## Summary
 

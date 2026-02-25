@@ -58,37 +58,54 @@ function Install-AtomicRedTeam {
         Write-Host "[*] Invoke-AtomicRedTeam already installed"
         return
     }
-    Write-Host "[*] Installing Invoke-AtomicRedTeam..."
-    $artUrl = "https://raw.githubusercontent.com/redcanaryco/invoke-atomicredteam/master/install-atomicredteam.ps1"
-    $artScript = $null
+    Write-Host "[*] Installing Invoke-AtomicRedTeam via git clone..."
 
-    # Try PS Invoke-WebRequest first
-    try {
-        $artScript = (Invoke-WebRequest -Uri $artUrl -UseBasicParsing -ErrorAction Stop).Content
-    } catch {
-        Write-Host "[*] PS web request failed, trying Python download..."
-        # Fallback: use Python (handles TLS better than .NET 4.x)
-        $pyCmd = $null
-        $venvPy = Join-Path $repoRoot ".venv-win\Scripts\python.exe"
-        if (Test-Path $venvPy) { $pyCmd = $venvPy }
-        elseif (Get-Command python -ErrorAction SilentlyContinue) { $pyCmd = "python" }
+    # Use git to clone ART repos (git handles TLS fine, unlike .NET on PS 5.1)
+    $artBase = Join-Path $env:TEMP "AtomicRedTeam"
+    $artModSrc = Join-Path $artBase "invoke-atomicredteam"
+    $atomicsSrc = Join-Path $artBase "atomic-red-team"
 
-        if ($pyCmd) {
-            $artScript = & $pyCmd -c "import urllib.request; print(urllib.request.urlopen('$artUrl').read().decode())" 2>&1
-            if ($LASTEXITCODE -ne 0) {
-                Write-Error "Python download also failed: $artScript"
-                return
-            }
-        } else {
-            Write-Error "Cannot download ART installer -- no working download method"
+    if (-not (Test-Path $artBase)) { New-Item -ItemType Directory -Path $artBase | Out-Null }
+
+    # Clone invoke-atomicredteam module
+    if (-not (Test-Path $artModSrc)) {
+        Write-Host "[*] Cloning invoke-atomicredteam..."
+        git clone --depth 1 "https://github.com/redcanaryco/invoke-atomicredteam.git" $artModSrc 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "Failed to clone invoke-atomicredteam"
             return
         }
     }
 
-    # Ensure script content is a single string (Python output may be an array of lines)
-    if ($artScript -is [array]) { $artScript = $artScript -join "`n" }
-    IEX $artScript
-    Install-AtomicRedTeam -getAtomics -Force
+    # Clone atomics library
+    if (-not (Test-Path $atomicsSrc)) {
+        Write-Host "[*] Cloning atomic-red-team (atomics)..."
+        git clone --depth 1 "https://github.com/redcanaryco/atomic-red-team.git" $atomicsSrc 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "Failed to clone atomic-red-team"
+            return
+        }
+    }
+
+    # Install module to user's PS module path
+    $modDest = Join-Path ($env:PSModulePath -split ';' | Where-Object { $_ -like "*$env:USERPROFILE*" } | Select-Object -First 1) "Invoke-AtomicRedTeam"
+    if (-not $modDest -or $modDest -eq "Invoke-AtomicRedTeam") {
+        $modDest = Join-Path "$env:USERPROFILE\Documents\WindowsPowerShell\Modules" "Invoke-AtomicRedTeam"
+    }
+    Write-Host "[*] Installing module to $modDest"
+    if (-not (Test-Path $modDest)) { New-Item -ItemType Directory -Path $modDest -Force | Out-Null }
+    Copy-Item -Path (Join-Path $artModSrc "*") -Destination $modDest -Recurse -Force
+
+    # Copy atomics to expected location
+    $atomicsDest = Join-Path $modDest "atomics"
+    $atomicsSrcDir = Join-Path $atomicsSrc "atomics"
+    if (Test-Path $atomicsSrcDir) {
+        Write-Host "[*] Copying atomics library..."
+        if (-not (Test-Path $atomicsDest)) { New-Item -ItemType Directory -Path $atomicsDest -Force | Out-Null }
+        Copy-Item -Path (Join-Path $atomicsSrcDir "*") -Destination $atomicsDest -Recurse -Force
+    }
+
+    Write-Host "[*] Invoke-AtomicRedTeam installed successfully"
 }
 
 function Test-SysmonInstalled {

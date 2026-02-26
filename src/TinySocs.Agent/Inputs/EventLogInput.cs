@@ -201,6 +201,7 @@ namespace TinySocs.Agent.Inputs
                                 var newEvents = new List<(AgentEvent Ev, long RecordId)>();
                                 var currentLastSeen = lastSeen ?? 0;
                                 int readCount = 0;
+                                bool detectedLogClear = false;
                                 EventRecord? record;
 
                                 while (!stoppingToken.IsCancellationRequested &&
@@ -228,6 +229,27 @@ namespace TinySocs.Agent.Inputs
                                         // a record_id we've already seen (or older), we can stop.
                                         if (recordId.Value <= currentLastSeen)
                                         {
+                                            // Detect log clear/rotation: if the NEWEST event in the
+                                            // log has a record_id lower than our bookmark, the log
+                                            // was cleared or rotated. Reset bookmark and re-read.
+                                            if (readCount == 0 && currentLastSeen > 0)
+                                            {
+                                                _logger.LogWarning(
+                                                    "Channel {Channel}: newest record_id ({NewestId}) is below bookmark ({Bookmark}). Log was likely cleared. Resetting bookmark.",
+                                                    channelName,
+                                                    recordId.Value,
+                                                    currentLastSeen);
+
+                                                detectedLogClear = true;
+                                                currentLastSeen = 0;
+
+                                                // This event is new — process it
+                                                var ev2 = MapRecordToAgentEvent(evInput.Name ?? "win-events", channelName, record);
+                                                newEvents.Add((ev2, recordId.Value));
+                                                readCount++;
+                                                continue;
+                                            }
+
                                             break;
                                         }
 

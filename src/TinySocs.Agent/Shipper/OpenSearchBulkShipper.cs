@@ -286,22 +286,44 @@ namespace TinySocs.Agent.Shipper
                         continue;
                     }
 
-                    // Parse _bulk response and ensure errors:false before acknowledging.
-                    if (!IsBulkResponseSuccessful(responseBody, out var errorSummary))
+                    // Parse _bulk response: acknowledge partial successes to avoid
+                    // head-of-line blocking on permanent mapping errors (poison docs).
+                    var bulkResult = ParseBulkResponse(responseBody);
+
+                    if (bulkResult.TotalErrors > 0)
                     {
                         _logger.LogError(
                             "OpenSearch _bulk response reported errors. {Summary}",
-                            errorSummary);
-
-                        failureCount++;
-                        await BackoffAsync(failureCount, _config.Output.Retry, stoppingToken).ConfigureAwait(false);
-                        // Do NOT acknowledge; events will be retried.
-                        continue;
+                            bulkResult.Summary);
                     }
 
-                    failureCount = 0;
+                    if (bulkResult.PermanentErrors > 0 && bulkResult.TransientErrors == 0)
+                    {
+                        // Only permanent (4xx) errors — retrying won't help.
+                        // Acknowledge to advance the queue past poison documents.
+                        _logger.LogWarning(
+                            "All {Count} bulk errors are permanent (4xx mapping/parse failures). " +
+                            "Acknowledging batch to prevent queue blockage. {Succeeded} docs indexed, {Failed} dropped.",
+                            bulkResult.PermanentErrors,
+                            bulkResult.Succeeded,
+                            bulkResult.PermanentErrors);
 
-                    await _queueReader.AcknowledgeAsync(batch.Count, stoppingToken).ConfigureAwait(false);
+                        failureCount = 0;
+                        await _queueReader.AcknowledgeAsync(batch.Count, stoppingToken).ConfigureAwait(false);
+                    }
+                    else if (bulkResult.TransientErrors > 0)
+                    {
+                        // Transient (5xx/429) errors — retry the whole batch.
+                        failureCount++;
+                        await BackoffAsync(failureCount, _config.Output.Retry, stoppingToken).ConfigureAwait(false);
+                        continue;
+                    }
+                    else
+                    {
+                        // No errors at all — clean success.
+                        failureCount = 0;
+                        await _queueReader.AcknowledgeAsync(batch.Count, stoppingToken).ConfigureAwait(false);
+                    }
 
                     // Update heartbeat tracking
                     _lastShipTime = DateTime.UtcNow;
@@ -666,6 +688,111 @@ namespace TinySocs.Agent.Shipper
             {
                 summary = $"Failed to parse bulk response JSON: {ex.Message}. Body: {Truncate(responseBody, 2048)}";
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// Parsed bulk response with success/failure breakdown.
+        /// Distinguishes permanent (4xx) from transient (5xx/429) errors
+        /// to decide whether retrying is worthwhile.
+        /// </summary>
+        private sealed class BulkResponseResult
+        {
+            public int Succeeded { get; set; }
+            public int PermanentErrors { get; set; }   // 400-499 (mapping errors, bad docs — won't fix on retry)
+            public int TransientErrors { get; set; }    // 429, 500-599 (overload, cluster issues — may fix on retry)
+            public int TotalErrors => PermanentErrors + TransientErrors;
+            public string Summary { get; set; } = string.Empty;
+        }
+
+        private BulkResponseResult ParseBulkResponse(string responseBody)
+        {
+            var result = new BulkResponseResult();
+
+            if (string.IsNullOrWhiteSpace(responseBody))
+            {
+                result.Summary = "Empty bulk response body.";
+                result.TransientErrors = 1; // Treat as transient
+                return result;
+            }
+
+            try
+            {
+                using var doc = JsonDocument.Parse(responseBody);
+                var root = doc.RootElement;
+
+                if (!root.TryGetProperty("errors", out var errorsProp) ||
+                    errorsProp.ValueKind != JsonValueKind.True)
+                {
+                    // No errors — all succeeded
+                    result.Summary = "Bulk response errors=false.";
+                    return result;
+                }
+
+                var sb = new StringBuilder("Bulk response errors=true. Sample item errors: ");
+                int shown = 0;
+
+                if (root.TryGetProperty("items", out var itemsProp) &&
+                    itemsProp.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var item in itemsProp.EnumerateArray())
+                    {
+                        if (item.ValueKind != JsonValueKind.Object) continue;
+
+                        foreach (var op in item.EnumerateObject())
+                        {
+                            if (op.Value.ValueKind != JsonValueKind.Object) continue;
+                            var opObj = op.Value;
+
+                            int status = 0;
+                            if (opObj.TryGetProperty("status", out var st) && st.ValueKind == JsonValueKind.Number)
+                                status = st.GetInt32();
+
+                            if (opObj.TryGetProperty("error", out var err) && err.ValueKind == JsonValueKind.Object)
+                            {
+                                // Classify: 4xx = permanent, 429/5xx = transient
+                                if (status == 429 || status >= 500)
+                                    result.TransientErrors++;
+                                else
+                                    result.PermanentErrors++;
+
+                                if (shown < 3)
+                                {
+                                    var type = err.TryGetProperty("type", out var t) && t.ValueKind == JsonValueKind.String
+                                        ? t.GetString() : "unknown";
+                                    var reason = err.TryGetProperty("reason", out var r) && r.ValueKind == JsonValueKind.String
+                                        ? r.GetString() : null;
+                                    sb.Append($"[{op.Name} status={status} type={type} reason={Truncate(reason ?? "", 256)}] ");
+                                    shown++;
+                                }
+                            }
+                            else if (status >= 200 && status < 300)
+                            {
+                                result.Succeeded++;
+                            }
+                            else if (status >= 400)
+                            {
+                                if (status == 429 || status >= 500)
+                                    result.TransientErrors++;
+                                else
+                                    result.PermanentErrors++;
+                            }
+                            else
+                            {
+                                result.Succeeded++;
+                            }
+                        }
+                    }
+                }
+
+                result.Summary = sb.ToString();
+                return result;
+            }
+            catch (Exception ex)
+            {
+                result.Summary = $"Failed to parse bulk response: {ex.Message}";
+                result.TransientErrors = 1; // Treat parse failures as transient
+                return result;
             }
         }
 

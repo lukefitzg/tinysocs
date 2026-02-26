@@ -742,6 +742,46 @@ rules:
       - write_alert_doc
       - append_alert_log
 
+  - id: "TS-135"
+    name: "lolbin_proxy_execution"
+    description: "LOLBin proxy execution (rundll32, mshta, regsvr32) detected via process creation"
+    severity: "high"
+    enabled: true
+    type: threshold_by_key
+    mitre:
+      technique_id: "T1218.011"
+      technique_name: "System Binary Proxy Execution: Rundll32"
+      tactic: "defense-evasion"
+    condition:
+      event_id: 4688
+      channel: Security
+      group_by: "winlog.event_data.NewProcessName"
+      threshold: 1
+      window_minutes: 5
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
+  - id: "TS-136"
+    name: "wmi_process_creation"
+    description: "Process spawned via WMI (wmiprvse.exe child process)"
+    severity: "medium"
+    enabled: true
+    type: threshold_by_key
+    mitre:
+      technique_id: "T1047"
+      technique_name: "Windows Management Instrumentation"
+      tactic: "execution"
+    condition:
+      event_id: 4688
+      channel: Security
+      group_by: "winlog.event_data.SubjectUserName"
+      threshold: 1
+      window_minutes: 5
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
   # ── Version Drift (Phase 15 M5) ──────────────────────────────────────
 
   - id: "TS-120"

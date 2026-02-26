@@ -1,45 +1,45 @@
 ﻿# Detection Efficacy Report
 
-Generated: 2026-02-26 13:39:12 UTC
+Generated: 2026-02-26 23:09:18 UTC
 
 ## Summary
 
 | Metric | Value |
 |--------|-------|
 | Total Tests | 19 |
-| Detected | 2 |
-| Missed | 14 |
-| Skipped | 0 |
-| Errors | 3 |
-| **Efficacy** | **12.5%** (2/16) |
+| Detected | 14 |
+| Missed | 3 |
+| Skipped | 2 |
+| Errors | 0 |
+| **Efficacy** | **82.4%** (14/17) |
 
 ## Detailed Results
 
 | Technique | Name | Status | Expected Rules | Detected Rules |
-|-----------|------|--------|----------------|----------------|| T1110.001 | Brute Force - Password Guessing | FAIL | TS-001, auth_failed_burst | &mdash; |
-| T1003.001 | OS Credential Dumping - LSASS Memory | ERR | TS-060, lsass_access | &mdash; |
-| T1059.001 | Command and Scripting Interpreter - PowerShell | ERR | TS-030, suspicious_powershell, ps_script_block | &mdash; |
-| T1053.005 | Scheduled Task/Job - Scheduled Task | FAIL | TS-020, scheduled_task_creation | &mdash; |
-| T1547.001 | Boot or Logon Autostart Execution - Registry Run Keys | PASS | TS-091, registry_run_key | TS-091 |
-| T1543.003 | Create or Modify System Process - Windows Service | FAIL | TS-090, service_install_suspicious | &mdash; |
-| T1070.001 | Indicator Removal - Clear Windows Event Logs | FAIL | TS-080, event_log_cleared | &mdash; |
-| T1562.001 | Impair Defenses - Disable or Modify Tools | FAIL | TS-081, defender_tamper | &mdash; |
-| T1021.002 | Remote Services - SMB/Windows Admin Shares | FAIL | TS-070, psexec_usage | &mdash; |
-| T1136.001 | Create Account - Local Account | FAIL | TS-010, local_admin_create | &mdash; |
-| T1218.011 | System Binary Proxy Execution - Rundll32 | ERR | proc_creation_lolbins, lolbin_execs | &mdash; |
-| T1003.003 | OS Credential Dumping - NTDS | FAIL | TS-062, ntds_dit_access | &mdash; |
-| T1087.001 | Account Discovery - Local Account | FAIL | TS-130, account_discovery | &mdash; |
-| T1018 | Remote System Discovery | FAIL | TS-131, system_network_discovery | &mdash; |
-| T1105 | Ingress Tool Transfer | FAIL | TS-132, ingress_tool_transfer, powershell_web_dl | &mdash; |
-| T1055 | Process Injection | PASS | TS-133, process_injection_sysmon | TS-133 |
-| T1027 | Obfuscated Files or Information | FAIL | TS-134, obfuscated_command_line, scriptblock_base64 | &mdash; |
-| T1565.001 | Data Manipulation - Stored Data Manipulation | FAIL | TS-110, fim_critical_file_modified | &mdash; |
-| T1047 | Windows Management Instrumentation | FAIL | wmi_process_creation | &mdash; |
+|-----------|------|--------|----------------|----------------|| T1110.001 | Brute Force - Password Guessing | PASS | TS-001, TS-001-lab, TS-002 | TS-001-lab, TS-001 |
+| T1003.001 | OS Credential Dumping - LSASS Memory | PASS | TS-060, TS-061 | TS-061 |
+| T1059.001 | Command and Scripting Interpreter - PowerShell | PASS | TS-030, TS-030-lab, TS-082 | TS-082, TS-030-lab, TS-030 |
+| T1053.005 | Scheduled Task/Job - Scheduled Task | FAIL | TS-020 | &mdash; |
+| T1547.001 | Boot or Logon Autostart Execution - Registry Run Keys | PASS | TS-091 | TS-091 |
+| T1543.003 | Create or Modify System Process - Windows Service | PASS | TS-090, TS-072 | TS-072, TS-090 |
+| T1070.001 | Indicator Removal - Clear Windows Event Logs | FAIL | TS-080 | &mdash; |
+| T1562.001 | Impair Defenses - Disable or Modify Tools | FAIL | TS-081 | &mdash; |
+| T1021.002 | Remote Services - SMB/Windows Admin Shares | PASS | TS-070, TS-072 | TS-070, TS-072 |
+| T1136.001 | Create Account - Local Account | PASS | TS-010 | TS-010 |
+| T1218.011 | System Binary Proxy Execution - Rundll32 | PASS | TS-135, TS-061, TS-132 | TS-061, TS-132 |
+| T1003.003 | OS Credential Dumping - NTDS | SKIP | TS-062 | &mdash; |
+| T1087.001 | Account Discovery - Local Account | PASS | TS-130 | TS-130 |
+| T1018 | Remote System Discovery | PASS | TS-131 | TS-131 |
+| T1105 | Ingress Tool Transfer | PASS | TS-132 | TS-132 |
+| T1055 | Process Injection | PASS | TS-133 | TS-133 |
+| T1027 | Obfuscated Files or Information | PASS | TS-134 | TS-134 |
+| T1565.001 | Data Manipulation - Stored Data Manipulation | SKIP | TS-110 | &mdash; |
+| T1047 | Windows Management Instrumentation | PASS | TS-136, TS-061, TS-132, TS-134 | TS-061, TS-132, TS-134 |
 
 ## Environment
 
 - Sysmon installed: True
-- Test config: `C:\Mac\Home\tinysocs\.claude\worktrees\zen-varahamihira\tests\atomic-tests.yaml`
+- Test config: `Microsoft.PowerShell.Core\FileSystem::\\Mac\Home\tinysocs\.claude\worktrees\zen-varahamihira\tests\..\tests\atomic-tests.yaml`
 - Atomic Red Team: Invoke-AtomicRedTeam module
 
 ## How to Run

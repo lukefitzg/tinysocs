@@ -523,6 +523,16 @@ if (-not $DryRun) {
     } catch {
         Write-Host "    Warning: could not enable command-line logging: $($_.Exception.Message)" -ForegroundColor Yellow
     }
+
+    # Enable PowerShell ScriptBlock logging (required for event 4104)
+    $sbLogPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging'
+    try {
+        if (-not (Test-Path $sbLogPath)) { New-Item -Path $sbLogPath -Force | Out-Null }
+        Set-ItemProperty -Path $sbLogPath -Name 'EnableScriptBlockLogging' -Value 1 -Type DWord
+        Write-Host "    PowerShell ScriptBlock logging enabled"
+    } catch {
+        Write-Host "    Warning: could not enable ScriptBlock logging: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
 }
 
 # Run tests
@@ -552,6 +562,49 @@ foreach ($test in $tests) {
         continue
     }
 
+    # Skip if environment requirement not met
+    $requires = $test.requires
+    if ($requires) {
+        $skipReq = $false
+        $skipMsg = ""
+        switch ($requires) {
+            "domain_controller" {
+                $isDC = (Get-WmiObject -Class Win32_ComputerSystem -ErrorAction SilentlyContinue).DomainRole -ge 4
+                if (-not $isDC) { $skipReq = $true; $skipMsg = "Requires Domain Controller (this machine is not a DC)" }
+            }
+            "fim_module" {
+                # Check if TinySocs-FIM event log channel exists
+                $fimLog = Get-WinEvent -ListLog 'TinySocs-FIM' -ErrorAction SilentlyContinue
+                if (-not $fimLog) { $skipReq = $true; $skipMsg = "Requires TinySocs FIM module (TinySocs-FIM event channel not found)" }
+            }
+            "tamper_protection_disabled" {
+                # Check if Tamper Protection is enabled (blocks Set-MpPreference)
+                try {
+                    $tp = (Get-MpComputerStatus -ErrorAction SilentlyContinue).IsTamperProtected
+                    if ($tp) { $skipReq = $true; $skipMsg = "Requires Tamper Protection disabled (currently enabled, blocks Defender config changes)" }
+                } catch {
+                    # If we can't check, assume it's enabled (safer to skip)
+                    $skipReq = $true; $skipMsg = "Cannot determine Tamper Protection status (assuming enabled)"
+                }
+            }
+            default {
+                $skipReq = $true; $skipMsg = "Unknown requirement: $requires"
+            }
+        }
+        if ($skipReq) {
+            Write-Host "  SKIP: $skipMsg" -ForegroundColor Yellow
+            $results += [PSCustomObject]@{
+                Technique = $technique
+                Name      = $name
+                Status    = "SKIP"
+                Reason    = $skipMsg
+                Rules     = ($rules -join ", ")
+                Detected  = @()
+            }
+            continue
+        }
+    }
+
     if ($DryRun) {
         Write-Host "  DRY RUN: Would execute Atomic test #$testNum"
         Write-Host "  Expected rules: $($rules -join ', ')"
@@ -571,10 +624,34 @@ foreach ($test in $tests) {
     # or when the YAML file is missing. It prints messages and returns normally.
     # We must capture output and inspect it to detect these silent failures.
     $fallbackCmd = $test.fallback_command
+    $preferFallback = $test.prefer_fallback -eq $true
     $usedFallback = $false
     $artSucceeded = $false
     $artError = $null
 
+    # If prefer_fallback is set and a fallback command exists, skip ART test entirely
+    if ($preferFallback -and $fallbackCmd) {
+        Write-Host "  Skipping ART test (prefer_fallback=true), using fallback command..."
+        try {
+            Invoke-Expression $fallbackCmd
+            $usedFallback = $true
+            $artSucceeded = $true  # Treat fallback success as test success
+            Write-Host "  Fallback command executed. Waiting for detection pipeline..."
+        } catch {
+            Write-Host "  ERROR executing fallback: $($_.Exception.Message)" -ForegroundColor Red
+            $results += [PSCustomObject]@{
+                Technique = $technique
+                Name      = $name
+                Status    = "ERROR"
+                Reason    = "Fallback: $($_.Exception.Message)"
+                Rules     = ($rules -join ", ")
+                Detected  = @()
+            }
+            continue
+        }
+    }
+
+    if (-not $artSucceeded) {
     try {
         Write-Host "  Executing Atomic test #$testNum..."
         Invoke-AtomicTest $technique -TestNumbers $testNum -GetPrereqs -ErrorAction SilentlyContinue
@@ -649,6 +726,7 @@ foreach ($test in $tests) {
             continue
         }
     }
+    } # end if (-not $artSucceeded) — prefer_fallback guard
 
     # Wait for detection pipeline to process
     $detected = @()

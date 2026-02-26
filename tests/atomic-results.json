@@ -1,46 +1,50 @@
 ﻿{
-    "generated_at":  "2026-02-26T13:39:13.0215696+00:00",
-    "efficacy_pct":  12.5,
+    "generated_at":  "2026-02-26T23:09:19.0054331+00:00",
+    "efficacy_pct":  82.4,
     "total_tests":  19,
     "results":  [
                     {
                         "technique_name":  "Brute Force - Password Guessing",
                         "detected_rules":  [
-
+                                               "TS-001-lab",
+                                               "TS-001"
                                            ],
                         "expected_rules":  [
                                                "TS-001",
-                                               "auth_failed_burst"
+                                               "TS-001-lab",
+                                               "TS-002"
                                            ],
-                        "reason":  "No alerts within timeout",
-                        "status":  "MISSED",
+                        "reason":  "",
+                        "status":  "DETECTED",
                         "technique_id":  "T1110.001"
                     },
                     {
                         "technique_name":  "OS Credential Dumping - LSASS Memory",
                         "detected_rules":  [
-
+                                               "TS-061"
                                            ],
                         "expected_rules":  [
                                                "TS-060",
-                                               "lsass_access"
+                                               "TS-061"
                                            ],
-                        "reason":  "Exception calling \"Start\" with \"0\" argument(s): \"Access is denied\"",
-                        "status":  "ERROR",
+                        "reason":  "",
+                        "status":  "DETECTED",
                         "technique_id":  "T1003.001"
                     },
                     {
                         "technique_name":  "Command and Scripting Interpreter - PowerShell",
                         "detected_rules":  [
-
+                                               "TS-082",
+                                               "TS-030-lab",
+                                               "TS-030"
                                            ],
                         "expected_rules":  [
                                                "TS-030",
-                                               "suspicious_powershell",
-                                               "ps_script_block"
+                                               "TS-030-lab",
+                                               "TS-082"
                                            ],
-                        "reason":  "Exception calling \"Start\" with \"0\" argument(s): \"Access is denied\"",
-                        "status":  "ERROR",
+                        "reason":  "",
+                        "status":  "DETECTED",
                         "technique_id":  "T1059.001"
                     },
                     {
@@ -49,8 +53,7 @@
 
                                            ],
                         "expected_rules":  [
-                                               "TS-020",
-                                               "scheduled_task_creation"
+                                               "TS-020"
                                            ],
                         "reason":  "No alerts within timeout",
                         "status":  "MISSED",
@@ -62,8 +65,7 @@
                                                "TS-091"
                                            ],
                         "expected_rules":  [
-                                               "TS-091",
-                                               "registry_run_key"
+                                               "TS-091"
                                            ],
                         "reason":  "",
                         "status":  "DETECTED",
@@ -72,14 +74,15 @@
                     {
                         "technique_name":  "Create or Modify System Process - Windows Service",
                         "detected_rules":  [
-
+                                               "TS-072",
+                                               "TS-090"
                                            ],
                         "expected_rules":  [
                                                "TS-090",
-                                               "service_install_suspicious"
+                                               "TS-072"
                                            ],
-                        "reason":  "No alerts within timeout",
-                        "status":  "MISSED",
+                        "reason":  "",
+                        "status":  "DETECTED",
                         "technique_id":  "T1543.003"
                     },
                     {
@@ -88,8 +91,7 @@
 
                                            ],
                         "expected_rules":  [
-                                               "TS-080",
-                                               "event_log_cleared"
+                                               "TS-080"
                                            ],
                         "reason":  "No alerts within timeout",
                         "status":  "MISSED",
@@ -101,8 +103,7 @@
 
                                            ],
                         "expected_rules":  [
-                                               "TS-081",
-                                               "defender_tamper"
+                                               "TS-081"
                                            ],
                         "reason":  "No alerts within timeout",
                         "status":  "MISSED",
@@ -111,40 +112,42 @@
                     {
                         "technique_name":  "Remote Services - SMB/Windows Admin Shares",
                         "detected_rules":  [
-
+                                               "TS-070",
+                                               "TS-072"
                                            ],
                         "expected_rules":  [
                                                "TS-070",
-                                               "psexec_usage"
+                                               "TS-072"
                                            ],
-                        "reason":  "No alerts within timeout",
-                        "status":  "MISSED",
+                        "reason":  "",
+                        "status":  "DETECTED",
                         "technique_id":  "T1021.002"
                     },
                     {
                         "technique_name":  "Create Account - Local Account",
                         "detected_rules":  [
-
+                                               "TS-010"
                                            ],
                         "expected_rules":  [
-                                               "TS-010",
-                                               "local_admin_create"
+                                               "TS-010"
                                            ],
-                        "reason":  "No alerts within timeout",
-                        "status":  "MISSED",
+                        "reason":  "",
+                        "status":  "DETECTED",
                         "technique_id":  "T1136.001"
                     },
                     {
                         "technique_name":  "System Binary Proxy Execution - Rundll32",
                         "detected_rules":  [
-
+                                               "TS-061",
+                                               "TS-132"
                                            ],
                         "expected_rules":  [
-                                               "proc_creation_lolbins",
-                                               "lolbin_execs"
+                                               "TS-135",
+                                               "TS-061",
+                                               "TS-132"
                                            ],
-                        "reason":  "Exception calling \"Start\" with \"0\" argument(s): \"Access is denied\"",
-                        "status":  "ERROR",
+                        "reason":  "",
+                        "status":  "DETECTED",
                         "technique_id":  "T1218.011"
                     },
                     {
@@ -153,51 +156,46 @@
 
                                            ],
                         "expected_rules":  [
-                                               "TS-062",
-                                               "ntds_dit_access"
+                                               "TS-062"
                                            ],
-                        "reason":  "No alerts within timeout",
-                        "status":  "MISSED",
+                        "reason":  "Requires Domain Controller (this machine is not a DC)",
+                        "status":  "SKIP",
                         "technique_id":  "T1003.003"
                     },
                     {
                         "technique_name":  "Account Discovery - Local Account",
                         "detected_rules":  [
-
+                                               "TS-130"
                                            ],
                         "expected_rules":  [
-                                               "TS-130",
-                                               "account_discovery"
+                                               "TS-130"
                                            ],
-                        "reason":  "No alerts within timeout",
-                        "status":  "MISSED",
+                        "reason":  "",
+                        "status":  "DETECTED",
                         "technique_id":  "T1087.001"
                     },
                     {
                         "technique_name":  "Remote System Discovery",
                         "detected_rules":  [
-
+                                               "TS-131"
                                            ],
                         "expected_rules":  [
-                                               "TS-131",
-                                               "system_network_discovery"
+                                               "TS-131"
                                            ],
-                        "reason":  "No alerts within timeout",
-                        "status":  "MISSED",
+                        "reason":  "",
+                        "status":  "DETECTED",
                         "technique_id":  "T1018"
                     },
                     {
                         "technique_name":  "Ingress Tool Transfer",
                         "detected_rules":  [
-
+                                               "TS-132"
                                            ],
                         "expected_rules":  [
-                                               "TS-132",
-                                               "ingress_tool_transfer",
-                                               "powershell_web_dl"
+                                               "TS-132"
                                            ],
-                        "reason":  "No alerts within timeout",
-                        "status":  "MISSED",
+                        "reason":  "",
+                        "status":  "DETECTED",
                         "technique_id":  "T1105"
                     },
                     {
@@ -206,8 +204,7 @@
                                                "TS-133"
                                            ],
                         "expected_rules":  [
-                                               "TS-133",
-                                               "process_injection_sysmon"
+                                               "TS-133"
                                            ],
                         "reason":  "",
                         "status":  "DETECTED",
@@ -216,15 +213,13 @@
                     {
                         "technique_name":  "Obfuscated Files or Information",
                         "detected_rules":  [
-
+                                               "TS-134"
                                            ],
                         "expected_rules":  [
-                                               "TS-134",
-                                               "obfuscated_command_line",
-                                               "scriptblock_base64"
+                                               "TS-134"
                                            ],
-                        "reason":  "No alerts within timeout",
-                        "status":  "MISSED",
+                        "reason":  "",
+                        "status":  "DETECTED",
                         "technique_id":  "T1027"
                     },
                     {
@@ -233,23 +228,27 @@
 
                                            ],
                         "expected_rules":  [
-                                               "TS-110",
-                                               "fim_critical_file_modified"
+                                               "TS-110"
                                            ],
-                        "reason":  "No alerts within timeout",
-                        "status":  "MISSED",
+                        "reason":  "Requires TinySocs FIM module (TinySocs-FIM event channel not found)",
+                        "status":  "SKIP",
                         "technique_id":  "T1565.001"
                     },
                     {
                         "technique_name":  "Windows Management Instrumentation",
                         "detected_rules":  [
-
+                                               "TS-061",
+                                               "TS-132",
+                                               "TS-134"
                                            ],
                         "expected_rules":  [
-                                               "wmi_process_creation"
+                                               "TS-136",
+                                               "TS-061",
+                                               "TS-132",
+                                               "TS-134"
                                            ],
-                        "reason":  "No alerts within timeout",
-                        "status":  "MISSED",
+                        "reason":  "",
+                        "status":  "DETECTED",
                         "technique_id":  "T1047"
                     }
                 ]

@@ -146,6 +146,15 @@ namespace TinySocs.Agent.Detection
                 };
 
                 // Map AlertDocument to the schema expected by OpenSearch
+                object? mitreSection = alert.Mitre != null
+                    ? (object)new
+                    {
+                        technique_id = alert.Mitre.TechniqueId,
+                        technique_name = alert.Mitre.TechniqueName,
+                        tactic = alert.Mitre.Tactic
+                    }
+                    : null;
+
                 var doc = new
                 {
                     timestamp = alert.Timestamp,
@@ -162,7 +171,8 @@ namespace TinySocs.Agent.Detection
                         window_start = alert.Alert.WindowStart
                     },
                     source = alert.Source,
-                    matched_events = alert.MatchedEvents
+                    matched_events = alert.MatchedEvents,
+                    mitre = mitreSection
                 };
 
                 var ndjson = JsonSerializer.Serialize(action, _jsonOptions) + "\n" +

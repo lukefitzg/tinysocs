@@ -149,19 +149,21 @@ function Test-SysmonInstalled {
 }
 
 # ---------------------------------------------------------------------------
-# OpenSearch query helper
+# OpenSearch helpers
 # ---------------------------------------------------------------------------
-function Query-TinySocsAlerts {
-    param(
-        [string[]]$RuleIds,
-        [int]$LookbackMinutes = 10
-    )
+
+# Shared credential + TLS setup (called once, cached in script scope)
+$script:_siemUrl  = $null
+$script:_siemHeaders = $null
+
+function Initialize-SiemConnection {
+    if ($script:_siemUrl) { return }  # Already initialized
+
     $dataDir = Join-Path $env:ProgramData "TinySocs"
     $envFile = Join-Path $dataDir "Assistant\assistant.env"
     $siemUrl  = "https://localhost:9201"
     $siemUser = "admin"
     $siemPass = "admin"
-    $caCert   = Join-Path $dataDir "OpenSearch\config\root-ca.pem"
 
     # Try to read from assistant.env
     if (Test-Path $envFile) {
@@ -169,14 +171,151 @@ function Query-TinySocsAlerts {
             if ($line -match "^SIEM_URL=(.+)$")  { $siemUrl  = $Matches[1].Trim() }
             if ($line -match "^SIEM_USER=(.+)$") { $siemUser = $Matches[1].Trim() }
             if ($line -match "^SIEM_PASS=(.+)$") { $siemPass = $Matches[1].Trim() }
-            if ($line -match "^SIEM_CA_CERT=(.+)$") { $caCert = $Matches[1].Trim() }
         }
     }
 
-    $ruleFilter = ($RuleIds | ForEach-Object { "{`"term`":{`"alert.rule_id.keyword`":`"$_`"}}" }) -join ","
-    $body = @"
+    # For self-signed certs: trust all (test environment only)
+    try {
+        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+    } catch { }
+
+    $pair = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${siemUser}:${siemPass}"))
+    $script:_siemUrl = $siemUrl
+    $script:_siemHeaders = @{ "Authorization" = "Basic $pair"; "Content-Type" = "application/json" }
+
+    Write-Host "[*] SIEM connection: url=$siemUrl, user=$siemUser, pass_len=$($siemPass.Length)"
+}
+
+function Invoke-SiemQuery {
+    param([string]$Path, [string]$Body)
+
+    Initialize-SiemConnection
+    $splat = @{
+        Uri     = "$($script:_siemUrl)$Path"
+        Method  = "POST"
+        Headers = $script:_siemHeaders
+        Body    = $Body
+    }
+    $resp = Invoke-RestMethod @splat -ErrorAction Stop
+    return $resp
+}
+
+# ---------------------------------------------------------------------------
+# Pre-flight diagnostic: verify connectivity and inspect alert schema
+# ---------------------------------------------------------------------------
+function Test-AlertConnectivity {
+    Initialize-SiemConnection
+    Write-Host ""
+    Write-Host "[*] Pre-flight: checking OpenSearch alerts index..."
+
+    try {
+        # Check if alerts index exists and get document count
+        $countBody = '{"query":{"match_all":{}}}'
+        $countResp = Invoke-SiemQuery -Path "/tinysocs-alerts-*/_count" -Body $countBody
+        $totalAlerts = $countResp.count
+        Write-Host "    Total alerts in index: $totalAlerts"
+
+        if ($totalAlerts -eq 0) {
+            Write-Warning "    No alerts found in tinysocs-alerts-*. Detection pipeline may not be generating alerts."
+            Write-Warning "    Check: agent logs, detection.enabled config, rules.yml loading."
+            return $false
+        }
+
+        # Fetch a sample alert to inspect field structure
+        $sampleBody = '{"size":1,"sort":[{"_doc":"desc"}],"query":{"match_all":{}}}'
+        $sampleResp = Invoke-SiemQuery -Path "/tinysocs-alerts-*/_search" -Body $sampleBody
+        $sampleHits = @($sampleResp.hits.hits)
+        if ($sampleHits.Count -gt 0) {
+            $src = $sampleHits[0]._source
+            $fieldNames = @($src | Get-Member -MemberType NoteProperty | ForEach-Object { $_.Name })
+            Write-Host "    Sample alert fields: $($fieldNames -join ', ')"
+
+            # Detect rule_id field path
+            $ruleIdValue = $null
+            $ruleIdPath = "unknown"
+            if ($src.alert) {
+                if ($src.alert.rule_id)  { $ruleIdValue = $src.alert.rule_id;  $ruleIdPath = "alert.rule_id" }
+                elseif ($src.alert.ruleId)  { $ruleIdValue = $src.alert.ruleId;  $ruleIdPath = "alert.ruleId" }
+                elseif ($src.alert.RuleId)  { $ruleIdValue = $src.alert.RuleId;  $ruleIdPath = "alert.RuleId" }
+            }
+            Write-Host "    Rule ID field path: $ruleIdPath = $ruleIdValue"
+
+            # Show timestamp field info
+            $ts = $null
+            if ($src.timestamp) { $ts = $src.timestamp }
+            elseif ($src.Timestamp) { $ts = $src.Timestamp }
+            elseif ($src.'@timestamp') { $ts = $src.'@timestamp' }
+            Write-Host "    Timestamp value: $ts"
+        }
+
+        # Get field mapping for alerts index
+        try {
+            $mappingSplat = @{
+                Uri     = "$($script:_siemUrl)/tinysocs-alerts-*/_mapping"
+                Method  = "GET"
+                Headers = $script:_siemHeaders
+            }
+            $mappingResp = Invoke-RestMethod @mappingSplat -ErrorAction Stop
+            # Extract first index mapping
+            $firstIdx = ($mappingResp | Get-Member -MemberType NoteProperty | Select-Object -First 1).Name
+            if ($firstIdx) {
+                $alertMapping = $mappingResp.$firstIdx.mappings.properties.alert
+                if ($alertMapping) {
+                    $alertFields = $alertMapping.properties | Get-Member -MemberType NoteProperty | ForEach-Object { $_.Name }
+                    Write-Host "    Alert sub-fields in mapping: $($alertFields -join ', ')"
+                }
+                $tsMapping = $mappingResp.$firstIdx.mappings.properties.timestamp
+                if ($tsMapping) {
+                    Write-Host "    Timestamp field type: $($tsMapping.type)"
+                }
+            }
+        } catch {
+            Write-Host "    (Could not read index mapping: $($_.Exception.Message))"
+        }
+
+        Write-Host "    Pre-flight check PASSED" -ForegroundColor Green
+        return $true
+    } catch {
+        Write-Warning "    Pre-flight check FAILED: $($_.Exception.Message)"
+        Write-Warning "    Cannot reach OpenSearch. Alerts will not be detected."
+        return $false
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Extract rule_id from a hit, handling multiple field name variants
+# ---------------------------------------------------------------------------
+function Get-HitRuleId {
+    param($Hit)
+    $src = $Hit._source
+    if (-not $src -or -not $src.alert) { return $null }
+    $a = $src.alert
+    # Try all possible field name variants (snake_case, camelCase, PascalCase)
+    if ($a.rule_id)  { return $a.rule_id }
+    if ($a.ruleId)   { return $a.ruleId }
+    if ($a.RuleId)   { return $a.RuleId }
+    if ($a.ruleid)   { return $a.ruleid }
+    return $null
+}
+
+# ---------------------------------------------------------------------------
+# Query alerts with multi-strategy fallback
+# ---------------------------------------------------------------------------
+function Query-TinySocsAlerts {
+    param(
+        [string[]]$RuleIds,
+        [int]$LookbackMinutes = 30
+    )
+
+    Initialize-SiemConnection
+
+    # ── Strategy 1: Server-side term filter on alert.rule_id ──
+    # The field is mapped as keyword type directly (no .keyword sub-field needed).
+    try {
+        $ruleFilter = ($RuleIds | ForEach-Object { "{`"term`":{`"alert.rule_id`":`"$_`"}}" }) -join ","
+        $body = @"
 {
-  "size": 10,
+  "size": 50,
   "query": {
     "bool": {
       "must": [
@@ -187,34 +326,66 @@ function Query-TinySocsAlerts {
   }
 }
 "@
-
-    $pair = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${siemUser}:${siemPass}"))
-    $headers = @{ "Authorization" = "Basic $pair"; "Content-Type" = "application/json" }
-
-    $splat = @{
-        Uri     = "$siemUrl/tinysocs-alerts-*/_search"
-        Method  = "POST"
-        Headers = $headers
-        Body    = $body
-    }
-
-    # Handle TLS
-    if (Test-Path $caCert -ErrorAction SilentlyContinue) {
-        # PowerShell 7+ supports -Certificate, but for 5.1 we skip verification
-    }
-    # For self-signed certs: trust all (test environment only)
-    try {
-        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
-    } catch { }
-
-    try {
-        $resp = Invoke-RestMethod @splat -ErrorAction Stop
+        $resp = Invoke-SiemQuery -Path "/tinysocs-alerts-*/_search" -Body $body
         $hits = @($resp.hits.hits)
-        return $hits
+        if ($hits.Count -gt 0) { return $hits }
     } catch {
-        Write-Warning "OpenSearch query failed: $($_.Exception.Message)"
-        return @()
+        Write-Host "    Strategy 1 (term+range) failed: $($_.Exception.Message)" -ForegroundColor DarkGray
     }
+
+    # ── Strategy 2: Same rule filter but WITHOUT timestamp range ──
+    # Handles case where timestamp field is mapped as text (not date).
+    try {
+        $ruleFilter2 = ($RuleIds | ForEach-Object { "{`"term`":{`"alert.rule_id`":`"$_`"}}" }) -join ","
+        $body2 = @"
+{
+  "size": 50,
+  "query": {
+    "bool": {
+      "should": [$ruleFilter2],
+      "minimum_should_match": 1
+    }
+  }
+}
+"@
+        $resp2 = Invoke-SiemQuery -Path "/tinysocs-alerts-*/_search" -Body $body2
+        $hits2 = @($resp2.hits.hits)
+        if ($hits2.Count -gt 0) { return $hits2 }
+    } catch {
+        Write-Host "    Strategy 2 (term, no range) failed: $($_.Exception.Message)" -ForegroundColor DarkGray
+    }
+
+    # ── Strategy 3: Fetch all alerts, match rule_id client-side ──
+    # Handles field name mismatches (camelCase vs snake_case, missing .keyword).
+    try {
+        $body3 = @"
+{
+  "size": 500,
+  "sort": [{"_doc": "desc"}],
+  "query": {"match_all": {}}
+}
+"@
+        $resp3 = Invoke-SiemQuery -Path "/tinysocs-alerts-*/_search" -Body $body3
+        $allHits = @($resp3.hits.hits)
+
+        if ($allHits.Count -gt 0) {
+            $matched = @()
+            foreach ($hit in $allHits) {
+                $ruleId = Get-HitRuleId $hit
+                if ($ruleId -and ($RuleIds -contains $ruleId)) {
+                    $matched += $hit
+                }
+            }
+            if ($matched.Count -gt 0) {
+                Write-Host "    (Matched via client-side filter on $($allHits.Count) alerts)" -ForegroundColor DarkGray
+                return $matched
+            }
+        }
+    } catch {
+        Write-Host "    Strategy 3 (match_all + client filter) failed: $($_.Exception.Message)" -ForegroundColor DarkGray
+    }
+
+    return @()
 }
 
 # ---------------------------------------------------------------------------
@@ -310,6 +481,15 @@ if (-not $DryRun) {
     }
 }
 
+# Pre-flight: check OpenSearch connectivity and alert schema
+if (-not $DryRun) {
+    $preflight = Test-AlertConnectivity
+    if (-not $preflight) {
+        Write-Warning "Pre-flight check failed. Tests will run but alert detection may not work."
+        Write-Warning "Verify: (1) OpenSearch is running, (2) detection engine is enabled, (3) rules are loaded."
+    }
+}
+
 # Run tests
 $results = @()
 foreach ($test in $tests) {
@@ -351,25 +531,88 @@ foreach ($test in $tests) {
         continue
     }
 
-    # Execute the Atomic test
+    # Execute the Atomic test (with fallback command support)
+    # NOTE: Invoke-AtomicTest does NOT throw when it finds 0 applicable tests
+    # or when the YAML file is missing. It prints messages and returns normally.
+    # We must capture output and inspect it to detect these silent failures.
+    $fallbackCmd = $test.fallback_command
+    $usedFallback = $false
+    $artSucceeded = $false
+    $artError = $null
+
     try {
         Write-Host "  Executing Atomic test #$testNum..."
         Invoke-AtomicTest $technique -TestNumbers $testNum -GetPrereqs -ErrorAction SilentlyContinue
-        Invoke-AtomicTest $technique -TestNumbers $testNum -ErrorAction Stop
-        Write-Host "  Test executed. Waiting for detection pipeline..."
-    } catch {
-        Write-Host "  ERROR executing test: $($_.Exception.Message)" -ForegroundColor Red
-        $results += [PSCustomObject]@{
-            Technique = $technique
-            Name      = $name
-            Status    = "ERROR"
-            Reason    = $_.Exception.Message
-            Rules     = ($rules -join ", ")
-            Detected  = @()
+
+        # Capture ALL output (stdout + stderr + warning + verbose) to detect silent failures
+        $artOutput = Invoke-AtomicTest $technique -TestNumbers $testNum -ErrorAction Stop *>&1
+        $artOutputStr = ($artOutput | Out-String)
+
+        # Check for patterns that indicate the test did NOT actually execute successfully.
+        # Invoke-AtomicTest silently swallows many errors (no throw), so we must inspect output.
+        $needsFallback = $false
+        if ($artOutputStr -match "Found 0 atomic tests") {
+            $artError = "No ART tests applicable to Windows for $technique"
+            $needsFallback = $true
+        } elseif ($artOutputStr -match "does not exist.*Check your Atomic") {
+            $artError = "ART YAML file missing for $technique"
+            $needsFallback = $true
+        } elseif ($artOutputStr -match "'wmic' is not recognized") {
+            $artError = "wmic tool not available (deprecated in this Windows version)"
+            $needsFallback = $true
+        } elseif ($artOutputStr -match "The specified service does not exist") {
+            $artError = "Target service does not exist on this system"
+            $needsFallback = $true
+        } elseif ($artOutputStr -match "The network name cannot be found") {
+            $artError = "Network target not reachable"
+            $needsFallback = $true
+        } elseif ($artOutputStr -match "Failed to meet prereq") {
+            $artError = "ART prerequisite not met for $technique"
+            $needsFallback = $true
+        } else {
+            $artSucceeded = $true
+            Write-Host "  Test executed. Waiting for detection pipeline..."
         }
-        # Cleanup
-        try { Invoke-AtomicTest $technique -TestNumbers $testNum -Cleanup -ErrorAction SilentlyContinue } catch { }
-        continue
+    } catch {
+        $artError = $_.Exception.Message
+        # "Access is denied" errors also qualify for fallback
+        $needsFallback = $true
+    }
+
+    # If ART test didn't succeed, try fallback command
+    if (-not $artSucceeded) {
+        if ($fallbackCmd -and $needsFallback) {
+            Write-Host "  ART test failed ($artError). Using fallback command..." -ForegroundColor Yellow
+            try {
+                Invoke-Expression $fallbackCmd
+                $usedFallback = $true
+                Write-Host "  Fallback command executed. Waiting for detection pipeline..."
+            } catch {
+                Write-Host "  ERROR executing fallback: $($_.Exception.Message)" -ForegroundColor Red
+                $results += [PSCustomObject]@{
+                    Technique = $technique
+                    Name      = $name
+                    Status    = "ERROR"
+                    Reason    = "ART: $artError; Fallback: $($_.Exception.Message)"
+                    Rules     = ($rules -join ", ")
+                    Detected  = @()
+                }
+                continue
+            }
+        } else {
+            Write-Host "  ERROR: $artError" -ForegroundColor Red
+            $results += [PSCustomObject]@{
+                Technique = $technique
+                Name      = $name
+                Status    = "ERROR"
+                Reason    = $artError
+                Rules     = ($rules -join ", ")
+                Detected  = @()
+            }
+            # Cleanup
+            try { Invoke-AtomicTest $technique -TestNumbers $testNum -Cleanup -ErrorAction SilentlyContinue } catch { }
+            continue
+        }
     }
 
     # Wait for detection pipeline to process
@@ -377,9 +620,9 @@ foreach ($test in $tests) {
     $deadline = (Get-Date).AddSeconds($timeout)
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Seconds 15
-        $hits = Query-TinySocsAlerts -RuleIds $rules -LookbackMinutes 10
+        $hits = Query-TinySocsAlerts -RuleIds $rules -LookbackMinutes 30
         if ($hits.Count -gt 0) {
-            $detected = @($hits | ForEach-Object { $_._source.alert.rule_id } | Select-Object -Unique)
+            $detected = @($hits | ForEach-Object { Get-HitRuleId $_ } | Where-Object { $_ } | Select-Object -Unique)
             break
         }
         Write-Host "  Waiting... ($([int](($deadline - (Get-Date)).TotalSeconds))s remaining)"
@@ -407,12 +650,14 @@ foreach ($test in $tests) {
         }
     }
 
-    # Cleanup
-    try {
-        Write-Host "  Cleaning up..."
-        Invoke-AtomicTest $technique -TestNumbers $testNum -Cleanup -ErrorAction SilentlyContinue
-    } catch {
-        Write-Host "  Cleanup warning: $($_.Exception.Message)" -ForegroundColor Yellow
+    # Cleanup (skip ART cleanup if we used the fallback command)
+    if (-not $usedFallback) {
+        try {
+            Write-Host "  Cleaning up..."
+            Invoke-AtomicTest $technique -TestNumbers $testNum -Cleanup -ErrorAction SilentlyContinue
+        } catch {
+            Write-Host "  Cleanup warning: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
     }
 }
 

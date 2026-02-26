@@ -1,10 +1,10 @@
 ﻿{
-    "generated_at":  "2026-02-25T19:33:50.6588905+00:00",
-    "efficacy_pct":  0,
+    "generated_at":  "2026-02-26T13:39:13.0215696+00:00",
+    "efficacy_pct":  12.5,
     "total_tests":  19,
     "results":  [
                     {
-                        "technique_name":  "Brute Force — Password Guessing",
+                        "technique_name":  "Brute Force - Password Guessing",
                         "detected_rules":  [
 
                                            ],
@@ -17,7 +17,7 @@
                         "technique_id":  "T1110.001"
                     },
                     {
-                        "technique_name":  "OS Credential Dumping — LSASS Memory",
+                        "technique_name":  "OS Credential Dumping - LSASS Memory",
                         "detected_rules":  [
 
                                            ],
@@ -30,7 +30,7 @@
                         "technique_id":  "T1003.001"
                     },
                     {
-                        "technique_name":  "Command and Scripting Interpreter — PowerShell",
+                        "technique_name":  "Command and Scripting Interpreter - PowerShell",
                         "detected_rules":  [
 
                                            ],
@@ -44,7 +44,7 @@
                         "technique_id":  "T1059.001"
                     },
                     {
-                        "technique_name":  "Scheduled Task/Job — Scheduled Task",
+                        "technique_name":  "Scheduled Task/Job - Scheduled Task",
                         "detected_rules":  [
 
                                            ],
@@ -57,20 +57,20 @@
                         "technique_id":  "T1053.005"
                     },
                     {
-                        "technique_name":  "Boot or Logon Autostart Execution — Registry Run Keys",
+                        "technique_name":  "Boot or Logon Autostart Execution - Registry Run Keys",
                         "detected_rules":  [
-
+                                               "TS-091"
                                            ],
                         "expected_rules":  [
                                                "TS-091",
                                                "registry_run_key"
                                            ],
-                        "reason":  "No alerts within timeout",
-                        "status":  "MISSED",
+                        "reason":  "",
+                        "status":  "DETECTED",
                         "technique_id":  "T1547.001"
                     },
                     {
-                        "technique_name":  "Create or Modify System Process — Windows Service",
+                        "technique_name":  "Create or Modify System Process - Windows Service",
                         "detected_rules":  [
 
                                            ],
@@ -83,7 +83,7 @@
                         "technique_id":  "T1543.003"
                     },
                     {
-                        "technique_name":  "Indicator Removal — Clear Windows Event Logs",
+                        "technique_name":  "Indicator Removal - Clear Windows Event Logs",
                         "detected_rules":  [
 
                                            ],
@@ -96,7 +96,7 @@
                         "technique_id":  "T1070.001"
                     },
                     {
-                        "technique_name":  "Impair Defenses — Disable or Modify Tools",
+                        "technique_name":  "Impair Defenses - Disable or Modify Tools",
                         "detected_rules":  [
 
                                            ],
@@ -109,7 +109,7 @@
                         "technique_id":  "T1562.001"
                     },
                     {
-                        "technique_name":  "Remote Services — SMB/Windows Admin Shares",
+                        "technique_name":  "Remote Services - SMB/Windows Admin Shares",
                         "detected_rules":  [
 
                                            ],
@@ -122,7 +122,7 @@
                         "technique_id":  "T1021.002"
                     },
                     {
-                        "technique_name":  "Create Account — Local Account",
+                        "technique_name":  "Create Account - Local Account",
                         "detected_rules":  [
 
                                            ],
@@ -135,7 +135,7 @@
                         "technique_id":  "T1136.001"
                     },
                     {
-                        "technique_name":  "System Binary Proxy Execution — Rundll32",
+                        "technique_name":  "System Binary Proxy Execution - Rundll32",
                         "detected_rules":  [
 
                                            ],
@@ -148,7 +148,7 @@
                         "technique_id":  "T1218.011"
                     },
                     {
-                        "technique_name":  "OS Credential Dumping — NTDS",
+                        "technique_name":  "OS Credential Dumping - NTDS",
                         "detected_rules":  [
 
                                            ],
@@ -161,7 +161,7 @@
                         "technique_id":  "T1003.003"
                     },
                     {
-                        "technique_name":  "Account Discovery — Local Account",
+                        "technique_name":  "Account Discovery - Local Account",
                         "detected_rules":  [
 
                                            ],
@@ -203,14 +203,14 @@
                     {
                         "technique_name":  "Process Injection",
                         "detected_rules":  [
-
+                                               "TS-133"
                                            ],
                         "expected_rules":  [
                                                "TS-133",
                                                "process_injection_sysmon"
                                            ],
-                        "reason":  "No alerts within timeout",
-                        "status":  "MISSED",
+                        "reason":  "",
+                        "status":  "DETECTED",
                         "technique_id":  "T1055"
                     },
                     {
@@ -228,7 +228,7 @@
                         "technique_id":  "T1027"
                     },
                     {
-                        "technique_name":  "Data Manipulation — Stored Data Manipulation",
+                        "technique_name":  "Data Manipulation - Stored Data Manipulation",
                         "detected_rules":  [
 
                                            ],

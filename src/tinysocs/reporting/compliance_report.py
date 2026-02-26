@@ -72,7 +72,7 @@ def _rule_fire_counts(hours: int) -> Dict[str, int]:
         "query": {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}},
         "aggs": {
             "by_rule": {
-                "terms": {"field": "alert.rule_id.keyword", "size": 500}
+                "terms": {"field": "alert.rule_id", "size": 500}
             }
         },
     }

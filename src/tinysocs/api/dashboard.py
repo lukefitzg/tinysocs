@@ -548,7 +548,7 @@ async def api_alert_summary(hours: int = Query(24, ge=1, le=720)):
     # Top rules
     body_rules = {
         "query": {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}},
-        "aggs": {"by_rule": {"terms": {"field": "alert.rule_id.keyword", "size": 10, "order": {"_count": "desc"}}}},
+        "aggs": {"by_rule": {"terms": {"field": "alert.rule_id", "size": 10, "order": {"_count": "desc"}}}},
     }
     resp_rules = await _safe_query_async("tinysocs-alerts-*", body_rules)
     top_rules = [

@@ -154,3 +154,7 @@ C:\ProgramData\TinySocs\Collector\agent\queue/**
 # Ignore local queue segment files created during agent runs
 segment-*.jsonl
 **/segment-*.jsonl
+
+# Build/deploy staging artefacts (contain large binaries)
+deploy-staging/
+publish/

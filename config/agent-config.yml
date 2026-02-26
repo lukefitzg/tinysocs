@@ -13,7 +13,7 @@ inputs:
         level: information          # critical/error/warning/information/verbose
         start_from: now             # now | bookmark | beginning
       - name: System
-        level: warning
+        level: information          # must include Information-level events (e.g. 7045 service installed)
         start_from: now
       - name: Application
         level: information

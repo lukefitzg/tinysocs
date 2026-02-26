@@ -490,6 +490,41 @@ if (-not $DryRun) {
     }
 }
 
+# ---------------------------------------------------------------------------
+# Enable Windows audit policies (required for Security event generation)
+# ---------------------------------------------------------------------------
+if (-not $DryRun) {
+    Write-Host ""
+    Write-Host "[*] Enabling Windows audit policies for detection..."
+    $auditPolicies = @(
+        @{ Sub = 'Logon';                       Flag = '/failure:enable' },
+        @{ Sub = 'Logoff';                      Flag = '/success:enable' },
+        @{ Sub = 'Process Creation';             Flag = '/success:enable' },
+        @{ Sub = 'Other Object Access Events';   Flag = '/success:enable' },
+        @{ Sub = 'User Account Management';      Flag = '/success:enable' },
+        @{ Sub = 'Audit Policy Change';          Flag = '/success:enable' },
+        @{ Sub = 'Security State Change';        Flag = '/success:enable' },
+        @{ Sub = 'File System';                  Flag = '/success:enable' },
+        @{ Sub = 'Special Logon';                Flag = '/success:enable' }
+    )
+    $auditOk = 0
+    foreach ($ap in $auditPolicies) {
+        $null = auditpol /set /subcategory:"$($ap.Sub)" $($ap.Flag) 2>&1
+        if ($LASTEXITCODE -eq 0) { $auditOk++ }
+    }
+    Write-Host "    Enabled $auditOk/$($auditPolicies.Count) audit subcategories"
+
+    # Enable command-line logging for 4688
+    $regPath = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit'
+    try {
+        if (-not (Test-Path $regPath)) { New-Item -Path $regPath -Force | Out-Null }
+        Set-ItemProperty -Path $regPath -Name 'ProcessCreationIncludeCmdLine_Enabled' -Value 1 -Type DWord
+        Write-Host "    Process command-line logging enabled"
+    } catch {
+        Write-Host "    Warning: could not enable command-line logging: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+}
+
 # Run tests
 $results = @()
 foreach ($test in $tests) {

@@ -9,8 +9,10 @@
     3. Replaces the agent binary with the updated version
     4. Restores the full rules.yml (with mitre blocks)
     5. Clears any stuck queue segments
-    6. Restarts the agent via the quickstart
-    7. Waits for rules to load and verifies detection engine is up
+    6. Enables Windows audit policies (required for Security event generation)
+    7. Restarts the agent via the quickstart
+    8. Waits for rules to load and verifies detection engine is up
+    9. Verifies audit policies are active
 
 .PARAMETER SourceDir
     Directory containing the updated files (TinySocs.Agent.exe, rules.yml,
@@ -64,7 +66,7 @@ Write-Host "[*] New binary: $newBinary ($([math]::Round((Get-Item $newBinary).Le
 
 # -- Step 1: Stop the watchdog (TinySocs-Quickstart) --
 Write-Host ""
-Write-Host "[1/7] Stopping TinySocs-Quickstart watchdog..."
+Write-Host "[1/9] Stopping TinySocs-Quickstart watchdog..."
 $quickstart = Get-Process -Name "TinySocs-Quickstart" -ErrorAction SilentlyContinue
 if ($quickstart) {
     Write-Host "      Watchdog PID: $($quickstart.Id)"
@@ -84,7 +86,7 @@ if ($quickstart) {
 
 # -- Step 2: Stop the agent --
 Write-Host ""
-Write-Host "[2/7] Stopping TinySocs.Agent..."
+Write-Host "[2/9] Stopping TinySocs.Agent..."
 $agent = Get-Process -Name "TinySocs.Agent" -ErrorAction SilentlyContinue
 if ($agent) {
     Write-Host "      Agent PID: $($agent.Id)"
@@ -104,7 +106,7 @@ if ($agent) {
 
 # -- Step 3: Replace the binary --
 Write-Host ""
-Write-Host "[3/7] Replacing agent binary..."
+Write-Host "[3/9] Replacing agent binary..."
 $targetBinary = Join-Path $agentBin "TinySocs.Agent.exe"
 if (Test-Path $targetBinary) {
     $backupPath = "$targetBinary.bak"
@@ -116,7 +118,7 @@ Write-Host "      Binary replaced: $([math]::Round((Get-Item $targetBinary).Leng
 
 # -- Step 4: Restore full rules.yml --
 Write-Host ""
-Write-Host "[4/7] Deploying rules.yml (with MITRE data)..."
+Write-Host "[4/9] Deploying rules.yml (with MITRE data)..."
 if (-not (Test-Path $rulesDir)) {
     New-Item -ItemType Directory -Path $rulesDir -Force | Out-Null
 }
@@ -129,7 +131,7 @@ if (Test-Path $newRules) {
 
 # -- Step 5: Clear stuck queue segments --
 Write-Host ""
-Write-Host "[5/7] Clearing queue segments..."
+Write-Host "[5/9] Clearing queue segments..."
 if (Test-Path $queueDir) {
     $segments = Get-ChildItem $queueDir -Filter "segment-*.jsonl" -ErrorAction SilentlyContinue
     if ($segments.Count -gt 0) {
@@ -142,9 +144,36 @@ if (Test-Path $queueDir) {
     Write-Host "      Queue directory doesn't exist yet (OK)"
 }
 
-# -- Step 6: Start the quickstart (which starts the agent) --
+# -- Step 6: Enable Windows audit policies --
 Write-Host ""
-Write-Host "[6/7] Starting TinySocs-Quickstart..."
+Write-Host "[6/9] Enabling Windows audit policies..."
+$auditPolicies = @(
+    @{ Subcategory = 'Logon';                       Setting = '/failure:enable' },
+    @{ Subcategory = 'Logoff';                      Setting = '/success:enable' },
+    @{ Subcategory = 'Process Creation';             Setting = '/success:enable' },
+    @{ Subcategory = 'Other Object Access Events';   Setting = '/success:enable' },
+    @{ Subcategory = 'User Account Management';      Setting = '/success:enable' },
+    @{ Subcategory = 'Audit Policy Change';          Setting = '/success:enable' },
+    @{ Subcategory = 'Security State Change';        Setting = '/success:enable' },
+    @{ Subcategory = 'File System';                  Setting = '/success:enable' },
+    @{ Subcategory = 'Special Logon';                Setting = '/success:enable' }
+)
+$auditOk = 0
+foreach ($p in $auditPolicies) {
+    $r = auditpol /set /subcategory:"$($p.Subcategory)" $($p.Setting) 2>&1
+    if ($LASTEXITCODE -eq 0) { $auditOk++ }
+}
+Write-Host "      Enabled $auditOk/$($auditPolicies.Count) audit subcategories" -ForegroundColor Green
+
+# Enable command-line logging for 4688
+$regPath = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit'
+if (-not (Test-Path $regPath)) { New-Item -Path $regPath -Force | Out-Null }
+Set-ItemProperty -Path $regPath -Name 'ProcessCreationIncludeCmdLine_Enabled' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+Write-Host "      Process command-line logging enabled" -ForegroundColor Green
+
+# -- Step 7: Start the quickstart (which starts the agent) --
+Write-Host ""
+Write-Host "[7/9] Starting TinySocs-Quickstart..."
 $quickstartExe = "C:\Program Files\TinySocs\TinySocs-Quickstart.exe"
 if (Test-Path $quickstartExe) {
     Start-Process -FilePath $quickstartExe -WindowStyle Hidden
@@ -171,9 +200,9 @@ if (Test-Path $quickstartExe) {
     }
 }
 
-# -- Step 7: Verify detection engine --
+# -- Step 8: Verify detection engine --
 Write-Host ""
-Write-Host "[7/7] Verifying detection engine..."
+Write-Host "[8/9] Verifying detection engine..."
 Write-Host "      Waiting 15s for rule reload cycle..."
 Start-Sleep -Seconds 15
 
@@ -201,6 +230,19 @@ if (Test-Path $logFile) {
     }
 } else {
     Write-Warning "      Log file not found at $logFile"
+}
+
+# -- Step 9: Verify audit policies are active --
+Write-Host ""
+Write-Host "[9/9] Verifying audit policies..."
+$verifyPolicies = @('Logon', 'Process Creation', 'Other Object Access Events', 'User Account Management')
+$auditOutput = auditpol /get /category:* 2>&1 | Out-String
+foreach ($vp in $verifyPolicies) {
+    $line = ($auditOutput -split "`n") | Where-Object { $_ -match "^\s+$vp\s+" } | Select-Object -First 1
+    if ($line) {
+        $setting = ($line -replace "^\s+$vp\s+", '').Trim()
+        Write-Host "      $vp`: $setting" -ForegroundColor Green
+    }
 }
 
 Write-Host ""

@@ -162,7 +162,18 @@ namespace TinySocs.Agent.Detection
             var groupKey = ExtractGroupKey(rule.Condition.GroupBy, evt);
             if (string.IsNullOrWhiteSpace(groupKey))
             {
-                return null;
+                // Fallback: use computer_name as group key when the configured
+                // group_by field is missing from the event. This prevents silently
+                // dropping threshold-1 events where the field path doesn't resolve
+                // (e.g. after queue serialization or unusual event structures).
+                groupKey = ExtractGroupKey("winlog.computer_name", evt);
+                if (string.IsNullOrWhiteSpace(groupKey))
+                {
+                    return null;
+                }
+                _logger.LogDebug(
+                    "Rule {RuleId}: group_by field '{GroupBy}' not found in event {EventId}; falling back to computer_name '{Key}'.",
+                    rule.Id, rule.Condition.GroupBy, evt.EventId, groupKey);
             }
 
             var now = DateTime.UtcNow;
@@ -188,9 +199,20 @@ namespace TinySocs.Agent.Detection
                 Event = evt
             });
 
-            // Clean up old events outside the window
-            var cutoff = now.AddMinutes(-windowMinutes);
-            window.RemoveAll(e => e.Timestamp < cutoff);
+            // For threshold == 1, fire immediately on any matching event.
+            // No window pruning needed — a single occurrence is sufficient.
+            // This avoids false negatives when events are processed with delay
+            // (e.g. after queue backlog or shipper retries).
+            if (rule.Condition.Threshold <= 1)
+            {
+                // Skip window cleanup — go straight to threshold check below
+            }
+            else
+            {
+                // Clean up old events outside the window
+                var cutoff = now.AddMinutes(-windowMinutes);
+                window.RemoveAll(e => e.Timestamp < cutoff);
+            }
 
             // Check if threshold is met
             if (window.Count >= rule.Condition.Threshold)
@@ -262,7 +284,32 @@ namespace TinySocs.Agent.Detection
                 return false;
             }
 
-            // Future: add more filter checks from condition.Filters
+            // Content-based field_match filter
+            if (condition.FieldMatch != null &&
+                !string.IsNullOrWhiteSpace(condition.FieldMatch.Field) &&
+                condition.FieldMatch.Values?.Count > 0)
+            {
+                var fieldValue = ExtractGroupKey(condition.FieldMatch.Field, evt);
+                if (string.IsNullOrWhiteSpace(fieldValue))
+                {
+                    return false;
+                }
+
+                bool anyMatch = false;
+                foreach (var pattern in condition.FieldMatch.Values)
+                {
+                    if (fieldValue.IndexOf(pattern, StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        anyMatch = true;
+                        break;
+                    }
+                }
+
+                if (!anyMatch)
+                {
+                    return false;
+                }
+            }
 
             return true;
         }

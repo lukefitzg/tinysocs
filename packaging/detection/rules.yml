@@ -312,6 +312,26 @@ rules:
       - write_alert_doc
       - append_alert_log
 
+  - id: "TS-080-sys"
+    name: "event_log_cleared_system"
+    description: "Event log cleared detected via System channel (104)"
+    severity: "high"
+    enabled: true
+    type: threshold_by_key
+    mitre:
+      technique_id: "T1070.001"
+      technique_name: "Indicator Removal: Clear Windows Event Logs"
+      tactic: "defense-evasion"
+    condition:
+      event_id: 104
+      channel: System
+      group_by: "winlog.computer_name"
+      threshold: 1
+      window_minutes: 5
+    actions:
+      - write_alert_doc
+      - append_alert_log
+
   - id: "TS-081"
     name: "defender_tamper"
     description: "Windows Defender real-time protection disabled or exclusion added"
@@ -758,6 +778,14 @@ rules:
       group_by: "winlog.event_data.NewProcessName"
       threshold: 1
       window_minutes: 5
+      field_match:
+        field: "winlog.event_data.NewProcessName"
+        values:
+          - "rundll32.exe"
+          - "regsvr32.exe"
+          - "mshta.exe"
+          - "wmic.exe"
+          - "certutil.exe"
     actions:
       - write_alert_doc
       - append_alert_log
@@ -775,9 +803,15 @@ rules:
     condition:
       event_id: 4688
       channel: Security
-      group_by: "winlog.event_data.SubjectUserName"
+      group_by: "winlog.event_data.NewProcessName"
       threshold: 1
       window_minutes: 5
+      field_match:
+        field: "winlog.event_data.ParentProcessName"
+        values:
+          - "wmiprvse.exe"
+          - "wmic.exe"
+          - "WmiPrvSE.exe"
     actions:
       - write_alert_doc
       - append_alert_log

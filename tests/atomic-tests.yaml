@@ -70,12 +70,12 @@ tests:
   - atomic_technique: "T1070.001"
     technique_name: "Indicator Removal - Clear Windows Event Logs"
     atomic_test_number: 1
-    expected_rules: ["TS-080"]
+    expected_rules: ["TS-080", "TS-080-sys"]
     sysmon_required: false
     prefer_fallback: true
     timeout_seconds: 120
-    fallback_command: "wevtutil cl Security; Start-Sleep -Seconds 3; $evt1102 = Get-WinEvent -LogName Security -MaxEvents 20 -ErrorAction SilentlyContinue | Where-Object { $_.Id -eq 1102 }; if ($evt1102) { Write-Host \"DIAG: Event 1102 found after log clear\" } else { Write-Host \"DIAG: Event 1102 NOT in Security log after clear\" }"
-    notes: "Clears the Security event log, generating event 1102. Uses prefer_fallback to run diagnostic. Agent may lose EventLogWatcher subscription after log clear (known agent-side issue)."
+    fallback_command: "wevtutil cl Security; Start-Sleep -Seconds 3; $evt1102 = Get-WinEvent -LogName Security -MaxEvents 20 -ErrorAction SilentlyContinue | Where-Object { $_.Id -eq 1102 }; if ($evt1102) { Write-Host \"DIAG: Event 1102 found after log clear\" } else { Write-Host \"DIAG: Event 1102 NOT in Security log after clear\" }; $evt104 = Get-WinEvent -LogName System -MaxEvents 20 -ErrorAction SilentlyContinue | Where-Object { $_.Id -eq 104 }; if ($evt104) { Write-Host \"DIAG: Event 104 found in System log\" } else { Write-Host \"DIAG: Event 104 NOT in System log\" }"
+    notes: "Clears the Security event log. Detects via event 1102 (Security) or event 104 (System). System-channel detection (TS-080-sys) is more reliable as it is unaffected by the Security log clear."
 
   - atomic_technique: "T1562.001"
     technique_name: "Impair Defenses - Disable or Modify Tools"

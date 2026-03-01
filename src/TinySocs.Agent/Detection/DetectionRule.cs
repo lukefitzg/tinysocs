@@ -41,6 +41,22 @@ namespace TinySocs.Agent.Detection
 
         // Additional filter fields (extensible)
         public Dictionary<string, object>? Filters { get; set; }
+
+        // Content-based filter: require a field path to contain one of these substrings (case-insensitive).
+        // YAML example:
+        //   field_match:
+        //     field: "winlog.event_data.NewProcessName"
+        //     values: ["rundll32.exe", "regsvr32.exe"]
+        public FieldMatchFilter? FieldMatch { get; set; }
+    }
+
+    /// <summary>
+    /// Content-based filter: matches when the specified field contains one of the values.
+    /// </summary>
+    public sealed class FieldMatchFilter
+    {
+        public string Field { get; set; } = string.Empty;
+        public List<string> Values { get; set; } = new();
     }
 
     public sealed class RulesFile

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
@@ -22,10 +23,36 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-# Standard paths for rule files
+# Standard paths for rule files (development layout)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 _CSHARP_RULES = _PROJECT_ROOT / "packaging" / "detection" / "rules.yml"
 _PYTHON_RULES = _PROJECT_ROOT / "src" / "tinysocs" / "agent" / "detections" / "rules.yaml"
+
+
+def _find_csharp_rules() -> Optional[Path]:
+    """Locate C# rules file across dev and installed layouts."""
+    candidates = [
+        _CSHARP_RULES,
+        Path(os.environ.get("ProgramData", r"C:\ProgramData"))
+        / "TinySocs" / "Collector" / "rules" / "rules.yml",
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    return None
+
+
+def _find_python_rules() -> Optional[Path]:
+    """Locate Python rules file across dev and installed layouts."""
+    candidates = [
+        _PYTHON_RULES,
+        # Relative to this module — works inside PyInstaller bundles
+        Path(__file__).resolve().parent.parent / "agent" / "detections" / "rules.yaml",
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    return None
 
 # ATT&CK tactics in standard order
 TACTIC_ORDER = [
@@ -70,14 +97,16 @@ TACTIC_LABELS = {
 def load_all_rules() -> List[Dict[str, Any]]:
     """Load all rules from both C# and Python rule files."""
     rules = []
-    if _CSHARP_RULES.exists():
-        with open(_CSHARP_RULES) as f:
+    csharp_path = _find_csharp_rules()
+    if csharp_path:
+        with open(csharp_path) as f:
             data = yaml.safe_load(f)
             for r in data.get("rules", []):
                 r["_source"] = "csharp"
                 rules.append(r)
-    if _PYTHON_RULES.exists():
-        with open(_PYTHON_RULES) as f:
+    python_path = _find_python_rules()
+    if python_path:
+        with open(python_path) as f:
             for r in yaml.safe_load(f) or []:
                 r["_source"] = "python"
                 rules.append(r)

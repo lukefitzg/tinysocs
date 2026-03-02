@@ -11,6 +11,8 @@ import yaml
 from tinysocs.reporting.mitre_coverage import (
     TACTIC_ORDER,
     TACTIC_LABELS,
+    _find_csharp_rules,
+    _find_python_rules,
     calculate_coverage,
     extract_mitre_annotations,
     generate_coverage_markdown,
@@ -75,6 +77,18 @@ class TestRuleLoading:
                 tid = mitre["technique_id"]
                 assert pattern.match(tid), \
                     f"Rule {rule.get('id', '?')}: invalid technique_id format: {tid}"
+
+    def test_find_csharp_rules_dev_path(self):
+        """_find_csharp_rules should find rules in development layout."""
+        path = _find_csharp_rules()
+        assert path is not None, "C# rules file should be found in dev layout"
+        assert path.name == "rules.yml"
+
+    def test_find_python_rules_dev_path(self):
+        """_find_python_rules should find rules in development layout."""
+        path = _find_python_rules()
+        assert path is not None, "Python rules file should be found in dev layout"
+        assert path.name == "rules.yaml"
 
 
 # ---------------------------------------------------------------------------

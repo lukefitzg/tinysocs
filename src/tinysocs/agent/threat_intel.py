@@ -283,27 +283,36 @@ class AlienVaultOTXProvider(ThreatIntelProvider):
 # ---------------------------------------------------------------------------
 
 class GreyNoiseCommunityProvider(ThreatIntelProvider):
-    """GreyNoise Community IP classification. Free tier: 5,000/day."""
+    """GreyNoise Community IP classification.
+
+    Works unauthenticated (10 lookups/day) or with a free API key
+    (50 lookups/week).  The API key is optional.
+    """
 
     name = "greynoise"
-    _rate_limit = 5000
 
     def __init__(self) -> None:
         super().__init__()
         self._api_key = _get_env("GREYNOISE_API_KEY")
+        # Authenticated: 50/week (~7/day); unauthenticated: 10/day
+        self._rate_limit = 50 if self._api_key else 10
 
     def is_configured(self) -> bool:
-        return bool(self._api_key)
+        # Always configured — works without an API key (unauthenticated)
+        return True
 
     async def enrich_ip(self, ip: str) -> Optional[EnrichmentResult]:
         if not self.is_available():
             return None
         self._record_call()
         try:
+            headers = {"Accept": "application/json"}
+            if self._api_key:
+                headers["key"] = self._api_key
             async with httpx.AsyncClient(timeout=10.0) as client:
                 r = await client.get(
                     f"https://api.greynoise.io/v3/community/{ip}",
-                    headers={"key": self._api_key, "Accept": "application/json"},
+                    headers=headers,
                 )
                 r.raise_for_status()
                 data = r.json()

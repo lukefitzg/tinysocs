@@ -1026,10 +1026,10 @@ def api_rules_validate(body: Dict[str, Any] = Body(...)):
 
 @dashboard_app.get("/api/host/timeline")
 async def api_host_timeline(
-    hostname: str = Query(..., description="Host to query"),
+    hostname: str = Query("", description="Host to query (blank = all hosts)"),
     hours: int = Query(24, ge=1, le=720),
 ):
-    """Event count over time for a specific host, bucketed with channel breakdown."""
+    """Event count over time for a host (or all hosts), bucketed with channel breakdown."""
     # Determine interval based on time range
     if hours <= 6:
         interval = "5m"
@@ -1038,13 +1038,22 @@ async def api_host_timeline(
     else:
         interval = "6h"
 
+    # Build query — filter by hostname(s) if provided, otherwise fleet-wide
+    must_clauses: list = [
+        {"range": {"@timestamp": {"gte": f"now-{hours}h", "lte": "now"}}},
+    ]
+    if hostname:
+        # Support comma-separated hostnames for multi-select
+        hosts = [h.strip() for h in hostname.split(",") if h.strip()]
+        if len(hosts) == 1:
+            must_clauses.append({"term": {"winlog.computer_name": hosts[0]}})
+        elif len(hosts) > 1:
+            must_clauses.append({"terms": {"winlog.computer_name": hosts}})
+
     body = {
         "query": {
             "bool": {
-                "must": [
-                    {"term": {"winlog.computer_name": hostname}},
-                    {"range": {"@timestamp": {"gte": f"now-{hours}h", "lte": "now"}}},
-                ]
+                "must": must_clauses,
             }
         },
         "aggs": {
@@ -3017,9 +3026,50 @@ a { color: var(--accent); text-decoration: none; }
 .header .meta { color: var(--muted); font-size: 12px; }
 
 .main-layout { display: flex; gap: 16px; padding: 16px 24px; align-items: flex-start; }
-.left-panels { flex: 1; min-width: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
-               margin-right: 400px; transition: margin-right 0.25s ease; }
+.left-panels { flex: 1; min-width: 0; margin-right: 400px; transition: margin-right 0.25s ease; }
 .left-panels.expanded { margin-right: 52px; }
+.tab-bar { display:flex; gap:0; padding:0 24px; background:var(--surface); border-bottom:1px solid var(--border);
+           position:sticky; top:56px; z-index:19; overflow-x:auto; }
+.tab-bar button { background:none; border:none; color:var(--muted); padding:10px 18px; font-size:13px;
+                  cursor:pointer; border-bottom:2px solid transparent; transition:color 0.15s, border-color 0.15s;
+                  white-space:nowrap; font-family:inherit; }
+.tab-bar button.active { color:var(--accent); border-bottom-color:var(--accent); }
+.tab-bar button:hover:not(.active) { color:var(--text); }
+/* Multi-select host picker dropdown */
+.host-picker { position:relative; display:inline-block; }
+.host-picker-btn, .timeline-controls select {
+  font:12px/1 inherit; font-size:12px; margin:0;
+  background:var(--bg); color:var(--text);
+  border:1px solid var(--border); border-radius:4px; cursor:pointer;
+  height:30px; box-sizing:border-box;
+  display:inline-flex; align-items:center;
+  -webkit-appearance:none; -moz-appearance:none; appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23888'/%3E%3C/svg%3E");
+  background-repeat:no-repeat; background-position:right 8px center;
+  padding:0 26px 0 10px;
+}
+.host-picker-btn {
+  min-width:140px; max-width:220px;
+  text-align:left; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.host-picker-btn:hover, .timeline-controls select:hover { border-color:var(--accent); }
+.host-picker-menu {
+  display:none; position:absolute; top:calc(100% + 4px); right:0; z-index:50;
+  background:var(--surface); border:1px solid var(--border); border-radius:6px;
+  min-width:200px; max-height:260px; overflow-y:auto; padding:4px 0;
+  box-shadow:0 8px 24px rgba(0,0,0,.4);
+}
+.host-picker-menu.open { display:block; }
+.host-picker-item {
+  display:flex; align-items:center; gap:8px; padding:6px 12px; cursor:pointer;
+  font-size:12px; color:var(--text); transition:background 0.1s;
+}
+.host-picker-item:hover { background:var(--hover); }
+.host-picker-item input[type=checkbox] { accent-color:var(--accent); margin:0; cursor:pointer; }
+.host-picker-item label { cursor:pointer; flex:1; user-select:none; }
+.host-picker-divider { height:1px; background:var(--border); margin:4px 0; }
+.tab-pane { display:none; }
+.tab-pane.active { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
 .right-panel { width: 384px; position: fixed; top: 90px; right: 24px; bottom: 16px; z-index: 10;
                transition: width 0.25s ease; overflow: hidden; }
 .right-panel.collapsed { width: 36px; }
@@ -3039,8 +3089,9 @@ a { color: var(--accent); text-decoration: none; }
   .right-panel.collapsed { width: 100%; }
   .right-panel .assistant-card { max-height: 450px; height: 450px; }
   .assistant-toggle { display: none; }
+  .tab-bar { top: 0; }
 }
-@media (max-width: 700px) { .left-panels { grid-template-columns: 1fr; } }
+@media (max-width: 700px) { .tab-pane.active { grid-template-columns: 1fr; } }
 
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
         padding: 16px; overflow: hidden; }
@@ -3389,7 +3440,7 @@ select { cursor: pointer; }
       </div>
       <div class="field">
         <label>GreyNoise Community API Key</label>
-        <input type="text" id="s_GREYNOISE_API_KEY" placeholder="(free: 5,000/day)">
+        <input type="text" id="s_GREYNOISE_API_KEY" placeholder="(optional: 10/day unauthenticated, 50/week with key)">
       </div>
       <div class="field">
         <button class="btn-save" onclick="testThreatIntel()" style="width:auto;background:var(--surface);color:var(--accent);border:1px solid var(--accent)">Test Providers</button>
@@ -3438,279 +3489,307 @@ select { cursor: pointer; }
   </div>
 </div>
 
+<div class="tab-bar" id="tabBar">
+  <button class="active" data-tab="overview" onclick="switchTab('overview')">Overview</button>
+  <button data-tab="fleet" onclick="switchTab('fleet')">Fleet</button>
+  <button data-tab="data" onclick="switchTab('data')">Data</button>
+  <button data-tab="detections" onclick="switchTab('detections')">Detections</button>
+  <button data-tab="compliance" onclick="switchTab('compliance')">Compliance</button>
+</div>
+
 <div class="main-layout">
   <div class="left-panels">
-    <!-- Alert Summary -->
-    <div class="card">
-      <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
-        <span class="collapse-chevron" onclick="toggleCardCollapse('summary')" id="chevron-summary">&#x25BC;</span>
-        <h2 style="margin:0;cursor:pointer;flex:1" onclick="toggleCardCollapse('summary')">Alert Summary</h2>
+
+    <!-- ==================== OVERVIEW TAB ==================== -->
+    <div class="tab-pane active" id="tab-overview">
+      <!-- Alert Summary -->
+      <div class="card">
+        <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
+          <span class="collapse-chevron" onclick="toggleCardCollapse('summary')" id="chevron-summary">&#x25BC;</span>
+          <h2 style="margin:0;cursor:pointer;flex:1" onclick="toggleCardCollapse('summary')">Alert Summary</h2>
+        </div>
+        <div class="card-body" id="body-summary">
+          <div id="summary-content"><div class="loading">Loading...</div></div>
+        </div>
       </div>
-      <div class="card-body" id="body-summary">
-        <div id="summary-content"><div class="loading">Loading...</div></div>
+
+      <!-- Alert Timeline -->
+      <div class="card">
+        <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
+          <span class="collapse-chevron" onclick="toggleCardCollapse('timeline')" id="chevron-timeline">&#x25BC;</span>
+          <h2 style="margin:0;cursor:pointer;flex:1" onclick="toggleCardCollapse('timeline')">Alert Timeline</h2>
+        </div>
+        <div class="card-body" id="body-timeline">
+          <div id="timeline-content"><div class="loading">Loading...</div></div>
+        </div>
+      </div>
+
+      <!-- Fired Detections (full width) -->
+      <div class="card full detections-card">
+        <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
+          <span class="collapse-chevron" onclick="toggleCardCollapse('detections')" id="chevron-detections">&#x25BC;</span>
+          <h2 style="margin:0;white-space:nowrap;cursor:pointer" onclick="toggleCardCollapse('detections')">Fired Detections</h2>
+          <select id="detStatusFilter" style="font-size:11px;padding:2px 6px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;max-width:200px;margin-left:8px" onchange="_detectionsPage=0;_openDetectionIdx=-1;renderDetections()">
+            <option value="active" selected>Active (new + ack)</option>
+            <option value="all">All</option>
+            <option value="new">New only</option>
+            <option value="acknowledged">Acknowledged</option>
+            <option value="dismissed">Dismissed</option>
+          </select>
+        </div>
+        <div class="card-body" id="body-detections">
+          <div id="detections-content"><div class="loading">Loading...</div></div>
+        </div>
       </div>
     </div>
 
-    <!-- Alert Timeline -->
-    <div class="card">
-      <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
-        <span class="collapse-chevron" onclick="toggleCardCollapse('timeline')" id="chevron-timeline">&#x25BC;</span>
-        <h2 style="margin:0;cursor:pointer;flex:1" onclick="toggleCardCollapse('timeline')">Alert Timeline</h2>
+    <!-- ==================== FLEET TAB ==================== -->
+    <div class="tab-pane" id="tab-fleet">
+      <!-- Fleet Health (full width) -->
+      <div class="card full">
+        <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
+          <span class="collapse-chevron" onclick="toggleCardCollapse('fleet')" id="chevron-fleet">&#x25BC;</span>
+          <h2 style="margin:0;cursor:pointer;flex:1" onclick="toggleCardCollapse('fleet')">Fleet Health</h2>
+        </div>
+        <div class="card-body" id="body-fleet">
+          <div id="fleet-content"><div class="loading">Loading...</div></div>
+        </div>
       </div>
-      <div class="card-body" id="body-timeline">
-        <div id="timeline-content"><div class="loading">Loading...</div></div>
+
+      <!-- Event Flow (fleet-wide by default, filterable by host) -->
+      <div class="card full timeline-card" id="hostTimelineCard">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <h2 id="hostTimelineTitle" style="margin:0;font-size:14px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px">Event Flow</h2>
+          <div class="timeline-controls" style="display:flex;gap:6px;align-items:center">
+            <div class="host-picker" id="hostPickerWrap">
+              <button class="host-picker-btn" id="hostPickerBtn" onclick="toggleHostPicker()" type="button">All Hosts</button>
+              <div class="host-picker-menu" id="hostPickerMenu"></div>
+            </div>
+            <select id="hostTimelineRange" onchange="refreshHostTimeline()">
+              <option value="1">1 hour</option>
+              <option value="6">6 hours</option>
+              <option value="24" selected>24 hours</option>
+              <option value="48">48 hours</option>
+              <option value="168">7 days</option>
+            </select>
+          </div>
+        </div>
+        <div id="hostTimelineChart" style="margin-top:10px"><div class="loading">Loading...</div></div>
+        <div id="hostTimelineLegend" style="margin-top:8px;display:flex;flex-wrap:wrap;gap:10px;font-size:11px"></div>
       </div>
     </div>
 
-    <!-- Fired Detections (full width) -->
-    <div class="card full detections-card">
-      <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
-        <span class="collapse-chevron" onclick="toggleCardCollapse('detections')" id="chevron-detections">&#x25BC;</span>
-        <h2 style="margin:0;white-space:nowrap;cursor:pointer" onclick="toggleCardCollapse('detections')">Fired Detections</h2>
-        <select id="detStatusFilter" style="font-size:11px;padding:2px 6px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;max-width:200px;margin-left:8px" onchange="_detectionsPage=0;_openDetectionIdx=-1;renderDetections()">
-          <option value="active" selected>Active (new + ack)</option>
-          <option value="all">All</option>
-          <option value="new">New only</option>
-          <option value="acknowledged">Acknowledged</option>
-          <option value="dismissed">Dismissed</option>
-        </select>
-      </div>
-      <div class="card-body" id="body-detections">
-        <div id="detections-content"><div class="loading">Loading...</div></div>
+    <!-- ==================== DATA TAB ==================== -->
+    <div class="tab-pane" id="tab-data">
+      <!-- Event Explorer -->
+      <div class="card full" id="event-explorer-card">
+        <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
+          <span class="collapse-chevron" onclick="toggleCardCollapse('explorer')" id="chevron-explorer">&#x25BC;</span>
+          <h2 style="margin:0;cursor:pointer;flex:1" onclick="toggleCardCollapse('explorer')">Event Explorer</h2>
+          <button style="font-size:11px;padding:2px 8px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer" onclick="toggleSchema()">Schema</button>
+        </div>
+        <div class="card-body" id="body-explorer">
+          <div class="explorer-toolbar">
+            <select id="eventIndex" onchange="loadEvents()">
+              <option value="tinysocs-winlog-*">tinysocs-winlog-*</option>
+              <option value="tinysocs-alerts-*">tinysocs-alerts-*</option>
+            </select>
+            <select id="eventTimeRange" onchange="loadEvents()">
+              <option value="">All time</option>
+              <option value="5m">Last 5 min</option>
+              <option value="15m">Last 15 min</option>
+              <option value="1h">Last 1 hour</option>
+              <option value="6h">Last 6 hours</option>
+              <option value="24h" selected>Last 24 hours</option>
+              <option value="7d">Last 7 days</option>
+            </select>
+            <input type="text" id="eventQuery" placeholder="KQL filter (e.g. winlog.event_id:4625)" onkeydown="if(event.key==='Enter')loadEvents()">
+            <button onclick="loadEvents()">Search</button>
+            <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--muted);cursor:pointer;margin-left:6px;white-space:nowrap;user-select:none">
+              <input type="checkbox" id="eventsLiveToggle" onchange="toggleEventsLive(this.checked)" style="accent-color:var(--accent);cursor:pointer"> Live
+            </label>
+          </div>
+          <div id="schema-panel" style="display:none;max-height:200px;overflow-y:auto;margin-bottom:8px;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;font-size:12px"></div>
+          <div id="events-content"><div class="loading">Loading...</div></div>
+        </div>
       </div>
     </div>
 
-    <!-- Fleet Health (full width) -->
-    <div class="card full">
-      <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
-        <span class="collapse-chevron" onclick="toggleCardCollapse('fleet')" id="chevron-fleet">&#x25BC;</span>
-        <h2 style="margin:0;cursor:pointer;flex:1" onclick="toggleCardCollapse('fleet')">Fleet Health</h2>
-      </div>
-      <div class="card-body" id="body-fleet">
-        <div id="fleet-content"><div class="loading">Loading...</div></div>
+    <!-- ==================== DETECTIONS TAB ==================== -->
+    <div class="tab-pane" id="tab-detections">
+      <!-- Alert Rules -->
+      <div class="card full rules-card" id="rules-card">
+        <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
+          <span class="collapse-chevron" onclick="toggleCardCollapse('rules')" id="chevron-rules">&#x25BC;</span>
+          <h2 style="margin:0;white-space:nowrap;cursor:pointer" onclick="toggleCardCollapse('rules')">Alert Rules</h2>
+          <select id="rulesFilter" onchange="filterRules()" style="flex:1;margin-bottom:0;height:32px;margin-left:8px">
+            <option value="all">All Rules</option>
+            <option value="builtin">Built-in</option>
+            <option value="custom">Custom</option>
+            <option value="enabled">Enabled</option>
+            <option value="disabled">Disabled</option>
+          </select>
+          <div style="display:flex;gap:6px;align-items:center;margin-left:auto">
+            <button onclick="toggleRuleBuilder()" class="rules-btn rules-btn-accent">+ New Rule</button>
+            <button onclick="toggleRuleUpload()" class="rules-btn rules-btn-purple">Upload Pack</button>
+          </div>
+        </div>
+        <div class="card-body" id="body-rules">
+
+        <!-- Quick Rule Builder (hidden by default) -->
+        <div id="ruleBuilder" style="display:none;margin-bottom:12px;padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px">
+          <div style="font-size:13px;font-weight:500;margin-bottom:10px;color:var(--text)">Create New Detection Rule</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+            <div>
+              <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:2px">Rule ID *</label>
+              <input type="text" id="rb_id" placeholder="e.g. my_custom_rule" style="width:100%;box-sizing:border-box">
+            </div>
+            <div>
+              <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:2px">Severity *</label>
+              <select id="rb_severity" style="width:100%;box-sizing:border-box">
+                <option value="low">Low</option>
+                <option value="medium" selected>Medium</option>
+                <option value="high">High</option>
+                <option value="critical">Critical</option>
+              </select>
+            </div>
+          </div>
+          <div style="margin-bottom:8px">
+            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:2px">Description *</label>
+            <input type="text" id="rb_desc" placeholder="What does this rule detect?" style="width:100%;box-sizing:border-box">
+          </div>
+          <div style="margin-bottom:8px">
+            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:2px">KQL Query *</label>
+            <textarea id="rb_kql" rows="3" placeholder="e.g. winlog.event_id:4625 AND NOT winlog.event_data.IpAddress:127.0.0.1" style="width:100%;box-sizing:border-box;font-family:monospace;font-size:12px;padding:6px 10px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;resize:vertical"></textarea>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:10px">
+            <div>
+              <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:2px">Index</label>
+              <input type="text" id="rb_index" value="tinysocs-winlog-*" style="width:100%;box-sizing:border-box">
+            </div>
+            <div>
+              <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:2px">Min. events to alert</label>
+              <input type="number" id="rb_threshold" value="1" min="1" style="width:100%;box-sizing:border-box" title="Alert fires when this many matching events are found in a single run">
+            </div>
+            <div>
+              <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:2px">Category</label>
+              <select id="rb_category" style="width:100%;box-sizing:border-box">
+                <option value="custom">Custom</option>
+                <option value="auth">Auth</option>
+                <option value="powershell">PowerShell</option>
+                <option value="endpoint">Endpoint</option>
+                <option value="identity">Identity</option>
+                <option value="persistence">Persistence</option>
+                <option value="lateral">Lateral</option>
+                <option value="network">Network</option>
+                <option value="cloud">Cloud</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:2px">Group By <span style="opacity:0.6">(optional)</span></label>
+              <input type="text" id="rb_groupby" value="" placeholder="e.g. host.name, user.name" style="width:100%;box-sizing:border-box" title="Count events per unique combination of these fields. Leave blank to count all matching events together.">
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;justify-content:flex-end">
+            <button onclick="toggleRuleBuilder()" style="font-size:12px;padding:4px 14px;background:var(--bg);color:var(--muted);border:1px solid var(--border);border-radius:4px;cursor:pointer">Cancel</button>
+            <button onclick="createRule()" style="font-size:12px;padding:4px 14px;background:#27ae60;color:#fff;border:none;border-radius:4px;cursor:pointer">Create Rule</button>
+          </div>
+          <div id="ruleBuilderMsg" style="margin-top:6px;font-size:12px;display:none"></div>
+        </div>
+
+        <!-- Rule Pack Upload (hidden by default) -->
+        <div id="ruleUpload" style="display:none;margin-bottom:12px;padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px">
+          <div style="font-size:13px;font-weight:500;margin-bottom:10px;color:var(--text)">Upload Rule Pack</div>
+          <p style="font-size:12px;color:var(--muted);margin:0 0 8px 0">Upload a YAML or JSON file containing a list of detection rules. Each rule needs at least: id, description, kql, severity.</p>
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+            <input type="file" id="rulePackFile" accept=".yaml,.yml,.json" style="font-size:12px;color:var(--text)">
+            <input type="text" id="rulePackName" placeholder="Pack name (optional)" style="width:180px">
+          </div>
+          <div style="display:flex;gap:8px;justify-content:flex-end">
+            <button onclick="toggleRuleUpload()" style="font-size:12px;padding:4px 14px;background:var(--bg);color:var(--muted);border:1px solid var(--border);border-radius:4px;cursor:pointer">Cancel</button>
+            <button onclick="uploadRulePack()" style="font-size:12px;padding:4px 14px;background:#8e44ad;color:#fff;border:none;border-radius:4px;cursor:pointer">Upload</button>
+          </div>
+          <div id="ruleUploadMsg" style="margin-top:6px;font-size:12px;display:none"></div>
+        </div>
+
+        <div id="rules-content"><div class="loading">Loading...</div></div>
+        </div>
       </div>
     </div>
 
-    <!-- Host Event Timeline (inline widget, hidden until a host is clicked) -->
-    <div class="card full timeline-card" id="hostTimelineCard" style="display:none">
-      <div style="display:flex;justify-content:space-between;align-items:center">
-        <h2 id="hostTimelineTitle" style="margin:0;font-size:14px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px">Host Event Timeline</h2>
-        <div style="display:flex;gap:6px;align-items:center">
-          <select id="hostTimelineRange" onchange="refreshHostTimeline()" style="font-size:12px;padding:3px 8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px">
-            <option value="1">1 hour</option>
-            <option value="6">6 hours</option>
-            <option value="24" selected>24 hours</option>
-            <option value="48">48 hours</option>
+    <!-- ==================== COMPLIANCE TAB ==================== -->
+    <div class="tab-pane" id="tab-compliance">
+      <!-- Compliance Reports (Phase 14 M4) -->
+      <div class="card full" id="compliance-card">
+        <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
+          <span class="collapse-chevron" onclick="toggleCardCollapse('compliance')" id="chevron-compliance">&#x25BC;</span>
+          <h2 style="margin:0;white-space:nowrap;cursor:pointer" onclick="toggleCardCollapse('compliance')">Compliance Coverage</h2>
+          <select id="complianceFramework" onchange="loadComplianceReport()" style="font-size:12px;padding:4px 8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;margin-left:8px">
+            <option value="">Loading frameworks...</option>
+          </select>
+          <select id="complianceHours" onchange="loadComplianceReport()" style="font-size:12px;padding:4px 8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px">
             <option value="168">7 days</option>
+            <option value="720" selected>30 days</option>
+            <option value="2160">90 days</option>
           </select>
-          <button onclick="closeHostTimeline()" style="background:none;border:none;color:var(--muted);font-size:16px;cursor:pointer;padding:2px 6px" title="Hide">&times;</button>
-        </div>
-      </div>
-      <div id="hostTimelineChart" style="margin-top:10px"><div class="empty">Click a hostname to view its event timeline</div></div>
-      <div id="hostTimelineLegend" style="margin-top:8px;display:flex;flex-wrap:wrap;gap:10px;font-size:11px"></div>
-    </div>
-
-    <!-- Event Explorer -->
-    <div class="card full" id="event-explorer-card">
-      <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
-        <span class="collapse-chevron" onclick="toggleCardCollapse('explorer')" id="chevron-explorer">&#x25BC;</span>
-        <h2 style="margin:0;cursor:pointer;flex:1" onclick="toggleCardCollapse('explorer')">Event Explorer</h2>
-        <button style="font-size:11px;padding:2px 8px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer" onclick="toggleSchema()">Schema</button>
-      </div>
-      <div class="card-body" id="body-explorer">
-        <div class="explorer-toolbar">
-          <select id="eventIndex" onchange="loadEvents()">
-            <option value="tinysocs-winlog-*">tinysocs-winlog-*</option>
-            <option value="tinysocs-alerts-*">tinysocs-alerts-*</option>
+          <select id="complianceStatus" onchange="_filterCompliancePage()" style="font-size:12px;padding:4px 8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px">
+            <option value="">All Statuses</option>
+            <option value="active">Active</option>
+            <option value="deployed">Deployed</option>
+            <option value="not_mapped">Not Mapped</option>
           </select>
-          <select id="eventTimeRange" onchange="loadEvents()">
-            <option value="">All time</option>
-            <option value="5m">Last 5 min</option>
-            <option value="15m">Last 15 min</option>
-            <option value="1h">Last 1 hour</option>
-            <option value="6h">Last 6 hours</option>
-            <option value="24h" selected>Last 24 hours</option>
-            <option value="7d">Last 7 days</option>
-          </select>
-          <input type="text" id="eventQuery" placeholder="KQL filter (e.g. winlog.event_id:4625)" onkeydown="if(event.key==='Enter')loadEvents()">
-          <button onclick="loadEvents()">Search</button>
-          <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--muted);cursor:pointer;margin-left:6px;white-space:nowrap;user-select:none">
-            <input type="checkbox" id="eventsLiveToggle" onchange="toggleEventsLive(this.checked)" style="accent-color:var(--accent);cursor:pointer"> Live
-          </label>
+          <a id="complianceDownload" href="#" style="display:none;font-size:16px;padding:2px 8px;color:var(--muted);text-decoration:none;margin-left:auto;cursor:pointer" title="Download HTML report" download>&#x2B07;</a>
         </div>
-        <div id="schema-panel" style="display:none;max-height:200px;overflow-y:auto;margin-bottom:8px;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;font-size:12px"></div>
-        <div id="events-content"><div class="loading">Loading...</div></div>
+        <div class="card-body" id="body-compliance">
+        <div id="compliance-summary" style="display:none;gap:12px;margin:12px 0">
+          <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
+            <div id="comp-coverage" style="font-size:24px;font-weight:700;color:var(--text)">—</div>
+            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Coverage</div>
+          </div>
+          <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
+            <div id="comp-covered" style="font-size:24px;font-weight:700;color:#00b894">—</div>
+            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Covered</div>
+          </div>
+          <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
+            <div id="comp-notmapped" style="font-size:24px;font-weight:700;color:#b2bec3">—</div>
+            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Not Mapped</div>
+          </div>
+          <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
+            <div id="comp-total" style="font-size:24px;font-weight:700;color:var(--text)">—</div>
+            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Total Controls</div>
+          </div>
+        </div>
+        <div id="compliance-content"><div class="loading">Loading...</div></div>
+        </div>
+      </div>
+
+      <!-- MITRE ATT&CK Coverage (Phase 15 M3) -->
+      <div class="card full" id="mitre-card">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+          <span class="collapse-chevron" onclick="toggleCardCollapse('mitre')" id="chevron-mitre">&#x25BC;</span>
+          <h2 style="margin:0;cursor:pointer" onclick="toggleCardCollapse('mitre')">MITRE ATT&CK Coverage</h2>
+          <a id="mitreDownload" href="#" style="font-size:16px;padding:2px 8px;color:var(--muted);text-decoration:none;margin-left:auto;cursor:pointer" title="Download Navigator layer JSON" onclick="downloadNavigatorLayer(event)">&#x2B07;</a>
+        </div>
+        <div class="card-body" id="body-mitre">
+        <div id="mitre-summary" style="display:none;gap:12px;margin:12px 0">
+          <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
+            <div id="mitre-techniques" style="font-size:24px;font-weight:700;color:#27ae60">—</div>
+            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Techniques</div>
+          </div>
+          <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
+            <div id="mitre-tactics" style="font-size:24px;font-weight:700;color:#3498db">—</div>
+            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Tactics</div>
+          </div>
+          <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
+            <div id="mitre-rules" style="font-size:24px;font-weight:700;color:var(--text)">—</div>
+            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Annotated Rules</div>
+          </div>
+        </div>
+        <div id="mitre-heatmap" style="margin-top:12px"></div>
+        </div>
       </div>
     </div>
 
-    <!-- Alert Rules -->
-    <div class="card full rules-card" id="rules-card">
-      <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
-        <span class="collapse-chevron" onclick="toggleCardCollapse('rules')" id="chevron-rules">&#x25BC;</span>
-        <h2 style="margin:0;white-space:nowrap;cursor:pointer" onclick="toggleCardCollapse('rules')">Alert Rules</h2>
-        <select id="rulesFilter" onchange="filterRules()" style="flex:1;margin-bottom:0;height:32px;margin-left:8px">
-          <option value="all">All Rules</option>
-          <option value="builtin">Built-in</option>
-          <option value="custom">Custom</option>
-          <option value="enabled">Enabled</option>
-          <option value="disabled">Disabled</option>
-        </select>
-        <div style="display:flex;gap:6px;align-items:center;margin-left:auto">
-          <button onclick="toggleRuleBuilder()" class="rules-btn rules-btn-accent">+ New Rule</button>
-          <button onclick="toggleRuleUpload()" class="rules-btn rules-btn-purple">Upload Pack</button>
-        </div>
-      </div>
-      <div class="card-body" id="body-rules">
-
-      <!-- Quick Rule Builder (hidden by default) -->
-      <div id="ruleBuilder" style="display:none;margin-bottom:12px;padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px">
-        <div style="font-size:13px;font-weight:500;margin-bottom:10px;color:var(--text)">Create New Detection Rule</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
-          <div>
-            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:2px">Rule ID *</label>
-            <input type="text" id="rb_id" placeholder="e.g. my_custom_rule" style="width:100%;box-sizing:border-box">
-          </div>
-          <div>
-            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:2px">Severity *</label>
-            <select id="rb_severity" style="width:100%;box-sizing:border-box">
-              <option value="low">Low</option>
-              <option value="medium" selected>Medium</option>
-              <option value="high">High</option>
-              <option value="critical">Critical</option>
-            </select>
-          </div>
-        </div>
-        <div style="margin-bottom:8px">
-          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:2px">Description *</label>
-          <input type="text" id="rb_desc" placeholder="What does this rule detect?" style="width:100%;box-sizing:border-box">
-        </div>
-        <div style="margin-bottom:8px">
-          <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:2px">KQL Query *</label>
-          <textarea id="rb_kql" rows="3" placeholder="e.g. winlog.event_id:4625 AND NOT winlog.event_data.IpAddress:127.0.0.1" style="width:100%;box-sizing:border-box;font-family:monospace;font-size:12px;padding:6px 10px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;resize:vertical"></textarea>
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:10px">
-          <div>
-            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:2px">Index</label>
-            <input type="text" id="rb_index" value="tinysocs-winlog-*" style="width:100%;box-sizing:border-box">
-          </div>
-          <div>
-            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:2px">Min. events to alert</label>
-            <input type="number" id="rb_threshold" value="1" min="1" style="width:100%;box-sizing:border-box" title="Alert fires when this many matching events are found in a single run">
-          </div>
-          <div>
-            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:2px">Category</label>
-            <select id="rb_category" style="width:100%;box-sizing:border-box">
-              <option value="custom">Custom</option>
-              <option value="auth">Auth</option>
-              <option value="powershell">PowerShell</option>
-              <option value="endpoint">Endpoint</option>
-              <option value="identity">Identity</option>
-              <option value="persistence">Persistence</option>
-              <option value="lateral">Lateral</option>
-              <option value="network">Network</option>
-              <option value="cloud">Cloud</option>
-            </select>
-          </div>
-          <div>
-            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:2px">Group By <span style="opacity:0.6">(optional)</span></label>
-            <input type="text" id="rb_groupby" value="" placeholder="e.g. host.name, user.name" style="width:100%;box-sizing:border-box" title="Count events per unique combination of these fields. Leave blank to count all matching events together.">
-          </div>
-        </div>
-        <div style="display:flex;gap:8px;justify-content:flex-end">
-          <button onclick="toggleRuleBuilder()" style="font-size:12px;padding:4px 14px;background:var(--bg);color:var(--muted);border:1px solid var(--border);border-radius:4px;cursor:pointer">Cancel</button>
-          <button onclick="createRule()" style="font-size:12px;padding:4px 14px;background:#27ae60;color:#fff;border:none;border-radius:4px;cursor:pointer">Create Rule</button>
-        </div>
-        <div id="ruleBuilderMsg" style="margin-top:6px;font-size:12px;display:none"></div>
-      </div>
-
-      <!-- Rule Pack Upload (hidden by default) -->
-      <div id="ruleUpload" style="display:none;margin-bottom:12px;padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px">
-        <div style="font-size:13px;font-weight:500;margin-bottom:10px;color:var(--text)">Upload Rule Pack</div>
-        <p style="font-size:12px;color:var(--muted);margin:0 0 8px 0">Upload a YAML or JSON file containing a list of detection rules. Each rule needs at least: id, description, kql, severity.</p>
-        <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
-          <input type="file" id="rulePackFile" accept=".yaml,.yml,.json" style="font-size:12px;color:var(--text)">
-          <input type="text" id="rulePackName" placeholder="Pack name (optional)" style="width:180px">
-        </div>
-        <div style="display:flex;gap:8px;justify-content:flex-end">
-          <button onclick="toggleRuleUpload()" style="font-size:12px;padding:4px 14px;background:var(--bg);color:var(--muted);border:1px solid var(--border);border-radius:4px;cursor:pointer">Cancel</button>
-          <button onclick="uploadRulePack()" style="font-size:12px;padding:4px 14px;background:#8e44ad;color:#fff;border:none;border-radius:4px;cursor:pointer">Upload</button>
-        </div>
-        <div id="ruleUploadMsg" style="margin-top:6px;font-size:12px;display:none"></div>
-      </div>
-
-      <div id="rules-content"><div class="loading">Loading...</div></div>
-      </div>
-    </div>
-
-    <!-- Compliance Reports (Phase 14 M4) -->
-    <div class="card full" id="compliance-card">
-      <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
-        <span class="collapse-chevron" onclick="toggleCardCollapse('compliance')" id="chevron-compliance">&#x25BC;</span>
-        <h2 style="margin:0;white-space:nowrap;cursor:pointer" onclick="toggleCardCollapse('compliance')">Compliance Coverage</h2>
-        <select id="complianceFramework" onchange="loadComplianceReport()" style="font-size:12px;padding:4px 8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;margin-left:8px">
-          <option value="">Loading frameworks...</option>
-        </select>
-        <select id="complianceHours" onchange="loadComplianceReport()" style="font-size:12px;padding:4px 8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px">
-          <option value="168">7 days</option>
-          <option value="720" selected>30 days</option>
-          <option value="2160">90 days</option>
-        </select>
-        <select id="complianceStatus" onchange="_filterCompliancePage()" style="font-size:12px;padding:4px 8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px">
-          <option value="">All Statuses</option>
-          <option value="active">Active</option>
-          <option value="deployed">Deployed</option>
-          <option value="not_mapped">Not Mapped</option>
-        </select>
-        <a id="complianceDownload" href="#" style="display:none;font-size:16px;padding:2px 8px;color:var(--muted);text-decoration:none;margin-left:auto;cursor:pointer" title="Download HTML report" download>&#x2B07;</a>
-      </div>
-      <div class="card-body" id="body-compliance">
-      <div id="compliance-summary" style="display:none;gap:12px;margin:12px 0">
-        <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
-          <div id="comp-coverage" style="font-size:24px;font-weight:700;color:var(--text)">—</div>
-          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Coverage</div>
-        </div>
-        <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
-          <div id="comp-covered" style="font-size:24px;font-weight:700;color:#00b894">—</div>
-          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Covered</div>
-        </div>
-        <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
-          <div id="comp-notmapped" style="font-size:24px;font-weight:700;color:#b2bec3">—</div>
-          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Not Mapped</div>
-        </div>
-        <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
-          <div id="comp-total" style="font-size:24px;font-weight:700;color:var(--text)">—</div>
-          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Total Controls</div>
-        </div>
-      </div>
-      <div id="compliance-content"><div class="loading">Loading...</div></div>
-      </div>
-    </div>
-
-    <!-- MITRE ATT&CK Coverage (Phase 15 M3) -->
-    <div class="card full" id="mitre-card">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-        <span class="collapse-chevron" onclick="toggleCardCollapse('mitre')" id="chevron-mitre">&#x25BC;</span>
-        <h2 style="margin:0;cursor:pointer" onclick="toggleCardCollapse('mitre')">MITRE ATT&CK Coverage</h2>
-        <a id="mitreDownload" href="#" style="font-size:16px;padding:2px 8px;color:var(--muted);text-decoration:none;margin-left:auto;cursor:pointer" title="Download Navigator layer JSON" onclick="downloadNavigatorLayer(event)">&#x2B07;</a>
-      </div>
-      <div class="card-body" id="body-mitre">
-      <div id="mitre-summary" style="display:none;gap:12px;margin:12px 0">
-        <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
-          <div id="mitre-techniques" style="font-size:24px;font-weight:700;color:#27ae60">—</div>
-          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Techniques</div>
-        </div>
-        <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
-          <div id="mitre-tactics" style="font-size:24px;font-weight:700;color:#3498db">—</div>
-          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Tactics</div>
-        </div>
-        <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
-          <div id="mitre-rules" style="font-size:24px;font-weight:700;color:var(--text)">—</div>
-          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Annotated Rules</div>
-        </div>
-      </div>
-      <div id="mitre-heatmap" style="margin-top:12px"></div>
-      </div>
-    </div>
   </div>
 
   <div class="right-panel" id="rightPanel">
@@ -3737,6 +3816,43 @@ select { cursor: pointer; }
 <script>
 let hours = 24;
 const BASE = window.location.pathname.replace(/\\/$/, '');
+
+// ── Tab navigation ──
+const _validTabs = ['overview','fleet','data','detections','compliance'];
+let _activeTab = 'overview';
+let _tabLoaded = {};
+
+function switchTab(tabId) {
+  if (!_validTabs.includes(tabId)) tabId = 'overview';
+  document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-bar button').forEach(b => b.classList.remove('active'));
+  const pane = document.getElementById('tab-' + tabId);
+  if (pane) pane.classList.add('active');
+  const btn = document.querySelector('.tab-bar button[data-tab="' + tabId + '"]');
+  if (btn) btn.classList.add('active');
+  _activeTab = tabId;
+  try { localStorage.setItem('tinysocs_active_tab', tabId); } catch(e) {}
+  history.replaceState(null, '', '#' + tabId);
+  loadTabData(tabId);
+}
+
+function loadTabData(tabId) {
+  if (_tabLoaded[tabId]) return;
+  _tabLoaded[tabId] = true;
+  switch(tabId) {
+    case 'overview': loadSummary(); loadTimeline(); loadDetections(); break;
+    case 'fleet': loadFleet(); break;
+    case 'data': loadEvents(); break;
+    case 'detections': loadRules(); break;
+    case 'compliance': loadComplianceFrameworks(); loadMitreCoverage(); break;
+  }
+}
+
+// Listen for hash changes (back/forward navigation)
+window.addEventListener('hashchange', function() {
+  const hash = window.location.hash.replace('#', '');
+  if (_validTabs.includes(hash) && hash !== _activeTab) switchTab(hash);
+});
 
 function setHours(h) {
   hours = h;
@@ -4317,6 +4433,9 @@ async function loadFleet() {
     _threatIntelStatus = null;
   }
   renderFleet();
+  // Update Event Flow host filter dropdown and auto-load fleet-wide timeline
+  _updateTimelineFilterFromFleet();
+  if (!_hostTimelineHost && _activeTab === 'fleet') refreshHostTimeline();
 }
 
 function renderFleet() {
@@ -4345,7 +4464,7 @@ function renderFleet() {
     const verLabel = h.agent_version || 'N/A';
     const versionBadge = `<span style="background:${verColor};color:#fff;padding:1px 6px;border-radius:4px;font-size:11px">${escapeHtml(verLabel)}</span>`;
     html += `<tr style="cursor:pointer" onclick="toggleFleetDetail(${i})">`;
-    html += `<td style="font-weight:600"><a href="#" style="color:var(--accent);text-decoration:none" onclick="event.stopPropagation(); event.preventDefault(); openHostTimeline('${escapeHtml(h.hostname)}')">${escapeHtml(h.hostname)}</a></td>`;
+    html += `<td style="font-weight:600;color:var(--accent)">${escapeHtml(h.hostname)}</td>`;
     html += `<td>${h.event_count}</td>`;
     html += `<td>${alertBadge}</td>`;
     html += `<td>${versionBadge}</td>`;
@@ -4576,6 +4695,11 @@ function restoreCollapseState() {
 }
 
 function ensureCardExpanded(id) {
+  // Switch to the tab containing this card
+  const cardTabMap = {summary:'overview',timeline:'overview',detections:'overview',
+    fleet:'fleet',explorer:'data',rules:'detections',compliance:'compliance',mitre:'compliance'};
+  const targetTab = cardTabMap[id];
+  if (targetTab && targetTab !== _activeTab) switchTab(targetTab);
   const body = document.getElementById('body-' + id);
   const chevron = document.getElementById('chevron-' + id);
   if (body && body.classList.contains('collapsed')) {
@@ -4698,23 +4822,107 @@ function timeAgo(iso) {
 }
 
 // ---- Host Event Timeline (inline stacked area chart) ----
-let _hostTimelineHost = '';
+let _hostTimelineHost = '';  // '' = fleet-wide, 'HOST' = single, 'H1,H2' = multi
 const _channelColors = [
   '#4a90d9', '#e67e22', '#2ecc71', '#e74c3c', '#9b59b6',
   '#1abc9c', '#f1c40f', '#e84393', '#00cec9', '#fd79a8',
 ];
 
-function openHostTimeline(hostname) {
-  _hostTimelineHost = hostname;
-  const card = document.getElementById('hostTimelineCard');
-  card.style.display = '';
-  document.getElementById('hostTimelineTitle').textContent = hostname + ' \u2014 Event Flow';
-  refreshHostTimeline();
-  card.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+// ---- Host picker (custom multi-select dropdown) ----
+let _hostPickerOpen = false;
+let _hostPickerSelected = new Set();  // empty = all hosts
+
+function toggleHostPicker() {
+  const menu = document.getElementById('hostPickerMenu');
+  _hostPickerOpen = !_hostPickerOpen;
+  menu.classList.toggle('open', _hostPickerOpen);
 }
 
-function closeHostTimeline() {
-  document.getElementById('hostTimelineCard').style.display = 'none';
+// Close picker when clicking outside
+document.addEventListener('click', function(e) {
+  const wrap = document.getElementById('hostPickerWrap');
+  if (wrap && !wrap.contains(e.target) && _hostPickerOpen) {
+    _hostPickerOpen = false;
+    document.getElementById('hostPickerMenu').classList.remove('open');
+  }
+});
+
+function _buildHostPickerMenu() {
+  const menu = document.getElementById('hostPickerMenu');
+  if (!menu) return;
+  let html = '';
+  // "All Hosts" option
+  const allChecked = _hostPickerSelected.size === 0;
+  html += '<label class="host-picker-item" onclick="event.stopPropagation()"><input type="checkbox"' + (allChecked ? ' checked' : '') + ' onchange="_onPickerAllToggle(this.checked)"><span>All Hosts</span></label>';
+  if (_fleetCache.length) html += '<div class="host-picker-divider"></div>';
+  for (const h of _fleetCache) {
+    const checked = _hostPickerSelected.has(h.hostname);
+    html += '<label class="host-picker-item" onclick="event.stopPropagation()"><input type="checkbox" value="' + escapeHtml(h.hostname) + '"' + (checked ? ' checked' : '') + ' onchange="_onPickerHostToggle(this)"><span>' + escapeHtml(h.hostname) + '</span></label>';
+  }
+  menu.innerHTML = html;
+}
+
+function _onPickerAllToggle(checked) {
+  if (checked) {
+    _hostPickerSelected.clear();
+    _buildHostPickerMenu();
+    _applyPickerSelection();
+  }
+}
+
+function _onPickerHostToggle(cb) {
+  if (cb.checked) {
+    _hostPickerSelected.add(cb.value);
+  } else {
+    _hostPickerSelected.delete(cb.value);
+  }
+  // If none remain, reset to "all"
+  if (_hostPickerSelected.size === 0) {
+    _hostPickerSelected.clear();
+  }
+  _buildHostPickerMenu();
+  _applyPickerSelection();
+}
+
+function _applyPickerSelection() {
+  const btn = document.getElementById('hostPickerBtn');
+  const titleEl = document.getElementById('hostTimelineTitle');
+  if (_hostPickerSelected.size === 0) {
+    _hostTimelineHost = '';
+    btn.textContent = 'All Hosts';
+    titleEl.textContent = 'Event Flow';
+  } else if (_hostPickerSelected.size === 1) {
+    const name = [..._hostPickerSelected][0];
+    _hostTimelineHost = name;
+    btn.textContent = name;
+    titleEl.textContent = name + ' \u2014 Event Flow';
+  } else {
+    const names = [..._hostPickerSelected];
+    _hostTimelineHost = names.join(',');
+    btn.textContent = names.length + ' hosts selected';
+    titleEl.textContent = names.join(', ') + ' \u2014 Event Flow';
+  }
+  refreshHostTimeline();
+}
+
+function _updateTimelineFilterFromFleet() {
+  // Rebuild picker menu when fleet data changes
+  _buildHostPickerMenu();
+}
+
+function openHostTimeline(hostname) {
+  if (_activeTab !== 'fleet') switchTab('fleet');
+  _hostPickerSelected.clear();
+  _hostPickerSelected.add(hostname);
+  _buildHostPickerMenu();
+  _applyPickerSelection();
+  document.getElementById('hostTimelineCard').scrollIntoView({behavior: 'smooth', block: 'nearest'});
+}
+
+function resetTimelineToFleet() {
+  _hostPickerSelected.clear();
+  _buildHostPickerMenu();
+  _applyPickerSelection();
 }
 
 async function refreshHostTimeline() {
@@ -5084,11 +5292,28 @@ function testRuleInExplorer(idx) {
 
 function refreshAll() {
   document.getElementById('lastUpdate').textContent = 'Refreshing...';
-  // Load local data (rules) immediately — no SIEM dependency
-  loadRules();
-  // Load SIEM-dependent data; only refresh Event Explorer when Live is on
-  const tasks = [loadSummary(), loadTimeline(), loadDetections(), loadFleet()];
-  if (_eventsLive) tasks.push(loadEvents(true));
+  _tabLoaded = {};  // allow data reload
+  // Only refresh widgets on the active tab
+  const tasks = [];
+  switch(_activeTab) {
+    case 'overview':
+      tasks.push(loadSummary(), loadTimeline(), loadDetections());
+      break;
+    case 'fleet':
+      tasks.push(loadFleet());
+      break;
+    case 'data':
+      if (_eventsLive) tasks.push(loadEvents(true));
+      break;
+    case 'detections':
+      loadRules();
+      break;
+    case 'compliance':
+      tasks.push(loadComplianceReport());
+      loadMitreCoverage();
+      break;
+  }
+  _tabLoaded[_activeTab] = true;
   Promise.all(tasks)
     .then(() => {
       document.getElementById('lastUpdate').textContent = 'Updated ' + new Date().toLocaleTimeString();
@@ -5378,7 +5603,8 @@ function populateSettings(d) {
   // SIEM_PASS excluded — field always starts blank (password type, never pre-filled)
   const fields = ['LLM_MODE','OPENAI_API_KEY','OPENAI_MODEL','ANTHROPIC_API_KEY','ANTHROPIC_MODEL',
     'OFFLINE_LLM_URL','OFFLINE_LLM_MODEL','WEBHOOK_URL','WEBHOOK_ENABLED',
-    'SIEM_URL','SIEM_USER'];
+    'SIEM_URL','SIEM_USER',
+    'ABUSEIPDB_API_KEY','OTX_API_KEY','GREYNOISE_API_KEY'];
   for (const f of fields) {
     const el = document.getElementById('s_' + f);
     if (el) {
@@ -5424,7 +5650,8 @@ document.getElementById('s_LLM_MODE')?.addEventListener('change', updateProvider
 async function saveSettings() {
   const fields = ['LLM_MODE','OPENAI_API_KEY','OPENAI_MODEL','ANTHROPIC_API_KEY','ANTHROPIC_MODEL',
     'OFFLINE_LLM_URL','OFFLINE_LLM_MODEL','WEBHOOK_URL','WEBHOOK_ENABLED',
-    'SIEM_URL','SIEM_USER','SIEM_PASS'];
+    'SIEM_URL','SIEM_USER','SIEM_PASS',
+    'ABUSEIPDB_API_KEY','OTX_API_KEY','GREYNOISE_API_KEY'];
   const settings = {};
   for (const f of fields) {
     const el = document.getElementById('s_' + f);
@@ -5642,10 +5869,15 @@ function unlockDashboard() {
   try { restoreCollapseState(); } catch(e) {}
   try { checkLlmStatus(); } catch(e) {}
   try { restoreChat(); } catch(e) {}
-  try { loadComplianceFrameworks(); } catch(e) {}
-  try { loadMitreCoverage(); } catch(e) {}
-  try { loadEvents(); } catch(e) {}
-  try { refreshAll(); } catch(e) {}
+
+  // Restore active tab from URL hash or localStorage
+  var hash = window.location.hash.replace('#', '');
+  var saved = '';
+  try { saved = localStorage.getItem('tinysocs_active_tab') || ''; } catch(e) {}
+  var tab = _validTabs.includes(hash) ? hash
+          : _validTabs.includes(saved) ? saved
+          : 'overview';
+  switchTab(tab);
 }
 
 // Periodic data refresh (every 30s once unlocked)

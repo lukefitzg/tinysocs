@@ -138,6 +138,22 @@ class TestProviderConfiguration:
         assert result["provider"] == "abuseipdb"
         assert result["configured"] is True
 
+    def test_greynoise_configured_without_key(self):
+        """GreyNoise should be configured even without an API key (unauthenticated mode)."""
+        with patch("tinysocs.agent.threat_intel._get_env", return_value=""):
+            p = GreyNoiseCommunityProvider()
+            assert p.is_configured()
+            assert p.is_available()
+            assert p._rate_limit == 10  # unauthenticated limit
+
+    def test_greynoise_configured_with_key(self):
+        """GreyNoise with an API key should have a higher rate limit."""
+        with patch("tinysocs.agent.threat_intel._get_env", return_value="test-key"):
+            p = GreyNoiseCommunityProvider()
+            assert p.is_configured()
+            assert p.is_available()
+            assert p._rate_limit == 50  # authenticated limit
+
 
 # ---------------------------------------------------------------------------
 # Threat level calculation

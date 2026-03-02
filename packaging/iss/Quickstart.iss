@@ -1235,7 +1235,7 @@ begin
   L.Left := 0;
   L.Top := OTXKeyEdit.Top + ScaleY(32);
   L.Width := ThreatIntelPage.SurfaceWidth;
-  L.Caption := 'GreyNoise Community API key (free: 5,000 lookups/day):';
+  L.Caption := 'GreyNoise Community API key (optional — works without, 10/day unauthenticated):';
 
   GreyNoiseKeyEdit := TNewEdit.Create(ThreatIntelPage.Surface);
   GreyNoiseKeyEdit.Parent := ThreatIntelPage.Surface;

@@ -157,7 +157,51 @@ class Handler(BaseHTTPRequestHandler):
                     "last_ship_time": "2026-02-25T08:59:50Z",
                     "heartbeat_ts": "2026-02-25T09:00:00Z",
                 },
+                {
+                    "hostname": "TINYBOX-02",
+                    "event_count": 763,
+                    "last_seen": "2026-02-25T08:55:00Z",
+                    "first_seen": "2026-02-25T02:00:00Z",
+                    "alert_count": 1,
+                    "alert_severities": {"medium": 1},
+                    "active_detections": ["powershell_scriptblock"],
+                    "top_channels": [
+                        {"channel": "Security", "count": 520},
+                        {"channel": "Microsoft-Windows-Sysmon/Operational", "count": 203},
+                        {"channel": "System", "count": 40},
+                    ],
+                    "top_event_ids": [{"event_id": "4624", "count": 180}, {"event_id": "1", "count": 150}],
+                    "agent_version": "0.8.0",
+                    "uptime": "1d 6h",
+                    "events_shipped": 7630,
+                    "queue_files": 0,
+                    "last_ship_time": "2026-02-25T08:54:30Z",
+                    "heartbeat_ts": "2026-02-25T08:55:00Z",
+                },
             ]})
+            return
+
+        # Host timeline (fleet-wide event flow)
+        if path == "/dashboard/api/host/timeline":
+            import datetime
+            base = datetime.datetime(2026, 2, 25, 0, 0, 0)
+            buckets = []
+            for i in range(24):
+                t = base + datetime.timedelta(hours=i)
+                buckets.append({
+                    "time": t.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "count": 40 + (i * 7 % 30),
+                    "channels": {
+                        "Security": 20 + (i * 3 % 15),
+                        "Microsoft-Windows-Sysmon/Operational": 15 + (i * 5 % 12),
+                        "TinySocs-FIM": 5 + (i % 4),
+                    },
+                })
+            self._json(200, {
+                "hostname": "", "hours": 24, "interval": "1h",
+                "buckets": buckets,
+                "channels": ["Security", "Microsoft-Windows-Sysmon/Operational", "TinySocs-FIM"],
+            })
             return
 
         # Version status
@@ -165,8 +209,11 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {
                 "ok": True, "has_outdated": False,
                 "manifest": {"current_version": "0.8.0"},
-                "fleet_versions": [{"hostname": "TINYBOX-01", "agent_version": "0.8.0", "status": "current"}],
-                "summary": {"current": 1, "outdated_minor": 0, "outdated_major": 0},
+                "fleet_versions": [
+                    {"hostname": "TINYBOX-01", "agent_version": "0.8.0", "status": "current"},
+                    {"hostname": "TINYBOX-02", "agent_version": "0.8.0", "status": "current"},
+                ],
+                "summary": {"current": 2, "outdated_minor": 0, "outdated_major": 0},
             })
             return
 

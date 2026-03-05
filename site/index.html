@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TinySocs — Lightweight AI-Powered SIEM</title>
+<meta name="description" content="Privacy-first, self-hosted SIEM with AI assistant. 15-minute install, 89 detection rules, compliance reporting. Built for small businesses and MSSPs.">
+<style>
+:root {
+  --bg: #0f1117;
+  --surface: #1a1d2e;
+  --border: #2a2d3a;
+  --text: #e2e8f0;
+  --muted: #94a3b8;
+  --accent: #6366f1;
+  --accent-glow: rgba(99,102,241,0.15);
+  --green: #22c55e;
+  --amber: #f59e0b;
+  --red: #ef4444;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+  overflow-x: hidden;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Layout */
+.container { max-width: 1100px; margin: 0 auto; padding: 0 24px; }
+section { padding: 80px 0; }
+section:nth-child(even) { background: var(--surface); }
+
+/* Hero */
+.hero {
+  text-align: center;
+  padding: 120px 0 80px;
+  background: linear-gradient(180deg, var(--accent-glow) 0%, transparent 60%);
+}
+.hero h1 {
+  font-size: clamp(2rem, 5vw, 3.2rem);
+  font-weight: 800;
+  line-height: 1.15;
+  margin-bottom: 20px;
+  letter-spacing: -0.02em;
+}
+.hero .subtitle {
+  font-size: clamp(1rem, 2.5vw, 1.25rem);
+  color: var(--muted);
+  max-width: 640px;
+  margin: 0 auto 40px;
+}
+.btn-primary {
+  display: inline-block;
+  background: var(--accent);
+  color: #fff;
+  padding: 14px 32px;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: 600;
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+.btn-primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(99,102,241,0.3);
+  text-decoration: none;
+}
+.btn-secondary {
+  display: inline-block;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  padding: 12px 28px;
+  border-radius: 8px;
+  font-size: 14px;
+  margin-left: 16px;
+  transition: border-color 0.15s;
+}
+.btn-secondary:hover { border-color: var(--accent); color: var(--text); text-decoration: none; }
+
+/* Section headers */
+.section-title {
+  font-size: clamp(1.5rem, 3vw, 2rem);
+  font-weight: 700;
+  text-align: center;
+  margin-bottom: 12px;
+}
+.section-sub {
+  text-align: center;
+  color: var(--muted);
+  max-width: 600px;
+  margin: 0 auto 48px;
+  font-size: 15px;
+}
+
+/* Problem statement */
+.problem-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 20px;
+}
+.problem-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 24px;
+}
+.problem-card .icon { font-size: 28px; margin-bottom: 12px; }
+.problem-card h3 { font-size: 16px; font-weight: 600; margin-bottom: 8px; }
+.problem-card p { font-size: 14px; color: var(--muted); }
+
+/* Feature grid */
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 24px;
+}
+.feature-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 28px;
+  transition: border-color 0.2s;
+}
+.feature-card:hover { border-color: var(--accent); }
+.feature-card .icon { font-size: 32px; margin-bottom: 14px; }
+.feature-card h3 { font-size: 17px; font-weight: 600; margin-bottom: 8px; }
+.feature-card p { font-size: 14px; color: var(--muted); line-height: 1.5; }
+
+/* Comparison table */
+.table-wrap { overflow-x: auto; }
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+th, td {
+  padding: 12px 16px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+th {
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--bg);
+  position: sticky;
+  top: 0;
+}
+td:first-child { font-weight: 500; }
+tr:hover td { background: rgba(99,102,241,0.04); }
+
+/* How it works */
+.steps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 32px;
+  text-align: center;
+}
+.step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: 20px;
+  font-weight: 700;
+  margin-bottom: 16px;
+}
+.step h3 { font-size: 18px; margin-bottom: 8px; }
+.step p { font-size: 14px; color: var(--muted); }
+
+/* Stats bar */
+.stats-bar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 40px;
+  padding: 40px 0;
+  text-align: center;
+}
+.stat-item .value {
+  font-size: clamp(1.8rem, 3vw, 2.4rem);
+  font-weight: 800;
+  color: var(--accent);
+}
+.stat-item .label { font-size: 13px; color: var(--muted); margin-top: 4px; }
+
+/* Screenshots placeholder */
+.screenshots {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+  margin-top: 32px;
+}
+.screenshot-placeholder {
+  background: var(--surface);
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  aspect-ratio: 16 / 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* CTA */
+.cta-section {
+  text-align: center;
+  padding: 80px 0;
+}
+.cta-section h2 { font-size: clamp(1.5rem, 3vw, 2rem); margin-bottom: 16px; }
+.cta-section p { color: var(--muted); margin-bottom: 32px; }
+
+/* Footer */
+footer {
+  text-align: center;
+  padding: 40px 0;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--muted);
+}
+footer a { color: var(--muted); }
+footer a:hover { color: var(--accent); }
+
+/* Responsive */
+@media (max-width: 640px) {
+  section { padding: 48px 0; }
+  .hero { padding: 80px 0 48px; }
+  .btn-secondary { display: block; margin: 16px auto 0; }
+}
+</style>
+</head>
+<body>
+
+<!-- Hero -->
+<section class="hero">
+  <div class="container">
+    <h1>Security monitoring that small businesses can actually use.</h1>
+    <p class="subtitle">
+      Privacy-first, self-hosted SIEM with an AI assistant.
+      Install in 15 minutes. Detect threats with 89 built-in rules.
+      Report compliance with one click. Your data never leaves the box.
+    </p>
+    <a href="https://github.com/lukefitzg/tinysocs/releases/latest" class="btn-primary">Download TinySocs</a>
+    <a href="https://github.com/lukefitzg/tinysocs" class="btn-secondary">View on GitHub</a>
+  </div>
+</section>
+
+<!-- Problem -->
+<section>
+  <div class="container">
+    <h2 class="section-title">Enterprise SIEMs weren't built for you</h2>
+    <p class="section-sub">Small organisations need security monitoring but face barriers that enterprise tools weren't designed to solve.</p>
+    <div class="problem-grid">
+      <div class="problem-card">
+        <div class="icon">&#x1F3D7;</div>
+        <h3>Too complex</h3>
+        <p>Splunk, Sentinel, and Elastic require dedicated security teams and months of deployment.</p>
+      </div>
+      <div class="problem-card">
+        <div class="icon">&#x2601;</div>
+        <h3>Cloud-only</h3>
+        <p>Your data leaves the network. Per-GB pricing means unpredictable costs.</p>
+      </div>
+      <div class="problem-card">
+        <div class="icon">&#x1F514;</div>
+        <h3>Alert fatigue</h3>
+        <p>Hundreds of alerts, no context. You need someone to explain what matters.</p>
+      </div>
+      <div class="problem-card">
+        <div class="icon">&#x1F4CB;</div>
+        <h3>Compliance gaps</h3>
+        <p>Frameworks require log monitoring, but proving coverage is a manual, audit-time scramble.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Features -->
+<section>
+  <div class="container">
+    <h2 class="section-title">Everything you need in one box</h2>
+    <p class="section-sub">No cloud subscriptions, no per-GB billing, no security analyst required.</p>
+    <div class="feature-grid">
+      <div class="feature-card">
+        <div class="icon">&#x26A1;</div>
+        <h3>15-Minute Install</h3>
+        <p>Wizard-driven setup from a single .exe. OpenSearch, agent, and dashboard bundled. No security expertise needed.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">&#x1F916;</div>
+        <h3>AI Assistant</h3>
+        <p>Ask "what happened on RECEPTION-PC?" and get a plain-English narrative with remediation steps. Supports Claude, GPT-4o, and local Ollama.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">&#x1F512;</div>
+        <h3>On-Premises Privacy</h3>
+        <p>Data never leaves your network. Field-level redaction before any LLM call. Full data sovereignty.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">&#x1F6E1;</div>
+        <h3>89 Detection Rules</h3>
+        <p>Covering 33 MITRE ATT&CK techniques across 11 tactics. 100% validated efficacy against Atomic Red Team.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">&#x1F4CA;</div>
+        <h3>Compliance Reporting</h3>
+        <p>One-click reports for NIST CSF 2.0, HIPAA Security Rule, and PCI DSS v4.0. Maps controls to detection coverage.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">&#x1F310;</div>
+        <h3>Multi-Site Management</h3>
+        <p>Federated architecture for MSSPs. Manage multiple client sites from one dashboard with hash-chained evidence ledgers.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Stats -->
+<section>
+  <div class="container">
+    <div class="stats-bar">
+      <div class="stat-item">
+        <div class="value">89</div>
+        <div class="label">Detection rules</div>
+      </div>
+      <div class="stat-item">
+        <div class="value">33</div>
+        <div class="label">MITRE ATT&CK techniques</div>
+      </div>
+      <div class="stat-item">
+        <div class="value">11</div>
+        <div class="label">Tactics covered</div>
+      </div>
+      <div class="stat-item">
+        <div class="value">100%</div>
+        <div class="label">Atomic Red Team efficacy</div>
+      </div>
+      <div class="stat-item">
+        <div class="value">15 min</div>
+        <div class="label">Install time</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Comparison -->
+<section>
+  <div class="container">
+    <h2 class="section-title">How TinySocs compares</h2>
+    <p class="section-sub">Built for a different audience with different priorities.</p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Feature</th>
+            <th>TinySocs</th>
+            <th>Enterprise SIEM</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>Deployment time</td><td>15 minutes</td><td>Weeks to months</td></tr>
+          <tr><td>Data residency</td><td>100% on-premises</td><td>Cloud or hybrid</td></tr>
+          <tr><td>Pricing</td><td>Free (MIT license)</td><td>Usage-based / per-GB</td></tr>
+          <tr><td>AI assistant</td><td>Built-in (Claude / GPT / Ollama)</td><td>Add-on or none</td></tr>
+          <tr><td>Compliance reports</td><td>One-click generation</td><td>Custom development</td></tr>
+          <tr><td>Operator skill level</td><td>IT generalist</td><td>Security engineer</td></tr>
+          <tr><td>MSSP multi-site</td><td>Federated with evidence ledger</td><td>Tenant isolation required</td></tr>
+          <tr><td>Threat intelligence</td><td>AbuseIPDB + OTX + GreyNoise</td><td>Varies by vendor</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- How it works -->
+<section>
+  <div class="container">
+    <h2 class="section-title">Get started in three steps</h2>
+    <p class="section-sub">From download to monitoring in 15 minutes.</p>
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <h3>Download</h3>
+        <p>Grab the installer from GitHub Releases. One .exe file, under 300 MB.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <h3>Install</h3>
+        <p>Run the wizard. It installs OpenSearch, the agent, and the dashboard. Pick your role: single-box, node, or master.</p>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <h3>Monitor</h3>
+        <p>Open the dashboard. Events flow in automatically. The AI assistant explains what it sees.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Screenshots -->
+<section>
+  <div class="container">
+    <h2 class="section-title">See it in action</h2>
+    <p class="section-sub">Dashboard screenshots from demo mode.</p>
+    <div class="screenshots">
+      <div class="screenshot-placeholder">
+        <img src="screenshots/overview.png" alt="Overview tab — alert summary and 24-hour timeline" onerror="this.style.display='none'; this.parentNode.textContent='Overview tab — alert summary and timeline';" style="width:100%; height:100%; object-fit:cover; border-radius:8px;">
+      </div>
+      <div class="screenshot-placeholder">
+        <img src="screenshots/fleet.png" alt="Fleet tab — host health, event flow, and host picker" onerror="this.style.display='none'; this.parentNode.textContent='Fleet tab — host health and event flow';" style="width:100%; height:100%; object-fit:cover; border-radius:8px;">
+      </div>
+      <div class="screenshot-placeholder">
+        <img src="screenshots/detections.png" alt="Detections tab — fired alerts with threat intel enrichment" onerror="this.style.display='none'; this.parentNode.textContent='Detections tab — alerts with threat intel';" style="width:100%; height:100%; object-fit:cover; border-radius:8px;">
+      </div>
+      <div class="screenshot-placeholder">
+        <img src="screenshots/sites.png" alt="Sites tab — multi-site management for MSSPs" onerror="this.style.display='none'; this.parentNode.textContent='Sites tab — multi-site MSSP management';" style="width:100%; height:100%; object-fit:cover; border-radius:8px;">
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+<section class="cta-section">
+  <div class="container">
+    <h2>Ready to try it?</h2>
+    <p>Download the installer and have security monitoring running in 15 minutes.</p>
+    <a href="https://github.com/lukefitzg/tinysocs/releases/latest" class="btn-primary">Download TinySocs v0.9.0</a>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer>
+  <div class="container">
+    <p>
+      TinySocs v0.9.0 &middot;
+      <a href="https://github.com/lukefitzg/tinysocs">GitHub</a> &middot;
+      <a href="https://github.com/lukefitzg/tinysocs/blob/main/docs/getting-started.md">Getting Started</a> &middot;
+      <a href="https://github.com/lukefitzg/tinysocs/blob/main/docs/detection-coverage.md">Detection Coverage</a> &middot;
+      MIT License
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>

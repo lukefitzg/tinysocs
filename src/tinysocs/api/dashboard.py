@@ -16,6 +16,7 @@ import hashlib
 import hmac
 import json
 import os
+import random
 import secrets
 import traceback
 import uuid
@@ -27,6 +28,11 @@ from fastapi import Body, FastAPI, Header, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 dashboard_app = FastAPI(title="TinySocs Dashboard", docs_url=None, redoc_url=None)
+
+# ---------------------------------------------------------------------------
+# Demo mode (Phase 17 M0) — serve synthetic data without OpenSearch
+# ---------------------------------------------------------------------------
+_DEMO_MODE = os.getenv("TINYSOCS_DEMO_MODE", "").strip().lower() in ("1", "true", "yes")
 
 # ---------------------------------------------------------------------------
 # Dashboard authentication (M0 — Phase 13)
@@ -492,12 +498,433 @@ def _format_query_error(index: str, exc: Exception) -> Dict[str, Any]:
     return {"error": friendly, "hits": {"total": {"value": 0}, "hits": []}, "aggregations": {}}
 
 
+# ===========================================================================
+# Phase 17 M0 — Demo data generators
+# ===========================================================================
+
+def _demo_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _demo_iso(offset_hours: float = 0) -> str:
+    """ISO timestamp relative to now.  offset_hours is negative for past."""
+    dt = _demo_now() + __import__("datetime").timedelta(hours=offset_hours)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+# Demo hosts
+_DEMO_HOSTS = [
+    {"hostname": "RECEPTION-PC", "role": "workstation"},
+    {"hostname": "FILESERVER-01", "role": "fileserver"},
+    {"hostname": "DC-01", "role": "domaincontroller"},
+]
+
+# Demo alerts (offsets in hours from now)
+_DEMO_ALERTS_TEMPLATE = [
+    {"offset": -14, "rule_id": "TS-001", "rule_name": "brute_force_logon",
+     "severity": "critical", "host": "RECEPTION-PC",
+     "description": "8 failed logon attempts from 203.0.113.47 for user jdoe in 5 minutes",
+     "event_count": 8, "matched_events": 8},
+    {"offset": -12, "rule_id": "TS-030", "rule_name": "ps_encoded_command",
+     "severity": "high", "host": "DC-01",
+     "description": "PowerShell encoded command execution detected",
+     "event_count": 3, "matched_events": 3},
+    {"offset": -10, "rule_id": "TS-010", "rule_name": "local_account_created",
+     "severity": "medium", "host": "FILESERVER-01",
+     "description": "New local account created: svc_backup",
+     "event_count": 1, "matched_events": 1},
+    {"offset": -8, "rule_id": "FIM-001", "rule_name": "fim_file_modified",
+     "severity": "medium", "host": "FILESERVER-01",
+     "description": "File modified: C:\\ClientFiles\\Mergers\\draft.docx",
+     "event_count": 1, "matched_events": 1},
+    {"offset": -4, "rule_id": "TS-071", "rule_name": "rdp_brute_force",
+     "severity": "high", "host": "FILESERVER-01",
+     "description": "Off-hours RDP connection attempt from 198.51.100.22",
+     "event_count": 4, "matched_events": 4},
+    {"offset": -2, "rule_id": "TS-132", "rule_name": "scheduled_task_created",
+     "severity": "medium", "host": "DC-01",
+     "description": "Scheduled task created: WindowsUpdate_Check",
+     "event_count": 1, "matched_events": 1},
+    {"offset": -0.75, "rule_id": "TS-080", "rule_name": "defender_realtime_disabled",
+     "severity": "high", "host": "RECEPTION-PC",
+     "description": "Windows Defender real-time protection disabled",
+     "event_count": 1, "matched_events": 1},
+]
+
+
+def _demo_alerts_summary(hours: int = 24) -> dict:
+    severity = {"critical": 3, "high": 8, "medium": 17, "low": 14}
+    total = sum(severity.values())
+    return {
+        "hours": hours,
+        "total": total,
+        "severity": severity,
+        "top_rules": [
+            {"rule": "brute_force_logon", "count": 5},
+            {"rule": "ps_encoded_command", "count": 4},
+            {"rule": "fim_file_modified", "count": 3},
+            {"rule": "rdp_brute_force", "count": 3},
+            {"rule": "local_account_created", "count": 2},
+        ],
+        "top_hosts": [
+            {"host": "RECEPTION-PC", "count": 18},
+            {"host": "FILESERVER-01", "count": 14},
+            {"host": "DC-01", "count": 10},
+        ],
+        "error": None,
+    }
+
+
+def _demo_alerts_timeline(hours: int = 24) -> dict:
+    now = _demo_now()
+    buckets = []
+    for i in range(hours):
+        t = now + __import__("datetime").timedelta(hours=-(hours - 1 - i))
+        hour = t.hour
+        # Business-hours bell curve + spike at the brute-force hour
+        if 8 <= hour <= 17:
+            base = random.randint(2, 5)
+        elif 22 <= hour or hour <= 5:
+            base = random.randint(0, 1)
+        else:
+            base = random.randint(1, 3)
+        # Spike around the brute-force offset (14 hours ago)
+        hours_ago = hours - 1 - i
+        if abs(hours_ago - 14) <= 1:
+            base += random.randint(4, 7)
+        sev = {}
+        if base > 0:
+            sev["medium"] = max(1, base - 2)
+            sev["high"] = min(base, random.randint(0, 2))
+            sev["low"] = max(0, base - sev["medium"] - sev["high"])
+            if hours_ago >= 13 and hours_ago <= 15:
+                sev["critical"] = random.randint(1, 2)
+        buckets.append({
+            "time": t.strftime("%Y-%m-%dT%H:00:00.000Z"),
+            "count": base + sev.get("critical", 0),
+            "severity": sev,
+        })
+    return {"hours": hours, "buckets": buckets, "error": None}
+
+
+def _demo_detections_fired(hours: int = 24, limit: int = 30) -> dict:
+    detections = []
+    for idx, a in enumerate(_DEMO_ALERTS_TEMPLATE):
+        det_id = f"demo-alert-{idx:04d}"
+        alert_id = f"{a['rule_id']}|{a['host']}|{_demo_iso(a['offset'])}"
+        detections.append({
+            "id": det_id,
+            "alert_id": alert_id,
+            "rule_id": a["rule_id"],
+            "rule_name": a["rule_name"],
+            "severity": a["severity"],
+            "description": a["description"],
+            "event_count": a["event_count"],
+            "first_seen": _demo_iso(a["offset"] - 0.1),
+            "last_seen": _demo_iso(a["offset"]),
+            "timestamp": _demo_iso(a["offset"]),
+            "host": a["host"],
+            "matched_events": a["matched_events"],
+            "status": "new",
+            "tags": [],
+            "notes": "",
+        })
+    return {"detections": detections[:limit], "total": len(detections), "error": None}
+
+
+def _demo_fleet_health() -> dict:
+    now_iso = _demo_iso(0)
+    hosts = [
+        {
+            "hostname": "RECEPTION-PC",
+            "event_count": 12847,
+            "last_seen": _demo_iso(-0.02),
+            "first_seen": _demo_iso(-23.5),
+            "alert_count": 18,
+            "alert_severities": {"critical": 3, "high": 4, "medium": 8, "low": 3},
+            "active_detections": ["brute_force_logon", "defender_realtime_disabled"],
+            "top_channels": [
+                {"channel": "Security", "count": 8420},
+                {"channel": "Microsoft-Windows-Sysmon/Operational", "count": 3200},
+                {"channel": "System", "count": 1227},
+            ],
+            "top_event_ids": [
+                {"event_id": "4624", "count": 3100},
+                {"event_id": "4625", "count": 842},
+                {"event_id": "1", "count": 2800},
+            ],
+            "agent_version": "0.8.0",
+            "node_id": "node-local",
+            "uptime": "4d 12h 30m",
+            "events_shipped": 12847,
+            "queue_files": 0,
+            "queue_bytes": 0,
+            "last_ship_time": _demo_iso(-0.02),
+            "heartbeat_ts": _demo_iso(-0.01),
+        },
+        {
+            "hostname": "FILESERVER-01",
+            "event_count": 8934,
+            "last_seen": _demo_iso(-0.05),
+            "first_seen": _demo_iso(-23.8),
+            "alert_count": 14,
+            "alert_severities": {"high": 2, "medium": 9, "low": 3},
+            "active_detections": ["rdp_brute_force", "fim_file_modified", "local_account_created"],
+            "top_channels": [
+                {"channel": "Security", "count": 5100},
+                {"channel": "Microsoft-Windows-Sysmon/Operational", "count": 2400},
+                {"channel": "TinySocs-FIM", "count": 1434},
+            ],
+            "top_event_ids": [
+                {"event_id": "4624", "count": 2100},
+                {"event_id": "1", "count": 1900},
+                {"event_id": "4663", "count": 1100},
+            ],
+            "agent_version": "0.8.0",
+            "node_id": "node-local",
+            "uptime": "4d 12h 30m",
+            "events_shipped": 8934,
+            "queue_files": 0,
+            "queue_bytes": 0,
+            "last_ship_time": _demo_iso(-0.05),
+            "heartbeat_ts": _demo_iso(-0.02),
+        },
+        {
+            "hostname": "DC-01",
+            "event_count": 15392,
+            "last_seen": _demo_iso(-0.01),
+            "first_seen": _demo_iso(-23.9),
+            "alert_count": 10,
+            "alert_severities": {"high": 1, "medium": 6, "low": 3},
+            "active_detections": ["ps_encoded_command", "scheduled_task_created"],
+            "top_channels": [
+                {"channel": "Security", "count": 10200},
+                {"channel": "Microsoft-Windows-Sysmon/Operational", "count": 3100},
+                {"channel": "Microsoft-Windows-PowerShell/Operational", "count": 2092},
+            ],
+            "top_event_ids": [
+                {"event_id": "4624", "count": 4500},
+                {"event_id": "4672", "count": 3200},
+                {"event_id": "4104", "count": 1800},
+            ],
+            "agent_version": "0.8.0",
+            "node_id": "node-local",
+            "uptime": "12d 3h 15m",
+            "events_shipped": 15392,
+            "queue_files": 0,
+            "queue_bytes": 0,
+            "last_ship_time": _demo_iso(-0.01),
+            "heartbeat_ts": _demo_iso(-0.005),
+        },
+    ]
+    return {"hosts": hosts, "error": None}
+
+
+def _demo_host_timeline(hostname: str = "", hours: int = 24) -> dict:
+    now = _demo_now()
+    td = __import__("datetime").timedelta
+    channels = ["Security", "Microsoft-Windows-Sysmon/Operational", "TinySocs-FIM"]
+    all_channels = set(channels)
+    buckets = []
+    for i in range(hours):
+        t = now + td(hours=-(hours - 1 - i))
+        hour = t.hour
+        if 8 <= hour <= 17:
+            sec = random.randint(80, 200)
+            sys = random.randint(30, 80)
+            fim = random.randint(5, 20)
+        else:
+            sec = random.randint(10, 40)
+            sys = random.randint(5, 20)
+            fim = random.randint(0, 5)
+        ch = {"Security": sec, "Microsoft-Windows-Sysmon/Operational": sys}
+        if fim > 0:
+            ch["TinySocs-FIM"] = fim
+        buckets.append({
+            "time": t.strftime("%Y-%m-%dT%H:00:00.000Z"),
+            "count": sum(ch.values()),
+            "channels": ch,
+        })
+    return {
+        "hostname": hostname,
+        "hours": hours,
+        "interval": "1h",
+        "buckets": buckets,
+        "channels": sorted(all_channels),
+        "error": None,
+    }
+
+
+def _demo_events_recent(limit: int = 50) -> dict:
+    """Generate synthetic recent events matching the event-schema shape."""
+    td = __import__("datetime").timedelta
+    event_templates = [
+        {"channel": "Security", "event_id": "4624", "host": "RECEPTION-PC",
+         "message": "An account was successfully logged on. Subject: SYSTEM. Logon Type: 3. New Logon: jdoe."},
+        {"channel": "Security", "event_id": "4625", "host": "RECEPTION-PC",
+         "message": "An account failed to log on. Subject: SYSTEM. Failure Reason: Unknown user name or bad password. Account: jdoe. Source: 203.0.113.47."},
+        {"channel": "Microsoft-Windows-Sysmon/Operational", "event_id": "1", "host": "DC-01",
+         "message": "Process Create: Image: C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe CommandLine: powershell.exe -enc SQBuAH..."},
+        {"channel": "Security", "event_id": "4720", "host": "FILESERVER-01",
+         "message": "A user account was created. New Account: svc_backup. Created By: Administrator."},
+        {"channel": "Microsoft-Windows-PowerShell/Operational", "event_id": "4104", "host": "DC-01",
+         "message": "Script block logging: Creating Scriptblock text (1 of 1): Get-ADUser -Filter * | Select-Object Name, Enabled"},
+        {"channel": "TinySocs-FIM", "event_id": "FIM", "host": "FILESERVER-01",
+         "message": "File modified: C:\\ClientFiles\\Mergers\\draft.docx. Action: Modified. Hash changed."},
+        {"channel": "Security", "event_id": "4672", "host": "DC-01",
+         "message": "Special privileges assigned to new logon. Subject: Administrator. Privileges: SeBackupPrivilege."},
+        {"channel": "Microsoft-Windows-Sysmon/Operational", "event_id": "3", "host": "RECEPTION-PC",
+         "message": "Network connection detected. Image: chrome.exe. Destination: 198.51.100.22:443. Protocol: tcp."},
+        {"channel": "Security", "event_id": "4688", "host": "RECEPTION-PC",
+         "message": "A new process has been created. Creator: explorer.exe. New Process: C:\\Program Files\\App\\app.exe."},
+        {"channel": "System", "event_id": "7045", "host": "DC-01",
+         "message": "A service was installed in the system. Service Name: WindowsUpdate_Check. Service Type: user mode service."},
+    ]
+    events = []
+    now = _demo_now()
+    for i in range(min(limit, 50)):
+        tmpl = event_templates[i % len(event_templates)]
+        t = now - td(minutes=random.randint(1, 1400))
+        events.append({
+            "timestamp": t.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+            "host": tmpl["host"],
+            "channel": tmpl["channel"],
+            "event_id": tmpl["event_id"],
+            "message": tmpl["message"][:300],
+        })
+    events.sort(key=lambda e: e["timestamp"], reverse=True)
+    return {"events": events, "total": len(events), "index": "tinysocs-winlog-*", "error": None}
+
+
+def _demo_version_status() -> dict:
+    return {
+        "fleet_versions": [
+            {"hostname": "RECEPTION-PC", "agent_version": "0.7.9", "status": "outdated-minor"},
+            {"hostname": "FILESERVER-01", "agent_version": "0.8.0", "status": "current"},
+            {"hostname": "DC-01", "agent_version": "0.8.0", "status": "current"},
+        ],
+        "has_outdated": True,
+        "summary": "1 of 3 agents outdated (RECEPTION-PC: 0.7.9 → 0.8.0)",
+        "manifest": {"current_version": "0.8.0"},
+    }
+
+
+def _demo_compliance_report(framework: str = "nist_csf", hours: int = 720) -> dict:
+    frameworks = {
+        "nist_csf": {
+            "name": "NIST CSF 2.0",
+            "controls": [
+                {"id": "DE.CM-1", "name": "Networks are monitored", "status": "pass", "rules_mapped": 8, "rules_fired": 5},
+                {"id": "DE.CM-3", "name": "Personnel activity is monitored", "status": "pass", "rules_mapped": 6, "rules_fired": 3},
+                {"id": "DE.AE-2", "name": "Events are analysed to detect attacks", "status": "pass", "rules_mapped": 12, "rules_fired": 7},
+                {"id": "DE.AE-3", "name": "Event data are aggregated", "status": "pass", "rules_mapped": 4, "rules_fired": 2},
+                {"id": "PR.AC-1", "name": "Identities and credentials managed", "status": "pass", "rules_mapped": 5, "rules_fired": 4},
+                {"id": "PR.AC-7", "name": "Users authenticated", "status": "pass", "rules_mapped": 3, "rules_fired": 2},
+                {"id": "PR.DS-1", "name": "Data-at-rest is protected", "status": "partial", "rules_mapped": 2, "rules_fired": 1},
+                {"id": "PR.DS-5", "name": "Data leakage protections", "status": "partial", "rules_mapped": 1, "rules_fired": 0},
+                {"id": "RS.AN-1", "name": "Notifications from detection systems investigated", "status": "pass", "rules_mapped": 7, "rules_fired": 4},
+                {"id": "RS.RP-1", "name": "Response plan is executed", "status": "partial", "rules_mapped": 2, "rules_fired": 1},
+            ],
+        },
+        "hipaa": {
+            "name": "HIPAA Security Rule",
+            "controls": [
+                {"id": "164.312(b)", "name": "Audit controls", "status": "pass", "rules_mapped": 10, "rules_fired": 6},
+                {"id": "164.312(a)(1)", "name": "Access control", "status": "pass", "rules_mapped": 5, "rules_fired": 3},
+                {"id": "164.312(d)", "name": "Person authentication", "status": "pass", "rules_mapped": 4, "rules_fired": 2},
+                {"id": "164.308(a)(5)", "name": "Security awareness training", "status": "partial", "rules_mapped": 2, "rules_fired": 1},
+                {"id": "164.312(c)(1)", "name": "Integrity controls", "status": "pass", "rules_mapped": 3, "rules_fired": 2},
+            ],
+        },
+        "pci_dss": {
+            "name": "PCI DSS v4.0",
+            "controls": [
+                {"id": "10.2", "name": "Audit logs capture relevant activity", "status": "pass", "rules_mapped": 12, "rules_fired": 8},
+                {"id": "10.4", "name": "Audit logs are reviewed", "status": "pass", "rules_mapped": 6, "rules_fired": 4},
+                {"id": "8.3", "name": "Strong authentication for users", "status": "pass", "rules_mapped": 4, "rules_fired": 3},
+                {"id": "11.5", "name": "File integrity monitoring", "status": "pass", "rules_mapped": 2, "rules_fired": 1},
+                {"id": "6.4", "name": "Public-facing web apps protected", "status": "partial", "rules_mapped": 1, "rules_fired": 0},
+            ],
+        },
+    }
+    fw = frameworks.get(framework, frameworks["nist_csf"])
+    total = len(fw["controls"])
+    passed = sum(1 for c in fw["controls"] if c["status"] == "pass")
+    partial = sum(1 for c in fw["controls"] if c["status"] == "partial")
+    failed = total - passed - partial
+    return {
+        "ok": True,
+        "framework": {"id": framework, "name": fw["name"]},
+        "hours": hours,
+        "controls": fw["controls"],
+        "summary": {"total": total, "pass": passed, "partial": partial, "fail": failed},
+    }
+
+
+def _demo_threat_intel_status() -> dict:
+    return {
+        "ok": True,
+        "providers": [
+            {"name": "AbuseIPDB", "configured": True, "available": True, "quota_remaining": 847},
+            {"name": "AlienVault OTX", "configured": True, "available": True, "quota_remaining": -1},
+            {"name": "GreyNoise Community", "configured": True, "available": True, "quota_remaining": 7},
+        ],
+        "cache": {"total_entries": 23, "error": None},
+    }
+
+
+def _demo_nodes() -> dict:
+    """Synthetic multi-site data for the Sites tab."""
+    return {
+        "nodes": [
+            {
+                "url": "http://acme-node:8081",
+                "node_id": "acme-law",
+                "version": "0.8.0",
+                "status": "healthy",
+                "ledger_sequence": 347,
+                "ledger_head": "a3f2c9e1d4b5a6f7e8d9c0b1a2f3e4d5c6b7a8f9e0d1c2b3a4f5e6d7c8b9a0f1",
+                "last_anchor_at": _demo_iso(-0.2),
+                "last_anchor_items": 2,
+                "reachable": True,
+                "error": None,
+            },
+            {
+                "url": "http://dental-node:8081",
+                "node_id": "mainst-dental",
+                "version": "0.8.0",
+                "status": "healthy",
+                "ledger_sequence": 189,
+                "ledger_head": "b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3",
+                "last_anchor_at": _demo_iso(-0.3),
+                "last_anchor_items": 0,
+                "reachable": True,
+                "error": None,
+            },
+            {
+                "url": "http://harbor-node:8081",
+                "node_id": "harbor-ins",
+                "version": "0.7.9",
+                "status": "warning",
+                "ledger_sequence": 512,
+                "ledger_head": "c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4",
+                "last_anchor_at": _demo_iso(-1.5),
+                "last_anchor_items": 5,
+                "reachable": True,
+                "error": None,
+            },
+        ],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Data API endpoints (no auth — local operator tool)
 # ---------------------------------------------------------------------------
 @dashboard_app.get("/api/alerts/timeline")
 async def api_alert_timeline(hours: int = Query(24, ge=1, le=720)):
     """Alert counts bucketed by hour and severity."""
+    if _DEMO_MODE:
+        return _demo_alerts_timeline(hours)
     body = {
         "query": {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}},
         "aggs": {
@@ -531,6 +958,8 @@ async def api_alert_timeline(hours: int = Query(24, ge=1, le=720)):
 @dashboard_app.get("/api/alerts/summary")
 async def api_alert_summary(hours: int = Query(24, ge=1, le=720)):
     """Summary stats: total, by severity, top rules, top hosts."""
+    if _DEMO_MODE:
+        return _demo_alerts_summary(hours)
     # Total + severity
     body_sev = {
         "query": {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}},
@@ -583,6 +1012,8 @@ async def api_detections_fired(
     limit: int = Query(30, ge=1, le=200),
 ):
     """Fetch individual fired detections with full details."""
+    if _DEMO_MODE:
+        return _demo_detections_fired(hours, limit)
     body = {
         "query": {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}},
         "sort": [{"timestamp": {"order": "desc"}}],
@@ -1030,6 +1461,8 @@ async def api_host_timeline(
     hours: int = Query(24, ge=1, le=720),
 ):
     """Event count over time for a host (or all hosts), bucketed with channel breakdown."""
+    if _DEMO_MODE:
+        return _demo_host_timeline(hostname, hours)
     # Determine interval based on time range
     if hours <= 6:
         interval = "5m"
@@ -1193,6 +1626,8 @@ def api_detection_summarize(body: Dict[str, Any] = Body(...)):
 @dashboard_app.get("/api/fleet/health")
 async def api_fleet_health():
     """Fleet status: hosts, last seen, event counts, plus metadata."""
+    if _DEMO_MODE:
+        return _demo_fleet_health()
     body = {
         "query": {"range": {"@timestamp": {"gte": "now-24h", "lte": "now"}}},
         "aggs": {
@@ -1314,11 +1749,104 @@ async def api_fleet_health():
 
 
 # ---------------------------------------------------------------------------
+# Node / Sites API (Phase 17 M1 — Federation visibility)
+# ---------------------------------------------------------------------------
+_NODES_LIST: Optional[List[str]] = None
+
+
+def _get_node_urls() -> List[str]:
+    global _NODES_LIST
+    if _NODES_LIST is None:
+        raw = os.getenv("TINYSOCS_NODES", "").strip()
+        _NODES_LIST = [u.strip() for u in raw.split(",") if u.strip()] if raw else []
+    return _NODES_LIST
+
+
+@dashboard_app.get("/api/nodes")
+async def api_nodes():
+    """Return health and ledger status for all configured TinySocs nodes."""
+    if _DEMO_MODE:
+        return _demo_nodes()
+
+    node_urls = _get_node_urls()
+    if not node_urls:
+        return {"nodes": []}
+
+    import httpx
+    nodes_out: List[Dict[str, Any]] = []
+
+    async with httpx.AsyncClient(verify=False, timeout=5.0) as client:
+        for url in node_urls:
+            node_info: Dict[str, Any] = {
+                "url": url, "node_id": "", "version": "", "status": "unreachable",
+                "ledger_sequence": 0, "ledger_head": "", "last_anchor_at": "",
+                "last_anchor_items": 0, "reachable": False, "error": None,
+            }
+            # Call /meta (no HMAC needed)
+            try:
+                meta_resp = await client.get(f"{url.rstrip('/')}/meta")
+                meta = meta_resp.json()
+                node_info["node_id"] = meta.get("node_id", "")
+                node_info["version"] = meta.get("version", "")
+                node_info["reachable"] = True
+            except Exception as exc:
+                node_info["error"] = f"Cannot reach {url}: {type(exc).__name__}"
+                nodes_out.append(node_info)
+                continue
+
+            # Call /evidence/head (no HMAC needed)
+            try:
+                head_resp = await client.get(f"{url.rstrip('/')}/evidence/head")
+                head = head_resp.json()
+                if head.get("ok"):
+                    node_info["ledger_sequence"] = head.get("sequence", 0)
+                    node_info["ledger_head"] = head.get("head_sha256", "")
+            except Exception:
+                pass
+
+            # Query local anchors index for latest anchor for this node
+            nid = node_info["node_id"]
+            if nid:
+                try:
+                    anchor_body: Dict[str, Any] = {
+                        "query": {"term": {"node_id": nid}},
+                        "sort": [{"anchored_at": {"order": "desc"}}],
+                    }
+                    anchor_resp = _safe_query("tinysocs_anchors", anchor_body, size=1)
+                    ahits = anchor_resp.get("hits", {}).get("hits", [])
+                    if ahits:
+                        asrc = ahits[0].get("_source", {})
+                        node_info["last_anchor_at"] = asrc.get("anchored_at", "")
+                        node_info["last_anchor_items"] = asrc.get("run", {}).get("items", 0)
+                except Exception:
+                    pass
+
+            # Determine status
+            if not node_info["reachable"]:
+                node_info["status"] = "unreachable"
+            elif node_info["last_anchor_at"]:
+                try:
+                    anchor_dt = datetime.fromisoformat(node_info["last_anchor_at"].replace("Z", "+00:00"))
+                    age_hours = (datetime.now(timezone.utc) - anchor_dt).total_seconds() / 3600
+                    node_info["status"] = "healthy" if age_hours < 1 else "warning"
+                except Exception:
+                    node_info["status"] = "healthy"
+            else:
+                node_info["status"] = "healthy"
+
+            nodes_out.append(node_info)
+
+    return {"nodes": nodes_out}
+
+
+# ---------------------------------------------------------------------------
 # Version status API (Phase 15 M5)
 # ---------------------------------------------------------------------------
 @dashboard_app.get("/api/version/status")
 async def api_version_status():
     """Return manifest data + fleet version comparison."""
+    if _DEMO_MODE:
+        return _demo_version_status()
     from tinysocs.reporting.version_check import (
         load_version_manifest,
         check_fleet_versions,
@@ -1466,6 +1994,8 @@ async def api_events_recent(
     time_range: str = Query("", description="Time range: 5m, 15m, 1h, 6h, 24h, 7d"),
 ):
     """Recent events from the specified index."""
+    if _DEMO_MODE:
+        return _demo_events_recent(limit)
     # Validate index pattern (allow known patterns only)
     allowed = ["tinysocs-winlog-*", "tinysocs-alerts-*"]
     if index not in allowed:
@@ -1840,6 +2370,19 @@ def _chat_tool_search_kql(args: Dict[str, Any]) -> Dict[str, Any]:
     size = min(int(args.get("size", 100)), 500)
     ts_field = _chat_ts_field(index)
 
+    # ── Demo mode: return synthetic docs instead of hitting OpenSearch ──
+    if _DEMO_MODE:
+        if "alerts" in index:
+            d = _demo_detections_fired(24, size or 50)
+            docs = d.get("detections", [])
+            return {"ok": True, "hits": docs[:size] if size else docs, "count": len(docs), "total": d.get("total", len(docs)), "index": index}
+        else:
+            d = _demo_events_recent(size or 20)
+            docs = d.get("events", [])
+            if size == 0:
+                return {"ok": True, "total": d.get("total", len(docs)), "index": index}
+            return {"ok": True, "hits": docs[:size], "count": len(docs), "total": d.get("total", len(docs)), "index": index}
+
     query = _chat_build_query(kql, index)
 
     if size == 0:
@@ -1869,6 +2412,30 @@ def _chat_tool_aggregate(args: Dict[str, Any]) -> Dict[str, Any]:
     index = args.get("index", "tinysocs-winlog-*")
     dsl = args.get("dsl") or {}
     ts_field = _chat_ts_field(index)
+
+    # ── Demo mode: return synthetic aggregation results ──
+    if _DEMO_MODE:
+        if "alerts" in index:
+            summary = _demo_alerts_summary(24)
+            return {
+                "ok": True, "total": summary["total"], "index": index,
+                "aggregations": {
+                    "severity_breakdown": {"buckets": [{"key": k, "doc_count": v} for k, v in summary["severity"].items()]},
+                    "top_hosts": {"buckets": [{"key": h["host"], "doc_count": h["count"]} for h in summary["top_hosts"]]},
+                    "top_rules": {"buckets": [{"key": r["rule"], "doc_count": r["count"]} for r in summary["top_rules"]]},
+                },
+            }
+        else:
+            events = _demo_events_recent(200)
+            total = events.get("total", len(events.get("events", [])))
+            return {
+                "ok": True, "total": total, "index": index,
+                "aggregations": {
+                    "total_count": {"value": total},
+                    "by_host": {"buckets": [{"key": "RECEPTION-PC", "doc_count": 45}, {"key": "FILESERVER-01", "doc_count": 32}, {"key": "DC-01", "doc_count": 28}]},
+                    "by_channel": {"buckets": [{"key": "Security", "doc_count": 62}, {"key": "Microsoft-Windows-Sysmon/Operational", "doc_count": 28}, {"key": "TinySocs-FIM", "doc_count": 15}]},
+                },
+            }
 
     # If no aggs provided, build a sensible default: count docs in last 24h
     if not dsl or not dsl.get("aggs"):
@@ -2874,6 +3441,8 @@ async def api_compliance_report(
     hours: int = Query(720, ge=1, le=8760),
 ):
     """Generate compliance report data as JSON."""
+    if _DEMO_MODE:
+        return _demo_compliance_report(framework, hours)
     try:
         from tinysocs.reporting.compliance_report import generate_compliance_report
         loop = asyncio.get_event_loop()
@@ -2919,6 +3488,8 @@ async def api_compliance_report_html(
 @dashboard_app.get("/api/threat-intel/status")
 async def api_threat_intel_status():
     """Return status of configured threat intel providers and cache stats."""
+    if _DEMO_MODE:
+        return _demo_threat_intel_status()
     try:
         from tinysocs.agent.threat_intel import get_providers
         from tinysocs.agent.threat_cache import ThreatCache
@@ -3035,6 +3606,32 @@ a { color: var(--accent); text-decoration: none; }
                   white-space:nowrap; font-family:inherit; }
 .tab-bar button.active { color:var(--accent); border-bottom-color:var(--accent); }
 .tab-bar button:hover:not(.active) { color:var(--text); }
+/* Demo mode banner */
+.demo-banner { background:#f59e0b; color:#1a1a2e; text-align:center; padding:6px 16px; font-size:12px;
+               font-weight:600; position:relative; z-index:18; display:flex; align-items:center;
+               justify-content:center; gap:8px; }
+.demo-banner .close-btn { background:none; border:none; color:#1a1a2e; cursor:pointer; font-size:16px;
+                          padding:0 4px; margin-left:8px; opacity:0.7; }
+.demo-banner .close-btn:hover { opacity:1; }
+/* Sites grid (Phase 17 M1) */
+.sites-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:1rem; padding:0.5rem 0; }
+.site-card { background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:1rem;
+             transition:border-color 0.15s; }
+.site-card:hover { border-color:var(--accent); }
+.site-card-header { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+.site-card-header strong { margin:0; font-size:14px; color:var(--text); font-weight:600; }
+.site-metrics { display:flex; flex-direction:column; }
+.site-status { width:8px; height:8px; border-radius:50%; display:inline-block; flex-shrink:0; }
+.site-status.healthy { background:#22c55e; }
+.site-status.warning { background:#f59e0b; }
+.site-status.unreachable { background:#ef4444; }
+.site-metric { display:flex; justify-content:space-between; font-size:12px; padding:3px 0;
+               color:var(--muted); border-bottom:1px solid var(--border); }
+.site-metric:last-child { border-bottom:none; }
+.site-metric .val { color:var(--text); font-weight:500; }
+.site-badge { display:inline-block; font-size:10px; padding:1px 6px; border-radius:4px; font-weight:600; }
+.site-badge.outdated { background:rgba(245,158,11,0.15); color:#f59e0b; }
+.site-error { font-size:11px; color:#ef4444; margin-top:6px; }
 /* Multi-select host picker dropdown */
 .host-picker { position:relative; display:inline-block; }
 .host-picker-btn, .timeline-controls select {
@@ -3490,6 +4087,7 @@ select { cursor: pointer; }
 </div>
 
 <div class="tab-bar" id="tabBar">
+  <button data-tab="sites" onclick="switchTab('sites')" id="sitesTabBtn" style="display:none">Sites</button>
   <button class="active" data-tab="overview" onclick="switchTab('overview')">Overview</button>
   <button data-tab="fleet" onclick="switchTab('fleet')">Fleet</button>
   <button data-tab="data" onclick="switchTab('data')">Data</button>
@@ -3497,8 +4095,31 @@ select { cursor: pointer; }
   <button data-tab="compliance" onclick="switchTab('compliance')">Compliance</button>
 </div>
 
+""" + ("""
+<style>
+  .right-panel { top: 122px !important; }
+  .tab-bar { top: 88px !important; }
+</style>
+<div class="demo-banner" id="demoBanner"
+     style="position:sticky; top:56px; z-index:19;">
+  &#9888; Demo Mode &mdash; showing synthetic data for illustration purposes
+  <button class="close-btn" onclick="document.getElementById('demoBanner').style.display='none'; document.querySelector('.right-panel').style.top='90px'; document.querySelector('.tab-bar').style.top='56px';">&times;</button>
+</div>
+""" if _DEMO_MODE else "") + """
+
 <div class="main-layout">
   <div class="left-panels">
+
+    <!-- ==================== SITES TAB ==================== -->
+    <div class="tab-pane" id="tab-sites">
+      <div class="card">
+        <div class="card-header" style="display:flex;align-items:center;justify-content:space-between">
+          <h3>Managed Sites</h3>
+          <span id="sitesCount" style="color:var(--muted);font-size:13px"></span>
+        </div>
+        <div class="sites-grid" id="sitesGrid"></div>
+      </div>
+    </div>
 
     <!-- ==================== OVERVIEW TAB ==================== -->
     <div class="tab-pane active" id="tab-overview">
@@ -3818,7 +4439,7 @@ let hours = 24;
 const BASE = window.location.pathname.replace(/\\/$/, '');
 
 // ── Tab navigation ──
-const _validTabs = ['overview','fleet','data','detections','compliance'];
+const _validTabs = ['sites','overview','fleet','data','detections','compliance'];
 let _activeTab = 'overview';
 let _tabLoaded = {};
 
@@ -3840,6 +4461,7 @@ function loadTabData(tabId) {
   if (_tabLoaded[tabId]) return;
   _tabLoaded[tabId] = true;
   switch(tabId) {
+    case 'sites': loadSites(); break;
     case 'overview': loadSummary(); loadTimeline(); loadDetections(); break;
     case 'fleet': loadFleet(); break;
     case 'data': loadEvents(); break;
@@ -3888,6 +4510,59 @@ async function fetchJSON(path) {
     return await r.json();
   } catch(e) {
     return { error: e.message };
+  }
+}
+
+// ── Sites tab ──
+let _sitesVisible = false;
+
+async function loadSites() {
+  const grid = document.getElementById('sitesGrid');
+  const countEl = document.getElementById('sitesCount');
+  const d = await fetchJSON('/api/nodes');
+  if (d.error && !d.nodes) { grid.innerHTML = '<div class="empty">' + escapeHtml(d.error) + '</div>'; return; }
+  const nodes = d.nodes || [];
+  countEl.textContent = nodes.length + ' site' + (nodes.length !== 1 ? 's' : '');
+  if (!nodes.length) { grid.innerHTML = '<div class="empty">No remote sites configured</div>'; return; }
+  let html = '';
+  for (const n of nodes) {
+    const statusCls = n.status || 'unreachable';
+    const statusLabel = statusCls.charAt(0).toUpperCase() + statusCls.slice(1);
+    const anchorAgo = n.last_anchor_at ? timeAgo(n.last_anchor_at) : 'never';
+    const versionBadge = n.version && n.version !== nodes[0].version
+      ? ' <span class="badge badge-medium">outdated</span>' : '';
+    html += '<div class="site-card">'
+      + '<div class="site-card-header">'
+      + '<span class="site-status ' + statusCls + '"></span>'
+      + '<strong>' + escapeHtml(n.node_id || n.url) + '</strong>'
+      + '</div>'
+      + '<div class="site-metrics">'
+      + '<div class="site-metric"><span>Status</span><span class="val">' + statusLabel + '</span></div>'
+      + '<div class="site-metric"><span>Version</span><span class="val">' + escapeHtml(n.version || '?') + versionBadge + '</span></div>'
+      + '<div class="site-metric"><span>Ledger seq</span><span class="val">' + (n.ledger_sequence ?? '—') + '</span></div>'
+      + '<div class="site-metric"><span>Last anchor</span><span class="val">' + anchorAgo + '</span></div>'
+      + '<div class="site-metric"><span>Detections (last run)</span><span class="val">' + (n.last_anchor_items ?? '—') + '</span></div>'
+      + '</div>';
+    if (!n.reachable && n.error) {
+      html += '<div class="site-error">' + escapeHtml(n.error) + '</div>';
+    }
+    html += '</div>';
+  }
+  grid.innerHTML = html;
+}
+
+async function initSitesTab() {
+  // Check if Sites tab should be visible (multi-node or demo mode)
+  const d = await fetchJSON('/api/nodes');
+  const nodes = d.nodes || [];
+  const btn = document.getElementById('sitesTabBtn');
+  if (nodes.length > 0) {
+    btn.style.display = '';
+    _sitesVisible = true;
+    // If no tab explicitly selected, default to Sites
+    if (!window.location.hash && !localStorage.getItem('tinysocs_active_tab')) {
+      switchTab('sites');
+    }
   }
 }
 
@@ -4407,10 +5082,11 @@ async function loadFleet() {
         _fleetVersionMap[fv.hostname] = fv.status;
       }
     }
-    // Show/hide version drift banner
+    // Show/hide version drift banner (suppress in demo mode — it's synthetic data)
     const banner = document.getElementById('versionDriftBanner');
     const bannerText = document.getElementById('versionDriftText');
-    if (banner && vs.has_outdated) {
+    const isDemoMode = !!document.getElementById('demoBanner');
+    if (banner && vs.has_outdated && !isDemoMode) {
       const minor = vs.summary?.outdated_minor || 0;
       const major = vs.summary?.outdated_major || 0;
       const parts = [];
@@ -5296,6 +5972,9 @@ function refreshAll() {
   // Only refresh widgets on the active tab
   const tasks = [];
   switch(_activeTab) {
+    case 'sites':
+      tasks.push(loadSites());
+      break;
     case 'overview':
       tasks.push(loadSummary(), loadTimeline(), loadDetections());
       break;
@@ -5878,6 +6557,9 @@ function unlockDashboard() {
           : _validTabs.includes(saved) ? saved
           : 'overview';
   switchTab(tab);
+
+  // Check if Sites tab should be shown (async — may update default tab)
+  try { initSitesTab(); } catch(e) {}
 }
 
 // Periodic data refresh (every 30s once unlocked)

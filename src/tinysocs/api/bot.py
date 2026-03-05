@@ -357,6 +357,14 @@ def _guard_params(action: str, params: Dict[str, Any]) -> None:
 # ---------- App ----------
 app = FastAPI(title="TinySocs Bot Bridge", version="0.2.0")
 
+# ---------- Phase 17 M0: Early --demo detection (before dashboard import) ----------
+# Must set env var BEFORE importing dashboard, since _DEMO_MODE and _DASHBOARD_HTML
+# are evaluated at module load time.
+import sys as _sys
+if "--demo" in _sys.argv:
+    os.environ["TINYSOCS_DEMO_MODE"] = "1"
+    os.environ.setdefault("SIEM_PASS", "demo")
+
 # ---------- Phase 12: Mount built-in operator dashboard ----------
 try:
     from tinysocs.api.dashboard import dashboard_app
@@ -602,8 +610,18 @@ def bot_diag_queue_append_sample() -> Dict[str, Any]:
     return {"ok": True, "added": len(entries), "path": str(_effective_queue_path())}
 
 def cli():
+    import sys
+
+    # Phase 17 M0: --demo flag for synthetic data mode
+    demo_mode = "--demo" in sys.argv
+    if demo_mode:
+        os.environ["TINYSOCS_DEMO_MODE"] = "1"
+        os.environ.setdefault("DASHBOARD_BIND", "127.0.0.1")
+        os.environ.setdefault("SIEM_PASS", "demo")
+        print("[bot] Demo mode — serving synthetic data at http://localhost:8090/dashboard")
+
     # Guard: if the project forgot to set BOT_SHARED_SECRET, fail loudly.
-    if not BOT_SECRET:
+    if not demo_mode and not BOT_SECRET:
         raise SystemExit("BOT_SHARED_SECRET must be set (see .env).")
     port = int(os.getenv("BOT_PORT", "8090"))
     workers = int(os.getenv("TINYSOCS_BOT_WORKERS", "1"))
@@ -612,7 +630,7 @@ def cli():
     # Dashboard TLS config (Phase 14 M0)
     tls_cert = os.getenv("DASHBOARD_TLS_CERT", "").strip()
     tls_key = os.getenv("DASHBOARD_TLS_KEY", "").strip()
-    bind_host = os.getenv("DASHBOARD_BIND", "0.0.0.0").strip()
+    bind_host = os.getenv("DASHBOARD_BIND", "127.0.0.1" if demo_mode else "0.0.0.0").strip()
 
     ssl_kwargs: dict = {}
     if tls_cert and tls_key:

@@ -13,7 +13,9 @@ Small and mid-sized organisations need security monitoring but face:
 
 TinySocs is a privacy-first, self-hosted SIEM with an AI assistant that deploys in 15 minutes.
 
-**Install** a single executable on a Windows machine. **Collect** Windows security events from endpoints. **Detect** threats with 40+ built-in rules mapped to MITRE ATT&CK. **Investigate** with an AI assistant that speaks plain English. **Report** compliance coverage against NIST CSF, HIPAA, and PCI DSS.
+**Install** a single executable on a Windows machine. **Collect** Windows security events from endpoints. **Detect** threats with 89 built-in rules mapped to 33 MITRE ATT&CK techniques across 11 tactics — 100% validated against Atomic Red Team. **Investigate** with an AI assistant that speaks plain English. **Report** compliance coverage against NIST CSF 2.0, HIPAA, and PCI DSS v4.0. **Manage** multiple client sites from one federated dashboard.
+
+**Download:** [GitHub Releases](https://github.com/lukefitzg/tinysocs/releases/latest) | **Landing page:** [lukefitzg.github.io/tinysocs](https://lukefitzg.github.io/tinysocs/)
 
 ## Key Differentiators
 
@@ -31,7 +33,7 @@ TinySocs is a privacy-first, self-hosted SIEM with an AI assistant that deploys 
 - **Platform**: Windows 10/11, Server 2019+
 - **Data store**: Bundled OpenSearch (single-node)
 - **Agent**: C# .NET 8.0, collects Windows + Sysmon events
-- **Detection**: 40+ rules, KQL + threshold-based, MITRE ATT&CK mapped
+- **Detection**: 89 rules (33 techniques, 11 tactics, 100% Atomic Red Team efficacy), KQL + threshold-based, MITRE ATT&CK mapped
 - **AI**: Claude (Anthropic), GPT-4o (OpenAI), or local Ollama
 - **Dashboard**: Web UI with alerts, timeline, fleet health, event explorer, rule management
 - **Notifications**: Slack, Teams, email (with retry queue)

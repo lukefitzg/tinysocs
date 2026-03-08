@@ -1,8 +1,13 @@
 """
-Phase 17 M5: Demo mode response shape tests.
+Phase 17 M5 + Phase 18 M5: Demo mode response shape tests.
 
 Validates that all demo data generator functions return dicts/lists
 matching the exact shape expected by the dashboard JavaScript frontend.
+
+Phase 18 additions:
+  - Per-site demo data generators (_demo_site_*)
+  - Demo proxy handler (_demo_site_proxy)
+  - Site data consistency checks
 """
 
 import os
@@ -28,6 +33,16 @@ from tinysocs.api.dashboard import (  # noqa: E402
     _demo_nodes,
     _demo_threat_intel_status,
     _demo_version_status,
+    # Phase 18 M4: per-site demo data generators
+    _demo_site_alerts_summary,
+    _demo_site_alerts_timeline,
+    _demo_site_fleet_health,
+    _demo_site_detections_fired,
+    _demo_site_events_recent,
+    _demo_site_host_timeline,
+    _demo_site_proxy,
+    _DEMO_SITE_HOSTS,
+    _DEMO_SITE_ALERTS,
 )
 
 
@@ -310,9 +325,9 @@ class TestDemoNodes:
     def test_node_ids(self):
         d = _demo_nodes()
         ids = {n["node_id"] for n in d["nodes"]}
-        assert "acme-law" in ids
-        assert "mainst-dental" in ids
-        assert "harbor-ins" in ids
+        assert "head-office" in ids
+        assert "branch-north" in ids
+        assert "warehouse" in ids
 
 
 class TestDemoTimestampsRelative:
@@ -358,3 +373,258 @@ class TestDemoTimestampsRelative:
             ts = self._parse_iso(ts_str)
             delta = abs((now - ts).total_seconds())
             assert delta < 90000, f"Alert ts {ts_str} too old ({delta}s)"
+
+
+# =========================================================================
+# Phase 18 M4+M5: Per-site demo data generators
+# =========================================================================
+
+_SITE_IDS = ["head-office", "branch-north", "warehouse"]
+
+
+class TestDemoSiteAlertsSummary:
+    """Per-site alert summary shape tests."""
+
+    def test_all_sites_return_valid_shape(self):
+        for site in _SITE_IDS:
+            d = _demo_site_alerts_summary(site)
+            assert "total" in d
+            assert "severity" in d
+            assert "top_rules" in d
+            assert "top_hosts" in d
+            assert d.get("error") is None
+
+    def test_acme_alert_counts(self):
+        d = _demo_site_alerts_summary("head-office")
+        assert d["total"] == 14
+        assert d["severity"]["critical"] == 2
+
+    def test_dental_no_critical(self):
+        d = _demo_site_alerts_summary("branch-north")
+        assert d["total"] == 3
+        # No critical key or critical == 0
+        assert d["severity"].get("critical", 0) == 0
+
+    def test_harbor_most_alerts(self):
+        d = _demo_site_alerts_summary("warehouse")
+        assert d["total"] == 31
+        assert d["severity"]["critical"] == 3
+
+    def test_unknown_site_returns_error(self):
+        d = _demo_site_alerts_summary("nonexistent")
+        assert "error" in d
+
+
+class TestDemoSiteAlertsTimeline:
+    """Per-site alert timeline shape tests."""
+
+    def test_all_sites_return_buckets(self):
+        for site in _SITE_IDS:
+            d = _demo_site_alerts_timeline(site)
+            assert "buckets" in d
+            assert len(d["buckets"]) == 24
+
+    def test_bucket_shape(self):
+        d = _demo_site_alerts_timeline("head-office")
+        for b in d["buckets"]:
+            assert "time" in b
+            assert "count" in b
+            assert "severity" in b
+
+
+class TestDemoSiteFleetHealth:
+    """Per-site fleet health shape tests."""
+
+    def test_acme_has_two_hosts(self):
+        d = _demo_site_fleet_health("head-office")
+        assert len(d["hosts"]) == 2
+        names = {h["hostname"] for h in d["hosts"]}
+        assert "RECEPTION-PC" in names
+        assert "EXEC-LAPTOP" in names
+
+    def test_dental_has_two_hosts(self):
+        d = _demo_site_fleet_health("branch-north")
+        assert len(d["hosts"]) == 2
+        names = {h["hostname"] for h in d["hosts"]}
+        assert "BRANCH-PC-01" in names
+        assert "BRANCH-PC-02" in names
+
+    def test_harbor_has_three_hosts(self):
+        d = _demo_site_fleet_health("warehouse")
+        assert len(d["hosts"]) == 3
+        names = {h["hostname"] for h in d["hosts"]}
+        assert "SHIPPING-PC" in names
+        assert "INVENTORY-SERVER" in names
+        assert "LOGISTICS-DB" in names
+
+    def test_host_fields_present(self):
+        for site in _SITE_IDS:
+            d = _demo_site_fleet_health(site)
+            for host in d["hosts"]:
+                for field in ("hostname", "event_count", "last_seen",
+                              "alert_count", "alert_severities", "top_channels"):
+                    assert field in host, f"Missing {field} in {site} host {host.get('hostname')}"
+
+    def test_no_host_overlap_between_sites(self):
+        """Each site should have distinct hosts."""
+        all_hosts = []
+        for site in _SITE_IDS:
+            d = _demo_site_fleet_health(site)
+            all_hosts.extend(h["hostname"] for h in d["hosts"])
+        assert len(all_hosts) == len(set(all_hosts)), "Hosts overlap between sites"
+
+
+class TestDemoSiteDetectionsFired:
+    """Per-site fired detections shape tests."""
+
+    def test_all_sites_return_detections(self):
+        for site in _SITE_IDS:
+            d = _demo_site_detections_fired(site)
+            assert "detections" in d
+            assert "total" in d
+            assert isinstance(d["detections"], list)
+
+    def test_detection_fields(self):
+        d = _demo_site_detections_fired("warehouse")
+        for det in d["detections"]:
+            for field in ("rule_id", "rule_name", "severity", "host", "timestamp"):
+                assert field in det, f"Missing {field} in detection"
+
+
+class TestDemoSiteEventsRecent:
+    """Per-site recent events shape tests."""
+
+    def test_all_sites_return_events(self):
+        for site in _SITE_IDS:
+            d = _demo_site_events_recent(site, 10)
+            assert "events" in d
+            assert len(d["events"]) > 0
+
+    def test_event_fields(self):
+        d = _demo_site_events_recent("head-office", 5)
+        for evt in d["events"]:
+            for field in ("timestamp", "host", "channel", "event_id"):
+                assert field in evt
+
+    def test_events_sorted_by_timestamp_desc(self):
+        d = _demo_site_events_recent("warehouse", 20)
+        ts = [e["timestamp"] for e in d["events"]]
+        assert ts == sorted(ts, reverse=True)
+
+
+class TestDemoSiteHostTimeline:
+    """Per-site host timeline shape tests."""
+
+    def test_all_sites_return_buckets(self):
+        for site in _SITE_IDS:
+            d = _demo_site_host_timeline(site)
+            assert "buckets" in d
+            assert len(d["buckets"]) == 24
+
+    def test_buckets_have_channels(self):
+        d = _demo_site_host_timeline("warehouse")
+        for b in d["buckets"]:
+            assert "time" in b
+            assert "channels" in b
+            assert isinstance(b["channels"], dict)
+
+
+class TestDemoSiteProxy:
+    """Test the demo site proxy dispatcher."""
+
+    def test_known_site_alerts_summary(self):
+        d = _demo_site_proxy("head-office", "alerts/summary", {})
+        assert d["total"] == 14
+        assert d.get("error") is None
+
+    def test_known_site_fleet_health(self):
+        d = _demo_site_proxy("warehouse", "fleet/health", {})
+        assert len(d["hosts"]) == 3
+
+    def test_known_site_detections_fired(self):
+        d = _demo_site_proxy("branch-north", "detections/fired", {})
+        assert "detections" in d
+
+    def test_known_site_events_recent(self):
+        d = _demo_site_proxy("head-office", "events/recent", {"limit": "5"})
+        assert "events" in d
+
+    def test_known_site_host_timeline(self):
+        d = _demo_site_proxy("warehouse", "host/timeline",
+                             {"hostname": "INVENTORY-SERVER", "hours": "12"})
+        assert "buckets" in d
+
+    def test_unknown_site_returns_404(self):
+        from fastapi.responses import JSONResponse
+        result = _demo_site_proxy("nonexistent", "alerts/summary", {})
+        assert isinstance(result, JSONResponse)
+        assert result.status_code == 404
+
+    def test_unknown_endpoint_returns_404(self):
+        from fastapi.responses import JSONResponse
+        result = _demo_site_proxy("head-office", "unknown/path", {})
+        assert isinstance(result, JSONResponse)
+        assert result.status_code == 404
+
+
+class TestDemoSiteDataConsistency:
+    """Verify consistency between site cards and drill-through data."""
+
+    def test_card_alert_count_matches_drillthrough(self):
+        """Site card alerts_24h should equal drill-through alerts/summary total."""
+        nodes = _demo_nodes()
+        for node in nodes["nodes"]:
+            nid = node["node_id"]
+            summary = _demo_site_alerts_summary(nid)
+            assert node["alerts_24h"] == summary["total"], (
+                f"{nid}: card shows {node['alerts_24h']} but "
+                f"drill-through shows {summary['total']}"
+            )
+
+    def test_card_host_count_matches_drillthrough(self):
+        """Site card host_count should equal drill-through fleet/health host count."""
+        nodes = _demo_nodes()
+        for node in nodes["nodes"]:
+            nid = node["node_id"]
+            fleet = _demo_site_fleet_health(nid)
+            assert node["host_count"] == len(fleet["hosts"]), (
+                f"{nid}: card shows {node['host_count']} hosts but "
+                f"drill-through shows {len(fleet['hosts'])}"
+            )
+
+    def test_aggregate_matches_sum(self):
+        """Aggregate totals should equal sum of per-site summaries."""
+        nodes = _demo_nodes()
+        agg = nodes["aggregate"]
+        total_from_sites = sum(
+            _demo_site_alerts_summary(n["node_id"])["total"]
+            for n in nodes["nodes"]
+        )
+        assert agg["total_alerts_24h"] == total_from_sites
+
+
+class TestDemoSiteTimestampsRelative:
+    """Verify per-site demo timestamps are recent."""
+
+    def _parse_iso(self, ts):
+        if ts.endswith("Z"):
+            ts = ts[:-1] + "+00:00"
+        return datetime.fromisoformat(ts)
+
+    def test_site_fleet_timestamps_recent(self):
+        now = datetime.now(timezone.utc)
+        for site in _SITE_IDS:
+            d = _demo_site_fleet_health(site)
+            for host in d["hosts"]:
+                ts = self._parse_iso(host["last_seen"])
+                delta = abs((now - ts).total_seconds())
+                assert delta < 7200, f"{site} host {host['hostname']} last_seen too old"
+
+    def test_site_detections_timestamps_recent(self):
+        now = datetime.now(timezone.utc)
+        for site in _SITE_IDS:
+            d = _demo_site_detections_fired(site)
+            for det in d["detections"]:
+                ts = self._parse_iso(det["timestamp"])
+                delta = abs((now - ts).total_seconds())
+                assert delta < 90000, f"{site} detection {det['rule_id']} timestamp too old"

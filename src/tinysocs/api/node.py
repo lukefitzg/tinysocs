@@ -135,13 +135,13 @@ def _get_tls_verify_flag() -> bool:
         return False
 
 
-def _os_search(index_pattern: str, body: dict, size: int = 20) -> list[dict[str, Any]]:
+def _os_search_raw(index_pattern: str, body: dict, size: int = 0) -> dict:
     """
-    Minimal OpenSearch search helper.
+    OpenSearch search helper returning the full JSON response.
 
-    - Uses SIEM_URL/OPENSEARCH_URL for the base URL.
-    - Honors SIEM_SSL_VERIFY/OPENSEARCH_VERIFY_SSL.
-    - Flattens _source + a tiny bit of metadata into each returned doc.
+    Includes hits, aggregations, total, etc. — needed for endpoints
+    that use aggregation results rather than individual documents.
+    Returns an empty-result dict on any failure.
     """
     base = _get_siem_base_url()
     url = f"{base}/{index_pattern}/_search?ignore_unavailable=true&allow_no_indices=true"
@@ -159,25 +159,35 @@ def _os_search(index_pattern: str, body: dict, size: int = 20) -> list[dict[str,
         flush=True,
     )
 
+    empty: dict = {"hits": {"total": {"value": 0}, "hits": []}, "aggregations": {}}
+
     try:
         resp = requests.post(url, json=payload, timeout=10, verify=verify, auth=_get_siem_auth())
         resp.raise_for_status()
-        try:
-            text_preview = resp.text[:500]
-        except Exception:
-            text_preview = "<unreadable>"
-        print(
-            f"[tinysocs-node] OpenSearch HTTP {resp.status_code} body_preview={text_preview}",
-            flush=True,
-        )
     except Exception as e:  # pragma: no cover
         print(f"[tinysocs-node] OpenSearch query failed: {e}; url={url}", flush=True)
-        return []
+        return {**empty, "error": f"OpenSearch query failed: {e}"}
 
     try:
         data = resp.json()
     except Exception as e:  # pragma: no cover
         print(f"[tinysocs-node] Failed to parse OpenSearch JSON: {e}; url={url}", flush=True)
+        return {**empty, "error": f"Failed to parse response: {e}"}
+
+    return data
+
+
+def _os_search(index_pattern: str, body: dict, size: int = 20) -> list[dict[str, Any]]:
+    """
+    Minimal OpenSearch search helper.
+
+    - Uses SIEM_URL/OPENSEARCH_URL for the base URL.
+    - Honors SIEM_SSL_VERIFY/OPENSEARCH_VERIFY_SSL.
+    - Flattens _source + a tiny bit of metadata into each returned doc.
+    """
+    data = _os_search_raw(index_pattern, body, size=size)
+
+    if data.get("error"):
         return []
 
     total = data.get("hits", {}).get("total")
@@ -187,6 +197,8 @@ def _os_search(index_pattern: str, body: dict, size: int = 20) -> list[dict[str,
         total_val = total
     hits = data.get("hits", {}).get("hits", [])
     hits_len = len(hits)
+    base = _get_siem_base_url()
+    url = f"{base}/{index_pattern}/_search"
     print(
         f"[tinysocs-node] OpenSearch query ok url={url} total={total_val} hits={hits_len}",
         flush=True,
@@ -394,7 +406,11 @@ async def get_meta() -> dict:
         "ok": True,
         "node_id": NODE_ID,
         "version": os.getenv("TINYSOCS_VERSION", "dev"),
-        "endpoints": ["/meta", "/agg", "/sample", "/evidence/head", "/evidence/append"],
+        "endpoints": [
+            "/meta", "/agg", "/sample", "/evidence/head", "/evidence/append",
+            "/alerts/summary", "/alerts/timeline", "/fleet/summary", "/fleet/health",
+            "/detections/fired", "/events/recent", "/host/timeline",
+        ],
         "hmac": {
             "secret_set": SECRET != "dev-secret-change-me",
             "skew_secs": SKEW_SECS,
@@ -576,6 +592,385 @@ async def post_append(req: Request) -> dict:
     _append_jsonl(entry)
     _write_head({"ok": True, "sequence": sequence, "head_sha256": head_sha, "updated_at": now_iso()})
     return {"ok": True, "sequence": sequence, "head_sha256": head_sha}
+
+
+# ---------------------------------------------------------------------------
+# Federation summary & query endpoints (Phase 18 M0 + M2)
+# ---------------------------------------------------------------------------
+# All read-only, no HMAC required (same access level as /meta).
+# Query patterns mirror dashboard.py so response shapes are compatible.
+# ---------------------------------------------------------------------------
+
+
+def _os_total(resp: dict) -> int:
+    """Extract total hit count from an OpenSearch response."""
+    total_hit = resp.get("hits", {}).get("total", 0)
+    return total_hit.get("value", 0) if isinstance(total_hit, dict) else int(total_hit)
+
+
+@app.get("/alerts/summary")
+async def alerts_summary(hours: int = Query(24, ge=1, le=720)) -> dict:
+    """
+    Alert summary for the local site: total, by severity, top rules, top hosts.
+
+    Mirrors dashboard.py's /api/alerts/summary response shape.
+    """
+    # Severity counts
+    body_sev = {
+        "query": {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}},
+        "aggs": {"by_severity": {"terms": {"field": "alert.severity.keyword", "size": 10}}},
+    }
+    resp_sev = _os_search_raw("tinysocs-alerts-*", body_sev)
+    if resp_sev.get("error"):
+        return {"hours": hours, "total": 0, "severity": {}, "top_rules": [], "top_hosts": [],
+                "error": resp_sev["error"]}
+
+    total = _os_total(resp_sev)
+    severity = {
+        b["key"]: b["doc_count"]
+        for b in resp_sev.get("aggregations", {}).get("by_severity", {}).get("buckets", [])
+    }
+
+    # Top rules
+    body_rules = {
+        "query": {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}},
+        "aggs": {"by_rule": {"terms": {"field": "alert.rule_id", "size": 10, "order": {"_count": "desc"}}}},
+    }
+    resp_rules = _os_search_raw("tinysocs-alerts-*", body_rules)
+    top_rules = [
+        {"rule": b["key"], "count": b["doc_count"]}
+        for b in resp_rules.get("aggregations", {}).get("by_rule", {}).get("buckets", [])
+    ]
+
+    # Top hosts
+    body_hosts = {
+        "query": {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}},
+        "aggs": {"by_host": {"terms": {"field": "source.computer_name.keyword", "size": 10, "order": {"_count": "desc"}}}},
+    }
+    resp_hosts = _os_search_raw("tinysocs-alerts-*", body_hosts)
+    top_hosts = [
+        {"host": b["key"], "count": b["doc_count"]}
+        for b in resp_hosts.get("aggregations", {}).get("by_host", {}).get("buckets", [])
+    ]
+
+    return {
+        "hours": hours,
+        "total": total,
+        "severity": severity,
+        "top_rules": top_rules,
+        "top_hosts": top_hosts,
+    }
+
+
+@app.get("/fleet/summary")
+async def fleet_summary() -> dict:
+    """
+    Fleet composition: host count, total events (24h), per-host summary.
+
+    Lightweight version of /fleet/health for Sites tab cards.
+    """
+    body = {
+        "query": {"range": {"@timestamp": {"gte": "now-24h", "lte": "now"}}},
+        "aggs": {
+            "by_host": {
+                "terms": {"field": "winlog.computer_name", "size": 50},
+                "aggs": {
+                    "last_seen": {"max": {"field": "@timestamp"}},
+                    "event_count": {"value_count": {"field": "@timestamp"}},
+                },
+            }
+        },
+    }
+    resp = _os_search_raw("tinysocs-winlog-*", body)
+    if resp.get("error"):
+        return {"host_count": 0, "total_events_24h": 0, "hosts": [], "error": resp["error"]}
+
+    hosts = []
+    total_events = 0
+    for b in resp.get("aggregations", {}).get("by_host", {}).get("buckets", []):
+        ec = b.get("event_count", {}).get("value", b["doc_count"])
+        total_events += ec
+        hosts.append({
+            "hostname": b["key"],
+            "events_24h": ec,
+            "last_seen": b.get("last_seen", {}).get("value_as_string", ""),
+        })
+
+    return {
+        "host_count": len(hosts),
+        "total_events_24h": total_events,
+        "hosts": hosts,
+    }
+
+
+@app.get("/alerts/timeline")
+async def alerts_timeline(hours: int = Query(24, ge=1, le=720)) -> dict:
+    """
+    Hourly bucketed alert counts with per-severity breakdown.
+
+    Mirrors dashboard.py's /api/alerts/timeline response shape.
+    """
+    body = {
+        "query": {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}},
+        "aggs": {
+            "timeline": {
+                "date_histogram": {"field": "timestamp", "fixed_interval": "1h", "min_doc_count": 0},
+                "aggs": {
+                    "by_severity": {"terms": {"field": "alert.severity.keyword", "size": 10}}
+                },
+            }
+        },
+    }
+    resp = _os_search_raw("tinysocs-alerts-*", body)
+    buckets = resp.get("aggregations", {}).get("timeline", {}).get("buckets", [])
+    return {
+        "hours": hours,
+        "buckets": [
+            {
+                "time": b.get("key_as_string", ""),
+                "count": b.get("doc_count", 0),
+                "severity": {
+                    s["key"]: s["doc_count"]
+                    for s in b.get("by_severity", {}).get("buckets", [])
+                },
+            }
+            for b in buckets
+        ],
+    }
+
+
+@app.get("/detections/fired")
+async def detections_fired(
+    hours: int = Query(24, ge=1, le=720),
+    limit: int = Query(30, ge=1, le=200),
+) -> dict:
+    """
+    Individual fired detection alerts with full details.
+
+    Mirrors dashboard.py's /api/detections/fired response shape.
+    """
+    body: dict = {
+        "query": {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}},
+        "sort": [{"timestamp": {"order": "desc"}}],
+        "size": limit,
+    }
+    resp = _os_search_raw("tinysocs-alerts-*", body, size=limit)
+    hits = resp.get("hits", {}).get("hits", [])
+    detections = []
+    for h in hits:
+        src = h.get("_source", {})
+        alert = src.get("alert", {})
+        detections.append({
+            "id": h.get("_id", ""),
+            "alert_id": alert.get("id", ""),
+            "rule_id": alert.get("rule_id", ""),
+            "rule_name": alert.get("rule_name", ""),
+            "severity": alert.get("severity", ""),
+            "description": alert.get("description", ""),
+            "event_count": alert.get("event_count", 0),
+            "first_seen": alert.get("first_seen", ""),
+            "last_seen": alert.get("last_seen", ""),
+            "timestamp": src.get("timestamp", ""),
+            "host": src.get("source", {}).get("computer_name", ""),
+            "matched_events": src.get("matched_events", 0),
+            "status": "new",
+            "tags": [],
+            "notes": "",
+        })
+    total = _os_total(resp)
+    return {"detections": detections, "total": total}
+
+
+@app.get("/fleet/health")
+async def fleet_health() -> dict:
+    """
+    Detailed per-host fleet status with alert counts.
+
+    Mirrors dashboard.py's /api/fleet/health response shape.
+    """
+    # Event data by host
+    body = {
+        "query": {"range": {"@timestamp": {"gte": "now-24h", "lte": "now"}}},
+        "aggs": {
+            "by_host": {
+                "terms": {"field": "winlog.computer_name", "size": 50},
+                "aggs": {
+                    "last_seen": {"max": {"field": "@timestamp"}},
+                    "first_seen": {"min": {"field": "@timestamp"}},
+                    "event_count": {"value_count": {"field": "@timestamp"}},
+                    "top_channels": {"terms": {"field": "winlog.channel", "size": 5}},
+                    "top_event_ids": {"terms": {"field": "event.code", "size": 5}},
+                },
+            }
+        },
+    }
+    # Alert data by host
+    alert_body = {
+        "query": {"range": {"timestamp": {"gte": "now-24h", "lte": "now"}}},
+        "aggs": {
+            "by_host": {
+                "terms": {"field": "source.computer_name.keyword", "size": 50},
+                "aggs": {
+                    "by_severity": {"terms": {"field": "alert.severity.keyword", "size": 5}},
+                },
+            }
+        },
+    }
+    resp = _os_search_raw("tinysocs-winlog-*", body)
+    alert_resp = _os_search_raw("tinysocs-alerts-*", alert_body)
+
+    # Build alert lookup
+    alert_counts: dict[str, int] = {}
+    alert_severities: dict[str, dict[str, int]] = {}
+    for ab in alert_resp.get("aggregations", {}).get("by_host", {}).get("buckets", []):
+        hname = ab["key"]
+        alert_counts[hname] = ab["doc_count"]
+        alert_severities[hname] = {
+            s["key"]: s["doc_count"]
+            for s in ab.get("by_severity", {}).get("buckets", [])
+        }
+
+    hosts = []
+    for b in resp.get("aggregations", {}).get("by_host", {}).get("buckets", []):
+        hostname = b["key"]
+        top_channels = [
+            {"channel": ch["key"], "count": ch["doc_count"]}
+            for ch in b.get("top_channels", {}).get("buckets", [])
+        ]
+        top_events = [
+            {"event_id": str(ev["key"]), "count": ev["doc_count"]}
+            for ev in b.get("top_event_ids", {}).get("buckets", [])
+        ]
+        hosts.append({
+            "hostname": hostname,
+            "event_count": b.get("event_count", {}).get("value", b["doc_count"]),
+            "last_seen": b.get("last_seen", {}).get("value_as_string", ""),
+            "first_seen": b.get("first_seen", {}).get("value_as_string", ""),
+            "alert_count": alert_counts.get(hostname, 0),
+            "alert_severities": alert_severities.get(hostname, {}),
+            "top_channels": top_channels,
+            "top_event_ids": top_events,
+        })
+    return {"hosts": hosts}
+
+
+@app.get("/events/recent")
+async def events_recent(
+    limit: int = Query(50, ge=1, le=500),
+    q: str = Query("", description="KQL filter"),
+    index: str = Query("tinysocs-winlog-*", description="Index pattern"),
+) -> dict:
+    """
+    Recent events from the local SIEM.
+
+    Mirrors dashboard.py's /api/events/recent response shape.
+    """
+    allowed = ["tinysocs-winlog-*", "tinysocs-alerts-*"]
+    if index not in allowed:
+        index = "tinysocs-winlog-*"
+
+    ts_field = "timestamp" if "alerts" in index else "@timestamp"
+
+    # Build query
+    if q:
+        text_q: dict = {"query_string": {"query": q, "default_operator": "AND"}}
+    else:
+        text_q = {"match_all": {}}
+
+    body: dict = {
+        "query": text_q,
+        "sort": [{ts_field: {"order": "desc"}}],
+        "size": limit,
+    }
+    resp = _os_search_raw(index, body, size=limit)
+    hits = resp.get("hits", {}).get("hits", [])
+    events = []
+    for h in hits:
+        src = h.get("_source", {})
+        if "alerts" in index:
+            alert = src.get("alert", {})
+            events.append({
+                "timestamp": src.get("timestamp", ""),
+                "host": src.get("source", {}).get("computer_name", ""),
+                "channel": alert.get("rule_id", ""),
+                "event_id": alert.get("severity", ""),
+                "message": (alert.get("description", "") or alert.get("rule_name", ""))[:300],
+            })
+        else:
+            events.append({
+                "timestamp": src.get("@timestamp", ""),
+                "channel": (src.get("winlog", {}) or {}).get("channel", ""),
+                "event_id": (src.get("winlog", {}) or {}).get(
+                    "event_id", src.get("event", {}).get("code", "")),
+                "message": (src.get("message", "") or "")[:300],
+                "host": (src.get("winlog", {}) or {}).get(
+                    "computer_name", (src.get("agent", {}) or {}).get("hostname", "")),
+            })
+    return {"events": events, "total": len(events), "index": index}
+
+
+@app.get("/host/timeline")
+async def host_timeline(
+    hostname: str = Query("", description="Host to query (blank = all hosts)"),
+    hours: int = Query(24, ge=1, le=720),
+) -> dict:
+    """
+    Event count over time for a host (or all), bucketed with channel breakdown.
+
+    Mirrors dashboard.py's /api/host/timeline response shape.
+    """
+    if hours <= 6:
+        interval = "5m"
+    elif hours <= 48:
+        interval = "1h"
+    else:
+        interval = "6h"
+
+    must_clauses: list = [
+        {"range": {"@timestamp": {"gte": f"now-{hours}h", "lte": "now"}}},
+    ]
+    if hostname:
+        hosts_list = [h.strip() for h in hostname.split(",") if h.strip()]
+        if len(hosts_list) == 1:
+            must_clauses.append({"term": {"winlog.computer_name": hosts_list[0]}})
+        elif len(hosts_list) > 1:
+            must_clauses.append({"terms": {"winlog.computer_name": hosts_list}})
+
+    body = {
+        "query": {"bool": {"must": must_clauses}},
+        "aggs": {
+            "over_time": {
+                "date_histogram": {
+                    "field": "@timestamp",
+                    "fixed_interval": interval,
+                    "min_doc_count": 0,
+                    "extended_bounds": {"min": f"now-{hours}h", "max": "now"},
+                },
+                "aggs": {
+                    "by_channel": {"terms": {"field": "winlog.channel", "size": 10}},
+                },
+            }
+        },
+    }
+    resp = _os_search_raw("tinysocs-winlog-*", body)
+
+    # Collect all channels across all buckets
+    all_channels: set = set()
+    raw_buckets = resp.get("aggregations", {}).get("over_time", {}).get("buckets", [])
+    for b in raw_buckets:
+        for ch in b.get("by_channel", {}).get("buckets", []):
+            all_channels.add(ch["key"])
+
+    # Build output buckets with per-channel counts
+    buckets = []
+    for b in raw_buckets:
+        entry: dict = {"time": b.get("key_as_string", ""), "total": b.get("doc_count", 0)}
+        ch_map = {ch["key"]: ch["doc_count"] for ch in b.get("by_channel", {}).get("buckets", [])}
+        for ch_name in sorted(all_channels):
+            entry[ch_name] = ch_map.get(ch_name, 0)
+        buckets.append(entry)
+
+    return {"hostname": hostname, "hours": hours, "buckets": buckets}
 
 
 def cli() -> None:

@@ -1,0 +1,14 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "tinysocs-demo",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "tinysocs.api.bot", "--demo"],
+      "port": 8090,
+      "env": {
+        "PYTHONPATH": "src"
+      }
+    }
+  ]
+}

@@ -1235,7 +1235,7 @@ def _demo_nodes() -> dict:
     """Synthetic multi-site data for the Sites tab (Phase 18: enriched with operational data)."""
     nodes = [
         {
-            "url": "http://acme-node:8081",
+            "url": "https://acme-node:8081",
             "node_id": "head-office",
             "version": "0.8.0",
             "status": "healthy",
@@ -1247,11 +1247,12 @@ def _demo_nodes() -> dict:
             "error": None,
             # Phase 18 M1: operational data
             "alerts_24h": 14, "alerts_critical": 2, "alerts_high": 5,
+            "alerts_medium": 4, "alerts_low": 3,
             "top_rule": "brute_force_password", "host_count": 2,
             "total_events_24h": 24580,
         },
         {
-            "url": "http://dental-node:8081",
+            "url": "https://dental-node:8081",
             "node_id": "branch-north",
             "version": "0.8.0",
             "status": "healthy",
@@ -1262,11 +1263,12 @@ def _demo_nodes() -> dict:
             "reachable": True,
             "error": None,
             "alerts_24h": 3, "alerts_critical": 0, "alerts_high": 1,
+            "alerts_medium": 1, "alerts_low": 1,
             "top_rule": "off_hours_logon", "host_count": 2,
             "total_events_24h": 8120,
         },
         {
-            "url": "http://harbor-node:8081",
+            "url": "https://harbor-node:8081",
             "node_id": "warehouse",
             "version": "0.7.9",
             "status": "warning",
@@ -1277,6 +1279,7 @@ def _demo_nodes() -> dict:
             "reachable": True,
             "error": None,
             "alerts_24h": 31, "alerts_critical": 3, "alerts_high": 8,
+            "alerts_medium": 12, "alerts_low": 8,
             "top_rule": "suspicious_powershell", "host_count": 3,
             "total_events_24h": 52340,
         },
@@ -1286,6 +1289,8 @@ def _demo_nodes() -> dict:
         "total_alerts_24h": sum(n["alerts_24h"] for n in nodes),
         "total_critical": sum(n["alerts_critical"] for n in nodes),
         "total_high": sum(n["alerts_high"] for n in nodes),
+        "total_medium": sum(n["alerts_medium"] for n in nodes),
+        "total_low": sum(n["alerts_low"] for n in nodes),
         "total_hosts": sum(n["host_count"] for n in nodes),
         "sites_healthy": sum(1 for n in nodes if n["status"] == "healthy"),
         "sites_warning": sum(1 for n in nodes if n["status"] == "warning"),
@@ -1308,7 +1313,7 @@ async def api_alert_timeline(hours: int = Query(24, ge=1, le=720)):
             "timeline": {
                 "date_histogram": {"field": "timestamp", "fixed_interval": "1h", "min_doc_count": 0},
                 "aggs": {
-                    "by_severity": {"terms": {"field": "alert.severity.keyword", "size": 10}}
+                    "by_severity": {"terms": {"field": "alert.severity", "size": 10}}
                 },
             }
         },
@@ -1340,14 +1345,14 @@ async def api_alert_summary(hours: int = Query(24, ge=1, le=720)):
     # Total + severity
     body_sev = {
         "query": {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}},
-        "aggs": {"by_severity": {"terms": {"field": "alert.severity.keyword", "size": 10}}},
+        "aggs": {"by_severity": {"terms": {"field": "alert.severity", "size": 10}}},
     }
     resp_sev = await _safe_query_async("tinysocs-alerts-*", body_sev)
 
     total_hit = resp_sev.get("hits", {}).get("total", {})
     total = total_hit.get("value", 0) if isinstance(total_hit, dict) else int(total_hit)
     severity = {
-        b["key"]: b["doc_count"]
+        b["key"].lower(): b["doc_count"]
         for b in resp_sev.get("aggregations", {}).get("by_severity", {}).get("buckets", [])
     }
 
@@ -2029,7 +2034,7 @@ async def api_fleet_health():
             "by_host": {
                 "terms": {"field": "source.computer_name.keyword", "size": 50},
                 "aggs": {
-                    "by_severity": {"terms": {"field": "alert.severity.keyword", "size": 5}},
+                    "by_severity": {"terms": {"field": "alert.severity", "size": 5}},
                 },
             }
         },
@@ -2171,6 +2176,7 @@ async def api_nodes():
                 "last_anchor_items": 0, "reachable": False, "error": None,
                 # Phase 18 M1: operational data (null = not available)
                 "alerts_24h": None, "alerts_critical": None, "alerts_high": None,
+                "alerts_medium": None, "alerts_low": None,
                 "top_rule": None, "host_count": None, "total_events_24h": None,
             }
 
@@ -2185,6 +2191,41 @@ async def api_nodes():
             # Process /meta
             if meta_data is None:
                 node_info["error"] = f"Cannot reach {url}"
+                # Fallback: node unreachable but we can still query OpenSearch
+                # directly for alert and fleet data to populate the site card.
+                try:
+                    _ur_fb = {
+                        "query": {"range": {"timestamp": {"gte": "now-24h", "lte": "now"}}},
+                        "aggs": {
+                            "by_severity": {"terms": {"field": "alert.severity", "size": 10}},
+                            "by_rule": {"terms": {"field": "alert.rule_id", "size": 5, "order": {"_count": "desc"}}},
+                        },
+                    }
+                    _ur_r = await _safe_query_async("tinysocs-alerts-*", _ur_fb)
+                    if not _ur_r.get("error"):
+                        _ur_total = _ur_r.get("hits", {}).get("total", {})
+                        node_info["alerts_24h"] = _ur_total.get("value", 0) if isinstance(_ur_total, dict) else int(_ur_total)
+                        _ur_sev = {b["key"].lower(): b["doc_count"] for b in _ur_r.get("aggregations", {}).get("by_severity", {}).get("buckets", [])}
+                        node_info["alerts_critical"] = _ur_sev.get("critical", 0)
+                        node_info["alerts_high"] = _ur_sev.get("high", 0)
+                        node_info["alerts_medium"] = _ur_sev.get("medium", 0)
+                        node_info["alerts_low"] = _ur_sev.get("low", 0)
+                        _ur_rules = _ur_r.get("aggregations", {}).get("by_rule", {}).get("buckets", [])
+                        node_info["top_rule"] = _ur_rules[0]["key"] if _ur_rules else ""
+                except Exception:
+                    pass
+                try:
+                    _ur_fl = {
+                        "query": {"range": {"@timestamp": {"gte": "now-24h", "lte": "now"}}},
+                        "aggs": {"by_host": {"terms": {"field": "winlog.computer_name", "size": 50}}},
+                    }
+                    _ur_fl_r = await _safe_query_async("tinysocs-winlog-*", _ur_fl)
+                    if not _ur_fl_r.get("error"):
+                        _ur_bkt = _ur_fl_r.get("aggregations", {}).get("by_host", {}).get("buckets", [])
+                        node_info["host_count"] = len(_ur_bkt)
+                        node_info["total_events_24h"] = sum(b.get("doc_count", 0) for b in _ur_bkt)
+                except Exception:
+                    pass
                 nodes_out.append(node_info)
                 continue
 
@@ -2207,13 +2248,53 @@ async def api_nodes():
                 sev = alerts_data.get("severity", {})
                 node_info["alerts_critical"] = sev.get("critical", 0)
                 node_info["alerts_high"] = sev.get("high", 0)
+                node_info["alerts_medium"] = sev.get("medium", 0)
+                node_info["alerts_low"] = sev.get("low", 0)
                 top_rules = alerts_data.get("top_rules", [])
                 node_info["top_rule"] = top_rules[0]["rule"] if top_rules else ""
+            elif node_info["reachable"]:
+                # Fallback: node API returned error — query OpenSearch directly
+                # using the dashboard's own connection (proven to work).
+                try:
+                    _fb = {
+                        "query": {"range": {"timestamp": {"gte": "now-24h", "lte": "now"}}},
+                        "aggs": {
+                            "by_severity": {"terms": {"field": "alert.severity", "size": 10}},
+                            "by_rule": {"terms": {"field": "alert.rule_id", "size": 5, "order": {"_count": "desc"}}},
+                        },
+                    }
+                    _fb_r = await _safe_query_async("tinysocs-alerts-*", _fb)
+                    if not _fb_r.get("error"):
+                        _fb_total = _fb_r.get("hits", {}).get("total", {})
+                        node_info["alerts_24h"] = _fb_total.get("value", 0) if isinstance(_fb_total, dict) else int(_fb_total)
+                        _fb_sev = {b["key"].lower(): b["doc_count"] for b in _fb_r.get("aggregations", {}).get("by_severity", {}).get("buckets", [])}
+                        node_info["alerts_critical"] = _fb_sev.get("critical", 0)
+                        node_info["alerts_high"] = _fb_sev.get("high", 0)
+                        node_info["alerts_medium"] = _fb_sev.get("medium", 0)
+                        node_info["alerts_low"] = _fb_sev.get("low", 0)
+                        _fb_rules = _fb_r.get("aggregations", {}).get("by_rule", {}).get("buckets", [])
+                        node_info["top_rule"] = _fb_rules[0]["key"] if _fb_rules else ""
+                except Exception:
+                    pass
 
             # Process /fleet/summary (Phase 18 M1)
             if fleet_data and not fleet_data.get("error"):
                 node_info["host_count"] = fleet_data.get("host_count", 0)
                 node_info["total_events_24h"] = fleet_data.get("total_events_24h", 0)
+            elif node_info["reachable"]:
+                # Fallback: query winlog index directly for host count
+                try:
+                    _fl = {
+                        "query": {"range": {"@timestamp": {"gte": "now-24h", "lte": "now"}}},
+                        "aggs": {"by_host": {"terms": {"field": "winlog.computer_name", "size": 50}}},
+                    }
+                    _fl_r = await _safe_query_async("tinysocs-winlog-*", _fl)
+                    if not _fl_r.get("error"):
+                        _fl_bkt = _fl_r.get("aggregations", {}).get("by_host", {}).get("buckets", [])
+                        node_info["host_count"] = len(_fl_bkt)
+                        node_info["total_events_24h"] = sum(b.get("doc_count", 0) for b in _fl_bkt)
+                except Exception:
+                    pass
 
             # Query local anchors index for latest anchor for this node
             nid = node_info["node_id"]
@@ -2250,6 +2331,7 @@ async def api_nodes():
     # Phase 18 M1: compute aggregate summary across all reachable nodes
     agg = {
         "total_alerts_24h": 0, "total_critical": 0, "total_high": 0,
+        "total_medium": 0, "total_low": 0,
         "total_hosts": 0, "sites_healthy": 0, "sites_warning": 0,
         "sites_unreachable": 0,
     }
@@ -2267,6 +2349,10 @@ async def api_nodes():
             agg["total_critical"] += n["alerts_critical"]
         if n.get("alerts_high") is not None:
             agg["total_high"] += n["alerts_high"]
+        if n.get("alerts_medium") is not None:
+            agg["total_medium"] += n["alerts_medium"]
+        if n.get("alerts_low") is not None:
+            agg["total_low"] += n["alerts_low"]
         if n.get("host_count") is not None:
             agg["total_hosts"] += n["host_count"]
 
@@ -2417,7 +2503,18 @@ async def api_mitre_coverage():
         coverage = calculate_coverage(annotations)
         return {"ok": True, **coverage}
     except Exception as exc:
-        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
+        import traceback
+        traceback.print_exc()
+        # Return empty coverage instead of 500 so the widget renders gracefully
+        return {
+            "ok": True,
+            "total_techniques": 0,
+            "total_tactics": 0,
+            "techniques": {},
+            "tactic_summary": [],
+            "rules_without_mitre": [],
+            "error_detail": str(exc),
+        }
 
 
 @dashboard_app.get("/api/mitre/navigator-layer")
@@ -4176,7 +4273,7 @@ a { color: var(--accent); text-decoration: none; }
 .site-ops .sev-line span { font-weight:600; }
 .site-ops .sev-crit { color:#e74c3c; }
 .site-ops .sev-high { color:#e67e22; }
-.sites-aggregate { display:flex; align-items:center; gap:16px; padding:10px 14px; background:var(--surface);
+.sites-aggregate { grid-column:1/-1; display:flex; align-items:center; gap:16px; padding:10px 14px; background:var(--surface);
                    border:1px solid var(--border); border-radius:8px; margin-bottom:12px; font-size:13px;
                    cursor:pointer; transition:border-color 0.15s; flex-wrap:wrap; }
 .sites-aggregate:hover { border-color:var(--accent); }
@@ -4648,8 +4745,8 @@ select { cursor: pointer; }
 </div>
 
 <div class="tab-bar" id="tabBar">
-  <button data-tab="sites" onclick="switchTab('sites')" id="sitesTabBtn" style="display:none">Sites</button>
   <button class="active" data-tab="overview" onclick="switchTab('overview')">Overview</button>
+  <button data-tab="sites" onclick="switchTab('sites')" id="sitesTabBtn" style="display:none">Sites</button>
   <button data-tab="fleet" onclick="switchTab('fleet')">Fleet</button>
   <button data-tab="data" onclick="switchTab('data')">Data</button>
   <button data-tab="detections" onclick="switchTab('detections')">Detections</button>
@@ -4931,7 +5028,7 @@ select { cursor: pointer; }
           <a id="complianceDownload" href="#" style="display:none;font-size:16px;padding:2px 8px;color:var(--muted);text-decoration:none;margin-left:auto;cursor:pointer" title="Download HTML report" download>&#x2B07;</a>
         </div>
         <div class="card-body" id="body-compliance">
-        <div id="compliance-summary" style="display:none;gap:12px;margin:12px 0">
+        <div id="compliance-summary" style="display:flex;gap:12px;margin:0;overflow:hidden;max-height:0;transition:max-height 0.3s ease,margin 0.3s ease">
           <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
             <div id="comp-coverage" style="font-size:24px;font-weight:700;color:var(--text)">—</div>
             <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Coverage</div>
@@ -4961,7 +5058,7 @@ select { cursor: pointer; }
           <a id="mitreDownload" href="#" style="font-size:16px;padding:2px 8px;color:var(--muted);text-decoration:none;margin-left:auto;cursor:pointer" title="Download Navigator layer JSON" onclick="downloadNavigatorLayer(event)">&#x2B07;</a>
         </div>
         <div class="card-body" id="body-mitre">
-        <div id="mitre-summary" style="display:none;gap:12px;margin:12px 0">
+        <div id="mitre-summary" style="display:flex;gap:12px;margin:0;overflow:hidden;max-height:0;transition:max-height 0.3s ease,margin 0.3s ease">
           <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
             <div id="mitre-techniques" style="font-size:24px;font-weight:700;color:#27ae60">—</div>
             <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Techniques</div>
@@ -5008,8 +5105,9 @@ let hours = 24;
 const BASE = window.location.pathname.replace(/\\/$/, '');
 
 // ── Tab navigation ──
-const _validTabs = ['sites','overview','fleet','data','detections','compliance'];
+const _validTabs = ['overview','sites','fleet','data','detections','compliance'];
 let _activeTab = 'overview';
+let _initialHashTab = '';  // captures original URL hash; checked by initSitesTab
 let _tabLoaded = {};
 
 function switchTab(tabId) {
@@ -5021,7 +5119,6 @@ function switchTab(tabId) {
   const btn = document.querySelector('.tab-bar button[data-tab="' + tabId + '"]');
   if (btn) btn.classList.add('active');
   _activeTab = tabId;
-  try { localStorage.setItem('tinysocs_active_tab', tabId); } catch(e) {}
   history.replaceState(null, '', '#' + tabId);
   loadTabData(tabId);
 }
@@ -5122,6 +5219,14 @@ async function loadSites() {
       html += '<span class="agg-sep">&middot;</span>';
       html += '<span style="color:#e67e22;font-weight:600">' + agg.total_high + ' high</span>';
     }
+    if (agg.total_medium > 0) {
+      html += '<span class="agg-sep">&middot;</span>';
+      html += '<span style="color:#e67e22">' + agg.total_medium + ' medium</span>';
+    }
+    if (agg.total_low > 0) {
+      html += '<span class="agg-sep">&middot;</span>';
+      html += '<span style="color:#f1c40f">' + agg.total_low + ' low</span>';
+    }
     html += '<span class="agg-sep">&middot;</span>';
     html += '<span class="agg-val">' + (agg.total_hosts || 0) + ' hosts</span>';
     if (agg.sites_unreachable > 0) {
@@ -5158,7 +5263,9 @@ async function loadSites() {
       let sevParts = [];
       if (n.alerts_critical > 0) sevParts.push('<span class="sev-crit">' + n.alerts_critical + ' critical</span>');
       if (n.alerts_high > 0) sevParts.push('<span class="sev-high">' + n.alerts_high + ' high</span>');
-      const otherCount = alertCount - (n.alerts_critical || 0) - (n.alerts_high || 0);
+      if (n.alerts_medium > 0) sevParts.push('<span style="color:#e67e22">' + n.alerts_medium + ' medium</span>');
+      if (n.alerts_low > 0) sevParts.push('<span style="color:#f1c40f">' + n.alerts_low + ' low</span>');
+      const otherCount = alertCount - (n.alerts_critical || 0) - (n.alerts_high || 0) - (n.alerts_medium || 0) - (n.alerts_low || 0);
       if (otherCount > 0) sevParts.push('<span>' + otherCount + ' other</span>');
       if (sevParts.length > 0) {
         html += '<div class="sev-line">' + sevParts.join(' &middot; ') + '</div>';
@@ -5251,6 +5358,14 @@ async function loadOverviewAggregate() {
     html += '<span class="agg-sep">&middot;</span>';
     html += '<span style="color:#e67e22;font-weight:600">' + agg.total_high + ' high</span>';
   }
+  if (agg.total_medium > 0) {
+    html += '<span class="agg-sep">&middot;</span>';
+    html += '<span style="color:#e67e22">' + agg.total_medium + ' medium</span>';
+  }
+  if (agg.total_low > 0) {
+    html += '<span class="agg-sep">&middot;</span>';
+    html += '<span style="color:#f1c40f">' + agg.total_low + ' low</span>';
+  }
   html += '<span class="agg-sep">&middot;</span>';
   html += '<span class="agg-val">' + (agg.total_hosts || 0) + ' hosts</span>';
   if (agg.sites_unreachable > 0) {
@@ -5270,8 +5385,8 @@ async function initSitesTab() {
   if (nodes.length > 0) {
     btn.style.display = '';
     _sitesVisible = true;
-    // If no tab explicitly selected, default to Sites
-    if (!window.location.hash && !localStorage.getItem('tinysocs_active_tab')) {
+    // If no tab explicitly selected via URL hash, default to Sites
+    if (!_initialHashTab) {
       switchTab('sites');
     }
   }
@@ -7261,13 +7376,11 @@ function unlockDashboard() {
   try { checkLlmStatus(); } catch(e) {}
   try { restoreChat(); } catch(e) {}
 
-  // Restore active tab from URL hash or localStorage
-  var hash = window.location.hash.replace('#', '');
-  var saved = '';
-  try { saved = localStorage.getItem('tinysocs_active_tab') || ''; } catch(e) {}
-  var tab = _validTabs.includes(hash) ? hash
-          : _validTabs.includes(saved) ? saved
-          : 'overview';
+  // Restore active tab from URL hash only (not localStorage — it persists
+  // across reinstalls and causes stale tab selection)
+  var origHash = window.location.hash.replace('#', '');
+  _initialHashTab = origHash;
+  var tab = _validTabs.includes(origHash) ? origHash : 'overview';
   switchTab(tab);
 
   // Check if Sites tab should be shown (async — may update default tab)
@@ -7488,12 +7601,15 @@ async function loadComplianceReport() {
   const hrs = document.getElementById('complianceHours').value;
   const el = document.getElementById('compliance-content');
   const sumEl = document.getElementById('compliance-summary');
-  el.innerHTML = '<div class="loading">Loading...</div>';
+  // Only show loading spinner on first load; on refresh keep existing content visible
+  if (!_complianceAllControls || _complianceAllControls.length === 0) {
+    el.innerHTML = '<div class="loading">Loading...</div>';
+  }
   try {
     const r = await fetch(BASE + '/api/compliance/report?framework=' + encodeURIComponent(fw) + '&hours=' + hrs, {headers:{'Authorization':'Bearer '+_authToken}});
     const d = await r.json();
     if (!d.ok) { el.innerHTML = '<div style="color:var(--muted);font-size:13px">Error: ' + escapeHtml(d.error||'Unknown') + '</div>'; return; }
-    sumEl.style.display = 'flex';
+    sumEl.style.maxHeight = '200px'; sumEl.style.margin = '12px 0'; sumEl.style.overflow = 'visible';
     const dl = document.getElementById('complianceDownload');
     dl.href = BASE + '/api/compliance/report/html?framework=' + encodeURIComponent(fw) + '&hours=' + hrs;
     dl.style.display = 'inline-block';
@@ -7514,7 +7630,7 @@ async function loadMitreCoverage() {
     const d = await r.json();
     if (d.ok === false) { document.getElementById('mitre-heatmap').innerHTML = '<div class="empty">MITRE coverage error: ' + escapeHtml(d.error || 'unknown') + '</div>'; return; }
     const sumEl = document.getElementById('mitre-summary');
-    sumEl.style.display = 'flex';
+    sumEl.style.maxHeight = '200px'; sumEl.style.margin = '12px 0'; sumEl.style.overflow = 'visible';
     document.getElementById('mitre-techniques').textContent = d.total_techniques || 0;
     document.getElementById('mitre-tactics').textContent = (d.total_tactics || 0) + '/14';
     // Count total annotated rules

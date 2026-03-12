@@ -218,7 +218,8 @@ def main() -> None:
     print(f"[quickstart] frozen={frozen} import_strategy={used}")
 
     print(f"[quickstart] starting Node@{host}:{node_port} + Bot@{host}:{bot_port} ...")
-    _start_uvicorn(node_spec, node_port, host=host)
+    _start_uvicorn(node_spec, node_port, host=host,
+                   ssl_certfile=tls_cert, ssl_keyfile=tls_key)
     _start_uvicorn(bot_spec, bot_port, host=host,
                    ssl_certfile=tls_cert, ssl_keyfile=tls_key)
 
@@ -229,7 +230,8 @@ def main() -> None:
         print("[quickstart] master WARN: run_master not found (tinysocs.orchestrator.master / orchestrator.master)")
     else:
         try:
-            os.environ.setdefault("TINYSOCS_NODES", f"http://localhost:{node_port}")
+            _scheme = "https" if (tls_cert and tls_key) else "http"
+            os.environ.setdefault("TINYSOCS_NODES", f"{_scheme}://localhost:{node_port}")
             run_master(
                 rules="auth_failed_burst,script_block_volume",
                 window="15m",

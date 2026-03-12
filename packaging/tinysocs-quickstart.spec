@@ -28,6 +28,11 @@ for _pattern in ("**/*.yaml", "**/*.yml"):
             _rel = os.path.relpath(os.path.dirname(_f), SRC_DIR)
             datas.append((_f, _rel))
 
+# Bundle C# rules from packaging/detection/ (outside src/tinysocs/)
+_csharp_rules = os.path.join(REPO, 'packaging', 'detection', 'rules.yml')
+if os.path.isfile(_csharp_rules):
+    datas.append((_csharp_rules, os.path.join('tinysocs', 'detection')))
+
 hiddenimports = []
 try: hiddenimports += collect_submodules("tinysocs")
 except Exception: pass

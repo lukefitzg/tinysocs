@@ -92,8 +92,8 @@ def _env_bool(name: str, default: bool) -> bool:
 
 def _get_siem_auth():
     """Return (user, pass) tuple for OpenSearch Basic Auth, or None if unset."""
-    user = os.getenv("SIEM_USER", "")
-    pw = os.getenv("SIEM_PASS", "")
+    user = os.getenv("SIEM_USER", "admin")
+    pw = os.getenv("SIEM_PASS", "admin")
     if user:
         return (user, pw)
     return None
@@ -111,7 +111,7 @@ def _get_siem_base_url() -> str:
     url = (
         os.getenv("SIEM_URL")
         or os.getenv("OPENSEARCH_URL")
-        or "http://127.0.0.1:9200"
+        or "https://127.0.0.1:9201"
     )
     return url.rstrip("/")
 
@@ -142,7 +142,17 @@ def _os_search_raw(index_pattern: str, body: dict, size: int = 0) -> dict:
     Includes hits, aggregations, total, etc. — needed for endpoints
     that use aggregation results rather than individual documents.
     Returns an empty-result dict on any failure.
+
+    Mirrors dashboard.py's _os_query pattern: suppress InsecureRequestWarning,
+    manual status-code check (no raise_for_status), log response body on errors.
     """
+    # Suppress InsecureRequestWarning (matches dashboard.py)
+    try:
+        import urllib3 as _u3
+        _u3.disable_warnings(_u3.exceptions.InsecureRequestWarning)
+    except Exception:
+        pass
+
     base = _get_siem_base_url()
     url = f"{base}/{index_pattern}/_search?ignore_unavailable=true&allow_no_indices=true"
 
@@ -151,19 +161,38 @@ def _os_search_raw(index_pattern: str, body: dict, size: int = 0) -> dict:
         payload["size"] = size
 
     verify = _get_tls_verify_flag()
+    auth = _get_siem_auth()
 
     print(
-        "[tinysocs-node] OpenSearch query url="
-        f"{url} base={base} index_pattern={index_pattern} "
-        f"size={payload.get('size', size)} verify={verify}",
+        f"[tinysocs-node] OpenSearch query url={url} "
+        f"index_pattern={index_pattern} size={payload.get('size', size)} "
+        f"verify={verify} auth={'set' if auth else 'None'}",
         flush=True,
     )
 
     empty: dict = {"hits": {"total": {"value": 0}, "hits": []}, "aggregations": {}}
 
     try:
-        resp = requests.post(url, json=payload, timeout=10, verify=verify, auth=_get_siem_auth())
-        resp.raise_for_status()
+        resp = requests.post(
+            url, json=payload, timeout=(5, 15), verify=verify, auth=auth,
+        )
+        # Match dashboard.py: do NOT use raise_for_status().
+        # Handle 4xx/5xx manually so we can log the response body for debugging.
+        if resp.status_code >= 400:
+            err_body = ""
+            try:
+                err_body = resp.text[:300]
+            except Exception:
+                pass
+            print(
+                f"[tinysocs-node] HTTP {resp.status_code} on "
+                f"{index_pattern}: {err_body}",
+                flush=True,
+            )
+            return {
+                **empty,
+                "error": f"OpenSearch query error (HTTP {resp.status_code})",
+            }
     except Exception as e:  # pragma: no cover
         print(f"[tinysocs-node] OpenSearch query failed: {e}; url={url}", flush=True)
         return {**empty, "error": f"OpenSearch query failed: {e}"}
@@ -618,7 +647,7 @@ async def alerts_summary(hours: int = Query(24, ge=1, le=720)) -> dict:
     # Severity counts
     body_sev = {
         "query": {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}},
-        "aggs": {"by_severity": {"terms": {"field": "alert.severity.keyword", "size": 10}}},
+        "aggs": {"by_severity": {"terms": {"field": "alert.severity", "size": 10}}},
     }
     resp_sev = _os_search_raw("tinysocs-alerts-*", body_sev)
     if resp_sev.get("error"):
@@ -627,7 +656,7 @@ async def alerts_summary(hours: int = Query(24, ge=1, le=720)) -> dict:
 
     total = _os_total(resp_sev)
     severity = {
-        b["key"]: b["doc_count"]
+        b["key"].lower(): b["doc_count"]
         for b in resp_sev.get("aggregations", {}).get("by_severity", {}).get("buckets", [])
     }
 
@@ -716,7 +745,7 @@ async def alerts_timeline(hours: int = Query(24, ge=1, le=720)) -> dict:
             "timeline": {
                 "date_histogram": {"field": "timestamp", "fixed_interval": "1h", "min_doc_count": 0},
                 "aggs": {
-                    "by_severity": {"terms": {"field": "alert.severity.keyword", "size": 10}}
+                    "by_severity": {"terms": {"field": "alert.severity", "size": 10}}
                 },
             }
         },
@@ -811,7 +840,7 @@ async def fleet_health() -> dict:
             "by_host": {
                 "terms": {"field": "source.computer_name.keyword", "size": 50},
                 "aggs": {
-                    "by_severity": {"terms": {"field": "alert.severity.keyword", "size": 5}},
+                    "by_severity": {"terms": {"field": "alert.severity", "size": 5}},
                 },
             }
         },
@@ -982,12 +1011,27 @@ def cli() -> None:
     loglvl = os.getenv("UVICORN_LOG_LEVEL", "info")
     reload = os.getenv("UVICORN_RELOAD", "0").strip().lower() in ("1", "true", "yes", "y")
 
+    # Phase 19 M3: TLS support
+    tls_cert = os.getenv("TINYSOCS_TLS_CERT", "").strip()
+    tls_key = os.getenv("TINYSOCS_TLS_KEY", "").strip()
+    ssl_kwargs: dict = {}
+    if tls_cert and tls_key:
+        if not Path(tls_cert).is_file():
+            raise SystemExit(f"TINYSOCS_TLS_CERT not found: {tls_cert}")
+        if not Path(tls_key).is_file():
+            raise SystemExit(f"TINYSOCS_TLS_KEY not found: {tls_key}")
+        ssl_kwargs = {"ssl_certfile": tls_cert, "ssl_keyfile": tls_key}
+        print(f"[node] TLS enabled: cert={tls_cert}")
+    else:
+        print("[node] TLS not configured — running HTTP (dev mode)")
+
     uvicorn.run(
         app,
         host=host,
         port=port,
         log_level=loglvl,
         reload=reload,
+        **ssl_kwargs,
     )
 
 

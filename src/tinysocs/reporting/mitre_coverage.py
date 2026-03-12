@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
@@ -36,6 +37,9 @@ def _find_csharp_rules() -> Optional[Path]:
         Path(os.environ.get("ProgramData", r"C:\ProgramData"))
         / "TinySocs" / "Collector" / "rules" / "rules.yml",
     ]
+    # PyInstaller frozen bundle
+    if getattr(sys, "_MEIPASS", None):
+        candidates.append(Path(sys._MEIPASS) / "tinysocs" / "detection" / "rules.yml")
     for c in candidates:
         if c.exists():
             return c
@@ -49,6 +53,9 @@ def _find_python_rules() -> Optional[Path]:
         # Relative to this module — works inside PyInstaller bundles
         Path(__file__).resolve().parent.parent / "agent" / "detections" / "rules.yaml",
     ]
+    # PyInstaller frozen bundle
+    if getattr(sys, "_MEIPASS", None):
+        candidates.append(Path(sys._MEIPASS) / "tinysocs" / "agent" / "detections" / "rules.yaml")
     for c in candidates:
         if c.exists():
             return c
@@ -99,17 +106,33 @@ def load_all_rules() -> List[Dict[str, Any]]:
     rules = []
     csharp_path = _find_csharp_rules()
     if csharp_path:
-        with open(csharp_path) as f:
-            data = yaml.safe_load(f)
-            for r in data.get("rules", []):
-                r["_source"] = "csharp"
-                rules.append(r)
+        logger.info("Loading C# rules from %s", csharp_path)
+        try:
+            with open(csharp_path) as f:
+                data = yaml.safe_load(f)
+                for r in (data.get("rules", []) if isinstance(data, dict) else data or []):
+                    if isinstance(r, dict):
+                        r["_source"] = "csharp"
+                        rules.append(r)
+        except Exception as exc:
+            logger.error("Failed to load C# rules from %s: %s", csharp_path, exc)
+    else:
+        logger.warning("No C# rules file found (checked: %s, ProgramData, _MEIPASS=%s)",
+                        _CSHARP_RULES, getattr(sys, "_MEIPASS", None))
     python_path = _find_python_rules()
     if python_path:
-        with open(python_path) as f:
-            for r in yaml.safe_load(f) or []:
-                r["_source"] = "python"
-                rules.append(r)
+        logger.info("Loading Python rules from %s", python_path)
+        try:
+            with open(python_path) as f:
+                for r in yaml.safe_load(f) or []:
+                    if isinstance(r, dict):
+                        r["_source"] = "python"
+                        rules.append(r)
+        except Exception as exc:
+            logger.error("Failed to load Python rules from %s: %s", python_path, exc)
+    else:
+        logger.warning("No Python rules file found")
+    logger.info("Loaded %d total rules", len(rules))
     return rules
 
 

@@ -8699,6 +8699,100 @@ function New-TinySocsDashboardCert {
   }
 }
 
+function New-TinySocsNodeCert {
+  <#
+  .SYNOPSIS
+    Generate a TLS certificate for the TinySocs node API, signed by the existing TinySocs CA.
+  .DESCRIPTION
+    Phase 19 M3: Creates a server cert for node.py with SANs for localhost, 127.0.0.1,
+    and the machine hostname. Exports cert.pem and key.pem (PKCS#8) to the output directory.
+    Reuses the TinySocs OpenSearch CA from LocalMachine\My.
+    If cert files already exist, returns existing paths without regeneration.
+  .PARAMETER OutputDir
+    Directory to write tinysocs-node-cert.pem and tinysocs-node-key.pem.
+    Default: C:\ProgramData\TinySocs\certs
+  #>
+  [CmdletBinding()]
+  param(
+    [string]$OutputDir = (Join-Path $env:ProgramData "TinySocs\certs")
+  )
+
+  $certPemPath = Join-Path $OutputDir "tinysocs-node-cert.pem"
+  $keyPemPath  = Join-Path $OutputDir "tinysocs-node-key.pem"
+
+  # Preserve existing certs (re-install / upgrade)
+  if ((Test-Path $certPemPath) -and (Test-Path $keyPemPath)) {
+    Write-TinySocsLog "Node TLS cert already exists at $certPemPath; preserving."
+    return @{
+      CertPath = $certPemPath
+      KeyPath  = $keyPemPath
+    }
+  }
+
+  $caSubject   = "CN=TinySocs-OpenSearch-CA"
+  $nodeSubject = "CN=TinySocs-Node"
+
+  # Find existing CA
+  $caCert = Get-ChildItem -Path Cert:\LocalMachine\My -ErrorAction SilentlyContinue |
+    Where-Object { $_.Subject -eq $caSubject } |
+    Sort-Object NotAfter -Descending |
+    Select-Object -First 1
+
+  if (-not $caCert) {
+    throw "TinySocs CA ($caSubject) not found in LocalMachine\My. Run Hub install first or ensure CA cert exists."
+  }
+
+  # Build SAN list: localhost + hostname + machine IPs
+  $hostname = [System.Net.Dns]::GetHostName()
+  $sanParts = @("DNS=localhost", "DNS=$hostname", "IPAddress=127.0.0.1")
+  try {
+    $ips = [System.Net.Dns]::GetHostAddresses($hostname) |
+      Where-Object { $_.AddressFamily -eq 'InterNetwork' } |
+      ForEach-Object { "IPAddress=$($_.IPAddressToString)" }
+    if ($ips) { $sanParts += $ips }
+  } catch { }
+  $sanText = ($sanParts | Select-Object -Unique) -join "&"
+
+  # Generate node server cert signed by CA
+  Write-TinySocsLog "Generating node TLS certificate ($nodeSubject) signed by $caSubject."
+  $nodeCert = New-SelfSignedCertificate `
+    -Subject $nodeSubject `
+    -CertStoreLocation "Cert:\LocalMachine\My" `
+    -KeyExportPolicy Exportable `
+    -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 `
+    -NotAfter (Get-Date).AddYears(10) `
+    -KeyUsage DigitalSignature,KeyEncipherment `
+    -Signer $caCert `
+    -TextExtension @(
+      "2.5.29.19={critical}{text}ca=false",
+      "2.5.29.17={text}$sanText"
+    )
+
+  New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
+
+  # Export cert as PEM (base64 DER)
+  $certB64 = [Convert]::ToBase64String($nodeCert.RawData, [System.Base64FormattingOptions]::InsertLineBreaks)
+  $certPem = "-----BEGIN CERTIFICATE-----`n$certB64`n-----END CERTIFICATE-----"
+  Set-Content -Path $certPemPath -Value $certPem -Encoding ASCII -Force
+
+  # Export private key as PKCS#8 PEM via CNG (.NET 4.6.2+)
+  try {
+    $rsa = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($nodeCert)
+    $keyBytes = $rsa.Key.Export([System.Security.Cryptography.CngKeyBlobFormat]::Pkcs8PrivateBlob)
+    $keyB64 = [Convert]::ToBase64String($keyBytes, [System.Base64FormattingOptions]::InsertLineBreaks)
+    $keyPem = "-----BEGIN PRIVATE KEY-----`n$keyB64`n-----END PRIVATE KEY-----"
+    Set-Content -Path $keyPemPath -Value $keyPem -Encoding ASCII -Force
+  } catch {
+    throw "Failed to export node private key as PEM (CNG/PKCS#8): $($_.Exception.Message)"
+  }
+
+  Write-TinySocsLog "Node TLS cert generated: cert=$certPemPath key=$keyPemPath hostname=$hostname"
+  return @{
+    CertPath = $certPemPath
+    KeyPath  = $keyPemPath
+  }
+}
+
 function Write-TinySocsOpenSearchConfig {
   [CmdletBinding()]
   param(
@@ -12995,6 +13089,21 @@ function Register-TinySocsServices {
   $ssl  = [Environment]::GetEnvironmentVariable("SIEM_SSL_VERIFY","Machine"); if (-not $ssl) { $ssl = "false" }
   $priv = [Environment]::GetEnvironmentVariable("PRIVACY_MODE","Machine"); if (-not $priv) { $priv = "abstract" }
 
+  # SIEM credentials — needed by node.py to query alerts/fleet from OpenSearch.
+  # Read from Machine env, or fall back to assistant.env.
+  $siemUser = [Environment]::GetEnvironmentVariable("SIEM_USER","Machine")
+  $siemPass = [Environment]::GetEnvironmentVariable("SIEM_PASS","Machine")
+  if (-not $siemUser) {
+    $envFile = Join-Path $env:ProgramData "TinySocs\Assistant\assistant.env"
+    if (Test-Path $envFile) {
+      foreach ($line in (Get-Content $envFile)) {
+        if ($line -match '^SIEM_USER=(.+)$') { $siemUser = $Matches[1] }
+        if ($line -match '^SIEM_PASS=(.+)$') { $siemPass = $Matches[1] }
+      }
+    }
+  }
+  if (-not $siemUser) { $siemUser = "admin" }
+
   & $n install TinySocsNode $e | Out-Null
   & $n set TinySocsNode AppDirectory    $w                             | Out-Null
   & $n set TinySocsNode Start           SERVICE_AUTO_START             | Out-Null
@@ -13008,6 +13117,8 @@ function Register-TinySocsServices {
     ("SIEM_URL={0}"        -f $siem)
     ("SIEM_SSL_VERIFY={0}" -f $ssl)
     ("PRIVACY_MODE={0}"    -f $priv)
+    ("SIEM_USER={0}"       -f $siemUser)
+    ("SIEM_PASS={0}"       -f $siemPass)
   )
   & $n set TinySocsNode AppEnvironmentExtra $nodeEnvExtra | Out-Null
 

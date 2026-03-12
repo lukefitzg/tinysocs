@@ -92,8 +92,8 @@ def _env(name: str, default: Optional[str] = None) -> Optional[str]:
 
 BOT_SECRET = (_env("BOT_SHARED_SECRET", "") or "")
 NODE_SECRET = (_env("NODE_SECRET", _env("MASTER_SHARED_SECRET", "dev-secret-change-me")) or "dev-secret-change-me")
-NODES = [x.strip() for x in (_env("TINYSOCS_NODES", "http://localhost:8081") or "").split(",") if x.strip()]
-NODE_URL = NODES[0] if NODES else "http://localhost:8081"
+NODES = [x.strip() for x in (_env("TINYSOCS_NODES", "https://localhost:8081") or "").split(",") if x.strip()]
+NODE_URL = NODES[0] if NODES else "https://localhost:8081"
 NODE_TLS_VERIFY = str(_env("TINYSOCS_INSECURE_SKIP_VERIFY", "1")).lower() not in ("1", "true", "yes", "on")
 
 # Queue path (fallback if we can't import a project-level actions_queue module)
@@ -627,24 +627,26 @@ def cli():
     workers = int(os.getenv("TINYSOCS_BOT_WORKERS", "1"))
     loglvl = os.getenv("UVICORN_LOG_LEVEL", "info")
 
-    # Dashboard TLS config (Phase 14 M0)
-    tls_cert = os.getenv("DASHBOARD_TLS_CERT", "").strip()
-    tls_key = os.getenv("DASHBOARD_TLS_KEY", "").strip()
+    # Dashboard TLS config (Phase 14 M0, Phase 19 M3: fallback to TINYSOCS_TLS_*)
+    tls_cert = (os.getenv("DASHBOARD_TLS_CERT", "").strip()
+                or os.getenv("TINYSOCS_TLS_CERT", "").strip())
+    tls_key = (os.getenv("DASHBOARD_TLS_KEY", "").strip()
+               or os.getenv("TINYSOCS_TLS_KEY", "").strip())
     bind_host = os.getenv("DASHBOARD_BIND", "127.0.0.1" if demo_mode else "0.0.0.0").strip()
 
     ssl_kwargs: dict = {}
     if tls_cert and tls_key:
         if not Path(tls_cert).is_file():
-            raise SystemExit(f"DASHBOARD_TLS_CERT not found: {tls_cert}")
+            raise SystemExit(f"TLS cert not found: {tls_cert}")
         if not Path(tls_key).is_file():
-            raise SystemExit(f"DASHBOARD_TLS_KEY not found: {tls_key}")
+            raise SystemExit(f"TLS key not found: {tls_key}")
         ssl_kwargs = {"ssl_certfile": tls_cert, "ssl_keyfile": tls_key}
         print(f"[bot] TLS enabled: cert={tls_cert}")
     elif bind_host != "127.0.0.1":
         raise SystemExit(
-            "DASHBOARD_TLS_CERT and DASHBOARD_TLS_KEY are required when "
-            "DASHBOARD_BIND is not 127.0.0.1. Generate certs with the installer "
-            "or set DASHBOARD_BIND=127.0.0.1 for localhost-only access."
+            "DASHBOARD_TLS_CERT and DASHBOARD_TLS_KEY (or TINYSOCS_TLS_CERT/KEY) "
+            "are required when DASHBOARD_BIND is not 127.0.0.1. Generate certs "
+            "with the installer or set DASHBOARD_BIND=127.0.0.1 for localhost-only access."
         )
     else:
         print("[bot] TLS not configured — running HTTP (localhost only)")

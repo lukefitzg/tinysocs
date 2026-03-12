@@ -321,9 +321,8 @@ Name: "{group}\Operator README"; Filename: "{app}\modules\OPERATOR-README.txt"; 
 [Code]
 
 const
-  ROLE_NODE    = 0;
-  ROLE_MASTER  = 1;
-  ROLE_TINYBOX = 2;
+  ROLE_HUB  = 0;
+  ROLE_SITE = 1;
 
   { IMPORTANT: do NOT start lines with #13#10; ISPP can misread them as directives }
   CRLF = #13#10;
@@ -335,9 +334,8 @@ var
   NotifPage: TWizardPage;
   DashAccessPage: TWizardPage;
 
-  RoleNodeRadio: TRadioButton;
-  RoleMasterRadio: TRadioButton;
-  RoleTinyBoxRadio: TRadioButton;
+  RoleHubRadio: TRadioButton;
+  RoleSiteRadio: TRadioButton;
 
   SharedSecretEdit: TNewEdit;
   SiemPassEdit: TNewEdit;
@@ -371,6 +369,20 @@ var
 
   SysmonPage: TWizardPage;
   SysmonInstallCheck: TNewCheckBox;
+
+  { Phase 19: Site role config pages }
+  SiteHubPage: TWizardPage;
+  SiteIdentityPage: TWizardPage;
+  HubSitesPage: TWizardPage;
+  HubAddressEdit: TNewEdit;
+  SiteNameEdit: TNewEdit;
+  HubSitesEdit: TNewEdit;
+  CopySecretBtn: TNewButton;
+
+  { Phase 19: Site/Hub config values }
+  HubAddress: String;
+  SiteName: String;
+  HubNodes: String;
 
   SelectedRole: Integer;
   InstallTinyBox: Boolean;
@@ -486,10 +498,7 @@ end;
   URL because GetLocalIPv4 can fall back to COMPUTERNAME which may not resolve. }
 function GetDashboardUrl(Param: String): String;
 begin
-  if InstallTinyBox then
-    Result := 'https://localhost:8090/dashboard/'
-  else
-    Result := 'http://localhost:8090/dashboard/';
+  Result := 'https://localhost:8090/dashboard/';
 end;
 
 { Scripted constant: finish-page description showing the dashboard URL.
@@ -922,13 +931,23 @@ begin
   end;
 end;
 
+{ Phase 19 M2: Copy shared secret to clipboard }
+procedure CopySecretBtnClick(Sender: TObject);
+begin
+  if Trim(SharedSecretEdit.Text) <> '' then
+  begin
+    CopyToClipboard(Trim(SharedSecretEdit.Text));
+    CopySecretBtn.Caption := 'Copied!';
+  end;
+end;
+
 procedure InitializeWizard;
 var
   L: TNewStaticText;
   DescLabel: TNewStaticText;
 begin
   { ---- Page 1: Role ---- }
-  RolePage := CreateCustomPage(wpSelectDir, 'TinySocs Role', 'Select what this machine will do.');
+  RolePage := CreateCustomPage(wpSelectDir, 'Installation Role', 'Choose how this TinySocs instance will be used.');
 
   L := TNewStaticText.Create(RolePage.Surface);
   L.Parent := RolePage.Surface;
@@ -937,57 +956,72 @@ begin
   L.Width := RolePage.SurfaceWidth;
   L.Caption := 'Choose the role for this machine:';
 
-  RoleTinyBoxRadio := TRadioButton.Create(RolePage.Surface);
-  RoleTinyBoxRadio.Parent := RolePage.Surface;
-  RoleTinyBoxRadio.Left := 0;
-  RoleTinyBoxRadio.Top := ScaleY(28);
-  RoleTinyBoxRadio.Width := RolePage.SurfaceWidth;
-  RoleTinyBoxRadio.Height := ScaleY(20);
-  RoleTinyBoxRadio.Caption := '&TinyBox (recommended)';
-  RoleTinyBoxRadio.Checked := True;
+  RoleHubRadio := TRadioButton.Create(RolePage.Surface);
+  RoleHubRadio.Parent := RolePage.Surface;
+  RoleHubRadio.Left := 0;
+  RoleHubRadio.Top := ScaleY(28);
+  RoleHubRadio.Width := RolePage.SurfaceWidth;
+  RoleHubRadio.Height := ScaleY(20);
+  RoleHubRadio.Caption := '&Hub (recommended)';
+  RoleHubRadio.Checked := True;
 
   DescLabel := TNewStaticText.Create(RolePage.Surface);
   DescLabel.Parent := RolePage.Surface;
   DescLabel.Left := ScaleX(20);
-  DescLabel.Top := RoleTinyBoxRadio.Top + ScaleY(20);
+  DescLabel.Top := RoleHubRadio.Top + ScaleY(20);
   DescLabel.Width := RolePage.SurfaceWidth - ScaleX(20);
-  DescLabel.Caption := 'All-in-one: collector + SIEM datastore + LLM assistant on this machine.';
+  DescLabel.WordWrap := True;
+  DescLabel.AutoSize := True;
+  DescLabel.Caption := 'Install TinySocs as your central monitoring console. Use this for your main location. You can add remote sites later.';
   DescLabel.Font.Color := $666666;
 
-  RoleNodeRadio := TRadioButton.Create(RolePage.Surface);
-  RoleNodeRadio.Parent := RolePage.Surface;
-  RoleNodeRadio.Left := 0;
-  RoleNodeRadio.Top := DescLabel.Top + ScaleY(32);
-  RoleNodeRadio.Width := RolePage.SurfaceWidth;
-  RoleNodeRadio.Height := ScaleY(20);
-  RoleNodeRadio.Caption := '&Node';
+  RoleSiteRadio := TRadioButton.Create(RolePage.Surface);
+  RoleSiteRadio.Parent := RolePage.Surface;
+  RoleSiteRadio.Left := 0;
+  RoleSiteRadio.Top := DescLabel.Top + ScaleY(48);
+  RoleSiteRadio.Width := RolePage.SurfaceWidth;
+  RoleSiteRadio.Height := ScaleY(20);
+  RoleSiteRadio.Caption := '&Site';
 
   DescLabel := TNewStaticText.Create(RolePage.Surface);
   DescLabel.Parent := RolePage.Surface;
   DescLabel.Left := ScaleX(20);
-  DescLabel.Top := RoleNodeRadio.Top + ScaleY(20);
+  DescLabel.Top := RoleSiteRadio.Top + ScaleY(20);
   DescLabel.Width := RolePage.SurfaceWidth - ScaleX(20);
-  DescLabel.Caption := 'Collect Windows events and ship them to a remote SIEM.';
+  DescLabel.WordWrap := True;
+  DescLabel.AutoSize := True;
+  DescLabel.Caption := 'Install TinySocs at a remote location. This site will report back to your Hub.';
   DescLabel.Font.Color := $666666;
 
-  RoleMasterRadio := TRadioButton.Create(RolePage.Surface);
-  RoleMasterRadio.Parent := RolePage.Surface;
-  RoleMasterRadio.Left := 0;
-  RoleMasterRadio.Top := DescLabel.Top + ScaleY(32);
-  RoleMasterRadio.Width := RolePage.SurfaceWidth;
-  RoleMasterRadio.Height := ScaleY(20);
-  RoleMasterRadio.Caption := '&Master';
+  { ---- Phase 19 M1: Site Hub Connection page (Site role only) ---- }
+  SiteHubPage := CreateCustomPage(RolePage.ID, 'Hub Connection',
+    'Connect this site to your TinySocs Hub.');
 
-  DescLabel := TNewStaticText.Create(RolePage.Surface);
-  DescLabel.Parent := RolePage.Surface;
-  DescLabel.Left := ScaleX(20);
-  DescLabel.Top := RoleMasterRadio.Top + ScaleY(20);
-  DescLabel.Width := RolePage.SurfaceWidth - ScaleX(20);
-  DescLabel.Caption := 'Orchestrate nodes and run the LLM assistant (no local SIEM).';
-  DescLabel.Font.Color := $666666;
+  L := TNewStaticText.Create(SiteHubPage.Surface);
+  L.Parent := SiteHubPage.Surface;
+  L.Left := 0;
+  L.Top := ScaleY(4);
+  L.Width := SiteHubPage.SurfaceWidth;
+  L.Caption := 'Hub address (hostname or IP of your TinySocs Hub):';
+
+  HubAddressEdit := TNewEdit.Create(SiteHubPage.Surface);
+  HubAddressEdit.Parent := SiteHubPage.Surface;
+  HubAddressEdit.Left := 0;
+  HubAddressEdit.Top := L.Top + ScaleY(18);
+  HubAddressEdit.Width := SiteHubPage.SurfaceWidth;
+
+  L := TNewStaticText.Create(SiteHubPage.Surface);
+  L.Parent := SiteHubPage.Surface;
+  L.Left := 0;
+  L.Top := HubAddressEdit.Top + ScaleY(28);
+  L.Width := SiteHubPage.SurfaceWidth;
+  L.WordWrap := True;
+  L.AutoSize := True;
+  L.Caption := 'Enter the hostname or IP address of your TinySocs Hub (e.g. 192.168.1.100 or tinysocs-hub.local). Ask your administrator if you are unsure.';
+  L.Font.Color := $666666;
 
   { ---- Page 2: Security ---- }
-  SecurityPage := CreateCustomPage(RolePage.ID, 'Security', 'Set your shared secret and SIEM password.');
+  SecurityPage := CreateCustomPage(SiteHubPage.ID, 'Security', 'Set your shared secret and SIEM password.');
 
   L := TNewStaticText.Create(SecurityPage.Surface);
   L.Parent := SecurityPage.Surface;
@@ -1006,7 +1040,28 @@ begin
   L := TNewStaticText.Create(SecurityPage.Surface);
   L.Parent := SecurityPage.Surface;
   L.Left := 0;
-  L.Top := SharedSecretEdit.Top + ScaleY(36);
+  L.Top := SharedSecretEdit.Top + ScaleY(28);
+  L.Width := SecurityPage.SurfaceWidth;
+  L.WordWrap := True;
+  L.AutoSize := True;
+  L.Caption := 'For Hub installs, a strong secret is auto-generated — copy it for your remote Site installs.'
+    + ' For Site installs, enter the shared secret from your Hub installation.';
+  L.Font.Color := $666666;
+
+  { Phase 19 M2: Copy to clipboard button for Hub role }
+  CopySecretBtn := TNewButton.Create(SecurityPage.Surface);
+  CopySecretBtn.Parent := SecurityPage.Surface;
+  CopySecretBtn.Left := 0;
+  CopySecretBtn.Top := SharedSecretEdit.Top + ScaleY(56);
+  CopySecretBtn.Width := ScaleX(150);
+  CopySecretBtn.Height := ScaleY(25);
+  CopySecretBtn.Caption := 'Copy to Clipboard';
+  CopySecretBtn.OnClick := @CopySecretBtnClick;
+
+  L := TNewStaticText.Create(SecurityPage.Surface);
+  L.Parent := SecurityPage.Surface;
+  L.Left := 0;
+  L.Top := CopySecretBtn.Top + ScaleY(40);
   L.Width := SecurityPage.SurfaceWidth;
   L.Caption := 'SIEM + Dashboard password (leave blank to auto-generate a strong one):';
 
@@ -1028,8 +1083,64 @@ begin
     + ' If left blank, a strong password will be generated and stored in Windows'
     + ' Credential Manager.';
 
+  { ---- Phase 19 M1: Site Identity page (Site role only) ---- }
+  SiteIdentityPage := CreateCustomPage(SecurityPage.ID, 'Site Identity',
+    'Name this remote site.');
+
+  L := TNewStaticText.Create(SiteIdentityPage.Surface);
+  L.Parent := SiteIdentityPage.Surface;
+  L.Left := 0;
+  L.Top := ScaleY(4);
+  L.Width := SiteIdentityPage.SurfaceWidth;
+  L.Caption := 'Site name (a short name for this location):';
+
+  SiteNameEdit := TNewEdit.Create(SiteIdentityPage.Surface);
+  SiteNameEdit.Parent := SiteIdentityPage.Surface;
+  SiteNameEdit.Left := 0;
+  SiteNameEdit.Top := L.Top + ScaleY(18);
+  SiteNameEdit.Width := SiteIdentityPage.SurfaceWidth;
+
+  L := TNewStaticText.Create(SiteIdentityPage.Surface);
+  L.Parent := SiteIdentityPage.Surface;
+  L.Left := 0;
+  L.Top := SiteNameEdit.Top + ScaleY(28);
+  L.Width := SiteIdentityPage.SurfaceWidth;
+  L.WordWrap := True;
+  L.AutoSize := True;
+  L.Caption := 'A short name for this location (e.g. warehouse, branch-north). This appears in the Hub dashboard''s Sites tab.'
+    + ' Use only lowercase letters, numbers, and hyphens. Max 32 characters.';
+  L.Font.Color := $666666;
+
+  { ---- Phase 19 M2: Hub Remote Sites page (Hub role only) ---- }
+  HubSitesPage := CreateCustomPage(SiteIdentityPage.ID, 'Remote Sites',
+    'Optionally configure remote TinySocs sites.');
+
+  L := TNewStaticText.Create(HubSitesPage.Surface);
+  L.Parent := HubSitesPage.Surface;
+  L.Left := 0;
+  L.Top := ScaleY(4);
+  L.Width := HubSitesPage.SurfaceWidth;
+  L.Caption := 'Remote site URLs (comma-separated, or leave blank to add later):';
+
+  HubSitesEdit := TNewEdit.Create(HubSitesPage.Surface);
+  HubSitesEdit.Parent := HubSitesPage.Surface;
+  HubSitesEdit.Left := 0;
+  HubSitesEdit.Top := L.Top + ScaleY(18);
+  HubSitesEdit.Width := HubSitesPage.SurfaceWidth;
+
+  L := TNewStaticText.Create(HubSitesPage.Surface);
+  L.Parent := HubSitesPage.Surface;
+  L.Left := 0;
+  L.Top := HubSitesEdit.Top + ScaleY(28);
+  L.Width := HubSitesPage.SurfaceWidth;
+  L.WordWrap := True;
+  L.AutoSize := True;
+  L.Caption := 'Enter the addresses of any remote TinySocs Sites (e.g. https://192.168.1.50:8081, https://warehouse:8081).'
+    + ' You can skip this and add them later in the configuration file.';
+  L.Font.Color := $666666;
+
   { ---- Page 3: LLM Provider ---- }
-  LlmPage := CreateCustomPage(SecurityPage.ID, 'LLM Provider', 'Choose an AI provider for the TinySocs assistant.');
+  LlmPage := CreateCustomPage(HubSitesPage.ID, 'LLM Provider', 'Choose an AI provider for the TinySocs assistant.');
 
   L := TNewStaticText.Create(LlmPage.Surface);
   L.Parent := LlmPage.Surface;
@@ -1341,14 +1452,14 @@ begin
   L.Font.Color := $666666;
 
   { ---- Smart defaults ---- }
-  SelectedRole := ROLE_TINYBOX;
+  SelectedRole := ROLE_HUB;
   InstallTinyBox := True;
   ForceTinyBoxConfig := False;
   AnchorsRetentionDays := 45;
   HeartbeatMinutes := 15;
   RemoveDataOnUninstall := False;
   NodePort := '8081';
-  Nodes := 'http://127.0.0.1:8081';
+  Nodes := 'https://127.0.0.1:8081';
   SiemUrl := 'https://127.0.0.1:9201';
   SiemUser := 'admin';
   SiemPass := '';
@@ -1367,12 +1478,33 @@ end;
 
 function GetSelectedRole: Integer;
 begin
-  if RoleMasterRadio.Checked then
-    Result := ROLE_MASTER
-  else if RoleTinyBoxRadio.Checked then
-    Result := ROLE_TINYBOX
+  if RoleSiteRadio.Checked then
+    Result := ROLE_SITE
   else
-    Result := ROLE_NODE;
+    Result := ROLE_HUB;
+end;
+
+{ Phase 19: Control page visibility based on role selection }
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  Result := False;
+
+  { Site-only pages: skip when Hub role }
+  if (PageID = SiteHubPage.ID) or (PageID = SiteIdentityPage.ID) then
+    Result := (SelectedRole <> ROLE_SITE);
+
+  { Hub-only pages: skip when Site role }
+  if PageID = HubSitesPage.ID then
+    Result := (SelectedRole <> ROLE_HUB);
+
+  { Hub-only pages: LLM, Notifications, Threat Intel, Dashboard Access, Sysmon }
+  if (PageID = LlmPage.ID) or (PageID = NotifPage.ID) or
+     (PageID = ThreatIntelPage.ID) or (PageID = DashAccessPage.ID) or
+     (PageID = SysmonPage.ID) then
+    Result := (SelectedRole <> ROLE_HUB);
+
+  { SIEM password field is Hub-only; Site uses Security page for shared secret only }
+  { (We don't skip the SecurityPage itself — both roles use it for shared secret) }
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
@@ -1382,26 +1514,56 @@ begin
   if CurPageID = RolePage.ID then
   begin
     SelectedRole := GetSelectedRole;
-    InstallTinyBox := (SelectedRole = ROLE_TINYBOX);
+    InstallTinyBox := (SelectedRole = ROLE_HUB);
     ForceTinyBoxConfig := False;
 
     { Smart defaults based on role }
     NodePort := '8081';
     SiemUser := 'admin';
+    SiemUrl := 'https://127.0.0.1:9201';
     if InstallTinyBox then
-    begin
-      SiemUrl := 'https://127.0.0.1:9201';
-      Nodes := 'http://127.0.0.1:8081';
-    end
-    else if SelectedRole = ROLE_MASTER then
-    begin
-      SiemUrl := 'https://127.0.0.1:9201';
-      Nodes := 'http://127.0.0.1:8081';
-    end
+      Nodes := 'https://127.0.0.1:8081'
     else
-    begin
-      SiemUrl := 'https://127.0.0.1:9201';
       Nodes := '';
+
+    { Phase 19 M2: Auto-generate shared secret for Hub role }
+    if InstallTinyBox and (Trim(SharedSecretEdit.Text) = '') then
+    begin
+      SharedSecretEdit.Text := GeneratePassword(32);
+      SharedSecretEdit.PasswordChar := #0;  { Show plaintext so operator can copy }
+    end;
+
+    { Phase 19 M1: Default site name from hostname for Site role }
+    if (not InstallTinyBox) and (Trim(SiteNameEdit.Text) = '') then
+      SiteNameEdit.Text := Lowercase(ExpandConstant('{computername}'));
+
+    { Toggle UI visibility for role-specific fields }
+    SiemPassEdit.Visible := InstallTinyBox;
+    CopySecretBtn.Visible := InstallTinyBox;
+    if not InstallTinyBox then
+      SharedSecretEdit.PasswordChar := '*';  { Site role: mask secret }
+  end
+  else if CurPageID = SiteHubPage.ID then
+  begin
+    { Phase 19 M1: Validate hub address }
+    HubAddress := Trim(HubAddressEdit.Text);
+    { Strip protocol prefix if pasted }
+    if Pos('https://', HubAddress) = 1 then
+      HubAddress := Copy(HubAddress, 9, Length(HubAddress) - 8);
+    if Pos('http://', HubAddress) = 1 then
+      HubAddress := Copy(HubAddress, 8, Length(HubAddress) - 7);
+    HubAddressEdit.Text := HubAddress;
+    if HubAddress = '' then
+    begin
+      MsgBox('Hub address is required. Enter the hostname or IP of your TinySocs Hub.', mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
+    if Pos(' ', HubAddress) > 0 then
+    begin
+      MsgBox('Hub address must not contain spaces.', mbError, MB_OK);
+      Result := False;
+      Exit;
     end;
   end
   else if CurPageID = SecurityPage.ID then
@@ -1413,10 +1575,16 @@ begin
       Result := False;
       Exit;
     end;
+    if Length(SharedSecret) < 16 then
+    begin
+      MsgBox('Shared secret must be at least 16 characters.', mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
 
     SiemPass := Trim(SiemPassEdit.Text);
 
-    { Auto-generate SIEM password if blank and TinyBox role }
+    { Auto-generate SIEM password if blank and Hub role }
     if InstallTinyBox then
     begin
       if SiemPass = '' then
@@ -1437,6 +1605,33 @@ begin
         SiemPassEdit.Text := SiemPass;
       end;
     end;
+  end
+  else if CurPageID = SiteIdentityPage.ID then
+  begin
+    { Phase 19 M1: Validate site name }
+    SiteName := Lowercase(Trim(SiteNameEdit.Text));
+    SiteNameEdit.Text := SiteName;
+    if SiteName = '' then
+    begin
+      MsgBox('Site name is required.', mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
+    if Length(SiteName) > 32 then
+    begin
+      MsgBox('Site name must be 32 characters or fewer.', mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
+  end
+  else if CurPageID = HubSitesPage.ID then
+  begin
+    { Phase 19 M2: Store remote site URLs }
+    HubNodes := Trim(HubSitesEdit.Text);
+    if HubNodes <> '' then
+      Nodes := 'https://127.0.0.1:8081,' + HubNodes
+    else
+      Nodes := 'https://127.0.0.1:8081';
   end
   else if CurPageID = LlmPage.ID then
   begin
@@ -1551,7 +1746,7 @@ begin
 
     if InstallTinyBox then
     begin
-      Log('CurStepChanged: InstallTinyBox=True');
+      Log('CurStepChanged: InstallTinyBox=True (Hub role)');
       Log('STEP TB-1: defaults');
 
       if (SiemUser = '') then
@@ -2241,7 +2436,137 @@ begin
       Log('CurStepChanged: DidRunLocalSiem=True (ran inside one-chain postinstall).');
     end
     else
-      Log('CurStepChanged: InstallTinyBox=False');
+    begin
+      Log('CurStepChanged: InstallTinyBox=False (Site role)');
+
+      { ---- Phase 19 M1/M3/M4: Site role — generate TLS cert, write config, register node service ---- }
+      Script :=
+        '$ErrorActionPreference = ''Continue''' + CRLF +
+        'Import-Module ''' + PsEscape(InstallerModule) + ''' -Force' + CRLF +
+        '' + CRLF +
+        '# Phase 19 M3: Generate TLS certificate for node.py (reuse dashboard cert pattern)' + CRLF +
+        '$certsDir = Join-Path $env:ProgramData ''TinySocs\certs''' + CRLF +
+        '$certPath = Join-Path $certsDir ''tinysocs-node-cert.pem''' + CRLF +
+        '$keyPath  = Join-Path $certsDir ''tinysocs-node-key.pem''' + CRLF +
+        'if (-not (Test-Path $certPath)) {' + CRLF +
+        '  Write-Host ''[TinySocs][Inno] Phase 19: Generating TLS certificate for Site node...''' + CRLF +
+        '  try {' + CRLF +
+        '    if (Get-Command New-TinySocsNodeCert -ErrorAction SilentlyContinue) {' + CRLF +
+        '      $certs = New-TinySocsNodeCert -OutputDir $certsDir' + CRLF +
+        '      $certPath = $certs.CertPath' + CRLF +
+        '      $keyPath  = $certs.KeyPath' + CRLF +
+        '      Write-Host (''[TinySocs][Inno] Node TLS cert generated: '' + $certPath)' + CRLF +
+        '    } elseif (Get-Command New-TinySocsDashboardCert -ErrorAction SilentlyContinue) {' + CRLF +
+        '      # Fallback: use dashboard cert generator with node output dir' + CRLF +
+        '      $certs = New-TinySocsDashboardCert -OutputDir $certsDir' + CRLF +
+        '      # Rename to node cert paths' + CRLF +
+        '      if (Test-Path (Join-Path $certsDir ''dashboard-cert.pem'')) {' + CRLF +
+        '        Copy-Item (Join-Path $certsDir ''dashboard-cert.pem'') $certPath -Force' + CRLF +
+        '        Copy-Item (Join-Path $certsDir ''dashboard-key.pem'') $keyPath -Force' + CRLF +
+        '      }' + CRLF +
+        '      Write-Host (''[TinySocs][Inno] Node TLS cert generated (via dashboard cert): '' + $certPath)' + CRLF +
+        '    } else {' + CRLF +
+        '      Write-Warning ''[TinySocs][Inno] No cert generator found; node will run without TLS.''' + CRLF +
+        '    }' + CRLF +
+        '  } catch {' + CRLF +
+        '    Write-Warning (''[TinySocs][Inno] TLS cert generation failed (non-fatal): '' + $_.Exception.Message)' + CRLF +
+        '  }' + CRLF +
+        '} else {' + CRLF +
+        '  Write-Host ''[TinySocs][Inno] Node TLS cert already exists; preserving existing certificate.''' + CRLF +
+        '}' + CRLF +
+        '' + CRLF +
+        '# Phase 19 M1: Write Site config to assistant.env' + CRLF +
+        '$envDir = Join-Path $env:ProgramData ''TinySocs\Assistant''' + CRLF +
+        'if (-not (Test-Path $envDir)) { New-Item -ItemType Directory -Force -Path $envDir | Out-Null }' + CRLF +
+        '$envFile = Join-Path $envDir ''assistant.env''' + CRLF +
+        '$envLines = @()' + CRLF +
+        'if (Test-Path $envFile) { $envLines = @(Get-Content $envFile) }' + CRLF +
+        '# Remove existing entries we will overwrite' + CRLF +
+        '$envLines = $envLines | Where-Object { $_ -notmatch ''^(TINYSOCS_NODE_ID|MASTER_SHARED_SECRET|SIEM_URL|SIEM_USER|SIEM_PASS|TINYSOCS_HUB_URL|TINYSOCS_TLS_CERT|TINYSOCS_TLS_KEY)='' }' + CRLF +
+        '$envLines += ''# Phase 19: Site role configuration''' + CRLF +
+        '$envLines += ''TINYSOCS_NODE_ID=' + PsEscape(SiteName) + '''' + CRLF +
+        '$envLines += ''MASTER_SHARED_SECRET=' + PsEscape(SharedSecret) + '''' + CRLF +
+        '$envLines += ''SIEM_URL=https://localhost:9201''' + CRLF +
+        '$envLines += ''SIEM_USER=' + PsEscape(SiemUser) + '''' + CRLF +
+        '$envLines += ''SIEM_PASS=' + PsEscape(SiemPass) + '''' + CRLF +
+        '$envLines += ''TINYSOCS_HUB_URL=https://' + PsEscape(HubAddress) + ':8090''' + CRLF +
+        'if (Test-Path $certPath) {' + CRLF +
+        '  $envLines += (''TINYSOCS_TLS_CERT='' + $certPath)' + CRLF +
+        '  $envLines += (''TINYSOCS_TLS_KEY='' + $keyPath)' + CRLF +
+        '}' + CRLF +
+        'Set-Content -Path $envFile -Value $envLines -Encoding UTF8' + CRLF +
+        'Write-Host ''[TinySocs][Inno] Phase 19: assistant.env written for Site role''' + CRLF +
+        '' + CRLF +
+        '# Phase 19 M4: Register TinySocsNode service with Site config' + CRLF +
+        '$nssm = Join-Path ''' + PsEscape(ExpandConstant('{app}')) + ''' ''bin\nssm.exe''' + CRLF +
+        'if (Test-Path $nssm) {' + CRLF +
+        '  $nodeExe = Join-Path ''' + PsEscape(ExpandConstant('{app}')) + ''' ''bin\TinySocsNode.exe''' + CRLF +
+        '  $workDir = Join-Path $env:ProgramData ''TinySocs''' + CRLF +
+        '  $logsDir = Join-Path $workDir ''logs''' + CRLF +
+        '  if (-not (Test-Path $logsDir)) { New-Item -ItemType Directory -Force -Path $logsDir | Out-Null }' + CRLF +
+        '  # Remove existing service' + CRLF +
+        '  try { & $nssm stop TinySocsNode 2>$null | Out-Null } catch { }' + CRLF +
+        '  try { & $nssm remove TinySocsNode confirm 2>$null | Out-Null } catch { }' + CRLF +
+        '  Start-Sleep -Seconds 1' + CRLF +
+        '  & $nssm install TinySocsNode $nodeExe | Out-Null' + CRLF +
+        '  & $nssm set TinySocsNode DisplayName "TinySocs Site Node" | Out-Null' + CRLF +
+        '  & $nssm set TinySocsNode Description "TinySocs federation node for remote site monitoring" | Out-Null' + CRLF +
+        '  & $nssm set TinySocsNode AppDirectory $workDir | Out-Null' + CRLF +
+        '  & $nssm set TinySocsNode Start SERVICE_AUTO_START | Out-Null' + CRLF +
+        '  & $nssm set TinySocsNode AppStdout (Join-Path $logsDir ''TinySocsNode.out.log'') | Out-Null' + CRLF +
+        '  & $nssm set TinySocsNode AppStderr (Join-Path $logsDir ''TinySocsNode.err.log'') | Out-Null' + CRLF +
+        '  & $nssm set TinySocsNode AppNoConsole 1 | Out-Null' + CRLF +
+        '  & $nssm set TinySocsNode AppRestartDelay 2000 | Out-Null' + CRLF +
+        '  # Build environment' + CRLF +
+        '  $envVars = @(' + CRLF +
+        '    ''PORT=8081'',' + CRLF +
+        '    ''SIEM_URL=https://localhost:9201'',' + CRLF +
+        '    ''SIEM_SSL_VERIFY=false'',' + CRLF +
+        '    ''PRIVACY_MODE=abstract'',' + CRLF +
+        '    ''TINYSOCS_NODE_ID=' + PsEscape(SiteName) + ''',' + CRLF +
+        '    ''MASTER_SHARED_SECRET=' + PsEscape(SharedSecret) + '''' + CRLF +
+        '  )' + CRLF +
+        '  if (Test-Path $certPath) {' + CRLF +
+        '    $envVars += (''TINYSOCS_TLS_CERT='' + $certPath)' + CRLF +
+        '    $envVars += (''TINYSOCS_TLS_KEY='' + $keyPath)' + CRLF +
+        '  }' + CRLF +
+        '  $formatted = Format-TinySocsNssmEnvExtra $envVars' + CRLF +
+        '  & $nssm set TinySocsNode AppEnvironmentExtra $formatted | Out-Null' + CRLF +
+        '  sc.exe failure TinySocsNode reset= 60 actions= restart/2000/restart/2000/""/0 | Out-Null' + CRLF +
+        '  try { & $nssm start TinySocsNode | Out-Null } catch { }' + CRLF +
+        '  Write-Host ''[TinySocs][Inno] Phase 19: TinySocsNode service registered and started for Site role''' + CRLF +
+        '} else {' + CRLF +
+        '  Write-Warning ''[TinySocs][Inno] nssm.exe not found; skipping TinySocsNode service.''' + CRLF +
+        '}' + CRLF +
+        '' + CRLF +
+        '# Phase 19 M4: Create firewall rule for Node API (port 8081)' + CRLF +
+        'try {' + CRLF +
+        '  if (-not (Get-NetFirewallRule -DisplayName "TinySocs Node API" -ErrorAction SilentlyContinue)) {' + CRLF +
+        '    New-NetFirewallRule -DisplayName "TinySocs Node API" -Direction Inbound -Protocol TCP -LocalPort 8081 -Action Allow -Description "Allow inbound access to TinySocs Node API (HTTPS)" | Out-Null' + CRLF +
+        '    Write-Host ''[TinySocs][Inno] Firewall rule created: TinySocs Node API (TCP 8081 inbound)''' + CRLF +
+        '  }' + CRLF +
+        '} catch { Write-Warning (''[TinySocs][Inno] Firewall rule creation failed (non-fatal): '' + $_.Exception.Message) }' + CRLF +
+        '' + CRLF +
+        '# Phase 19 M4: Post-install health check' + CRLF +
+        '$probeOk = $false' + CRLF +
+        'for ($p = 0; $p -lt 15; $p++) {' + CRLF +
+        '  try {' + CRLF +
+        '    $resp = curl.exe -sk --max-time 3 --connect-timeout 2 -o NUL -w "%{http_code}" https://127.0.0.1:8081/meta 2>$null' + CRLF +
+        '    if ($resp -match ''2\d\d'') { $probeOk = $true; break }' + CRLF +
+        '  } catch { }' + CRLF +
+        '  Start-Sleep -Seconds 2' + CRLF +
+        '}' + CRLF +
+        'if ($probeOk) {' + CRLF +
+        '  Write-Host ''[TinySocs][Inno] Phase 19: Site node health check passed (https://127.0.0.1:8081/meta)''' + CRLF +
+        '} else {' + CRLF +
+        '  Write-Warning ''[TinySocs][Inno] Site node health check failed. Check C:\ProgramData\TinySocs\logs\TinySocsNode.err.log''' + CRLF +
+        '}' + CRLF;
+
+      if not RunPowerShellScript(Script) then
+        Log('CurStepChanged: Site role config failed (non-fatal).')
+      else
+        Log('CurStepChanged: Site role config completed successfully.');
+    end;
 
     { ---- Phase 11: Register LLM Assistant service (if bundle was deployed) ---- }
     Log('CurStepChanged: Phase 11 — checking for Assistant bundle');
@@ -2262,6 +2587,12 @@ begin
         '  $content = $content -replace ''(?m)^SIEM_PASS=.*$'', (''SIEM_PASS='' + ''' + PsEscape(SiemPass) + ''')' + CRLF +
         '  $content = $content -replace ''(?m)^MASTER_SHARED_SECRET=.*$'', (''MASTER_SHARED_SECRET='' + ''' + PsEscape(SharedSecret) + ''')' + CRLF +
         '  $content = $content -replace ''(?m)^BOT_SHARED_SECRET=.*$'', (''BOT_SHARED_SECRET='' + ''' + PsEscape(SharedSecret) + ''')' + CRLF +
+        '  # Phase 19 M2: Write TINYSOCS_NODES for federation' + CRLF +
+        '  if ($content -match ''(?m)^TINYSOCS_NODES='') {' + CRLF +
+        '    $content = $content -replace ''(?m)^TINYSOCS_NODES=.*$'', (''TINYSOCS_NODES='' + ''' + PsEscape(Nodes) + ''')' + CRLF +
+        '  } else {' + CRLF +
+        '    $content += "`n# Phase 19: Federation node URLs`nTINYSOCS_NODES=' + PsEscape(Nodes) + '"' + CRLF +
+        '  }' + CRLF +
         '  $content = $content -replace ''(?m)^LLM_MODE=.*$'', (''LLM_MODE='' + ''' + PsEscape(LlmMode) + ''')' + CRLF +
         '  $content = $content -replace ''(?m)^OPENAI_API_KEY=.*$'', (''OPENAI_API_KEY='' + ''' + PsEscape(LlmApiKey) + ''')' + CRLF +
         '  $content = $content -replace ''(?m)^ANTHROPIC_API_KEY=.*$'', (''ANTHROPIC_API_KEY='' + ''' + PsEscape(LlmApiKey) + ''')' + CRLF +
@@ -2430,13 +2761,37 @@ begin
         '    Set-Content -Path $envFile -Value $lines -Encoding UTF8' + CRLF +
         '  }' + CRLF +
         '  Write-Host "[TinySocs][Inno] Dashboard configured with TLS (bind=' + DashboardBind + ')."' + CRLF +
+        '' + CRLF +
+        '  # Phase 19 M3: Generate node TLS cert and update TinySocsNode service env' + CRLF +
+        '  Write-Host "[TinySocs][Inno] Phase 19: Generating node TLS certificate for Hub..."' + CRLF +
+        '  $nodeCerts = New-TinySocsNodeCert' + CRLF +
+        '  # Add node TLS paths to TinySocsNode NSSM env' + CRLF +
+        '  $nssm = Join-Path "' + PsEscape(AppDir) + '" "bin\nssm.exe"' + CRLF +
+        '  if (Test-Path $nssm) {' + CRLF +
+        '    try {' + CRLF +
+        '      $nssmKey = "HKLM:\SYSTEM\CurrentControlSet\Services\TinySocsNode\Parameters"' + CRLF +
+        '      if (Test-Path $nssmKey) {' + CRLF +
+        '        $curEnv = @()' + CRLF +
+        '        try { $curEnv = (Get-ItemProperty -Path $nssmKey -Name AppEnvironmentExtra -EA SilentlyContinue).AppEnvironmentExtra } catch { $curEnv = @() }' + CRLF +
+        '        if ($curEnv -is [string]) { $curEnv = @($curEnv) }' + CRLF +
+        '        $curEnv = @($curEnv | Where-Object { $_ -and ($_ -notmatch "^TINYSOCS_TLS_(CERT|KEY)=") })' + CRLF +
+        '        $curEnv += ("TINYSOCS_TLS_CERT=" + $nodeCerts.CertPath)' + CRLF +
+        '        $curEnv += ("TINYSOCS_TLS_KEY=" + $nodeCerts.KeyPath)' + CRLF +
+        '        $formatted = Format-TinySocsNssmEnvExtra $curEnv' + CRLF +
+        '        & $nssm set TinySocsNode AppEnvironmentExtra $formatted | Out-Null' + CRLF +
+        '        Write-Host "[TinySocs][Inno] Phase 19: TinySocsNode env updated with TLS cert paths."' + CRLF +
+        '        try { & $nssm restart TinySocsNode | Out-Null } catch { }' + CRLF +
+        '      }' + CRLF +
+        '    } catch { Write-Warning ("[TinySocs][Inno] Phase 19: Failed to update TinySocsNode TLS env: " + $_.Exception.Message) }' + CRLF +
+        '  }' + CRLF +
+        '' + CRLF +
         '  # Re-register assistant service so NSSM bakes in the new TLS cert paths' + CRLF +
         '  if (Get-Command Ensure-TinySocsAssistantService -ErrorAction SilentlyContinue) {' + CRLF +
         '    Ensure-TinySocsAssistantService -InstallRoot "' + PsEscape(AppDir) + '"' + CRLF +
         '    Write-Host "[TinySocs][Inno] Assistant service env updated with TLS cert paths."' + CRLF +
         '  }' + CRLF +
         '} catch {' + CRLF +
-        '  Write-Warning ("[TinySocs][Inno] Dashboard TLS cert generation failed (non-fatal): " + $_.Exception.Message)' + CRLF +
+        '  Write-Warning ("[TinySocs][Inno] Dashboard/Node TLS cert generation failed (non-fatal): " + $_.Exception.Message)' + CRLF +
         '}' + CRLF;
       if not RunPowerShellScript(Script) then
         Log('CurStepChanged: Dashboard TLS cert generation failed (non-fatal).')
@@ -2444,7 +2799,7 @@ begin
         Log('CurStepChanged: Dashboard TLS cert generated successfully.');
     end
     else
-      Log('CurStepChanged: Non-TinyBox install — skipping dashboard TLS cert.');
+      Log('CurStepChanged: Site role — skipping dashboard TLS cert.');
 
     { ---- Phase 14 M0b: Network-mode extras (firewall rule + CA cert export) ---- }
     if (InstallTinyBox) and (DashNetworkRadio.Checked) then
@@ -2503,6 +2858,26 @@ begin
     end
     else
       Log('CurStepChanged: Sysmon install skipped by user.');
+
+    { ---- Phase 19 M2: Update finish page with Hub summary ---- }
+    if InstallTinyBox then
+    begin
+      WizardForm.FinishedLabel.Caption :=
+        'TinySocs Hub has been installed.' + CRLF + CRLF +
+        'Dashboard: https://localhost:8090/dashboard/' + CRLF + CRLF +
+        'Shared secret: ' + SharedSecret + CRLF +
+        '(Copy this secret — you will need it when installing each remote Site.)' + CRLF + CRLF +
+        'To add a remote site: run the TinySocs installer on the remote machine, choose "Site," and enter this shared secret.';
+    end
+    else
+    begin
+      WizardForm.FinishedLabel.Caption :=
+        'TinySocs Site has been installed.' + CRLF + CRLF +
+        'Site name: ' + SiteName + CRLF +
+        'Hub: https://' + HubAddress + ':8090' + CRLF +
+        'Node API: https://localhost:8081/meta' + CRLF + CRLF +
+        'This site will be visible in the Hub dashboard''s Sites tab once the Hub is configured with this site''s URL.';
+    end;
 
     Log('CurStepChanged(ssPostInstall): end');
   except

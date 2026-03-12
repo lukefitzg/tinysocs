@@ -628,3 +628,27 @@ class TestDemoSiteTimestampsRelative:
                 ts = self._parse_iso(det["timestamp"])
                 delta = abs((now - ts).total_seconds())
                 assert delta < 90000, f"{site} detection {det['rule_id']} timestamp too old"
+
+
+# ---------------------------------------------------------------------------
+# Phase 19 M5: Demo mode HTTPS URL tests
+# ---------------------------------------------------------------------------
+
+class TestDemoNodesHttps:
+    """Phase 19: Verify demo nodes use https:// URLs."""
+
+    def test_demo_node_urls_use_https(self):
+        """All demo node URLs should use https:// prefix."""
+        result = _demo_nodes()
+        for node in result["nodes"]:
+            url = node.get("url", "")
+            assert url.startswith("https://"), \
+                f"Demo node {node.get('node_id')} uses non-https URL: {url}"
+
+    def test_demo_node_urls_include_port(self):
+        """All demo node URLs should include port 8081."""
+        result = _demo_nodes()
+        for node in result["nodes"]:
+            url = node.get("url", "")
+            assert ":8081" in url, \
+                f"Demo node {node.get('node_id')} missing port in URL: {url}"

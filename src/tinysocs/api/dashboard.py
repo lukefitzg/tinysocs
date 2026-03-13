@@ -3122,6 +3122,63 @@ def api_chat_history(session_id: str = Query(...)):
     return {"session_id": session_id, "messages": display}
 
 
+def _chat_get_environment_context() -> str:
+    """Query OpenSearch for known hosts and recent alert summary to give the LLM context."""
+    parts: list[str] = []
+    try:
+        # Get known hostnames from alerts (last 24h)
+        host_body: Dict[str, Any] = {
+            "query": {"range": {"timestamp": {"gte": "now-24h", "lte": "now"}}},
+            "aggs": {
+                "hosts": {"terms": {"field": "source.computer_name.keyword", "size": 20}},
+                "by_severity": {"terms": {"field": "alert.severity", "size": 10}},
+            },
+        }
+        alert_resp = _safe_query("tinysocs-alerts-*", host_body)
+        if not alert_resp.get("error"):
+            total = alert_resp.get("hits", {}).get("total", {})
+            alert_count = total.get("value", 0) if isinstance(total, dict) else int(total)
+
+            host_buckets = alert_resp.get("aggregations", {}).get("hosts", {}).get("buckets", [])
+            hosts = [b["key"] for b in host_buckets if b.get("key")]
+
+            sev_buckets = alert_resp.get("aggregations", {}).get("by_severity", {}).get("buckets", [])
+            sev_map = {b["key"].lower(): b["doc_count"] for b in sev_buckets}
+
+            if hosts:
+                parts.append(f"Monitored hosts: {', '.join(hosts)}")
+            if alert_count:
+                sev_parts = []
+                for s in ("critical", "high", "medium", "low"):
+                    if sev_map.get(s):
+                        sev_parts.append(f"{sev_map[s]} {s}")
+                sev_str = f" ({', '.join(sev_parts)})" if sev_parts else ""
+                parts.append(f"Alerts in last 24h: {alert_count}{sev_str}")
+
+        # Get known hostnames from winlog
+        winlog_body: Dict[str, Any] = {
+            "query": {"range": {"@timestamp": {"gte": "now-24h", "lte": "now"}}},
+            "aggs": {"hosts": {"terms": {"field": "winlog.computer_name", "size": 20}}},
+        }
+        winlog_resp = _safe_query("tinysocs-winlog-*", winlog_body)
+        if not winlog_resp.get("error"):
+            wl_buckets = winlog_resp.get("aggregations", {}).get("hosts", {}).get("buckets", [])
+            wl_hosts = [b["key"] for b in wl_buckets if b.get("key")]
+            # Merge with alert hosts (dedupe)
+            all_hosts = list(dict.fromkeys(hosts + wl_hosts)) if hosts else wl_hosts
+            if all_hosts and not hosts:
+                parts.append(f"Monitored hosts (winlog): {', '.join(all_hosts)}")
+            elif wl_hosts:
+                extra = [h for h in wl_hosts if h not in hosts]
+                if extra:
+                    parts.append(f"Additional winlog hosts: {', '.join(extra)}")
+
+    except Exception:
+        pass  # Non-fatal — chat works without context
+
+    return "\n".join(parts)
+
+
 @dashboard_app.post("/api/chat")
 def api_chat(body: Dict[str, Any] = Body(...)):
     """Chat with the TinySocs assistant (multi-LLM with tool-calling).
@@ -3178,8 +3235,23 @@ def api_chat(body: Dict[str, Any] = Body(...)):
         "  WRONG: event_id:4625      CORRECT: winlog.event_id:4625\n\n"
         "- Time expressions: now-1d, now-7d, now-1h, now-30m.\n"
         "- Always use 'timestamp' for alerts, '@timestamp' for winlog.\n"
-        "- Do not retry a tool if it already returned data (even if 0 results)."
+        "- Do not retry a tool if it already returned data (even if 0 results).\n\n"
+
+        "QUERY STRATEGY:\n"
+        "- For broad questions ('anything going on?', 'what's happening?', 'overview'):\n"
+        "  search ALL alerts without filtering by hostname. Use: alert.severity:* or timestamp >= now-24h\n"
+        "- Only filter by source.computer_name when the user asks about a SPECIFIC host.\n"
+        "- NEVER invent or guess hostnames. Use ONLY the real hostnames listed below.\n"
+        "- If the user says 'my environment', that means ALL monitored hosts — do not filter."
     )
+
+    # Inject live environment context (known hosts, alert counts)
+    env_context = _chat_get_environment_context()
+    if env_context:
+        system_text += (
+            "\n\nCURRENT ENVIRONMENT STATE:\n"
+            + env_context
+        )
 
     # Get or create session (trim to last 20 messages to control context size)
     if session_id not in _chat_sessions:

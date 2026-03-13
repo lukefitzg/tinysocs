@@ -800,7 +800,12 @@ async def detections_fired(
             "first_seen": alert.get("first_seen", ""),
             "last_seen": alert.get("last_seen", ""),
             "timestamp": src.get("timestamp", ""),
-            "host": src.get("source", {}).get("computer_name", ""),
+            "host": (
+                src.get("source", {}).get("computer_name")
+                or src.get("host", {}).get("name")
+                or alert.get("host")
+                or ""
+            ),
             "matched_events": src.get("matched_events", 0),
             "status": "new",
             "tags": [],
@@ -920,7 +925,12 @@ async def events_recent(
             alert = src.get("alert", {})
             events.append({
                 "timestamp": src.get("timestamp", ""),
-                "host": src.get("source", {}).get("computer_name", ""),
+                "host": (
+                src.get("source", {}).get("computer_name")
+                or src.get("host", {}).get("name")
+                or alert.get("host")
+                or ""
+            ),
                 "channel": alert.get("rule_id", ""),
                 "event_id": alert.get("severity", ""),
                 "message": (alert.get("description", "") or alert.get("rule_name", ""))[:300],

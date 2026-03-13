@@ -7,7 +7,8 @@
       "runtimeArgs": ["-m", "tinysocs.api.bot", "--demo"],
       "port": 8090,
       "env": {
-        "PYTHONPATH": "src"
+        "PYTHONPATH": "src",
+        "BOT_PORT": "8090"
       }
     }
   ]

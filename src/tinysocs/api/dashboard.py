@@ -1302,13 +1302,27 @@ def _demo_nodes() -> dict:
 # ---------------------------------------------------------------------------
 # Data API endpoints (no auth — local operator tool)
 # ---------------------------------------------------------------------------
+_LOCAL_NODE_ID = os.getenv("TINYSOCS_NODE_ID") or os.getenv("COMPUTERNAME") or "local"
+
+
+@dashboard_app.get("/api/local-meta")
+def api_local_meta():
+    """Return the local node ID so the frontend can detect local-site focus."""
+    return {"node_id": _LOCAL_NODE_ID}
+
+
 @dashboard_app.get("/api/alerts/timeline")
-async def api_alert_timeline(hours: int = Query(24, ge=1, le=720)):
+async def api_alert_timeline(
+    hours: int = Query(24, ge=1, le=720),
+    hostname: Optional[str] = Query(None),
+):
     """Alert counts bucketed by hour and severity."""
     if _DEMO_MODE:
         return _demo_alerts_timeline(hours)
+    host_filter = _alert_host_filter(hostname)
+    time_filter: Dict[str, Any] = {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}}
     body = {
-        "query": {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}},
+        "query": {"bool": {"filter": [time_filter] + host_filter}},
         "aggs": {
             "timeline": {
                 "date_histogram": {"field": "timestamp", "fixed_interval": "1h", "min_doc_count": 0},
@@ -1337,14 +1351,30 @@ async def api_alert_timeline(hours: int = Query(24, ge=1, le=720)):
     }
 
 
+def _alert_host_filter(hostname: Optional[str]) -> List[Dict[str, Any]]:
+    """Build filter clauses for alert queries scoped to a hostname."""
+    if not hostname:
+        return []
+    return [{"bool": {"should": [
+        {"term": {"source.computer_name.keyword": hostname}},
+        {"term": {"host.name": hostname}},
+        {"term": {"alert.host": hostname}},
+    ], "minimum_should_match": 1}}]
+
+
 @dashboard_app.get("/api/alerts/summary")
-async def api_alert_summary(hours: int = Query(24, ge=1, le=720)):
+async def api_alert_summary(
+    hours: int = Query(24, ge=1, le=720),
+    hostname: Optional[str] = Query(None),
+):
     """Summary stats: total, by severity, top rules, top hosts."""
     if _DEMO_MODE:
         return _demo_alerts_summary(hours)
+    host_filter = _alert_host_filter(hostname)
     # Total + severity
+    time_filter: Dict[str, Any] = {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}}
     body_sev = {
-        "query": {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}},
+        "query": {"bool": {"filter": [time_filter] + host_filter}},
         "aggs": {"by_severity": {"terms": {"field": "alert.severity", "size": 10}}},
     }
     resp_sev = await _safe_query_async("tinysocs-alerts-*", body_sev)
@@ -1358,7 +1388,7 @@ async def api_alert_summary(hours: int = Query(24, ge=1, le=720)):
 
     # Top rules
     body_rules = {
-        "query": {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}},
+        "query": {"bool": {"filter": [time_filter] + host_filter}},
         "aggs": {"by_rule": {"terms": {"field": "alert.rule_id", "size": 10, "order": {"_count": "desc"}}}},
     }
     resp_rules = await _safe_query_async("tinysocs-alerts-*", body_rules)
@@ -1369,7 +1399,7 @@ async def api_alert_summary(hours: int = Query(24, ge=1, le=720)):
 
     # Top hosts — alerts store host in source.computer_name
     body_hosts = {
-        "query": {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}},
+        "query": {"bool": {"filter": [time_filter] + host_filter}},
         "aggs": {"by_host": {"terms": {"field": "source.computer_name.keyword", "size": 10, "order": {"_count": "desc"}}}},
     }
     resp_hosts = await _safe_query_async("tinysocs-alerts-*", body_hosts)
@@ -1392,12 +1422,15 @@ async def api_alert_summary(hours: int = Query(24, ge=1, le=720)):
 async def api_detections_fired(
     hours: int = Query(24, ge=1, le=720),
     limit: int = Query(30, ge=1, le=200),
+    hostname: Optional[str] = Query(None),
 ):
     """Fetch individual fired detections with full details."""
     if _DEMO_MODE:
         return _demo_detections_fired(hours, limit)
+    host_filter = _alert_host_filter(hostname)
+    time_filter: Dict[str, Any] = {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}}
     body = {
-        "query": {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}},
+        "query": {"bool": {"filter": [time_filter] + host_filter}},
         "sort": [{"timestamp": {"order": "desc"}}],
     }
     resp = await _safe_query_async("tinysocs-alerts-*", body, size=limit)
@@ -1417,7 +1450,12 @@ async def api_detections_fired(
             "first_seen": alert.get("first_seen", ""),
             "last_seen": alert.get("last_seen", ""),
             "timestamp": src.get("timestamp", ""),
-            "host": src.get("source", {}).get("computer_name", ""),
+            "host": (
+                src.get("source", {}).get("computer_name")
+                or src.get("host", {}).get("name")
+                or alert.get("host")
+                or ""
+            ),
             "matched_events": src.get("matched_events", 0),
         })
     total_hit = resp.get("hits", {}).get("total", 0)
@@ -2019,8 +2057,6 @@ async def api_fleet_health():
                     "last_seen": {"max": {"field": "@timestamp"}},
                     "first_seen": {"min": {"field": "@timestamp"}},
                     "event_count": {"value_count": {"field": "@timestamp"}},
-                    "top_channels": {"terms": {"field": "winlog.channel", "size": 5}},
-                    "top_event_ids": {"terms": {"field": "event.code", "size": 5}},
                 },
             }
         },
@@ -2028,7 +2064,7 @@ async def api_fleet_health():
     # Run winlog + alerts queries in parallel via thread pool
     alert_body = {
         "query": {"range": {"timestamp": {"gte": "now-24h", "lte": "now"}}},
-        "size": 100,
+        "size": 50,
         "sort": [{"timestamp": {"order": "desc"}}],
         "aggs": {
             "by_host": {
@@ -2101,14 +2137,6 @@ async def api_fleet_health():
     hosts = []
     for b in resp.get("aggregations", {}).get("by_host", {}).get("buckets", []):
         hostname = b["key"]
-        top_channels = [
-            {"channel": ch["key"], "count": ch["doc_count"]}
-            for ch in b.get("top_channels", {}).get("buckets", [])
-        ]
-        top_events = [
-            {"event_id": str(ev["key"]), "count": ev["doc_count"]}
-            for ev in b.get("top_event_ids", {}).get("buckets", [])
-        ]
         hb = heartbeat_data.get(hostname, {})
         hosts.append({
             "hostname": hostname,
@@ -2118,8 +2146,6 @@ async def api_fleet_health():
             "alert_count": alert_counts.get(hostname, 0),
             "alert_severities": alert_severities.get(hostname, {}),
             "active_detections": host_detections.get(hostname, [])[:5],
-            "top_channels": top_channels,
-            "top_event_ids": top_events,
             "agent_version": hb.get("agent_version", ""),
             "uptime": hb.get("uptime", ""),
             "events_shipped": hb.get("events_shipped", 0),
@@ -2128,6 +2154,33 @@ async def api_fleet_health():
             "heartbeat_ts": hb.get("heartbeat_ts", ""),
         })
     return {"hosts": hosts, "error": resp.get("error")}
+
+
+@dashboard_app.get("/api/fleet/host-detail")
+async def api_fleet_host_detail(hostname: str = Query(...)):
+    """Lazy-load detailed data for a single fleet host (top channels, event IDs)."""
+    if _DEMO_MODE:
+        return {"hostname": hostname, "top_channels": [], "top_event_ids": []}
+    body = {
+        "query": {"bool": {"filter": [
+            {"range": {"@timestamp": {"gte": "now-24h", "lte": "now"}}},
+            {"term": {"winlog.computer_name": hostname}},
+        ]}},
+        "aggs": {
+            "top_channels": {"terms": {"field": "winlog.channel", "size": 5}},
+            "top_event_ids": {"terms": {"field": "event.code", "size": 5}},
+        },
+    }
+    resp = await _safe_query_async("tinysocs-winlog-*", body, size=0)
+    top_channels = [
+        {"channel": ch["key"], "count": ch["doc_count"]}
+        for ch in resp.get("aggregations", {}).get("top_channels", {}).get("buckets", [])
+    ]
+    top_events = [
+        {"event_id": str(ev["key"]), "count": ev["doc_count"]}
+        for ev in resp.get("aggregations", {}).get("top_event_ids", {}).get("buckets", [])
+    ]
+    return {"hostname": hostname, "top_channels": top_channels, "top_event_ids": top_events}
 
 
 # ---------------------------------------------------------------------------
@@ -4473,13 +4526,7 @@ tr:hover { background: rgba(74, 144, 217, 0.05); }
 .btn-reject:hover { opacity: 0.85; }
 .btn-sm:disabled { opacity: 0.4; cursor: not-allowed; }
 
-/* Collapsible card bodies */
-.card-body { overflow: hidden; transition: max-height 0.25s ease; }
-.card-body.collapsed { max-height: 0 !important; padding-top: 0; padding-bottom: 0; }
-.card-body:not(.collapsed) { max-height: 4000px; }
 #events-content { min-height: 420px; }
-.collapse-chevron { cursor:pointer; font-size:16px; color:var(--muted); transition:transform 0.25s ease; user-select:none; padding:4px 8px; }
-.collapse-chevron.collapsed { transform: rotate(-90deg); }
 
 /* Threat intelligence badges */
 .threat-badge { display:inline-flex; align-items:center; gap:3px; font-size:10px; padding:1px 6px; border-radius:3px; cursor:pointer; font-weight:600; }
@@ -4652,7 +4699,7 @@ select { cursor: pointer; }
 </div>
 
 <!-- Version Drift Banner (Phase 15 M5) -->
-<div id="versionDriftBanner" style="display:none;background:#e67e22;color:#fff;padding:8px 24px;font-size:13px;font-weight:500;text-align:center;cursor:pointer" onclick="ensureCardExpanded('fleet');document.getElementById('body-fleet').scrollIntoView({behavior:'smooth'})">
+<div id="versionDriftBanner" style="display:none;background:#e67e22;color:#fff;padding:8px 24px;font-size:13px;font-weight:500;text-align:center;cursor:pointer" onclick="ensureCardVisible('fleet');document.getElementById('body-fleet').scrollIntoView({behavior:'smooth'})">
   <span id="versionDriftText"></span>
 </div>
 
@@ -4864,8 +4911,8 @@ select { cursor: pointer; }
       <!-- Alert Summary -->
       <div class="card">
         <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
-          <span class="collapse-chevron" onclick="toggleCardCollapse('summary')" id="chevron-summary">&#x25BC;</span>
-          <h2 style="margin:0;cursor:pointer;flex:1" onclick="toggleCardCollapse('summary')">Alert Summary</h2>
+          <h2 style="margin:0;flex:1">Alert Summary</h2>
+          <button onclick="askAIAboutWidget('summary')" style="margin-left:auto;font-size:11px;padding:3px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;white-space:nowrap" title="Ask the AI assistant about this widget">Ask AI</button>
         </div>
         <div class="card-body" id="body-summary">
           <div id="summary-content"><div class="loading">Loading...</div></div>
@@ -4875,8 +4922,8 @@ select { cursor: pointer; }
       <!-- Alert Timeline -->
       <div class="card">
         <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
-          <span class="collapse-chevron" onclick="toggleCardCollapse('timeline')" id="chevron-timeline">&#x25BC;</span>
-          <h2 style="margin:0;cursor:pointer;flex:1" onclick="toggleCardCollapse('timeline')">Alert Timeline</h2>
+          <h2 style="margin:0;flex:1">Alert Timeline</h2>
+          <button onclick="askAIAboutWidget('timeline')" style="margin-left:auto;font-size:11px;padding:3px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;white-space:nowrap" title="Ask the AI assistant about this widget">Ask AI</button>
         </div>
         <div class="card-body" id="body-timeline">
           <div id="timeline-content"><div class="loading">Loading...</div></div>
@@ -4886,15 +4933,15 @@ select { cursor: pointer; }
       <!-- Fired Detections (full width) -->
       <div class="card full detections-card">
         <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
-          <span class="collapse-chevron" onclick="toggleCardCollapse('detections')" id="chevron-detections">&#x25BC;</span>
-          <h2 style="margin:0;white-space:nowrap;cursor:pointer" onclick="toggleCardCollapse('detections')">Fired Detections</h2>
-          <select id="detStatusFilter" style="font-size:11px;padding:2px 6px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;max-width:200px;margin-left:8px" onchange="_detectionsPage=0;_openDetectionIdx=-1;renderDetections()">
+          <h2 style="margin:0;white-space:nowrap">Fired Detections</h2>
+          <select id="detStatusFilter" style="font-size:12px;padding:4px 8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;max-width:200px;margin-left:8px" onchange="_detectionsPage=0;_openDetectionIdx=-1;renderDetections()">
             <option value="active" selected>Active (new + ack)</option>
             <option value="all">All</option>
             <option value="new">New only</option>
             <option value="acknowledged">Acknowledged</option>
             <option value="dismissed">Dismissed</option>
           </select>
+          <button onclick="askAIAboutWidget('detections')" style="margin-left:auto;font-size:11px;padding:3px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;white-space:nowrap" title="Ask the AI assistant about this widget">Ask AI</button>
         </div>
         <div class="card-body" id="body-detections">
           <div id="detections-content"><div class="loading">Loading...</div></div>
@@ -4907,8 +4954,8 @@ select { cursor: pointer; }
       <!-- Fleet Health (full width) -->
       <div class="card full">
         <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
-          <span class="collapse-chevron" onclick="toggleCardCollapse('fleet')" id="chevron-fleet">&#x25BC;</span>
-          <h2 style="margin:0;cursor:pointer;flex:1" onclick="toggleCardCollapse('fleet')">Fleet Health</h2>
+          <h2 style="margin:0;flex:1">Fleet Health</h2>
+          <button onclick="askAIAboutWidget('fleet')" style="margin-left:auto;font-size:11px;padding:3px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;white-space:nowrap" title="Ask the AI assistant about this widget">Ask AI</button>
         </div>
         <div class="card-body" id="body-fleet">
           <div id="fleet-content"><div class="loading">Loading...</div></div>
@@ -4943,8 +4990,7 @@ select { cursor: pointer; }
       <!-- Event Explorer -->
       <div class="card full" id="event-explorer-card">
         <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
-          <span class="collapse-chevron" onclick="toggleCardCollapse('explorer')" id="chevron-explorer">&#x25BC;</span>
-          <h2 style="margin:0;cursor:pointer;flex:1" onclick="toggleCardCollapse('explorer')">Event Explorer</h2>
+          <h2 style="margin:0;flex:1">Event Explorer</h2>
           <button style="font-size:11px;padding:2px 8px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer" onclick="toggleSchema()">Schema</button>
         </div>
         <div class="card-body" id="body-explorer">
@@ -4979,8 +5025,7 @@ select { cursor: pointer; }
       <!-- Alert Rules -->
       <div class="card full rules-card" id="rules-card">
         <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
-          <span class="collapse-chevron" onclick="toggleCardCollapse('rules')" id="chevron-rules">&#x25BC;</span>
-          <h2 style="margin:0;white-space:nowrap;cursor:pointer" onclick="toggleCardCollapse('rules')">Alert Rules</h2>
+          <h2 style="margin:0;white-space:nowrap">Alert Rules</h2>
           <select id="rulesFilter" onchange="filterRules()" style="flex:1;margin-bottom:0;height:32px;margin-left:8px">
             <option value="all">All Rules</option>
             <option value="builtin">Built-in</option>
@@ -5081,8 +5126,7 @@ select { cursor: pointer; }
       <!-- Compliance Reports (Phase 14 M4) -->
       <div class="card full" id="compliance-card">
         <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
-          <span class="collapse-chevron" onclick="toggleCardCollapse('compliance')" id="chevron-compliance">&#x25BC;</span>
-          <h2 style="margin:0;white-space:nowrap;cursor:pointer" onclick="toggleCardCollapse('compliance')">Compliance Coverage</h2>
+          <h2 style="margin:0;white-space:nowrap">Compliance Coverage</h2>
           <select id="complianceFramework" onchange="loadComplianceReport()" style="font-size:12px;padding:4px 8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;margin-left:8px">
             <option value="">Loading frameworks...</option>
           </select>
@@ -5097,7 +5141,8 @@ select { cursor: pointer; }
             <option value="deployed">Deployed</option>
             <option value="not_mapped">Not Mapped</option>
           </select>
-          <a id="complianceDownload" href="#" style="display:none;font-size:16px;padding:2px 8px;color:var(--muted);text-decoration:none;margin-left:auto;cursor:pointer" title="Download HTML report" download>&#x2B07;</a>
+          <button onclick="askAIAboutWidget('compliance')" style="margin-left:auto;font-size:11px;padding:3px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;white-space:nowrap" title="Ask the AI assistant about this widget">Ask AI</button>
+          <a id="complianceDownload" href="#" style="display:none;font-size:12px;padding:6px 14px;background:var(--accent);color:#fff;text-decoration:none;border-radius:4px;font-weight:600;cursor:pointer;white-space:nowrap" title="Download HTML report" download>&#x2B07; Download Report</a>
         </div>
         <div class="card-body" id="body-compliance">
         <div id="compliance-summary" style="display:flex;gap:12px;margin:0;overflow:hidden;max-height:0;transition:max-height 0.3s ease,margin 0.3s ease">
@@ -5125,9 +5170,9 @@ select { cursor: pointer; }
       <!-- MITRE ATT&CK Coverage (Phase 15 M3) -->
       <div class="card full" id="mitre-card">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-          <span class="collapse-chevron" onclick="toggleCardCollapse('mitre')" id="chevron-mitre">&#x25BC;</span>
-          <h2 style="margin:0;cursor:pointer" onclick="toggleCardCollapse('mitre')">MITRE ATT&CK Coverage</h2>
-          <a id="mitreDownload" href="#" style="font-size:16px;padding:2px 8px;color:var(--muted);text-decoration:none;margin-left:auto;cursor:pointer" title="Download Navigator layer JSON" onclick="downloadNavigatorLayer(event)">&#x2B07;</a>
+          <h2 style="margin:0">MITRE ATT&CK Coverage</h2>
+          <button onclick="askAIAboutWidget('mitre')" style="margin-left:auto;font-size:11px;padding:3px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;white-space:nowrap" title="Ask the AI assistant about this widget">Ask AI</button>
+          <a id="mitreDownload" href="#" style="font-size:16px;padding:2px 8px;color:var(--muted);text-decoration:none;cursor:pointer" title="Download Navigator layer JSON" onclick="downloadNavigatorLayer(event)">&#x2B07;</a>
         </div>
         <div class="card-body" id="body-mitre">
         <div id="mitre-summary" style="display:flex;gap:12px;margin:0;overflow:hidden;max-height:0;transition:max-height 0.3s ease,margin 0.3s ease">
@@ -5255,6 +5300,7 @@ async function fetchJSON(path) {
 let _sitesVisible = false;
 let _sitesCache = null;  // cached /api/nodes response for aggregate banner
 let _focusedSite = null; // Phase 18 M3: currently focused site node_id (null = all-sites view)
+let _localNodeId = null; // Phase 20: local node ID for single-node site focus bypass
 
 async function loadSites() {
   const grid = document.getElementById('sitesGrid');
@@ -5374,7 +5420,16 @@ async function loadSites() {
 function apiBase() {
   // Phase 18 M3: returns the API base path for data queries.
   // In focused mode, routes through the site proxy; otherwise uses local API.
-  return _focusedSite ? '/api/site/' + encodeURIComponent(_focusedSite) : '/api';
+  // Phase 20: bypass proxy when focused site is the local node (single-node setup).
+  if (_focusedSite && _focusedSite !== _localNodeId) {
+    return '/api/site/' + encodeURIComponent(_focusedSite);
+  }
+  return '/api';
+}
+
+function focusedHostname() {
+  // Returns the hostname to filter by when focused on the local site, or null.
+  return (_focusedSite && _focusedSite === _localNodeId) ? _focusedSite : null;
 }
 
 function focusSite(nodeId) {
@@ -5466,15 +5521,18 @@ async function initSitesTab() {
 
 async function loadSummary() {
   const el = document.getElementById('summary-content');
-  const d = await fetchJSON(`${apiBase()}/alerts/summary?hours=${hours}`);
+  let url = `${apiBase()}/alerts/summary?hours=${hours}`;
+  const fh = focusedHostname();
+  if (fh) url += `&hostname=${encodeURIComponent(fh)}`;
+  const d = await fetchJSON(url);
   if (d.error && !d.severity) { el.innerHTML = `<div class="empty">${d.error}</div>`; return; }
 
   const total = d.total || 0;
   const sev = d.severity || {};
   const sevOrder = ['critical','high','medium','low','info'];
 
-  let html = '<div class="stat-row">';
-  html += `<div class="stat"><div class="value">${total}</div><div class="label">Total Alerts</div></div>`;
+  let html = '<div class="stat-row"><div class="stat" style="flex:unset;width:100%"><div class="value">' + total + '</div><div class="label">Total Alerts</div></div></div>';
+  html += '<div class="stat-row">';
   for (const s of sevOrder) {
     if (sev[s]) html += `<div class="stat"><div class="value" style="color:var(--${s==='critical'?'red':s==='high'?'orange':s==='medium'?'yellow':s==='low'?'blue':'gray'})">${sev[s]}</div><div class="label">${s}</div></div>`;
   }
@@ -5494,7 +5552,10 @@ const SEV_ORDER = ['critical','high','medium','low','info'];
 
 async function loadTimeline() {
   const el = document.getElementById('timeline-content');
-  const d = await fetchJSON(`${apiBase()}/alerts/timeline?hours=${hours}`);
+  let tUrl = `${apiBase()}/alerts/timeline?hours=${hours}`;
+  const fhT = focusedHostname();
+  if (fhT) tUrl += `&hostname=${encodeURIComponent(fhT)}`;
+  const d = await fetchJSON(tUrl);
   if (d.error && !d.buckets?.length) { el.innerHTML = `<div class="empty">${d.error}</div>`; return; }
 
   const buckets = d.buckets || [];
@@ -5638,7 +5699,10 @@ const _DETECTIONS_PER_PAGE = 10;
 
 async function loadDetections() {
   const el = document.getElementById('detections-content');
-  const d = await fetchJSON(`${apiBase()}/detections/fired?hours=${hours}&limit=50`);
+  let dUrl = `${apiBase()}/detections/fired?hours=${hours}&limit=50`;
+  const fhD = focusedHostname();
+  if (fhD) dUrl += `&hostname=${encodeURIComponent(fhD)}`;
+  const d = await fetchJSON(dUrl);
   if (d.error && !d.detections?.length) { el.innerHTML = `<div class="empty">${d.error}</div>`; return; }
   _detectionCache = d.detections || [];
   renderDetections();
@@ -5925,6 +5989,46 @@ function askAboutAlert(idx) {
   if (assistant) assistant.scrollIntoView({behavior: 'smooth', block: 'start'});
 }
 
+function askAIAboutWidget(widgetId) {
+  const prompts = {
+    summary: () => {
+      const el = document.getElementById('summary-content');
+      const text = el ? el.innerText.substring(0, 500) : '';
+      return `Analyze the current alert summary for me. Here's what the dashboard shows:\n${text}\n\nWhat patterns do you see? Are there any concerns?`;
+    },
+    timeline: () => {
+      return `Look at the alert timeline for the last ${hours} hours. Search the alerts index and tell me about any trends, spikes, or patterns you see.`;
+    },
+    detections: () => {
+      const count = _detectionCache ? _detectionCache.length : 0;
+      const sevs = {};
+      (_detectionCache || []).forEach(d => { sevs[d.severity] = (sevs[d.severity]||0) + 1; });
+      const sevStr = Object.entries(sevs).map(([k,v]) => `${v} ${k}`).join(', ');
+      return `I have ${count} active fired detections (${sevStr}). Can you review them and tell me which ones I should prioritize? Search the alerts index for recent detections.`;
+    },
+    fleet: () => {
+      const el = document.getElementById('fleet-content');
+      const text = el ? el.innerText.substring(0, 500) : '';
+      return `Summarize the fleet health status for me. Here's what the dashboard shows:\n${text}\n\nAre there any hosts that need attention?`;
+    },
+    compliance: () => {
+      const fw = (document.getElementById('complianceFramework') || {}).value || '';
+      const cov = (document.getElementById('comp-coverage') || {}).innerText || '';
+      return `Analyze our compliance coverage for the ${fw} framework. Current coverage is ${cov}. What are the biggest gaps and what should we prioritize to improve coverage?`;
+    },
+    mitre: () => {
+      return `Review our MITRE ATT&CK coverage. What techniques are we missing detection coverage for? Which gaps are the most critical to address?`;
+    },
+  };
+  const fn = prompts[widgetId];
+  if (!fn) return;
+  const chatInput = document.getElementById('chatInput');
+  chatInput.value = fn();
+  sendChat();
+  const assistant = document.querySelector('.assistant-card');
+  if (assistant) assistant.scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+
 function showInLogs(idx) {
   const det = _detectionCache[idx];
   if (!det) return;
@@ -5955,7 +6059,7 @@ function showInLogs(idx) {
 
   // Scroll Event Explorer into view
   const explorer = document.getElementById('event-explorer-card');
-  ensureCardExpanded('explorer');
+  ensureCardVisible('explorer');
   if (explorer) explorer.scrollIntoView({behavior: 'smooth', block: 'start'});
 }
 
@@ -6062,20 +6166,23 @@ function renderFleet() {
     html += `<div><span style="color:var(--muted)">Last Heartbeat:</span> ${hbAgo}</div>`;
     html += `<div><span style="color:var(--muted)">Events Shipped:</span> ${(h.events_shipped || 0).toLocaleString()}</div>`;
 
-    const channels = (h.top_channels || []).map(c => `${c.channel} (${c.count})`).join(', ') || 'None';
-    html += `<div><span style="color:var(--muted)">Top Channels:</span> ${escapeHtml(channels)}</div>`;
-    const evtIds = (h.top_event_ids || []).map(e => `${e.event_id} (${e.count})`).join(', ') || 'None';
-    html += `<div><span style="color:var(--muted)">Top Event IDs:</span> ${escapeHtml(evtIds)}</div>`;
+    html += `<div><span style="color:var(--muted)">Top Channels:</span> <span id="fleet-channels-${i}">${h._channels_loaded ? escapeHtml((h.top_channels || []).map(c => c.channel + ' (' + c.count + ')').join(', ') || 'None') : '<em style="color:var(--muted)">Loading...</em>'}</span></div>`;
+    html += `<div><span style="color:var(--muted)">Top Event IDs:</span> <span id="fleet-evtids-${i}">${h._channels_loaded ? escapeHtml((h.top_event_ids || []).map(e => e.event_id + ' (' + e.count + ')').join(', ') || 'None') : '<em style="color:var(--muted)">Loading...</em>'}</span></div>`;
 
     const sevs = h.alert_severities || {};
     const sevStr = Object.entries(sevs).map(([k,v]) => `${k}: ${v}`).join(', ') || 'None';
     html += `<div><span style="color:var(--muted)">Alerts by Severity:</span> ${escapeHtml(sevStr)}</div>`;
     const dets = (h.active_detections || []).map(d => escapeHtml(d)).join(', ') || 'None';
     html += `<div><span style="color:var(--muted)">Active Detections:</span> ${dets}</div>`;
-    // FIM status — check if host has TinySocs-FIM channel events
-    const fimChannel = (h.top_channels || []).find(c => c.channel === 'TinySocs-FIM');
-    const fimLabel = fimChannel ? '<span style="color:var(--green)">Active</span> (' + fimChannel.count + ' events)' : '<span style="color:var(--muted)">No FIM events</span>';
-    html += `<div><span style="color:var(--muted)">FIM Status:</span> ${fimLabel}</div>`;
+    // FIM status — check if host has TinySocs-FIM channel events (lazy-loaded)
+    let fimLabel;
+    if (h._channels_loaded) {
+      const fimChannel = (h.top_channels || []).find(c => c.channel === 'TinySocs-FIM');
+      fimLabel = fimChannel ? '<span style="color:var(--green)">Active</span> (' + fimChannel.count + ' events)' : '<span style="color:var(--muted)">No FIM events</span>';
+    } else {
+      fimLabel = '<em style="color:var(--muted)">Loading...</em>';
+    }
+    html += `<div><span style="color:var(--muted)">FIM Status:</span> <span id="fleet-fim-${i}">${fimLabel}</span></div>`;
     // Threat intel status (global, same for all hosts)
     var tiLabel = '<span style="color:var(--muted)">Not configured</span>';
     if (_threatIntelStatus) {
@@ -6125,6 +6232,25 @@ function toggleFleetDetail(idx) {
     }
     row.style.display = 'table-row';
     _openFleetIdx = idx;
+    // Lazy-load host detail (top channels, event IDs)
+    const h = _fleetCache[idx];
+    if (h && !h._channels_loaded) {
+      fetchJSON(apiBase() + `/fleet/host-detail?hostname=${encodeURIComponent(h.hostname)}`).then(d => {
+        h.top_channels = d.top_channels || [];
+        h.top_event_ids = d.top_event_ids || [];
+        h._channels_loaded = true;
+        const chEl = document.getElementById('fleet-channels-' + idx);
+        const evEl = document.getElementById('fleet-evtids-' + idx);
+        if (chEl) chEl.textContent = h.top_channels.map(c => c.channel + ' (' + c.count + ')').join(', ') || 'None';
+        if (evEl) evEl.textContent = h.top_event_ids.map(e => e.event_id + ' (' + e.count + ')').join(', ') || 'None';
+        // Update FIM status
+        const fimEl = document.getElementById('fleet-fim-' + idx);
+        if (fimEl) {
+          const fimChannel = h.top_channels.find(c => c.channel === 'TinySocs-FIM');
+          fimEl.innerHTML = fimChannel ? '<span style="color:var(--green)">Active</span> (' + fimChannel.count + ' events)' : '<span style="color:var(--muted)">No FIM events</span>';
+        }
+      });
+    }
   }
 }
 
@@ -6134,7 +6260,7 @@ function viewHostLogs(hostname) {
   document.getElementById('eventTimeRange').value = '24h';
   loadEvents();
   const explorer = document.getElementById('event-explorer-card');
-  ensureCardExpanded('explorer');
+  ensureCardVisible('explorer');
   if (explorer) explorer.scrollIntoView({behavior: 'smooth', block: 'start'});
 }
 
@@ -6144,7 +6270,7 @@ function viewHostAlerts(hostname) {
   document.getElementById('eventTimeRange').value = '24h';
   loadEvents();
   const explorer = document.getElementById('event-explorer-card');
-  ensureCardExpanded('explorer');
+  ensureCardVisible('explorer');
   if (explorer) explorer.scrollIntoView({behavior: 'smooth', block: 'start'});
 }
 
@@ -6245,44 +6371,11 @@ const _EVENTS_PER_PAGE = 15;
 
 function toggleEventsLive(on) { _eventsLive = on; }
 
-function toggleCardCollapse(id) {
-  const body = document.getElementById('body-' + id);
-  const chevron = document.getElementById('chevron-' + id);
-  if (!body || !chevron) return;
-  body.classList.toggle('collapsed');
-  chevron.classList.toggle('collapsed');
-  const collapsed = JSON.parse(localStorage.getItem('tinysocs_collapsed') || '{}');
-  collapsed[id] = body.classList.contains('collapsed');
-  localStorage.setItem('tinysocs_collapsed', JSON.stringify(collapsed));
-}
-
-function restoreCollapseState() {
-  const collapsed = JSON.parse(localStorage.getItem('tinysocs_collapsed') || '{}');
-  for (const [id, isCollapsed] of Object.entries(collapsed)) {
-    if (isCollapsed) {
-      const body = document.getElementById('body-' + id);
-      const chevron = document.getElementById('chevron-' + id);
-      if (body) body.classList.add('collapsed');
-      if (chevron) chevron.classList.add('collapsed');
-    }
-  }
-}
-
-function ensureCardExpanded(id) {
-  // Switch to the tab containing this card
+function ensureCardVisible(id) {
   const cardTabMap = {summary:'overview',timeline:'overview',detections:'overview',
     fleet:'fleet',explorer:'data',rules:'detections',compliance:'compliance',mitre:'compliance'};
   const targetTab = cardTabMap[id];
   if (targetTab && targetTab !== _activeTab) switchTab(targetTab);
-  const body = document.getElementById('body-' + id);
-  const chevron = document.getElementById('chevron-' + id);
-  if (body && body.classList.contains('collapsed')) {
-    body.classList.remove('collapsed');
-    if (chevron) chevron.classList.remove('collapsed');
-    const collapsed = JSON.parse(localStorage.getItem('tinysocs_collapsed') || '{}');
-    collapsed[id] = false;
-    localStorage.setItem('tinysocs_collapsed', JSON.stringify(collapsed));
-  }
 }
 
 async function loadEvents(background) {
@@ -6860,7 +6953,7 @@ function testRuleInExplorer(idx) {
   document.getElementById('eventTimeRange').value = '24h';
   loadEvents();
   const explorer = document.getElementById('event-explorer-card');
-  ensureCardExpanded('explorer');
+  ensureCardVisible('explorer');
   if (explorer) explorer.scrollIntoView({behavior: 'smooth', block: 'start'});
 }
 
@@ -7444,7 +7537,6 @@ function unlockDashboard() {
   _dashboardUnlocked = true;
   document.getElementById('loginGate').style.display = 'none';
   document.getElementById('dashboardContent').style.visibility = 'visible';
-  try { restoreCollapseState(); } catch(e) {}
   try { checkLlmStatus(); } catch(e) {}
   try { restoreChat(); } catch(e) {}
 
@@ -7454,6 +7546,9 @@ function unlockDashboard() {
   _initialHashTab = origHash;
   var tab = _validTabs.includes(origHash) ? origHash : 'overview';
   switchTab(tab);
+
+  // Phase 20: fetch local node ID for single-node site focus
+  fetchJSON('/api/local-meta').then(m => { if (m && m.node_id) _localNodeId = m.node_id; }).catch(() => {});
 
   // Check if Sites tab should be shown (async — may update default tab)
   try { initSitesTab(); } catch(e) {}

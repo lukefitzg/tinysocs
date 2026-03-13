@@ -19,6 +19,9 @@ namespace TinySocs.Agent.Detection
         // In-memory sliding windows: ruleId -> groupKey -> list of event timestamps
         private readonly Dictionary<string, Dictionary<string, List<EventOccurrence>>> _windows;
 
+        // Cooldown tracking: "{ruleId}|{groupKey}" -> last alert fire time
+        private readonly Dictionary<string, DateTime> _lastAlertTime;
+
         // Pruning: track last prune pass to avoid pruning every single event
         private DateTime _lastPruneTime;
         private int _evaluationsSincePrune;
@@ -29,6 +32,7 @@ namespace TinySocs.Agent.Detection
             _logger = logger;
             _rules = new List<DetectionRule>();
             _windows = new Dictionary<string, Dictionary<string, List<EventOccurrence>>>();
+            _lastAlertTime = new Dictionary<string, DateTime>();
             _lastPruneTime = DateTime.UtcNow;
             _evaluationsSincePrune = 0;
         }
@@ -144,9 +148,32 @@ namespace TinySocs.Agent.Detection
                 totalWindows += ruleEntry.Value.Count;
             }
 
+            // Prune stale cooldown entries (older than 2x the longest effective cooldown)
+            var maxCooldownMinutes = 60;
+            foreach (var rule in _rules)
+            {
+                var cd = rule.Condition.CooldownMinutes > 0
+                    ? rule.Condition.CooldownMinutes
+                    : rule.Condition.WindowMinutes;
+                if (cd > maxCooldownMinutes) maxCooldownMinutes = cd;
+            }
+            var cooldownCutoff = now.AddMinutes(-maxCooldownMinutes * 2);
+            var staleCooldownKeys = new List<string>();
+            foreach (var entry in _lastAlertTime)
+            {
+                if (entry.Value < cooldownCutoff)
+                {
+                    staleCooldownKeys.Add(entry.Key);
+                }
+            }
+            foreach (var key in staleCooldownKeys)
+            {
+                _lastAlertTime.Remove(key);
+            }
+
             _logger.LogDebug(
-                "Window prune: removed {Pruned} expired events, {KeysRemoved} empty keys. Active windows: {WindowCount} across {RuleCount} rules.",
-                totalPruned, keysRemoved, totalWindows, _windows.Count);
+                "Window prune: removed {Pruned} expired events, {KeysRemoved} empty keys. Active windows: {WindowCount} across {RuleCount} rules. Cooldown entries: {CooldownCount}.",
+                totalPruned, keysRemoved, totalWindows, _windows.Count, _lastAlertTime.Count);
 
             _lastPruneTime = now;
         }
@@ -217,6 +244,29 @@ namespace TinySocs.Agent.Detection
             // Check if threshold is met
             if (window.Count >= rule.Condition.Threshold)
             {
+                // Cooldown check: suppress re-firing for the same rule+key
+                var cooldownKey = $"{rule.Id}|{groupKey}";
+                var effectiveCooldown = rule.Condition.CooldownMinutes > 0
+                    ? rule.Condition.CooldownMinutes
+                    : rule.Condition.WindowMinutes;
+
+                if (_lastAlertTime.TryGetValue(cooldownKey, out var lastFire))
+                {
+                    var elapsed = (now - lastFire).TotalMinutes;
+                    if (elapsed < effectiveCooldown)
+                    {
+                        // Still in cooldown — suppress alert but clear the window
+                        window.Clear();
+                        _logger.LogDebug(
+                            "Rule {RuleId} suppressed for {GroupKey}: cooldown {Remaining:F1}min remaining ({Cooldown}min total)",
+                            rule.Id, groupKey, effectiveCooldown - elapsed, effectiveCooldown);
+                        return null;
+                    }
+                }
+
+                // Record fire time for cooldown tracking
+                _lastAlertTime[cooldownKey] = now;
+
                 // Threshold met! Fire alert
                 var firstSeen = window.Min(e => e.Timestamp);
                 var lastSeen = window.Max(e => e.Timestamp);

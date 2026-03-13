@@ -39,6 +39,12 @@ namespace TinySocs.Agent.Detection
         public int Threshold { get; set; }
         public int WindowMinutes { get; set; } = 5;
 
+        /// <summary>
+        /// Minimum minutes between alerts for the same rule+group_by key.
+        /// Default 0 means "use window_minutes as the effective cooldown".
+        /// </summary>
+        public int CooldownMinutes { get; set; } = 0;
+
         // Additional filter fields (extensible)
         public Dictionary<string, object>? Filters { get; set; }
 

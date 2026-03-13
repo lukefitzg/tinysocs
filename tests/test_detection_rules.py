@@ -138,6 +138,24 @@ class TestCSharpRules:
             f"Expected >=22 production C# rules, found {len(prod_rules)}"
         )
 
+    def test_cooldown_minutes_valid(self, rules):
+        """cooldown_minutes must be a non-negative integer when present."""
+        for rule in rules:
+            cond = rule.get("condition", {})
+            cd = cond.get("cooldown_minutes")
+            if cd is not None:
+                assert isinstance(cd, int) and cd >= 0, (
+                    f"Rule '{rule['id']}' cooldown_minutes must be a non-negative integer, got {cd!r}"
+                )
+
+    def test_lab_rules_disabled(self, rules):
+        """Lab rules must be disabled by default to avoid alert noise in production."""
+        lab_rules = [r for r in rules if "-lab" in r["id"]]
+        for rule in lab_rules:
+            assert rule.get("enabled") is False, (
+                f"Lab rule '{rule['id']}' must have enabled: false"
+            )
+
 
 # ── Action coverage ───────────────────────────────────────────────────
 

@@ -861,6 +861,59 @@ def _demo_compliance_report(framework: str = "nist_csf", hours: int = 720) -> di
     }
 
 
+def _demo_actions() -> dict:
+    """Synthetic guided response actions for demo mode."""
+    return {"actions": [
+        {
+            "action_id": "demo-act-001", "action": "block_ip", "status": "staged",
+            "staged_at": _demo_iso(-2.5), "dry_run": True,
+            "params": {"ip": "203.0.113.47", "reason": "Triggered by brute_force_logon (critical) on RECEPTION-PC", "host": "RECEPTION-PC", "rule": "brute_force_logon"},
+            "runbook": [
+                "Verify 203.0.113.47 is not a known partner or VPN endpoint",
+                "Check threat intel: AbuseIPDB confidence 87%, GreyNoise: malicious",
+                "Add IP to perimeter firewall block list",
+                "Review RECEPTION-PC for signs of successful compromise",
+                "Reset credentials for any accounts that had failed logons from this IP",
+            ],
+        },
+        {
+            "action_id": "demo-act-002", "action": "isolate_host", "status": "staged",
+            "staged_at": _demo_iso(-1.0), "dry_run": True,
+            "params": {"host": "RECEPTION-PC", "reason": "Defender real-time protection disabled — possible tampering", "rule": "defender_realtime_disabled"},
+            "runbook": [
+                "Confirm whether Defender was intentionally disabled by IT staff",
+                "If unauthorized: network-isolate the host immediately",
+                "Run full antimalware scan with secondary tool (e.g., Malwarebytes)",
+                "Check for unauthorized processes or scheduled tasks",
+                "Re-enable Defender real-time protection and verify it persists",
+            ],
+        },
+        {
+            "action_id": "demo-act-003", "action": "disable_user", "status": "acknowledged",
+            "staged_at": _demo_iso(-8.0), "dry_run": True,
+            "params": {"user": "svc_backup", "reason": "Suspicious new local account created on FILESERVER-01", "rule": "local_account_created"},
+            "runbook": [
+                "Verify svc_backup was not created by an authorized admin",
+                "Check account permissions and group memberships",
+                "Disable the account if unauthorized",
+                "Audit FILESERVER-01 for lateral movement indicators",
+            ],
+            "resolved_by": "dashboard-operator", "resolved_at": _demo_iso(-6.0),
+        },
+        {
+            "action_id": "demo-act-004", "action": "open_ticket", "status": "staged",
+            "staged_at": _demo_iso(-0.5), "dry_run": True,
+            "params": {"title": "Off-hours RDP brute force from 198.51.100.22 targeting FILESERVER-01", "rule": "rdp_brute_force"},
+            "runbook": [
+                "Review RDP access logs for FILESERVER-01",
+                "Verify 198.51.100.22 is not a known remote worker IP",
+                "Consider restricting RDP to VPN-only access",
+                "Enable Network Level Authentication (NLA) if not already active",
+            ],
+        },
+    ]}
+
+
 def _demo_threat_intel_status() -> dict:
     return {
         "ok": True,
@@ -870,6 +923,65 @@ def _demo_threat_intel_status() -> dict:
             {"name": "GreyNoise Community", "configured": True, "available": True, "quota_remaining": 7},
         ],
         "cache": {"total_entries": 23, "error": None},
+    }
+
+
+def _demo_mitre_coverage() -> dict:
+    """Synthetic MITRE ATT&CK coverage: 33 techniques across 11 tactics."""
+    _tactics = [
+        ("TA0001", "Initial Access", [("T1078", "Valid Accounts"), ("T1190", "Exploit Public-Facing Application"), ("T1566", "Phishing")]),
+        ("TA0002", "Execution", [("T1059", "Command and Scripting Interpreter"), ("T1059.001", "PowerShell"), ("T1204", "User Execution"), ("T1053", "Scheduled Task/Job")]),
+        ("TA0003", "Persistence", [("T1053.005", "Scheduled Task"), ("T1136", "Create Account"), ("T1136.001", "Local Account"), ("T1547", "Boot or Logon Autostart Execution")]),
+        ("TA0004", "Privilege Escalation", [("T1078.003", "Local Accounts"), ("T1548", "Abuse Elevation Control Mechanism")]),
+        ("TA0005", "Defense Evasion", [("T1562", "Impair Defenses"), ("T1562.001", "Disable or Modify Tools"), ("T1027", "Obfuscated Files or Information"), ("T1070", "Indicator Removal")]),
+        ("TA0006", "Credential Access", [("T1110", "Brute Force"), ("T1110.001", "Password Guessing"), ("T1003", "OS Credential Dumping")]),
+        ("TA0007", "Discovery", [("T1087", "Account Discovery"), ("T1083", "File and Directory Discovery"), ("T1057", "Process Discovery")]),
+        ("TA0008", "Lateral Movement", [("T1021", "Remote Services"), ("T1021.001", "Remote Desktop Protocol")]),
+        ("TA0009", "Collection", [("T1005", "Data from Local System"), ("T1119", "Automated Collection")]),
+        ("TA0010", "Exfiltration", [("T1041", "Exfiltration Over C2 Channel")]),
+        ("TA0011", "Command and Control", [("T1071", "Application Layer Protocol"), ("T1571", "Non-Standard Port"), ("T1105", "Ingress Tool Transfer")]),
+    ]
+    # Build techniques dict keyed by technique ID
+    techniques = {}
+    rule_map = {
+        "T1078": ["auth_failed_burst"], "T1190": ["web_exploit_attempt"],
+        "T1566": ["phishing_attachment"], "T1059": ["suspicious_cmd_exec"],
+        "T1059.001": ["ps_script_block", "ps_encoded_command"],
+        "T1204": ["user_exec_macro"], "T1053": ["scheduled_task_created"],
+        "T1053.005": ["scheduled_task_created"], "T1136": ["local_account_created"],
+        "T1136.001": ["local_account_created"], "T1547": ["autostart_registry"],
+        "T1078.003": ["auth_failed_burst"], "T1548": ["uac_bypass"],
+        "T1562": ["defender_realtime_disabled"], "T1562.001": ["defender_realtime_disabled"],
+        "T1027": ["obfuscated_command"], "T1070": ["log_cleared"],
+        "T1110": ["brute_force_logon", "rdp_brute_force"],
+        "T1110.001": ["brute_force_logon"], "T1003": ["credential_dump_attempt"],
+        "T1087": ["account_enumeration"], "T1083": ["fim_file_modified"],
+        "T1057": ["process_enumeration"], "T1021": ["rdp_brute_force"],
+        "T1021.001": ["rdp_brute_force"], "T1005": ["fim_file_modified"],
+        "T1119": ["automated_collection"], "T1041": ["c2_exfil_detection"],
+        "T1071": ["c2_beacon_detection"], "T1571": ["nonstandard_port"],
+        "T1105": ["ingress_tool_transfer"],
+    }
+    for _tid, _tname, _techs in _tactics:
+        for tid, tname in _techs:
+            techniques[tid] = {
+                "name": tname, "tactic": _tid,
+                "rules": rule_map.get(tid, ["generic_detection"]),
+            }
+    tactic_summary = []
+    for tid, label, techs in _tactics:
+        tactic_summary.append({
+            "tactic": tid, "label": label,
+            "techniques_covered": len(techs),
+            "technique_ids": [t[0] for t in techs],
+        })
+    return {
+        "ok": True,
+        "total_techniques": len(techniques),
+        "total_tactics": len(_tactics),
+        "techniques": techniques,
+        "tactic_summary": tactic_summary,
+        "rules_without_mitre": [],
     }
 
 
@@ -2160,6 +2272,14 @@ async def api_fleet_health():
 async def api_fleet_host_detail(hostname: str = Query(...)):
     """Lazy-load detailed data for a single fleet host (top channels, event IDs)."""
     if _DEMO_MODE:
+        fleet = _demo_fleet_health()
+        for h in fleet.get("hosts", []):
+            if h["hostname"].lower() == hostname.lower():
+                return {
+                    "hostname": hostname,
+                    "top_channels": h.get("top_channels", []),
+                    "top_event_ids": h.get("top_event_ids", []),
+                }
         return {"hostname": hostname, "top_channels": [], "top_event_ids": []}
     body = {
         "query": {"bool": {"filter": [
@@ -2547,6 +2667,8 @@ async def api_version_status():
 @dashboard_app.get("/api/mitre/coverage")
 async def api_mitre_coverage():
     """Return MITRE ATT&CK coverage summary from detection rules."""
+    if _DEMO_MODE:
+        return _demo_mitre_coverage()
     try:
         from tinysocs.reporting.mitre_coverage import (
             load_all_rules, extract_mitre_annotations, calculate_coverage,
@@ -2573,6 +2695,18 @@ async def api_mitre_coverage():
 @dashboard_app.get("/api/mitre/navigator-layer")
 async def api_mitre_navigator_layer():
     """Download ATT&CK Navigator JSON layer."""
+    if _DEMO_MODE:
+        cov = _demo_mitre_coverage()
+        # Build a minimal navigator layer from demo data
+        layer = {
+            "name": "TinySocs Coverage (Demo)", "versions": {"attack": "14", "layer": "4.5", "navigator": "4.9.1"},
+            "domain": "enterprise-attack", "description": "TinySocs demo coverage",
+            "techniques": [{"techniqueID": tid, "score": 1, "color": "#27ae60"} for tid in cov["techniques"]],
+        }
+        return Response(
+            content=json.dumps(layer, indent=2), media_type="application/json",
+            headers={"Content-Disposition": 'attachment; filename="tinysocs-navigator-layer.json"'},
+        )
     try:
         from tinysocs.reporting.mitre_coverage import (
             load_all_rules, extract_mitre_annotations, calculate_coverage,
@@ -2734,6 +2868,8 @@ async def api_events_recent(
 @dashboard_app.get("/api/actions")
 def api_actions():
     """List guided response recommendations."""
+    if _DEMO_MODE:
+        return _demo_actions()
     try:
         from tinysocs.actions.executor import list_actions
         items = list_actions(limit=50)
@@ -2745,6 +2881,8 @@ def api_actions():
 @dashboard_app.post("/api/actions/{action_id}/approve")
 def api_action_approve(action_id: str):
     """Acknowledge a recommendation — operator will handle it manually."""
+    if _DEMO_MODE:
+        return {"ok": True, "action": {"action_id": action_id, "status": "acknowledged"}}
     try:
         from tinysocs.actions.executor import approve_action
         record = approve_action(action_id, approved_by="dashboard-operator")
@@ -2805,6 +2943,8 @@ def api_action_create_test():
 @dashboard_app.post("/api/actions/{action_id}/reject")
 def api_action_reject(action_id: str):
     """Dismiss a recommendation — false positive or not applicable."""
+    if _DEMO_MODE:
+        return {"ok": True, "action": {"action_id": action_id, "status": "dismissed"}}
     try:
         from tinysocs.actions.executor import reject_action
         record = reject_action(action_id, rejected_by="dashboard-operator")
@@ -4216,6 +4356,41 @@ async def api_compliance_report_html(
     hours: int = Query(720, ge=1, le=8760),
 ):
     """Generate and download compliance report as HTML."""
+    if _DEMO_MODE:
+        report = _demo_compliance_report(framework, hours)
+        fw_label = {"nist_csf": "NIST_CSF_2.0", "hipaa": "HIPAA", "pci_dss": "PCI_DSS"}.get(framework, framework)
+        controls = report.get("controls", [])
+        rows = "".join(
+            f'<tr><td>{c["id"]}</td><td>{c["name"]}</td><td>{c["status"]}</td>'
+            f'<td>{c.get("mapped_rules", 0)}</td><td>{c.get("event_count", 0)}</td></tr>'
+            for c in controls
+        )
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        html = (
+            f'<!DOCTYPE html><html><head><meta charset="utf-8">'
+            f'<title>TinySocs Compliance Report — {fw_label}</title>'
+            f'<style>body{{font-family:system-ui,sans-serif;margin:40px;color:#1a1a2e;background:#f8f9fa}}'
+            f'h1{{color:#2c3e50}}table{{border-collapse:collapse;width:100%;margin-top:20px}}'
+            f'th,td{{border:1px solid #dee2e6;padding:8px 12px;text-align:left}}'
+            f'th{{background:#2c3e50;color:#fff}}tr:nth-child(even){{background:#f1f3f5}}'
+            f'.pass{{color:#27ae60;font-weight:600}}.partial{{color:#e67e22;font-weight:600}}'
+            f'.fail{{color:#e74c3c;font-weight:600}}'
+            f'</style></head><body>'
+            f'<h1>TinySocs Compliance Report</h1>'
+            f'<p><strong>Framework:</strong> {fw_label} &nbsp; <strong>Period:</strong> {hours}h &nbsp; '
+            f'<strong>Generated:</strong> {ts} &nbsp; <em>(Demo Mode)</em></p>'
+            f'<p><strong>Coverage:</strong> {report["summary"]["pass"]} pass, '
+            f'{report["summary"]["partial"]} partial, {report["summary"]["fail"]} fail '
+            f'out of {report["summary"]["total"]} controls</p>'
+            f'<table><thead><tr><th>Control</th><th>Name</th><th>Status</th>'
+            f'<th>Rules</th><th>Events</th></tr></thead><tbody>{rows}</tbody></table>'
+            f'<p style="margin-top:30px;color:#7f8c8d;font-size:12px">'
+            f'Generated by TinySocs (demo mode)</p></body></html>'
+        )
+        return Response(
+            content=html, media_type="text/html",
+            headers={"Content-Disposition": f'attachment; filename="compliance_{fw_label}.html"'},
+        )
     try:
         from tinysocs.reporting.compliance_report import generate_compliance_report, render_html
         loop = asyncio.get_event_loop()
@@ -5119,6 +5294,17 @@ select { cursor: pointer; }
         <div id="rules-content"><div class="loading">Loading...</div></div>
         </div>
       </div>
+
+      <!-- Guided Response Actions -->
+      <div class="card full" id="actions-card">
+        <div class="card-header-sticky" style="display:flex;align-items:center;gap:8px">
+          <h2 style="margin:0;white-space:nowrap">Guided Response</h2>
+          <button onclick="createTestAction()" style="margin-left:auto;font-size:11px;padding:4px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer">+ Test Action</button>
+        </div>
+        <div class="card-body">
+          <div id="actions-content"><div class="loading">Loading...</div></div>
+        </div>
+      </div>
     </div>
 
     <!-- ==================== COMPLIANCE TAB ==================== -->
@@ -5248,7 +5434,7 @@ function loadTabData(tabId) {
     case 'overview': loadSummary(); loadTimeline(); loadDetections(); loadOverviewAggregate(); break;
     case 'fleet': loadFleet(); break;
     case 'data': loadEvents(); break;
-    case 'detections': loadRules(); break;
+    case 'detections': loadRules(); loadActions(); break;
     case 'compliance': loadComplianceFrameworks(); loadMitreCoverage(); break;
   }
 }

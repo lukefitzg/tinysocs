@@ -4624,7 +4624,7 @@ a { color: var(--accent); text-decoration: none; }
 /* Demo mode banner */
 .demo-banner { background:#f59e0b; color:#1a1a2e; text-align:center; padding:6px 16px; font-size:12px;
                font-weight:600; position:relative; z-index:18; display:flex; align-items:center;
-               justify-content:center; gap:8px; }
+               justify-content:center; gap:8px; margin-right:416px; }
 .demo-banner .close-btn { background:none; border:none; color:#1a1a2e; cursor:pointer; font-size:16px;
                           padding:0 4px; margin-left:8px; opacity:0.7; }
 .demo-banner .close-btn:hover { opacity:1; }
@@ -5434,8 +5434,8 @@ select { cursor: pointer; }
             <option value="deployed">Deployed</option>
             <option value="not_mapped">Not Mapped</option>
           </select>
-          <button onclick="askAIAboutWidget('compliance')" style="margin-left:auto;font-size:11px;padding:3px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;white-space:nowrap" title="Ask the AI assistant about this widget">Ask AI</button>
-          <a id="complianceDownload" href="#" style="display:none;font-size:11px;padding:3px 10px;background:var(--accent);color:#fff;text-decoration:none;border-radius:4px;cursor:pointer;white-space:nowrap" title="Download compliance report" download>&#x2B07;</a>
+          <button onclick="askAIAboutWidget('compliance')" style="margin-left:auto;font-size:11px;padding:0 10px;height:26px;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;white-space:nowrap" title="Ask the AI assistant about this widget">Ask AI</button>
+          <a id="complianceDownload" href="#" style="display:none;font-size:11px;padding:0 10px;height:26px;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;background:var(--accent);color:#fff;text-decoration:none;border-radius:4px;cursor:pointer;white-space:nowrap" title="Download compliance report" download>&#x2B07;</a>
         </div>
         <div class="card-body" id="body-compliance">
         <div id="compliance-summary" style="display:flex;gap:12px;margin:0;overflow:hidden;max-height:0;transition:max-height 0.3s ease,margin 0.3s ease">

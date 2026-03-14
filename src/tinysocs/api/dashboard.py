@@ -5160,25 +5160,23 @@ select { cursor: pointer; }
 
     <!-- ==================== SITES TAB ==================== -->
     <div class="tab-pane" id="tab-sites">
-      <div class="card">
-        <div class="card-header" style="display:flex;align-items:center;justify-content:space-between">
-          <h3>Managed Sites</h3>
-          <div style="display:flex;align-items:center;gap:12px">
-            <span id="sitesCount" style="color:var(--muted);font-size:13px"></span>
-            <button class="btn btn-sm" onclick="showAddSiteForm()" id="addSiteBtn" style="padding:4px 14px;font-size:13px;border-radius:6px;background:var(--accent);color:#fff;border:none;cursor:pointer">+ Add Site</button>
-          </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <h3 style="margin:0">Managed Sites</h3>
+        <div style="display:flex;align-items:center;gap:12px">
+          <span id="sitesCount" style="color:var(--muted);font-size:13px"></span>
+          <button onclick="showAddSiteForm()" id="addSiteBtn" style="padding:6px 16px;font-size:13px;border-radius:6px;background:var(--accent);color:#fff;border:none;cursor:pointer">+ Add Site</button>
         </div>
-        <div id="addSiteForm" style="display:none;padding:12px 16px;border-bottom:1px solid var(--border);background:var(--bg)">
-          <div style="display:flex;gap:8px;align-items:center;max-width:600px">
-            <input type="text" id="addSiteUrl" placeholder="e.g. 192.168.1.50 or warehouse:8081" style="flex:1;padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--card-bg);color:var(--fg);font-size:14px" onkeydown="if(event.key==='Enter')addSite()">
-            <button onclick="addSite()" style="padding:8px 18px;border-radius:6px;background:var(--accent);color:#fff;border:none;cursor:pointer;font-size:13px;white-space:nowrap">Add</button>
-            <button onclick="hideAddSiteForm()" style="padding:8px 12px;border-radius:6px;background:transparent;color:var(--muted);border:1px solid var(--border);cursor:pointer;font-size:13px">Cancel</button>
-          </div>
-          <div style="color:var(--muted);font-size:12px;margin-top:6px">Enter the IP address or hostname of the remote TinySocs Site. Port defaults to 8081 if not specified.</div>
-          <div id="addSiteError" style="color:var(--red,#ef4444);font-size:13px;margin-top:4px;display:none"></div>
-        </div>
-        <div class="sites-grid" id="sitesGrid"></div>
       </div>
+      <div id="addSiteForm" style="display:none;padding:14px 16px;margin-bottom:12px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">
+        <div style="display:flex;gap:8px;align-items:center">
+          <input type="text" id="addSiteUrl" placeholder="e.g. 192.168.1.50 or warehouse:8081" style="flex:1;padding:8px 12px;height:36px;box-sizing:border-box;border:1px solid var(--border);border-radius:6px;background:var(--card-bg);color:var(--fg);font-size:14px" onkeydown="if(event.key==='Enter')addSite()">
+          <button onclick="addSite()" style="padding:0 18px;height:36px;box-sizing:border-box;border-radius:6px;background:var(--accent);color:#fff;border:none;cursor:pointer;font-size:13px;white-space:nowrap">Add</button>
+          <button onclick="hideAddSiteForm()" style="padding:0 14px;height:36px;box-sizing:border-box;border-radius:6px;background:transparent;color:var(--muted);border:1px solid var(--border);cursor:pointer;font-size:13px">Cancel</button>
+        </div>
+        <div style="color:var(--muted);font-size:12px;margin-top:6px">Enter the IP address or hostname of the remote TinySocs Site. Port defaults to 8081 if not specified.</div>
+        <div id="addSiteError" style="color:var(--red,#ef4444);font-size:13px;margin-top:4px;display:none"></div>
+      </div>
+      <div class="sites-grid" id="sitesGrid"></div>
     </div>
 
     <!-- ==================== OVERVIEW TAB ==================== -->
@@ -5397,8 +5395,8 @@ select { cursor: pointer; }
         </div>
       </div>
 
-      <!-- Guided Response Actions -->
-      <div class="card full" id="actions-card">
+      <!-- Guided Response Actions (hidden until feature is fully implemented) -->
+      <div class="card full" id="actions-card" style="display:none">
         <div class="card-header-sticky" style="display:flex;align-items:center;gap:8px">
           <h2 style="margin:0;white-space:nowrap">Guided Response</h2>
           <button onclick="createTestAction()" style="margin-left:auto;font-size:11px;padding:4px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer">+ Test Action</button>
@@ -5857,10 +5855,6 @@ async function initSitesTab() {
   if (nodes.length > 0) {
     btn.style.display = '';
     _sitesVisible = true;
-    // If no tab explicitly selected via URL hash, default to Sites
-    if (!_initialHashTab) {
-      switchTab('sites');
-    }
   }
 }
 
@@ -7895,8 +7889,11 @@ function unlockDashboard() {
   // Phase 20: fetch local node ID for single-node site focus
   fetchJSON('/api/local-meta').then(m => { if (m && m.node_id) _localNodeId = m.node_id; }).catch(() => {});
 
-  // Check if Sites tab should be shown (async — may update default tab)
+  // Check if Sites tab should be shown
   try { initSitesTab(); } catch(e) {}
+
+  // Eager-load all tabs in background so switching is instant
+  _validTabs.forEach(function(t) { loadTabData(t); });
 
   // Phase 18 M3: restore focused site from sessionStorage
   try {

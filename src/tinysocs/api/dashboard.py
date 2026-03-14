@@ -5464,8 +5464,8 @@ select { cursor: pointer; }
       <div class="card full" id="mitre-card">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
           <h2 style="margin:0">MITRE ATT&CK Coverage</h2>
-          <button onclick="askAIAboutWidget('mitre')" style="margin-left:auto;font-size:11px;padding:3px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;white-space:nowrap" title="Ask the AI assistant about this widget">Ask AI</button>
-          <a id="mitreDownload" href="#" style="font-size:16px;padding:2px 8px;color:var(--muted);text-decoration:none;cursor:pointer" title="Download Navigator layer JSON" onclick="downloadNavigatorLayer(event)">&#x2B07;</a>
+          <button onclick="askAIAboutWidget('mitre')" style="margin-left:auto;font-size:11px;padding:0 10px;height:26px;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;white-space:nowrap" title="Ask the AI assistant about this widget">Ask AI</button>
+          <a id="mitreDownload" href="#" style="padding:0 8px;height:26px;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;background:var(--accent);color:#fff;text-decoration:none;border-radius:4px;cursor:pointer" title="Download Navigator layer JSON" onclick="downloadNavigatorLayer(event)"><span style="font-size:13px;line-height:0;position:relative;top:1px">&#x21E9;</span></a>
         </div>
         <div class="card-body" id="body-mitre">
         <div id="mitre-summary" style="display:flex;gap:12px;margin:0;overflow:hidden;max-height:0;transition:max-height 0.3s ease,margin 0.3s ease">

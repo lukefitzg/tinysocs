@@ -1136,7 +1136,8 @@ begin
   L.WordWrap := True;
   L.AutoSize := True;
   L.Caption := 'Enter the addresses of any remote TinySocs Sites (e.g. https://192.168.1.50:8081, https://warehouse:8081).'
-    + ' You can skip this and add them later in the configuration file.';
+    + ' You can skip this and add sites later from the Dashboard.'
+    + #13#10#13#10 + 'Tip: To find a Site machine''s IP address, run "ipconfig" in Command Prompt on that machine and look for the IPv4 Address.';
   L.Font.Color := $666666;
 
   { ---- Page 3: LLM Provider ---- }

@@ -4670,6 +4670,7 @@ a { color: var(--accent); text-decoration: none; }
 .sites-aggregate .agg-val { font-weight:700; color:var(--text); }
 .sites-aggregate .agg-crit { color:#e74c3c; font-weight:700; }
 .sites-aggregate .agg-sep { color:var(--border); }
+#overview-agg-banner { position:sticky; top:90px; z-index:18; margin:0 24px 0 24px; }
 /* Site focus banner (Phase 18 M3 — drill-through mode) */
 .site-focus-banner { display:none; position:sticky; z-index:18; padding:6px 14px;
                      background:var(--surface); border-bottom:1px solid var(--border);
@@ -4715,6 +4716,7 @@ a { color: var(--accent); text-decoration: none; }
 .host-picker-divider { height:1px; background:var(--border); margin:4px 0; }
 .tab-pane { display:none; }
 .tab-pane.active { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+#tab-sites.active { grid-template-columns:1fr; }
 .right-panel { width: 384px; position: fixed; top: 90px; right: 24px; bottom: 16px; z-index: 10;
                transition: width 0.25s ease; overflow: hidden; }
 .right-panel.collapsed { width: 36px; }
@@ -4791,7 +4793,7 @@ tr:hover { background: rgba(74, 144, 217, 0.05); }
 .btn-reject:hover { opacity: 0.85; }
 .btn-sm:disabled { opacity: 0.4; cursor: not-allowed; }
 
-#events-content { min-height: 420px; }
+#events-content { height: 420px; overflow-y: auto; }
 
 /* Threat intelligence badges */
 .threat-badge { display:inline-flex; align-items:center; gap:3px; font-size:10px; padding:1px 6px; border-radius:3px; cursor:pointer; font-weight:600; }
@@ -5149,6 +5151,9 @@ select { cursor: pointer; }
 </div>
 """ if _DEMO_MODE else "") + """
 
+<!-- Cross-site aggregate banner (full-width, sticky below tab bar) -->
+<div class="sites-aggregate" id="overview-agg-banner" style="display:none" onclick="switchTab('sites')"></div>
+
 <div class="main-layout">
   <div class="left-panels">
 
@@ -5164,14 +5169,15 @@ select { cursor: pointer; }
         <h3 style="margin:0">Managed Sites</h3>
         <div style="display:flex;align-items:center;gap:12px">
           <span id="sitesCount" style="color:var(--muted);font-size:13px"></span>
+          <button onclick="askAIAboutWidget('sites')" style="font-size:11px;padding:3px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;white-space:nowrap" title="Ask the AI assistant about federation sites">Ask AI</button>
           <button onclick="showAddSiteForm()" id="addSiteBtn" style="padding:6px 16px;font-size:13px;border-radius:6px;background:var(--accent);color:#fff;border:none;cursor:pointer">+ Add Site</button>
         </div>
       </div>
       <div id="addSiteForm" style="display:none;padding:14px 16px;margin-bottom:12px;border:1px solid var(--border);border-radius:8px;background:var(--surface)">
         <div style="display:flex;gap:8px;align-items:center">
           <input type="text" id="addSiteUrl" placeholder="e.g. 192.168.1.50 or warehouse:8081" style="flex:1;padding:8px 12px;height:36px;box-sizing:border-box;border:1px solid var(--border);border-radius:6px;background:var(--card-bg);color:var(--fg);font-size:14px" onkeydown="if(event.key==='Enter')addSite()">
-          <button onclick="addSite()" style="padding:0 18px;height:36px;box-sizing:border-box;border-radius:6px;background:var(--accent);color:#fff;border:none;cursor:pointer;font-size:13px;white-space:nowrap">Add</button>
-          <button onclick="hideAddSiteForm()" style="padding:0 14px;height:36px;box-sizing:border-box;border-radius:6px;background:transparent;color:var(--muted);border:1px solid var(--border);cursor:pointer;font-size:13px">Cancel</button>
+          <button onclick="addSite()" style="padding:0 18px;height:36px;box-sizing:border-box;border-radius:6px;background:var(--accent);color:#fff;border:1px solid transparent;cursor:pointer;font-size:13px;white-space:nowrap;display:inline-flex;align-items:center;justify-content:center">Add</button>
+          <button onclick="hideAddSiteForm()" style="padding:0 14px;height:36px;box-sizing:border-box;border-radius:6px;background:transparent;color:var(--muted);border:1px solid var(--border);cursor:pointer;font-size:13px;display:inline-flex;align-items:center;justify-content:center">Cancel</button>
         </div>
         <div style="color:var(--muted);font-size:12px;margin-top:6px">Enter the IP address or hostname of the remote TinySocs Site. Port defaults to 8081 if not specified.</div>
         <div id="addSiteError" style="color:var(--red,#ef4444);font-size:13px;margin-top:4px;display:none"></div>
@@ -5181,8 +5187,6 @@ select { cursor: pointer; }
 
     <!-- ==================== OVERVIEW TAB ==================== -->
     <div class="tab-pane active" id="tab-overview">
-      <!-- Cross-site aggregate banner (Phase 18 M1 — hidden when no nodes configured) -->
-      <div class="sites-aggregate" id="overview-agg-banner" style="display:none" onclick="switchTab('sites')"></div>
       <!-- Alert Summary -->
       <div class="card">
         <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
@@ -5266,6 +5270,7 @@ select { cursor: pointer; }
       <div class="card full" id="event-explorer-card">
         <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
           <h2 style="margin:0;flex:1">Event Explorer</h2>
+          <button onclick="askAIAboutWidget('explorer')" style="font-size:11px;padding:3px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;white-space:nowrap" title="Ask the AI assistant about this widget">Ask AI</button>
           <button style="font-size:11px;padding:2px 8px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer" onclick="toggleSchema()">Schema</button>
         </div>
         <div class="card-body" id="body-explorer">
@@ -5309,6 +5314,7 @@ select { cursor: pointer; }
             <option value="disabled">Disabled</option>
           </select>
           <div style="display:flex;gap:6px;align-items:center;margin-left:auto">
+            <button onclick="askAIAboutWidget('rules')" style="font-size:11px;padding:3px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;white-space:nowrap" title="Ask the AI assistant about detection rules">Ask AI</button>
             <button onclick="toggleRuleBuilder()" class="rules-btn rules-btn-accent">+ New Rule</button>
             <button onclick="toggleRuleUpload()" class="rules-btn rules-btn-purple">Upload Pack</button>
           </div>
@@ -5428,7 +5434,7 @@ select { cursor: pointer; }
             <option value="not_mapped">Not Mapped</option>
           </select>
           <button onclick="askAIAboutWidget('compliance')" style="margin-left:auto;font-size:11px;padding:3px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;white-space:nowrap" title="Ask the AI assistant about this widget">Ask AI</button>
-          <a id="complianceDownload" href="#" style="display:none;font-size:12px;padding:6px 14px;background:var(--accent);color:#fff;text-decoration:none;border-radius:4px;font-weight:600;cursor:pointer;white-space:nowrap" title="Download HTML report" download>&#x2B07; Download Report</a>
+          <a id="complianceDownload" href="#" style="display:none;font-size:11px;padding:3px 10px;background:var(--accent);color:#fff;text-decoration:none;border-radius:4px;cursor:pointer;white-space:nowrap" title="Download compliance report" download>&#x2B07;</a>
         </div>
         <div class="card-body" id="body-compliance">
         <div id="compliance-summary" style="display:flex;gap:12px;margin:0;overflow:hidden;max-height:0;transition:max-height 0.3s ease,margin 0.3s ease">
@@ -5523,6 +5529,9 @@ function switchTab(tabId) {
   if (btn) btn.classList.add('active');
   _activeTab = tabId;
   history.replaceState(null, '', '#' + tabId);
+  // Toggle full-width aggregate banner (lives outside tab panes)
+  const aggBanner = document.getElementById('overview-agg-banner');
+  if (aggBanner) { aggBanner.style.display = (tabId === 'overview' && aggBanner.innerHTML.trim()) ? '' : 'none'; }
   loadTabData(tabId);
 }
 
@@ -6357,6 +6366,27 @@ function askAIAboutWidget(widgetId) {
     },
     mitre: () => {
       return `Review our MITRE ATT&CK coverage. What techniques are we missing detection coverage for? Which gaps are the most critical to address?`;
+    },
+    explorer: () => {
+      const idx = (document.getElementById('eventIndex') || {}).value || '';
+      const range = (document.getElementById('eventTimeRange') || {}).value || '24h';
+      const query = (document.getElementById('eventQuery') || {}).value || '';
+      const el = document.getElementById('events-content');
+      const text = el ? el.innerText.substring(0, 500) : '';
+      let prompt = `Give me an overview of recent activity in the ${idx} index (last ${range}).`;
+      if (query) prompt += ` I'm currently filtering with: ${query}.`;
+      prompt += `\n\nHere's a snapshot of what the Event Explorer shows:\n${text}\n\nWhat notable events or patterns do you see? Is there anything unusual I should investigate?`;
+      return prompt;
+    },
+    sites: () => {
+      const countEl = document.getElementById('sitesCount');
+      const count = countEl ? countEl.innerText : '';
+      return `I'm looking at the Sites tab in the TinySocs Dashboard. ${count ? 'Currently showing ' + count + '.' : ''}\n\nCan you explain:\n1. What is a "Site" in TinySocs federation?\n2. How do I bring a new site online? (install steps, what to enter during setup)\n3. How do I add an existing site from this dashboard?\n\nPlease keep the explanation simple and non-technical.`;
+    },
+    rules: () => {
+      const el = document.getElementById('rules-content');
+      const text = el ? el.innerText.substring(0, 500) : '';
+      return `I'm looking at the Alert Rules in TinySocs. Here's what I see:\n${text}\n\nCan you explain:\n1. What are detection rules and how do they work in TinySocs?\n2. How do I create a new rule using the rule builder?\n3. How do I upload a rule pack (YAML/JSON)?\n4. How do I tune rules — adjust thresholds, group-by fields, or set cooldown periods?\n5. How do I suppress false positives or disable noisy rules?`;
     },
   };
   const fn = prompts[widgetId];

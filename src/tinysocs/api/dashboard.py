@@ -4670,7 +4670,7 @@ a { color: var(--accent); text-decoration: none; }
 .sites-aggregate .agg-val { font-weight:700; color:var(--text); }
 .sites-aggregate .agg-crit { color:#e74c3c; font-weight:700; }
 .sites-aggregate .agg-sep { color:var(--border); }
-#overview-agg-banner { position:sticky; top:90px; z-index:18; margin:0 24px 0 24px; }
+#overview-agg-banner { position:sticky; top:95px; z-index:18; margin:0 24px 0 24px; }
 /* Site focus banner (Phase 18 M3 — drill-through mode) */
 .site-focus-banner { display:none; position:sticky; z-index:18; padding:6px 14px;
                      background:var(--surface); border-bottom:1px solid var(--border);
@@ -5143,11 +5143,12 @@ select { cursor: pointer; }
 <style>
   .right-panel { top: 122px !important; }
   .tab-bar { top: 88px !important; }
+  #overview-agg-banner { top: 127px !important; }
 </style>
 <div class="demo-banner" id="demoBanner"
      style="position:sticky; top:56px; z-index:19;">
   &#9888; Demo Mode &mdash; showing synthetic data for illustration purposes
-  <button class="close-btn" onclick="document.getElementById('demoBanner').style.display='none'; document.querySelector('.right-panel').style.top='90px'; document.querySelector('.tab-bar').style.top='56px';">&times;</button>
+  <button class="close-btn" onclick="document.getElementById('demoBanner').style.display='none'; document.querySelector('.right-panel').style.top='90px'; document.querySelector('.tab-bar').style.top='56px'; var ab=document.getElementById('overview-agg-banner'); if(ab) ab.style.top='95px';">&times;</button>
 </div>
 """ if _DEMO_MODE else "") + """
 

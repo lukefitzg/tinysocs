@@ -2533,6 +2533,92 @@ async def api_nodes():
 
 
 # ---------------------------------------------------------------------------
+# Node Management — add / remove sites (Phase 20)
+# ---------------------------------------------------------------------------
+
+@dashboard_app.post("/api/nodes/add")
+def api_nodes_add(body: Dict[str, Any] = Body(...)):
+    """Add a remote site node URL to the federation."""
+    global _NODES_LIST
+
+    token = body.get("token", "")
+    if not _validate_session(token):
+        return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+
+    url = (body.get("url") or "").strip().rstrip("/")
+    if not url:
+        return JSONResponse(status_code=400, content={"error": "url is required"})
+
+    # Basic validation
+    if not url.startswith(("https://", "http://")):
+        url = "https://" + url
+    # Ensure port is present (default 8081)
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    if not parsed.port:
+        url = f"{parsed.scheme}://{parsed.hostname}:8081"
+
+    # Read current list from env (not cache, in case of manual edits)
+    raw = os.getenv("TINYSOCS_NODES", "").strip()
+    current = [u.strip() for u in raw.split(",") if u.strip()] if raw else []
+
+    if url in current:
+        return {"ok": True, "message": "Site already configured", "nodes": current}
+
+    current.append(url)
+    new_val = ",".join(current)
+
+    # Persist to assistant.env
+    env_path = _find_assistant_env()
+    if env_path:
+        try:
+            _write_env_file(env_path, {"TINYSOCS_NODES": new_val})
+        except Exception as exc:
+            return JSONResponse(status_code=500, content={"error": f"Failed to write env file: {exc}"})
+
+    # Update live environment + invalidate cache
+    os.environ["TINYSOCS_NODES"] = new_val
+    _NODES_LIST = None  # force re-read on next /api/nodes call
+
+    return {"ok": True, "message": f"Site added: {url}", "nodes": current}
+
+
+@dashboard_app.post("/api/nodes/remove")
+def api_nodes_remove(body: Dict[str, Any] = Body(...)):
+    """Remove a remote site node URL from the federation."""
+    global _NODES_LIST
+
+    token = body.get("token", "")
+    if not _validate_session(token):
+        return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+
+    url = (body.get("url") or "").strip().rstrip("/")
+    if not url:
+        return JSONResponse(status_code=400, content={"error": "url is required"})
+
+    raw = os.getenv("TINYSOCS_NODES", "").strip()
+    current = [u.strip() for u in raw.split(",") if u.strip()] if raw else []
+
+    if url not in current:
+        return {"ok": True, "message": "Site not found in list", "nodes": current}
+
+    current = [u for u in current if u != url]
+    new_val = ",".join(current)
+
+    env_path = _find_assistant_env()
+    if env_path:
+        try:
+            _write_env_file(env_path, {"TINYSOCS_NODES": new_val})
+        except Exception as exc:
+            return JSONResponse(status_code=500, content={"error": f"Failed to write env file: {exc}"})
+
+    os.environ["TINYSOCS_NODES"] = new_val
+    _NODES_LIST = None
+
+    return {"ok": True, "message": f"Site removed: {url}", "nodes": current}
+
+
+# ---------------------------------------------------------------------------
 # Site Proxy — drill-through to individual nodes (Phase 18 M3)
 # ---------------------------------------------------------------------------
 # Allowed proxy paths — only forward requests to known node endpoints.
@@ -4549,6 +4635,10 @@ a { color: var(--accent); text-decoration: none; }
 .site-card:hover { border-color:var(--accent); }
 .site-card-header { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
 .site-card-header strong { margin:0; font-size:14px; color:var(--text); font-weight:600; }
+.site-remove-btn { background:none; border:none; color:var(--muted); cursor:pointer; font-size:18px;
+                   line-height:1; padding:2px 6px; border-radius:4px; opacity:0; transition:opacity 0.15s; }
+.site-card:hover .site-remove-btn { opacity:0.6; }
+.site-remove-btn:hover { opacity:1 !important; color:var(--red, #ef4444); background:rgba(239,68,68,0.1); }
 .site-metrics { display:flex; flex-direction:column; }
 .site-status { width:8px; height:8px; border-radius:50%; display:inline-block; flex-shrink:0; }
 .site-status.healthy { background:#22c55e; }
@@ -5073,7 +5163,19 @@ select { cursor: pointer; }
       <div class="card">
         <div class="card-header" style="display:flex;align-items:center;justify-content:space-between">
           <h3>Managed Sites</h3>
-          <span id="sitesCount" style="color:var(--muted);font-size:13px"></span>
+          <div style="display:flex;align-items:center;gap:12px">
+            <span id="sitesCount" style="color:var(--muted);font-size:13px"></span>
+            <button class="btn btn-sm" onclick="showAddSiteForm()" id="addSiteBtn" style="padding:4px 14px;font-size:13px;border-radius:6px;background:var(--accent);color:#fff;border:none;cursor:pointer">+ Add Site</button>
+          </div>
+        </div>
+        <div id="addSiteForm" style="display:none;padding:12px 16px;border-bottom:1px solid var(--border);background:var(--bg)">
+          <div style="display:flex;gap:8px;align-items:center;max-width:600px">
+            <input type="text" id="addSiteUrl" placeholder="e.g. 192.168.1.50 or warehouse:8081" style="flex:1;padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--card-bg);color:var(--fg);font-size:14px" onkeydown="if(event.key==='Enter')addSite()">
+            <button onclick="addSite()" style="padding:8px 18px;border-radius:6px;background:var(--accent);color:#fff;border:none;cursor:pointer;font-size:13px;white-space:nowrap">Add</button>
+            <button onclick="hideAddSiteForm()" style="padding:8px 12px;border-radius:6px;background:transparent;color:var(--muted);border:1px solid var(--border);cursor:pointer;font-size:13px">Cancel</button>
+          </div>
+          <div style="color:var(--muted);font-size:12px;margin-top:6px">Enter the IP address or hostname of the remote TinySocs Site. Port defaults to 8081 if not specified.</div>
+          <div id="addSiteError" style="color:var(--red,#ef4444);font-size:13px;margin-top:4px;display:none"></div>
         </div>
         <div class="sites-grid" id="sitesGrid"></div>
       </div>
@@ -5496,7 +5598,7 @@ async function loadSites() {
   if (d.error && !d.nodes) { grid.innerHTML = '<div class="empty">' + escapeHtml(d.error) + '</div>'; return; }
   const nodes = d.nodes || [];
   countEl.textContent = nodes.length + ' site' + (nodes.length !== 1 ? 's' : '');
-  if (!nodes.length) { grid.innerHTML = '<div class="empty">No remote sites configured</div>'; return; }
+  if (!nodes.length) { grid.innerHTML = '<div class="empty" style="padding:2rem;text-align:center"><div style="margin-bottom:8px">No remote sites configured</div><button onclick="showAddSiteForm()" style="padding:6px 16px;border-radius:6px;background:var(--accent);color:#fff;border:none;cursor:pointer;font-size:13px">+ Add your first site</button></div>'; return; }
 
   // Sort: critical alerts first, then total alerts desc, then alphabetically
   nodes.sort(function(a, b) {
@@ -5556,8 +5658,9 @@ async function loadSites() {
     html += '<div class="site-card' + (hasCritical ? ' has-critical' : '') + '" onclick="focusSite(\\'' + escapeHtml(n.node_id || '') + '\\')">';
     html += '<div class="site-card-header">';
     html += '<span class="site-status ' + statusCls + '"></span>';
-    html += '<strong>' + escapeHtml(n.node_id || n.url) + '</strong>';
+    html += '<strong style="flex:1">' + escapeHtml(n.node_id || n.url) + '</strong>';
     html += '<span class="site-alert-badge ' + badgeCls + '">' + badgeVal + '</span>';
+    html += '<button class="site-remove-btn" onclick="event.stopPropagation();removeSite(\\'' + escapeHtml(n.url || '') + '\\',\\'' + escapeHtml(n.node_id || '') + '\\')" title="Remove site">&times;</button>';
     html += '</div>';
 
     // Operational data
@@ -5601,6 +5704,62 @@ async function loadSites() {
     html += '</div>';
   }
   grid.innerHTML = html;
+}
+
+function showAddSiteForm() {
+  document.getElementById('addSiteForm').style.display = 'block';
+  document.getElementById('addSiteUrl').value = '';
+  document.getElementById('addSiteError').style.display = 'none';
+  document.getElementById('addSiteUrl').focus();
+}
+function hideAddSiteForm() {
+  document.getElementById('addSiteForm').style.display = 'none';
+}
+
+async function addSite() {
+  const input = document.getElementById('addSiteUrl');
+  const errEl = document.getElementById('addSiteError');
+  const url = input.value.trim();
+  if (!url) { errEl.textContent = 'Please enter a URL or IP address.'; errEl.style.display = 'block'; return; }
+  errEl.style.display = 'none';
+  try {
+    const resp = await fetch('/api/nodes/add', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({url: url, token: _sessionToken || ''})
+    });
+    const data = await resp.json();
+    if (!resp.ok || data.error) {
+      errEl.textContent = data.error || 'Failed to add site.';
+      errEl.style.display = 'block';
+      return;
+    }
+    hideAddSiteForm();
+    await loadSites();
+    // Show Sites tab in nav if it was hidden
+    initSitesTab();
+  } catch (e) {
+    errEl.textContent = 'Network error: ' + e.message;
+    errEl.style.display = 'block';
+  }
+}
+
+async function removeSite(siteUrl, siteName) {
+  if (!confirm('Remove site "' + (siteName || siteUrl) + '" from federation?')) return;
+  try {
+    const resp = await fetch('/api/nodes/remove', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({url: siteUrl, token: _sessionToken || ''})
+    });
+    const data = await resp.json();
+    if (resp.ok && data.ok) {
+      await loadSites();
+      initSitesTab();
+    }
+  } catch (e) {
+    console.error('removeSite failed:', e);
+  }
 }
 
 function apiBase() {

@@ -2439,7 +2439,17 @@ begin
     begin
       Log('CurStepChanged: InstallTinyBox=False (Site role)');
 
-      { ---- Phase 19 M1/M3/M4: Site role — generate TLS cert, write config, register node service ---- }
+      { ---- Phase 19+20: Site role — OpenSearch bootstrap, TLS cert, config, node+agent services ---- }
+
+      { Phase 20: Auto-generate SIEM password for Site's local OpenSearch }
+      if (SiemPass = '') then
+      begin
+        SiemPass := GeneratePassword(24);
+        Log('CurStepChanged: Site role: generated SIEM password for local OpenSearch.');
+      end;
+      if (SiemUser = '') then
+        SiemUser := 'admin';
+
       Script :=
         '$ErrorActionPreference = ''Continue''' + CRLF +
         'Import-Module ''' + PsEscape(InstallerModule) + ''' -Force' + CRLF +
@@ -2475,6 +2485,112 @@ begin
         '  Write-Host ''[TinySocs][Inno] Node TLS cert already exists; preserving existing certificate.''' + CRLF +
         '}' + CRLF +
         '' + CRLF +
+
+        '# Phase 20: Bootstrap local OpenSearch for Site role' + CRLF +
+        'Write-Host ''[TinySocs][Inno] Phase 20: Bootstrapping local OpenSearch for Site role...''' + CRLF +
+        '$siemUrl = ''https://127.0.0.1:9201''' + CRLF +
+        '$u_in = ''' + PsEscape(SiemUser) + '''' + CRLF +
+        '$p_in = ''' + PsEscape(SiemPass) + '''' + CRLF +
+        '$openSearchRoot = Join-Path ''' + PsEscape(ExpandConstant('{app}')) + ''' ''OpenSearch''' + CRLF +
+        '$pdConf = Join-Path $env:ProgramData ''TinySocs\OpenSearch\config''' + CRLF +
+        '$certsDir = Join-Path $pdConf ''certs''' + CRLF +
+        '$svcName = ''TinySocsOpenSearch''' + CRLF +
+        '' + CRLF +
+
+        '# 20.1: Store SIEM credentials in CredMan' + CRLF +
+        'try {' + CRLF +
+        '  if (Get-Command Set-TinySocsSiemCredential -ErrorAction SilentlyContinue) {' + CRLF +
+        '    $sc = Get-Command Set-TinySocsSiemCredential -ErrorAction Stop' + CRLF +
+        '    $sp = @{}' + CRLF +
+        '    if ($sc.Parameters.ContainsKey(''SiemUrl''))       { $sp.SiemUrl = $siemUrl }' + CRLF +
+        '    if ($sc.Parameters.ContainsKey(''SiemUser''))      { $sp.SiemUser = $u_in }' + CRLF +
+        '    if ($sc.Parameters.ContainsKey(''SiemPass''))      { $sp.SiemPass = $p_in }' + CRLF +
+        '    if ($sc.Parameters.ContainsKey(''SiemSslVerify'')) { $sp.SiemSslVerify = $false }' + CRLF +
+        '    & $sc @sp | Out-Null' + CRLF +
+        '    Write-Host ''[TinySocs][Inno] Phase 20: CredMan SIEM credentials stored.''' + CRLF +
+        '  }' + CRLF +
+        '} catch { Write-Warning (''[TinySocs][Inno] CredMan store failed: '' + $_.Exception.Message) }' + CRLF +
+        '' + CRLF +
+
+        '# 20.2: Register OpenSearch service via module function' + CRLF +
+        'try {' + CRLF +
+        '  if (Get-Command Register-TinySocsOpenSearchService -ErrorAction SilentlyContinue) {' + CRLF +
+        '    Register-TinySocsOpenSearchService' + CRLF +
+        '    Write-Host ''[TinySocs][Inno] Phase 20: OpenSearch service registered.''' + CRLF +
+        '  } else {' + CRLF +
+        '    Write-Warning ''[TinySocs][Inno] Register-TinySocsOpenSearchService not found.''' + CRLF +
+        '  }' + CRLF +
+        '} catch { Write-Warning (''[TinySocs][Inno] OpenSearch service registration failed: '' + $_.Exception.Message) }' + CRLF +
+        '' + CRLF +
+
+        '# 20.3: Pre-hash admin password into internal_users.yml' + CRLF +
+        'try {' + CRLF +
+        '  if (Get-Command Set-TinySocsOpenSearchAdminPasswordInConfig -ErrorAction SilentlyContinue) {' + CRLF +
+        '    Set-TinySocsOpenSearchAdminPasswordInConfig -OpenSearchRoot $openSearchRoot -ConfigRoot $pdConf -AdminPassword $p_in' + CRLF +
+        '    Write-Host ''[TinySocs][Inno] Phase 20: Admin password pre-hashed.''' + CRLF +
+        '  }' + CRLF +
+        '} catch { Write-Warning (''[TinySocs][Inno] Password pre-hash failed: '' + $_.Exception.Message) }' + CRLF +
+        '' + CRLF +
+
+        '# 20.4: Write DPAPI admin-pass file for SYSTEM context' + CRLF +
+        'try {' + CRLF +
+        '  if (Get-Command Write-TinySocsSiemAdminPassToDpapiFile -ErrorAction SilentlyContinue) {' + CRLF +
+        '    Write-TinySocsSiemAdminPassToDpapiFile -CertsDir $certsDir -AdminPass $p_in | Out-Null' + CRLF +
+        '    Write-Host ''[TinySocs][Inno] Phase 20: DPAPI admin-pass file written.''' + CRLF +
+        '  }' + CRLF +
+        '} catch { Write-Warning (''[TinySocs][Inno] DPAPI write failed: '' + $_.Exception.Message) }' + CRLF +
+        '' + CRLF +
+
+        '# 20.5: Ensure admin_dn and security config ACLs' + CRLF +
+        'try {' + CRLF +
+        '  $pdYml = Join-Path $pdConf ''opensearch.yml''' + CRLF +
+        '  if (Get-Command Ensure-TinySocsOpenSearchAdminDn -ErrorAction SilentlyContinue) {' + CRLF +
+        '    Ensure-TinySocsOpenSearchAdminDn -OpenSearchYmlPath $pdYml -AdminDn ''CN=TinySocs-OpenSearch-Admin''' + CRLF +
+        '    Write-Host ''[TinySocs][Inno] Phase 20: admin_dn set in opensearch.yml''' + CRLF +
+        '  }' + CRLF +
+        '} catch { Write-Warning (''[TinySocs][Inno] admin_dn setup failed: '' + $_.Exception.Message) }' + CRLF +
+        'try {' + CRLF +
+        '  $secCfgDir = Join-Path $pdConf ''opensearch-security''' + CRLF +
+        '  if (Get-Command Ensure-TinySocsAclForOpenSearchSecurityConfig -ErrorAction SilentlyContinue) {' + CRLF +
+        '    Ensure-TinySocsAclForOpenSearchSecurityConfig -SecurityConfigDir $secCfgDir' + CRLF +
+        '    Write-Host ''[TinySocs][Inno] Phase 20: Security config ACLs set.''' + CRLF +
+        '  }' + CRLF +
+        '} catch { Write-Warning (''[TinySocs][Inno] Security config ACLs failed: '' + $_.Exception.Message) }' + CRLF +
+        '' + CRLF +
+
+        '# 20.6: Restart OpenSearch and run persistence (config + port wait)' + CRLF +
+        'try { sc.exe stop $svcName | Out-Null } catch { }' + CRLF +
+        'Start-Sleep -Seconds 2' + CRLF +
+        'try { sc.exe start $svcName | Out-Null } catch { }' + CRLF +
+        '& ''' + PsEscape(PersistScriptPath) + ''' -ConfDir $pdConf -ServiceName $svcName -HttpPort 9201 -NetworkHost ''127.0.0.1''' + CRLF +
+        '' + CRLF +
+
+        '# 20.7: Security initialization (securityadmin push)' + CRLF +
+        'try {' + CRLF +
+        '  if (Get-Command Ensure-TinySocsOpenSearchSecurityInitialized -ErrorAction SilentlyContinue) {' + CRLF +
+        '    Ensure-TinySocsOpenSearchSecurityInitialized -OpenSearchRoot $openSearchRoot -ProgramDataConf $pdConf -Url $siemUrl' + CRLF +
+        '    Write-Host ''[TinySocs][Inno] Phase 20: OpenSearch security initialized.''' + CRLF +
+        '  }' + CRLF +
+        '} catch { Write-Warning (''[TinySocs][Inno] Security init failed (non-fatal): '' + $_.Exception.Message) }' + CRLF +
+        '' + CRLF +
+
+        '# 20.8: Install-TinySocsLocalSiem (index templates + C# agent service)' + CRLF +
+        'try {' + CRLF +
+        '  if (Get-Command Install-TinySocsLocalSiem -ErrorAction SilentlyContinue) {' + CRLF +
+        '    $cmd = Get-Command Install-TinySocsLocalSiem -ErrorAction Stop' + CRLF +
+        '    $pp = @{}' + CRLF +
+        '    if ($cmd.Parameters.ContainsKey(''SiemUser''))     { $pp.SiemUser = $u_in }' + CRLF +
+        '    if ($cmd.Parameters.ContainsKey(''SiemPass''))     { $pp.SiemPass = $p_in }' + CRLF +
+        '    if ($cmd.Parameters.ContainsKey(''ApiPort''))      { $pp.ApiPort  = 9201 }' + CRLF +
+        '    if ($cmd.Parameters.ContainsKey(''TrustLocalCA'')) { $pp.TrustLocalCA = $true }' + CRLF +
+        '    & $cmd @pp' + CRLF +
+        '    Write-Host ''[TinySocs][Inno] Phase 20: Install-TinySocsLocalSiem completed (templates + agent).''' + CRLF +
+        '  }' + CRLF +
+        '} catch { Write-Warning (''[TinySocs][Inno] Install-TinySocsLocalSiem failed (non-fatal): '' + $_.Exception.Message) }' + CRLF +
+        '' + CRLF +
+        'Write-Host ''[TinySocs][Inno] Phase 20: Site OpenSearch bootstrap completed.''' + CRLF +
+        '' + CRLF +
+
         '# Phase 19 M1: Write Site config to assistant.env' + CRLF +
         '$envDir = Join-Path $env:ProgramData ''TinySocs\Assistant''' + CRLF +
         'if (-not (Test-Path $envDir)) { New-Item -ItemType Directory -Force -Path $envDir | Out-Null }' + CRLF +
@@ -2522,6 +2638,8 @@ begin
         '    ''PORT=8081'',' + CRLF +
         '    ''SIEM_URL=https://localhost:9201'',' + CRLF +
         '    ''SIEM_SSL_VERIFY=false'',' + CRLF +
+        '    ''SIEM_USER=' + PsEscape(SiemUser) + ''',' + CRLF +
+        '    ''SIEM_PASS=' + PsEscape(SiemPass) + ''',' + CRLF +
         '    ''PRIVACY_MODE=abstract'',' + CRLF +
         '    ''TINYSOCS_NODE_ID=' + PsEscape(SiteName) + ''',' + CRLF +
         '    ''MASTER_SHARED_SECRET=' + PsEscape(SharedSecret) + '''' + CRLF +

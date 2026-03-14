@@ -7845,6 +7845,151 @@ function Write-TinySocsNodesToFile {
   }
 }
 
+function Add-TinySocsNode {
+  <#
+  .SYNOPSIS
+    Add a Site node URL to the Hub's federation configuration.
+  .DESCRIPTION
+    Appends a new node URL to TINYSOCS_NODES in: machine env, nodes.txt,
+    and assistant.env.  Optionally restarts the TinySocsAssistant service
+    so the master orchestrator picks up the change immediately.
+  .PARAMETER NodeUrl
+    The HTTPS URL of the Site node (e.g. https://10.0.0.50:8081).
+  .PARAMETER NoRestart
+    Skip restarting the TinySocsAssistant service after adding the node.
+  .EXAMPLE
+    Add-TinySocsNode -NodeUrl https://192.168.1.100:8081
+  #>
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory)][string]$NodeUrl,
+    [switch]$NoRestart
+  )
+
+  Assert-TinySocsAdmin
+
+  # Normalise URL (strip trailing slash)
+  $NodeUrl = $NodeUrl.TrimEnd('/')
+
+  # 1. Read current nodes from machine env
+  $current = [Environment]::GetEnvironmentVariable('TINYSOCS_NODES','Machine')
+  if ([string]::IsNullOrWhiteSpace($current)) {
+    $current = ''
+  }
+
+  # Parse to list, dedup, add new
+  $list = @($current -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+  if ($list -contains $NodeUrl) {
+    Write-TinySocsLog "Node '$NodeUrl' is already in TINYSOCS_NODES; no change needed."
+    return @{ Added = $false; Nodes = ($list -join ',') }
+  }
+  $list += $NodeUrl
+  $newNodes = $list -join ','
+
+  # 2. Update machine env
+  Set-MachineEnv @{ TINYSOCS_NODES = $newNodes }
+  Write-TinySocsLog "TINYSOCS_NODES updated in machine env: $newNodes"
+
+  # 3. Persist to nodes.txt
+  try { Write-TinySocsNodesToFile -Nodes $newNodes | Out-Null } catch {
+    Write-TinySocsLog -Level "WARN" -Message "Failed to persist nodes.txt: $($_.Exception.Message)"
+  }
+
+  # 4. Update assistant.env
+  $envFile = Join-Path $env:ProgramData 'TinySocs\Assistant\assistant.env'
+  if (Test-Path $envFile) {
+    try {
+      $content = Get-Content $envFile -Raw
+      if ($content -match '(?m)^TINYSOCS_NODES=') {
+        $content = $content -replace '(?m)^TINYSOCS_NODES=.*$', "TINYSOCS_NODES=$newNodes"
+      } else {
+        $content += "`nTINYSOCS_NODES=$newNodes"
+      }
+      Set-Content -Path $envFile -Value $content -Force
+      Write-TinySocsLog "assistant.env updated with TINYSOCS_NODES=$newNodes"
+    } catch {
+      Write-TinySocsLog -Level "WARN" -Message "Failed to update assistant.env: $($_.Exception.Message)"
+    }
+  }
+
+  # 5. Optionally restart TinySocsAssistant service
+  if (-not $NoRestart) {
+    $svc = Get-Service -Name 'TinySocsAssistant' -ErrorAction SilentlyContinue
+    if ($svc) {
+      try {
+        Restart-Service -Name 'TinySocsAssistant' -Force -ErrorAction Stop
+        Write-TinySocsLog "TinySocsAssistant service restarted to pick up new node."
+      } catch {
+        Write-TinySocsLog -Level "WARN" -Message "Failed to restart TinySocsAssistant: $($_.Exception.Message)"
+      }
+    } else {
+      Write-TinySocsLog -Level "WARN" -Message "TinySocsAssistant service not found; restart skipped."
+    }
+  }
+
+  Write-Host "Node added successfully: $NodeUrl"
+  Write-Host "Current federation nodes: $newNodes"
+  return @{ Added = $true; Nodes = $newNodes }
+}
+
+function Remove-TinySocsNode {
+  <#
+  .SYNOPSIS
+    Remove a Site node URL from the Hub's federation configuration.
+  .PARAMETER NodeUrl
+    The HTTPS URL of the Site node to remove.
+  .PARAMETER NoRestart
+    Skip restarting the TinySocsAssistant service.
+  #>
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory)][string]$NodeUrl,
+    [switch]$NoRestart
+  )
+
+  Assert-TinySocsAdmin
+
+  $NodeUrl = $NodeUrl.TrimEnd('/')
+
+  $current = [Environment]::GetEnvironmentVariable('TINYSOCS_NODES','Machine')
+  if ([string]::IsNullOrWhiteSpace($current)) {
+    Write-TinySocsLog "TINYSOCS_NODES is empty; nothing to remove."
+    return @{ Removed = $false; Nodes = '' }
+  }
+
+  $list = @($current -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+  if ($list -notcontains $NodeUrl) {
+    Write-TinySocsLog "Node '$NodeUrl' is not in TINYSOCS_NODES; nothing to remove."
+    return @{ Removed = $false; Nodes = ($list -join ',') }
+  }
+
+  $list = @($list | Where-Object { $_ -ne $NodeUrl })
+  $newNodes = $list -join ','
+
+  Set-MachineEnv @{ TINYSOCS_NODES = $newNodes }
+  try { Write-TinySocsNodesToFile -Nodes $newNodes | Out-Null } catch { }
+
+  $envFile = Join-Path $env:ProgramData 'TinySocs\Assistant\assistant.env'
+  if (Test-Path $envFile) {
+    try {
+      $content = Get-Content $envFile -Raw
+      $content = $content -replace '(?m)^TINYSOCS_NODES=.*$', "TINYSOCS_NODES=$newNodes"
+      Set-Content -Path $envFile -Value $content -Force
+    } catch { }
+  }
+
+  if (-not $NoRestart) {
+    $svc = Get-Service -Name 'TinySocsAssistant' -ErrorAction SilentlyContinue
+    if ($svc) {
+      try { Restart-Service -Name 'TinySocsAssistant' -Force -ErrorAction Stop } catch { }
+    }
+  }
+
+  Write-Host "Node removed: $NodeUrl"
+  Write-Host "Remaining federation nodes: $newNodes"
+  return @{ Removed = $true; Nodes = $newNodes }
+}
+
 function Test-TinySocsIsElevated {
   try {
     $typeName = 'TinySocs.TokenCheck'

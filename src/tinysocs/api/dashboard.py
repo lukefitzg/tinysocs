@@ -5435,7 +5435,7 @@ select { cursor: pointer; }
             <option value="not_mapped">Not Mapped</option>
           </select>
           <button onclick="askAIAboutWidget('compliance')" style="margin-left:auto;font-size:11px;padding:0 10px;height:26px;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;white-space:nowrap" title="Ask the AI assistant about this widget">Ask AI</button>
-          <a id="complianceDownload" href="#" style="display:none;font-size:11px;padding:0 10px;height:26px;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;background:var(--accent);color:#fff;text-decoration:none;border-radius:4px;cursor:pointer;white-space:nowrap" title="Download compliance report" download>&#x2B07;</a>
+          <a id="complianceDownload" href="#" style="display:none;padding:0 8px;height:26px;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;background:var(--accent);color:#fff;text-decoration:none;border-radius:4px;cursor:pointer" title="Download compliance report" download><span style="font-size:13px;line-height:0;position:relative;top:1px">&#x21E9;</span></a>
         </div>
         <div class="card-body" id="body-compliance">
         <div id="compliance-summary" style="display:flex;gap:12px;margin:0;overflow:hidden;max-height:0;transition:max-height 0.3s ease,margin 0.3s ease">

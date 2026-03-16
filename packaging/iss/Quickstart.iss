@@ -501,7 +501,10 @@ end;
   URL because GetLocalIPv4 can fall back to COMPUTERNAME which may not resolve. }
 function GetDashboardUrl(Param: String): String;
 begin
-  Result := 'https://localhost:8090/dashboard/';
+  if (not InstallTinyBox) and (HubAddress <> '') then
+    Result := 'https://' + HubAddress + ':8090/dashboard/'
+  else
+    Result := 'https://localhost:8090/dashboard/';
 end;
 
 { Scripted constant: finish-page description showing the dashboard URL.
@@ -509,7 +512,9 @@ end;
   other machines, but the shellexec always opens localhost (see above). }
 function GetDashboardDescription(Param: String): String;
 begin
-  if DashboardLanUrl <> '' then
+  if not InstallTinyBox then
+    Result := 'Open Hub Dashboard'
+  else if DashboardLanUrl <> '' then
     Result := 'Open TinySocs Dashboard (LAN: ' + DashboardLanUrl + ')'
   else
     Result := 'Open TinySocs Dashboard';

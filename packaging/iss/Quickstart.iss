@@ -378,6 +378,9 @@ var
   SiteNameEdit: TNewEdit;
   HubSitesEdit: TNewEdit;
   CopySecretBtn: TNewButton;
+  SiemPassLabel: TNewStaticText;
+  SiemPassDescLabel: TNewStaticText;
+  SharedSecretHintLabel: TNewStaticText;
 
   { Phase 19: Site/Hub config values }
   HubAddress: String;
@@ -1037,16 +1040,16 @@ begin
   SharedSecretEdit.Width := SecurityPage.SurfaceWidth;
   SharedSecretEdit.PasswordChar := '*';
 
-  L := TNewStaticText.Create(SecurityPage.Surface);
-  L.Parent := SecurityPage.Surface;
-  L.Left := 0;
-  L.Top := SharedSecretEdit.Top + ScaleY(28);
-  L.Width := SecurityPage.SurfaceWidth;
-  L.WordWrap := True;
-  L.AutoSize := True;
-  L.Caption := 'For Hub installs, a strong secret is auto-generated — copy it for your remote Site installs.'
+  SharedSecretHintLabel := TNewStaticText.Create(SecurityPage.Surface);
+  SharedSecretHintLabel.Parent := SecurityPage.Surface;
+  SharedSecretHintLabel.Left := 0;
+  SharedSecretHintLabel.Top := SharedSecretEdit.Top + ScaleY(28);
+  SharedSecretHintLabel.Width := SecurityPage.SurfaceWidth;
+  SharedSecretHintLabel.WordWrap := True;
+  SharedSecretHintLabel.AutoSize := True;
+  SharedSecretHintLabel.Caption := 'For Hub installs, a strong secret is auto-generated — copy it for your remote Site installs.'
     + ' For Site installs, enter the shared secret from your Hub installation.';
-  L.Font.Color := $666666;
+  SharedSecretHintLabel.Font.Color := $666666;
 
   { Phase 19 M2: Copy to clipboard button for Hub role }
   CopySecretBtn := TNewButton.Create(SecurityPage.Surface);
@@ -1058,28 +1061,28 @@ begin
   CopySecretBtn.Caption := 'Copy to Clipboard';
   CopySecretBtn.OnClick := @CopySecretBtnClick;
 
-  L := TNewStaticText.Create(SecurityPage.Surface);
-  L.Parent := SecurityPage.Surface;
-  L.Left := 0;
-  L.Top := CopySecretBtn.Top + ScaleY(40);
-  L.Width := SecurityPage.SurfaceWidth;
-  L.Caption := 'SIEM + Dashboard password (leave blank to auto-generate a strong one):';
+  SiemPassLabel := TNewStaticText.Create(SecurityPage.Surface);
+  SiemPassLabel.Parent := SecurityPage.Surface;
+  SiemPassLabel.Left := 0;
+  SiemPassLabel.Top := CopySecretBtn.Top + ScaleY(40);
+  SiemPassLabel.Width := SecurityPage.SurfaceWidth;
+  SiemPassLabel.Caption := 'SIEM + Dashboard password (leave blank to auto-generate a strong one):';
 
   SiemPassEdit := TNewEdit.Create(SecurityPage.Surface);
   SiemPassEdit.Parent := SecurityPage.Surface;
   SiemPassEdit.Left := 0;
-  SiemPassEdit.Top := L.Top + ScaleY(18);
+  SiemPassEdit.Top := SiemPassLabel.Top + ScaleY(18);
   SiemPassEdit.Width := SecurityPage.SurfaceWidth;
   SiemPassEdit.PasswordChar := '*';
 
-  L := TNewStaticText.Create(SecurityPage.Surface);
-  L.Parent := SecurityPage.Surface;
-  L.Left := 0;
-  L.Top := SiemPassEdit.Top + ScaleY(28);
-  L.Width := SecurityPage.SurfaceWidth;
-  L.WordWrap := True;
-  L.AutoSize := True;
-  L.Caption := 'This password protects both the OpenSearch datastore and the TinySocs dashboard.'
+  SiemPassDescLabel := TNewStaticText.Create(SecurityPage.Surface);
+  SiemPassDescLabel.Parent := SecurityPage.Surface;
+  SiemPassDescLabel.Left := 0;
+  SiemPassDescLabel.Top := SiemPassEdit.Top + ScaleY(28);
+  SiemPassDescLabel.Width := SecurityPage.SurfaceWidth;
+  SiemPassDescLabel.WordWrap := True;
+  SiemPassDescLabel.AutoSize := True;
+  SiemPassDescLabel.Caption := 'This password protects both the OpenSearch datastore and the TinySocs dashboard.'
     + ' If left blank, a strong password will be generated and stored in Windows'
     + ' Credential Manager.';
 
@@ -1539,10 +1542,23 @@ begin
       SiteNameEdit.Text := Lowercase(ExpandConstant('{computername}'));
 
     { Toggle UI visibility for role-specific fields }
+    SiemPassLabel.Visible := InstallTinyBox;
     SiemPassEdit.Visible := InstallTinyBox;
+    SiemPassDescLabel.Visible := InstallTinyBox;
     CopySecretBtn.Visible := InstallTinyBox;
     if not InstallTinyBox then
+    begin
+      SharedSecretEdit.Text := '';           { Site role: operator must paste Hub secret }
       SharedSecretEdit.PasswordChar := '*';  { Site role: mask secret }
+      SecurityPage.Description := 'Enter the shared secret from your Hub installation.';
+      SharedSecretHintLabel.Caption := 'Paste the shared secret that was generated during your Hub install.';
+    end
+    else
+    begin
+      SecurityPage.Description := 'Set your shared secret and SIEM password.';
+      SharedSecretHintLabel.Caption := 'For Hub installs, a strong secret is auto-generated — copy it for your remote Site installs.'
+        + ' For Site installs, enter the shared secret from your Hub installation.';
+    end;
   end
   else if CurPageID = SiteHubPage.ID then
   begin

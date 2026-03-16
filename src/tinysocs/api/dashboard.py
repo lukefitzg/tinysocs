@@ -8136,7 +8136,7 @@ alignAssistantPanel();
 window.addEventListener('resize', alignAssistantPanel);
 window.addEventListener('scroll', alignAssistantPanel);
 
-// ---- M0: Dashboard Login Gate ----
+/// ---- M0: Dashboard Login Gate ----
 let _authToken = null;
 let _dashboardUnlocked = false;
 

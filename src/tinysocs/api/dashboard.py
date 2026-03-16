@@ -5719,6 +5719,7 @@ function switchTab(tabId) {
   const aggBanner = document.getElementById('overview-agg-banner');
   if (aggBanner) { aggBanner.style.display = (tabId === 'overview' && aggBanner.innerHTML.trim()) ? '' : 'none'; }
   loadTabData(tabId);
+  setTimeout(alignAssistantPanel, 50);
 }
 
 function loadTabData(tabId) {
@@ -8114,13 +8115,18 @@ function restoreAssistantState() {
 
 // Align assistant panel with the first card row (never above the header)
 function alignAssistantPanel() {
-  const firstCard = document.querySelector('.left-panels .card');
   const header = document.querySelector('.header');
   const panel = document.getElementById('rightPanel');
-  if (firstCard && panel) {
-    const rect = firstCard.getBoundingClientRect();
-    const minTop = header ? header.getBoundingClientRect().bottom : 0;
+  if (!panel) return;
+  // Try first card, then active tab pane as fallback (e.g. Sites tab has no .card)
+  let anchor = document.querySelector('.left-panels .tab-pane.active .card') ||
+               document.querySelector('.left-panels .tab-pane.active');
+  const minTop = header ? header.getBoundingClientRect().bottom : 0;
+  if (anchor) {
+    const rect = anchor.getBoundingClientRect();
     panel.style.top = Math.max(rect.top, minTop) + 'px';
+  } else {
+    panel.style.top = minTop + 'px';
   }
 }
 

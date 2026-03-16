@@ -2619,6 +2619,189 @@ def api_nodes_remove(body: Dict[str, Any] = Body(...)):
 
 
 # ---------------------------------------------------------------------------
+# Phase 21: Site auto-registration with Hub approval
+# ---------------------------------------------------------------------------
+
+_PENDING_FILE = Path(os.getenv("ProgramData", os.getenv("PROGRAMDATA", "C:\\ProgramData"))) / "TinySocs" / "Assistant" / "pending_sites.json"
+_HUB_SHARED_SECRET: Optional[str] = None
+
+
+def _get_hub_secret() -> str:
+    """Load MASTER_SHARED_SECRET for HMAC verification of registration requests."""
+    global _HUB_SHARED_SECRET
+    if _HUB_SHARED_SECRET is None:
+        _HUB_SHARED_SECRET = os.getenv("MASTER_SHARED_SECRET", "").strip()
+        if not _HUB_SHARED_SECRET:
+            # Try reading from assistant.env
+            env_path = _find_assistant_env()
+            if env_path and env_path.is_file():
+                for line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
+                    if line.startswith("MASTER_SHARED_SECRET="):
+                        _HUB_SHARED_SECRET = line.split("=", 1)[1].strip()
+                        break
+        if not _HUB_SHARED_SECRET:
+            _HUB_SHARED_SECRET = "dev-secret-change-me"
+    return _HUB_SHARED_SECRET
+
+
+def _verify_registration_hmac(request: Request) -> bool:
+    """Verify HMAC on a registration request from a Site node."""
+    import time as _time
+    ts = request.headers.get("X-TinySOCS-Timestamp", "")
+    sig_hdr = request.headers.get("X-TinySOCS-Signature", "")
+    if not ts or not sig_hdr:
+        return False
+    try:
+        ts_int = int(ts)
+    except ValueError:
+        return False
+    if abs(int(_time.time()) - ts_int) > 300:
+        return False
+    # Normalise: strip "sha256=" prefix if present
+    provided = sig_hdr.lower().strip()
+    if provided.startswith("sha256="):
+        provided = provided[7:]
+    secret = _get_hub_secret()
+    calc = hmac.new(secret.encode("utf-8"), ts.encode("utf-8"), hashlib.sha256).hexdigest().lower()
+    return hmac.compare_digest(calc, provided)
+
+
+def _load_pending_sites() -> dict:
+    if _PENDING_FILE.is_file():
+        try:
+            return json.loads(_PENDING_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return {"sites": {}}
+    return {"sites": {}}
+
+
+def _save_pending_sites(data: dict) -> None:
+    _PENDING_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _PENDING_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+@dashboard_app.post("/api/nodes/register")
+async def api_nodes_register(request: Request, body: Dict[str, Any] = Body(...)):
+    """Receive auto-registration from a Site node (HMAC-authenticated)."""
+    if not _verify_registration_hmac(request):
+        return JSONResponse(status_code=401, content={"error": "Invalid HMAC signature"})
+
+    node_id = (body.get("node_id") or "").strip()
+    url = (body.get("url") or "").strip().rstrip("/")
+    version = body.get("version", "unknown")
+
+    if not node_id or not url:
+        return JSONResponse(status_code=400, content={"error": "node_id and url are required"})
+
+    # Check if already approved (in TINYSOCS_NODES)
+    raw = os.getenv("TINYSOCS_NODES", "").strip()
+    current = [u.strip() for u in raw.split(",") if u.strip()] if raw else []
+    if url in current:
+        return {"status": "approved"}
+
+    # Check pending/rejected status
+    pending = _load_pending_sites()
+    existing = pending.get("sites", {}).get(node_id)
+    now = datetime.now(timezone.utc).isoformat()
+
+    if existing and existing.get("status") == "rejected":
+        return {"status": "rejected"}
+
+    # Upsert as pending
+    if "sites" not in pending:
+        pending["sites"] = {}
+    pending["sites"][node_id] = {
+        "node_id": node_id,
+        "url": url,
+        "version": version,
+        "status": "pending",
+        "first_seen": existing["first_seen"] if existing else now,
+        "last_seen": now,
+    }
+    _save_pending_sites(pending)
+
+    return {"status": "pending"}
+
+
+@dashboard_app.get("/api/nodes/pending")
+async def api_nodes_pending(request: Request):
+    """List pending site registrations (session-authenticated)."""
+    auth = request.headers.get("Authorization", "")
+    token = auth.replace("Bearer ", "") if auth.startswith("Bearer ") else ""
+    if not _validate_session(token):
+        return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+
+    pending = _load_pending_sites()
+    sites = pending.get("sites", {})
+    # Only return pending (not rejected)
+    pending_list = [v for v in sites.values() if v.get("status") == "pending"]
+    return {"pending": pending_list}
+
+
+@dashboard_app.post("/api/nodes/approve")
+async def api_nodes_approve(body: Dict[str, Any] = Body(...)):
+    """Approve a pending site — adds it to TINYSOCS_NODES."""
+    global _NODES_LIST
+    token = body.get("token", "")
+    if not _validate_session(token):
+        return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+
+    node_id = (body.get("node_id") or "").strip()
+    if not node_id:
+        return JSONResponse(status_code=400, content={"error": "node_id is required"})
+
+    pending = _load_pending_sites()
+    site = pending.get("sites", {}).get(node_id)
+    if not site:
+        return JSONResponse(status_code=404, content={"error": "Site not found in pending list"})
+
+    url = site["url"]
+
+    # Add to TINYSOCS_NODES (reuse add logic)
+    raw = os.getenv("TINYSOCS_NODES", "").strip()
+    current = [u.strip() for u in raw.split(",") if u.strip()] if raw else []
+    if url not in current:
+        current.append(url)
+        new_val = ",".join(current)
+        env_path = _find_assistant_env()
+        if env_path:
+            try:
+                _write_env_file(env_path, {"TINYSOCS_NODES": new_val})
+            except Exception:
+                pass
+        os.environ["TINYSOCS_NODES"] = new_val
+        _NODES_LIST = None
+
+    # Remove from pending
+    del pending["sites"][node_id]
+    _save_pending_sites(pending)
+
+    return {"ok": True, "status": "approved", "node_id": node_id, "url": url}
+
+
+@dashboard_app.post("/api/nodes/reject")
+async def api_nodes_reject(body: Dict[str, Any] = Body(...)):
+    """Reject a pending site registration."""
+    token = body.get("token", "")
+    if not _validate_session(token):
+        return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+
+    node_id = (body.get("node_id") or "").strip()
+    if not node_id:
+        return JSONResponse(status_code=400, content={"error": "node_id is required"})
+
+    pending = _load_pending_sites()
+    site = pending.get("sites", {}).get(node_id)
+    if not site:
+        return JSONResponse(status_code=404, content={"error": "Site not found in pending list"})
+
+    site["status"] = "rejected"
+    _save_pending_sites(pending)
+
+    return {"ok": True, "status": "rejected", "node_id": node_id}
+
+
+# ---------------------------------------------------------------------------
 # Site Proxy — drill-through to individual nodes (Phase 18 M3)
 # ---------------------------------------------------------------------------
 # Allowed proxy paths — only forward requests to known node endpoints.
@@ -5183,6 +5366,8 @@ select { cursor: pointer; }
         <div style="color:var(--muted);font-size:12px;margin-top:6px">Enter the IP address or hostname of the remote TinySocs Site. Port defaults to 8081 if not specified.</div>
         <div id="addSiteError" style="color:var(--red,#ef4444);font-size:13px;margin-top:4px;display:none"></div>
       </div>
+      <!-- Phase 21: Pending site approvals -->
+      <div id="pendingSitesBanner" style="display:none;margin-bottom:12px"></div>
       <div class="sites-grid" id="sitesGrid"></div>
     </div>
 
@@ -5599,6 +5784,7 @@ let _focusedSite = null; // Phase 18 M3: currently focused site node_id (null = 
 let _localNodeId = null; // Phase 20: local node ID for single-node site focus bypass
 
 async function loadSites() {
+  loadPendingSites();  // Phase 21: refresh pending approvals
   const grid = document.getElementById('sitesGrid');
   const countEl = document.getElementById('sitesCount');
   const d = await fetchJSON('/api/nodes');
@@ -5734,7 +5920,7 @@ async function addSite() {
     const resp = await fetch('/api/nodes/add', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({url: url, token: _sessionToken || ''})
+      body: JSON.stringify({url: url, token: _authToken || ''})
     });
     const data = await resp.json();
     if (!resp.ok || data.error) {
@@ -5758,7 +5944,7 @@ async function removeSite(siteUrl, siteName) {
     const resp = await fetch('/api/nodes/remove', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({url: siteUrl, token: _sessionToken || ''})
+      body: JSON.stringify({url: siteUrl, token: _authToken || ''})
     });
     const data = await resp.json();
     if (resp.ok && data.ok) {
@@ -5767,6 +5953,77 @@ async function removeSite(siteUrl, siteName) {
     }
   } catch (e) {
     console.error('removeSite failed:', e);
+  }
+}
+
+// Phase 21: Pending site approvals
+async function loadPendingSites() {
+  const banner = document.getElementById('pendingSitesBanner');
+  if (!banner) return;
+  try {
+    const resp = await fetch(BASE + '/api/nodes/pending', {headers: {'Authorization': 'Bearer ' + (_authToken || '')}});
+    if (!resp.ok) { banner.style.display = 'none'; return; }
+    const data = await resp.json();
+    const pending = data.pending || [];
+    if (!pending.length) { banner.style.display = 'none'; return; }
+    let html = '<div style="padding:14px 16px;border:1px solid #b8860b;border-radius:8px;background:rgba(184,134,11,0.12)">';
+    html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">';
+    html += '<span style="font-size:16px">&#9888;</span>';
+    html += '<strong style="color:#daa520">' + pending.length + ' site' + (pending.length !== 1 ? 's' : '') + ' waiting for approval</strong>';
+    html += '</div>';
+    for (const s of pending) {
+      const ago = s.last_seen ? timeAgo(s.last_seen) : 'just now';
+      html += '<div style="display:flex;align-items:center;gap:12px;padding:8px 10px;margin-bottom:4px;background:var(--card-bg);border-radius:6px;border:1px solid var(--border)">';
+      html += '<div style="flex:1">';
+      html += '<strong style="color:var(--fg)">' + escapeHtml(s.node_id) + '</strong>';
+      html += '<span style="color:var(--muted);font-size:12px;margin-left:8px">' + escapeHtml(s.url) + '</span>';
+      html += '<span style="color:var(--muted);font-size:12px;margin-left:8px">v' + escapeHtml(s.version || '?') + '</span>';
+      html += '<span style="color:var(--muted);font-size:11px;margin-left:8px">last seen ' + ago + '</span>';
+      html += '</div>';
+      html += '<button onclick="approveSite(\'' + escapeHtml(s.node_id) + '\')" style="padding:4px 14px;border-radius:4px;background:#22c55e;color:#fff;border:none;cursor:pointer;font-size:12px;font-weight:600">Approve</button>';
+      html += '<button onclick="rejectSite(\'' + escapeHtml(s.node_id) + '\')" style="padding:4px 14px;border-radius:4px;background:#ef4444;color:#fff;border:none;cursor:pointer;font-size:12px;font-weight:600">Reject</button>';
+      html += '</div>';
+    }
+    html += '</div>';
+    banner.innerHTML = html;
+    banner.style.display = 'block';
+  } catch (e) {
+    banner.style.display = 'none';
+  }
+}
+
+async function approveSite(nodeId) {
+  try {
+    const resp = await fetch(BASE + '/api/nodes/approve', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({node_id: nodeId, token: _authToken || ''})
+    });
+    const data = await resp.json();
+    if (resp.ok && data.ok) {
+      await loadPendingSites();
+      await loadSites();
+      initSitesTab();
+    }
+  } catch (e) {
+    console.error('approveSite failed:', e);
+  }
+}
+
+async function rejectSite(nodeId) {
+  if (!confirm('Reject site "' + nodeId + '"? It will stop trying to register.')) return;
+  try {
+    const resp = await fetch(BASE + '/api/nodes/reject', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({node_id: nodeId, token: _authToken || ''})
+    });
+    const data = await resp.json();
+    if (resp.ok && data.ok) {
+      await loadPendingSites();
+    }
+  } catch (e) {
+    console.error('rejectSite failed:', e);
   }
 }
 

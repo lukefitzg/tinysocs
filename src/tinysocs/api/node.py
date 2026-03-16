@@ -1012,6 +1012,106 @@ async def host_timeline(
     return {"hostname": hostname, "hours": hours, "buckets": buckets}
 
 
+# ---------------------------------------------------------------------------
+# Hub auto-registration (Phase 21)
+# ---------------------------------------------------------------------------
+
+_HUB_URL = os.getenv("TINYSOCS_HUB_URL", "").strip().rstrip("/")
+_REGISTER_INTERVAL = int(os.getenv("TINYSOCS_REGISTER_INTERVAL", "60"))
+
+
+def _discover_self_url() -> str:
+    """Discover our LAN IP by opening a UDP socket toward the Hub."""
+    override = os.getenv("TINYSOCS_NODE_URL", "").strip()
+    if override:
+        return override.rstrip("/")
+
+    import socket
+    from urllib.parse import urlparse
+
+    parsed = urlparse(_HUB_URL)
+    hub_host = parsed.hostname or "8.8.8.8"
+    hub_port = parsed.port or 8090
+
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect((hub_host, hub_port))
+        local_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        local_ip = "127.0.0.1"
+
+    port = _get_int_env("PORT") or _get_int_env("NODE_PORT") or 8081
+    return f"https://{local_ip}:{port}"
+
+
+def _registration_loop() -> None:
+    """Background loop: register with the Hub until approved or rejected."""
+    if not _HUB_URL:
+        return
+
+    register_url = f"{_HUB_URL}/dashboard/api/nodes/register"
+    version = os.getenv("TINYSOCS_VERSION", "dev")
+
+    # Wait a few seconds for the node API to start
+    time.sleep(10)
+
+    while True:
+        try:
+            my_url = _discover_self_url()
+            ts = str(int(time.time()))
+            sig = hmac.new(
+                SECRET.encode("utf-8"),
+                ts.encode("utf-8"),
+                hashlib.sha256,
+            ).hexdigest()
+
+            resp = requests.post(
+                register_url,
+                json={"node_id": NODE_ID, "url": my_url, "version": version},
+                headers={
+                    "X-TinySOCS-Timestamp": ts,
+                    "X-TinySOCS-Signature": f"sha256={sig}",
+                    "Content-Type": "application/json",
+                },
+                timeout=15,
+                verify=False,
+            )
+            data = resp.json()
+            status = data.get("status", "")
+
+            if status == "approved":
+                print(f"[tinysocs-node] Registration approved by Hub", flush=True)
+                return
+            elif status == "rejected":
+                print(f"[tinysocs-node] Registration rejected by Hub", flush=True)
+                return
+            elif status == "pending":
+                print(f"[tinysocs-node] Registration pending Hub approval", flush=True)
+            else:
+                print(f"[tinysocs-node] Registration response: {data}", flush=True)
+        except Exception as e:
+            print(f"[tinysocs-node] Registration attempt failed: {e}", flush=True)
+
+        time.sleep(_REGISTER_INTERVAL)
+
+
+def _start_registration_thread() -> None:
+    """Start the Hub registration loop as a daemon thread."""
+    if not _HUB_URL:
+        print("[tinysocs-node] No TINYSOCS_HUB_URL set; skipping auto-registration", flush=True)
+        return
+    import threading
+    t = threading.Thread(target=_registration_loop, daemon=True, name="hub-register")
+    t.start()
+    print(f"[tinysocs-node] Auto-registration started (hub={_HUB_URL})", flush=True)
+
+
+@app.on_event("startup")
+async def _on_startup():
+    _start_registration_thread()
+
+
 def cli() -> None:
     import uvicorn
 

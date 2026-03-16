@@ -2664,7 +2664,8 @@ begin
         '    ''SIEM_PASS=' + PsEscape(SiemPass) + ''',' + CRLF +
         '    ''PRIVACY_MODE=abstract'',' + CRLF +
         '    ''TINYSOCS_NODE_ID=' + PsEscape(SiteName) + ''',' + CRLF +
-        '    ''MASTER_SHARED_SECRET=' + PsEscape(SharedSecret) + '''' + CRLF +
+        '    ''MASTER_SHARED_SECRET=' + PsEscape(SharedSecret) + ''',' + CRLF +
+        '    ''TINYSOCS_HUB_URL=https://' + PsEscape(HubAddress) + ':8090''' + CRLF +
         '  )' + CRLF +
         '  if (Test-Path $certPath) {' + CRLF +
         '    $envVars += (''TINYSOCS_TLS_CERT='' + $certPath)' + CRLF +

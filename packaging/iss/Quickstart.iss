@@ -2703,9 +2703,9 @@ begin
         Log('CurStepChanged: Site role config completed successfully.');
     end;
 
-    { ---- Phase 11: Register LLM Assistant service (if bundle was deployed) ---- }
+    { ---- Phase 11: Register LLM Assistant service (Hub/TinyBox only) ---- }
     Log('CurStepChanged: Phase 11 — checking for Assistant bundle');
-    if FileExists(ExpandConstant('{app}\Assistant\TinySocs-Quickstart.exe')) then
+    if InstallTinyBox and FileExists(ExpandConstant('{app}\Assistant\TinySocs-Quickstart.exe')) then
     begin
       Log('CurStepChanged: Assistant bundle found. Registering TinySocsAssistant service.');
 
@@ -3009,9 +3009,11 @@ begin
       WizardForm.FinishedLabel.Caption :=
         'TinySocs Site has been installed.' + CRLF + CRLF +
         'Site name: ' + SiteName + CRLF +
-        'Hub: https://' + HubAddress + ':8090' + CRLF +
         'Node API: https://localhost:8081/meta' + CRLF + CRLF +
-        'This site will be visible in the Hub dashboard''s Sites tab once the Hub is configured with this site''s URL.';
+        'This machine collects and forwards security data to your Hub.' + CRLF +
+        'There is no dashboard on this machine — open the dashboard on your Hub:' + CRLF +
+        'https://' + HubAddress + ':8090/dashboard/' + CRLF + CRLF +
+        'This site will appear in the Hub dashboard''s Sites tab.';
     end;
 
     Log('CurStepChanged(ssPostInstall): end');

@@ -93,20 +93,30 @@ Start-Sleep -Seconds 2
 # Uninstall Sysmon BEFORE deleting TinySocs directories.
 # If we delete the binary first, the service/driver are left in a stale
 # state that prevents clean reinstall (exit code 13 / driver not found).
+# Detect processor architecture to try the correct Sysmon binary first
+$_isArm64 = ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') -or ($env:PROCESSOR_ARCHITEW6432 -eq 'ARM64')
+if (-not $_isArm64) {
+    try {
+        $regArch = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -Name PROCESSOR_ARCHITECTURE -ErrorAction Stop).PROCESSOR_ARCHITECTURE
+        $_isArm64 = ($regArch -eq 'ARM64')
+    } catch { }
+}
+$_sysmonOrder = if ($_isArm64) { @('Sysmon64a.exe','Sysmon64.exe') } else { @('Sysmon64.exe','Sysmon64a.exe') }
+
 $sysmonExe = $null
-foreach ($name in @('Sysmon64a.exe','Sysmon64.exe')) {
+foreach ($name in $_sysmonOrder) {
     $p = Join-Path $env:ProgramFiles "TinySocs\bin\$name"
     if (Test-Path $p) { $sysmonExe = $p; break }
 }
 if (-not $sysmonExe) {
     # Check if Sysmon is in Windows root (older installs)
-    foreach ($name in @('Sysmon64a.exe','Sysmon64.exe')) {
+    foreach ($name in $_sysmonOrder) {
         $p = Join-Path $env:SystemRoot $name
         if (Test-Path $p) { $sysmonExe = $p; break }
     }
 }
-# Try uninstalling Sysmon via both arch binaries (ARM64 first, then x64)
-foreach ($exeName in @('Sysmon64a.exe','Sysmon64.exe')) {
+# Try uninstalling Sysmon via both arch binaries (correct arch first)
+foreach ($exeName in $_sysmonOrder) {
     foreach ($searchDir in @((Join-Path $env:ProgramFiles 'TinySocs\bin'), $env:SystemRoot)) {
         $p = Join-Path $searchDir $exeName
         if (Test-Path $p) {

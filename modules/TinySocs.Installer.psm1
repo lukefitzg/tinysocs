@@ -15896,7 +15896,8 @@ function Install-TinySocsSysmon {
     # Sysmon protects its own services — sc.exe delete alone returns "Access is denied".
     # We must use the Sysmon binary's own -u flag to uninstall properly first.
     # Try both arch variants from C:\Windows\ (where Sysmon copies itself) and our bin dir.
-    foreach ($exeName in @('Sysmon64a.exe','Sysmon64.exe')) {
+    $purgeOrder = if ($isArm64) { @('Sysmon64a.exe','Sysmon64.exe') } else { @('Sysmon64.exe','Sysmon64a.exe') }
+    foreach ($exeName in $purgeOrder) {
       foreach ($searchDir in @($env:SystemRoot, (Join-Path $env:ProgramFiles 'TinySocs\bin'))) {
         $exePath = Join-Path $searchDir $exeName
         if (Test-Path $exePath) {

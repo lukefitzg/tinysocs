@@ -1730,10 +1730,13 @@ begin
     Script :=
       '$ErrorActionPreference = ''SilentlyContinue''' + CRLF +
       '$dataRoot = Join-Path $env:ProgramData ''TinySocs''' + CRLF +
+      '$currentRole = ''' + IntToStr(SelectedRole) + '''' + CRLF +
+      '# Role constants: 0 = Hub, 1 = Site' + CRLF +
+      '' + CRLF +
+      '# Non-role-sensitive configs: always safe to restore from backup' + CRLF +
       '$pairs = @(' + CRLF +
       '  @{ Live = Join-Path $dataRoot ''Collector\agent-config.yml'';      Bak = Join-Path $dataRoot ''Collector\agent-config.yml.pre-upgrade.bak'' },' + CRLF +
       '  @{ Live = Join-Path $dataRoot ''Collector\agent\config.yml'';       Bak = Join-Path $dataRoot ''Collector\agent\config.yml.pre-upgrade.bak'' },' + CRLF +
-      '  @{ Live = Join-Path $dataRoot ''Assistant\assistant.env'';          Bak = Join-Path $dataRoot ''Assistant\assistant.env.pre-upgrade.bak'' },' + CRLF +
       '  @{ Live = Join-Path $dataRoot ''Collector\rules\rules.yml'';        Bak = Join-Path $dataRoot ''Collector\rules\rules.yml.pre-upgrade.bak'' }' + CRLF +
       ')' + CRLF +
       'foreach ($p in $pairs) {' + CRLF +
@@ -1742,7 +1745,6 @@ begin
       '      Write-Host (''[TinySocs][Inno] Restoring missing config from backup: '' + $p.Bak)' + CRLF +
       '      Copy-Item -LiteralPath $p.Bak -Destination $p.Live -Force' + CRLF +
       '    } else {' + CRLF +
-      '      # Compare; if live file is different (installer overwrote), restore operator version' + CRLF +
       '      $bakHash = (Get-FileHash -LiteralPath $p.Bak -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash' + CRLF +
       '      $liveHash = (Get-FileHash -LiteralPath $p.Live -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash' + CRLF +
       '      if ($bakHash -and $liveHash -and ($bakHash -ne $liveHash)) {' + CRLF +
@@ -1750,8 +1752,40 @@ begin
       '        Copy-Item -LiteralPath $p.Bak -Destination $p.Live -Force' + CRLF +
       '      }' + CRLF +
       '    }' + CRLF +
-      '    # Clean up backup file after successful restore/verify' + CRLF +
       '    try { Remove-Item -LiteralPath $p.Bak -Force } catch { }' + CRLF +
+      '  }' + CRLF +
+      '}' + CRLF +
+      '' + CRLF +
+      '# assistant.env: role-aware restore — skip if role changed (Hub<->Site)' + CRLF +
+      '# TINYSOCS_HUB_URL present = was a Site; DASHBOARD_BIND present = was a Hub' + CRLF +
+      '$aenvLive = Join-Path $dataRoot ''Assistant\assistant.env''' + CRLF +
+      '$aenvBak  = Join-Path $dataRoot ''Assistant\assistant.env.pre-upgrade.bak''' + CRLF +
+      'if (Test-Path -LiteralPath $aenvBak -PathType Leaf) {' + CRLF +
+      '  $bakContent = Get-Content -LiteralPath $aenvBak -Raw -ErrorAction SilentlyContinue' + CRLF +
+      '  $bakWasSite = ($bakContent -match ''(?m)^TINYSOCS_HUB_URL='')' + CRLF +
+      '  $bakWasHub  = ($bakContent -match ''(?m)^DASHBOARD_BIND='')' + CRLF +
+      '  $roleChanged = $false' + CRLF +
+      '  if ($currentRole -eq ''1'' -and $bakWasHub -and -not $bakWasSite) {' + CRLF +
+      '    $roleChanged = $true  # Installing as Site but backup was Hub' + CRLF +
+      '  } elseif ($currentRole -eq ''0'' -and $bakWasSite -and -not $bakWasHub) {' + CRLF +
+      '    $roleChanged = $true  # Installing as Hub but backup was Site' + CRLF +
+      '  }' + CRLF +
+      '  if ($roleChanged) {' + CRLF +
+      '    Write-Host ''[TinySocs][Inno] Role change detected (backup role differs from selected role) — skipping assistant.env restore''' + CRLF +
+      '    try { Remove-Item -LiteralPath $aenvBak -Force } catch { }' + CRLF +
+      '  } else {' + CRLF +
+      '    if (-not (Test-Path -LiteralPath $aenvLive -PathType Leaf)) {' + CRLF +
+      '      Write-Host ''[TinySocs][Inno] Restoring missing assistant.env from backup''' + CRLF +
+      '      Copy-Item -LiteralPath $aenvBak -Destination $aenvLive -Force' + CRLF +
+      '    } else {' + CRLF +
+      '      $bakHash = (Get-FileHash -LiteralPath $aenvBak -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash' + CRLF +
+      '      $liveHash = (Get-FileHash -LiteralPath $aenvLive -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash' + CRLF +
+      '      if ($bakHash -and $liveHash -and ($bakHash -ne $liveHash)) {' + CRLF +
+      '        Write-Host ''[TinySocs][Inno] Restoring operator assistant.env (same role, content changed during upgrade)''' + CRLF +
+      '        Copy-Item -LiteralPath $aenvBak -Destination $aenvLive -Force' + CRLF +
+      '      }' + CRLF +
+      '    }' + CRLF +
+      '    try { Remove-Item -LiteralPath $aenvBak -Force } catch { }' + CRLF +
       '  }' + CRLF +
       '}' + CRLF +
       'Write-Host ''[TinySocs][Inno] Phase 13 M5: Config backup verification complete.''' + CRLF;

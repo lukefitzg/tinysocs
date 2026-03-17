@@ -15774,24 +15774,67 @@ function Install-TinySocsSysmon {
     # where PROCESSOR_ARCHITECTURE=AMD64 and PROCESSOR_ARCHITEW6432 is empty).
     # Use WMI/CIM as the authoritative source, with env vars as fallback.
     $isArm64 = $false
+
+    # Method 1 (most reliable): Check registry — Windows always writes the true
+    # native architecture here, even when running under x64 emulation on ARM64.
     try {
-      $cpuArch = (Get-CimInstance Win32_Processor -ErrorAction Stop | Select-Object -First 1).Architecture
-      # Architecture values: 12 = ARM64, 9 = x64, 5 = ARM, 0 = x86
-      $isArm64 = ($cpuArch -eq 12)
-      Write-TinySocsLog "CIM CPU Architecture: $cpuArch (ARM64=$isArm64)"
+      $regId = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -Name PROCESSOR_IDENTIFIER -ErrorAction Stop).PROCESSOR_IDENTIFIER
+      if ($regId -match 'ARMv|Aarch64|ARM64') {
+        $isArm64 = $true
+        Write-TinySocsLog "Registry PROCESSOR_IDENTIFIER indicates ARM64: $regId"
+      }
     } catch {
-      Write-TinySocsLog "CIM query failed, falling back to env vars: $($_.Exception.Message)"
+      Write-TinySocsLog "Registry arch check failed: $($_.Exception.Message)"
     }
+
+    # Method 2: Check registry PROCESSOR_ARCHITECTURE (also native, not emulated)
+    if (-not $isArm64) {
+      try {
+        $regArch = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -Name PROCESSOR_ARCHITECTURE -ErrorAction Stop).PROCESSOR_ARCHITECTURE
+        if ($regArch -eq 'ARM64') {
+          $isArm64 = $true
+          Write-TinySocsLog "Registry PROCESSOR_ARCHITECTURE indicates ARM64: $regArch"
+        }
+      } catch { }
+    }
+
+    # Method 3: CIM Win32_Processor
+    if (-not $isArm64) {
+      try {
+        $cpuArch = (Get-CimInstance Win32_Processor -ErrorAction Stop | Select-Object -First 1).Architecture
+        # Architecture values: 12 = ARM64, 9 = x64, 5 = ARM, 0 = x86
+        $isArm64 = ($cpuArch -eq 12)
+        Write-TinySocsLog "CIM CPU Architecture: $cpuArch (ARM64=$isArm64)"
+      } catch {
+        Write-TinySocsLog "CIM query failed: $($_.Exception.Message)"
+      }
+    }
+
+    # Method 4: Environment variables (unreliable under x64 emulation but worth checking)
     if (-not $isArm64) {
       $isArm64 = ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') -or ($env:PROCESSOR_ARCHITEW6432 -eq 'ARM64')
     }
-    # Also check OS architecture via .NET as a belt-and-suspenders check
+
+    # Method 5: .NET OSArchitecture
     if (-not $isArm64) {
       try {
         $osArch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
         $isArm64 = ($osArch -eq 'Arm64')
         Write-TinySocsLog ".NET OSArchitecture: $osArch (ARM64=$isArm64)"
       } catch { }
+    }
+
+    # Method 6: If Sysmon64a.exe exists and Sysmon64.exe won't load, prefer ARM64.
+    # This is a last-resort heuristic — if we're on a system that has both binaries
+    # but all detection above says x64, try Sysmon64a anyway if Sysmon64 previously
+    # failed (service exists but is Stopped).
+    if (-not $isArm64) {
+      $arm64ExeCheck = Join-Path $appDir "bin\Sysmon64a.exe"
+      $x64SvcCheck = Get-Service -Name "Sysmon64" -ErrorAction SilentlyContinue
+      if ((Test-Path $arm64ExeCheck) -and $x64SvcCheck -and $x64SvcCheck.Status -ne 'Running') {
+        $isArm64 = $true
+        Write-TinySocsLog "Sysmon64 service exists but not running — assuming ARM64 host, switching to Sysmon64a.exe"
+      }
     }
 
     $arm64Exe = Join-Path $appDir "bin\Sysmon64a.exe"

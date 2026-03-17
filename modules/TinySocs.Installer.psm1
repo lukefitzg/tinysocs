@@ -15919,6 +15919,20 @@ function Install-TinySocsSysmon {
         Start-Sleep -Milliseconds 500
       }
     }
+
+    # Nuclear fallback: if services STILL exist (Sysmon driver protection blocks sc.exe
+    # even as Admin), remove them directly from the registry.
+    foreach ($name in @('Sysmon64','Sysmon64a','SysmonDrv')) {
+      $s = Get-Service -Name $name -ErrorAction SilentlyContinue
+      if ($s) {
+        $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$name"
+        if (Test-Path $regPath) {
+          Write-TinySocsLog "Service $name still present after sc.exe -- removing via registry: $regPath"
+          Remove-Item $regPath -Recurse -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+
     # Remove stale driver binary from System32\drivers
     foreach ($drvFile in @('SysmonDrv.sys')) {
       $drvPath = Join-Path $env:SystemRoot "System32\drivers\$drvFile"

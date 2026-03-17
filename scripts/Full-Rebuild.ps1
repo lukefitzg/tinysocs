@@ -105,41 +105,68 @@ if (-not $sysmonExe) {
         if (Test-Path $p) { $sysmonExe = $p; break }
     }
 }
-if ($sysmonExe) {
-    Write-Host "  Uninstalling Sysmon ($sysmonExe) before purge..."
-    try {
-        $output = & $sysmonExe -u force 2>&1
-        $output | ForEach-Object { Write-Host "    $_" }
-    } catch {
-        Write-Host "    Sysmon uninstall warning: $($_.Exception.Message)" -ForegroundColor Yellow
+# Try uninstalling Sysmon via both arch binaries (ARM64 first, then x64)
+foreach ($exeName in @('Sysmon64a.exe','Sysmon64.exe')) {
+    foreach ($searchDir in @((Join-Path $env:ProgramFiles 'TinySocs\bin'), $env:SystemRoot)) {
+        $p = Join-Path $searchDir $exeName
+        if (Test-Path $p) {
+            Write-Host "  Uninstalling Sysmon via $p -u force..."
+            try {
+                & $p -u force 2>&1 | ForEach-Object { Write-Host "    $_" }
+            } catch {
+                Write-Host "    Sysmon uninstall warning: $($_.Exception.Message)" -ForegroundColor Yellow
+            }
+            Start-Sleep -Seconds 2
+            break
+        }
     }
-    Start-Sleep -Seconds 2
-    Write-Host "  Sysmon uninstalled." -ForegroundColor Green
 }
 
-# Always scrub any remaining Sysmon service/driver registrations after -u force.
-# Sysmon -u can leave orphaned SCM entries that block fresh installs (exit code 13).
-foreach ($svcName in @('Sysmon64','Sysmon64a')) {
+# Try sc.exe cleanup for any remaining service registrations
+foreach ($svcName in @('Sysmon64','Sysmon64a','SysmonDrv')) {
     $svc = Get-Service -Name $svcName -ErrorAction SilentlyContinue
     if ($svc) {
         Write-Host "  Removing stale Sysmon service: $svcName"
         Stop-Service -Name $svcName -Force -ErrorAction SilentlyContinue
+        sc.exe stop $svcName 2>$null | Out-Null
         sc.exe delete $svcName 2>$null | Out-Null
     }
 }
-foreach ($drvName in @('SysmonDrv')) {
-    $drv = Get-Service -Name $drvName -ErrorAction SilentlyContinue
-    if ($drv) {
-        Write-Host "  Removing stale SysmonDrv driver"
-        sc.exe stop $drvName 2>$null | Out-Null
-        sc.exe delete $drvName 2>$null | Out-Null
+
+# Nuclear fallback: if services STILL exist (Sysmon driver protection blocks sc.exe),
+# remove them directly from the registry. This is the only reliable method when the
+# Sysmon kernel driver is loaded but the binary path is broken.
+$needsReboot = $false
+foreach ($svcName in @('Sysmon64','Sysmon64a','SysmonDrv')) {
+    $svc = Get-Service -Name $svcName -ErrorAction SilentlyContinue
+    if ($svc) {
+        Write-Host "  Service $svcName still present after sc.exe -- removing via registry..." -ForegroundColor Yellow
+        $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$svcName"
+        if (Test-Path $regPath) {
+            Remove-Item $regPath -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Host "    Removed $regPath" -ForegroundColor Yellow
+            $needsReboot = $true
+        }
     }
 }
-# Remove stale driver binary from System32\drivers (prevents exit code 13 on reinstall)
+if ($needsReboot) {
+    Write-Host "  Registry cleanup done. A reboot may be needed for full effect." -ForegroundColor Yellow
+    Write-Host "  Continuing with build -- Sysmon will be reinstalled fresh." -ForegroundColor Yellow
+    Start-Sleep -Seconds 2
+}
+
+# Remove stale driver and executable files
 $sysmonDrvPath = Join-Path $env:SystemRoot "System32\drivers\SysmonDrv.sys"
 if (Test-Path $sysmonDrvPath) {
     Write-Host "  Removing stale driver file: $sysmonDrvPath"
     Remove-Item $sysmonDrvPath -Force -ErrorAction SilentlyContinue
+}
+foreach ($exeFile in @('Sysmon64.exe','Sysmon64a.exe','Sysmon.exe')) {
+    $exePath = Join-Path $env:SystemRoot $exeFile
+    if (Test-Path $exePath) {
+        Write-Host "  Removing stale Sysmon binary: $exePath"
+        Remove-Item $exePath -Force -ErrorAction SilentlyContinue
+    }
 }
 
 # Purge install directory

@@ -1077,19 +1077,36 @@ def _registration_loop() -> None:
                 timeout=15,
                 verify=False,
             )
-            data = resp.json()
-            status = data.get("status", "")
 
-            if status == "approved":
-                print(f"[tinysocs-node] Registration approved by Hub", flush=True)
-                return
-            elif status == "rejected":
-                print(f"[tinysocs-node] Registration rejected by Hub", flush=True)
-                return
-            elif status == "pending":
-                print(f"[tinysocs-node] Registration pending Hub approval", flush=True)
+            if resp.status_code == 401:
+                error_detail = ""
+                try:
+                    error_detail = resp.json().get("error", "")
+                except Exception:
+                    error_detail = resp.text[:200]
+                print(f"[tinysocs-node] *** REGISTRATION AUTH FAILED *** "
+                      f"Hub rejected our shared secret. Detail: {error_detail}. "
+                      f"Check that MASTER_SHARED_SECRET matches between this Site and the Hub.",
+                      flush=True)
+                # Keep retrying in case operator fixes the secret
+            elif resp.status_code >= 400:
+                print(f"[tinysocs-node] Registration error: HTTP {resp.status_code} — {resp.text[:200]}",
+                      flush=True)
             else:
-                print(f"[tinysocs-node] Registration response: {data}", flush=True)
+                data = resp.json()
+                status = data.get("status", "")
+
+                if status == "approved":
+                    print(f"[tinysocs-node] Registration approved by Hub", flush=True)
+                    return
+                elif status == "rejected":
+                    print(f"[tinysocs-node] Registration rejected by Hub", flush=True)
+                    return
+                elif status == "pending":
+                    print(f"[tinysocs-node] Registration pending Hub approval (url={my_url})",
+                          flush=True)
+                else:
+                    print(f"[tinysocs-node] Registration response: {data}", flush=True)
         except Exception as e:
             print(f"[tinysocs-node] Registration attempt failed: {e}", flush=True)
 

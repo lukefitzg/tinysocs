@@ -2644,26 +2644,30 @@ def _get_hub_secret() -> str:
     return _HUB_SHARED_SECRET
 
 
-def _verify_registration_hmac(request: Request) -> bool:
-    """Verify HMAC on a registration request from a Site node."""
+def _verify_registration_hmac(request: Request) -> tuple:
+    """Verify HMAC on a registration request from a Site node.
+    Returns (ok: bool, reason: str) for logging failed attempts."""
     import time as _time
     ts = request.headers.get("X-TinySOCS-Timestamp", "")
     sig_hdr = request.headers.get("X-TinySOCS-Signature", "")
     if not ts or not sig_hdr:
-        return False
+        return False, "Missing X-TinySOCS-Timestamp or X-TinySOCS-Signature headers"
     try:
         ts_int = int(ts)
     except ValueError:
-        return False
-    if abs(int(_time.time()) - ts_int) > 300:
-        return False
+        return False, f"Invalid timestamp format: {ts!r}"
+    skew = abs(int(_time.time()) - ts_int)
+    if skew > 300:
+        return False, f"Timestamp skew too large: {skew}s (max 300s) — check system clocks"
     # Normalise: strip "sha256=" prefix if present
     provided = sig_hdr.lower().strip()
     if provided.startswith("sha256="):
         provided = provided[7:]
     secret = _get_hub_secret()
     calc = hmac.new(secret.encode("utf-8"), ts.encode("utf-8"), hashlib.sha256).hexdigest().lower()
-    return hmac.compare_digest(calc, provided)
+    if not hmac.compare_digest(calc, provided):
+        return False, "HMAC mismatch — shared secret does not match between Hub and Site"
+    return True, ""
 
 
 def _load_pending_sites() -> dict:
@@ -2683,8 +2687,33 @@ def _save_pending_sites(data: dict) -> None:
 @dashboard_app.post("/api/nodes/register")
 async def api_nodes_register(request: Request, body: Dict[str, Any] = Body(...)):
     """Receive auto-registration from a Site node (HMAC-authenticated)."""
-    if not _verify_registration_hmac(request):
-        return JSONResponse(status_code=401, content={"error": "Invalid HMAC signature"})
+    hmac_ok, hmac_reason = _verify_registration_hmac(request)
+    if not hmac_ok:
+        # Log the failure with detail so operators can diagnose
+        node_id = (body.get("node_id") or "unknown") if isinstance(body, dict) else "unknown"
+        client_ip = request.client.host if request.client else "unknown"
+        print(f"[tinysocs-hub] Registration REJECTED from {node_id} ({client_ip}): {hmac_reason}", flush=True)
+        # Store failed attempt in pending_sites.json so it shows on the dashboard
+        try:
+            pending = _load_pending_sites()
+            if "sites" not in pending:
+                pending["sites"] = {}
+            fail_id = f"{node_id}" if node_id != "unknown" else f"unknown-{client_ip}"
+            now = datetime.now(timezone.utc).isoformat()
+            existing = pending["sites"].get(fail_id, {})
+            pending["sites"][fail_id] = {
+                "node_id": fail_id,
+                "url": (body.get("url") or client_ip) if isinstance(body, dict) else client_ip,
+                "version": (body.get("version") or "unknown") if isinstance(body, dict) else "unknown",
+                "status": "auth_failed",
+                "error": hmac_reason,
+                "first_seen": existing.get("first_seen", now),
+                "last_seen": now,
+            }
+            _save_pending_sites(pending)
+        except Exception:
+            pass
+        return JSONResponse(status_code=401, content={"error": f"Registration failed: {hmac_reason}"})
 
     node_id = (body.get("node_id") or "").strip()
     url = (body.get("url") or "").strip().rstrip("/")
@@ -2733,8 +2762,8 @@ async def api_nodes_pending(request: Request):
 
     pending = _load_pending_sites()
     sites = pending.get("sites", {})
-    # Only return pending (not rejected)
-    pending_list = [v for v in sites.values() if v.get("status") == "pending"]
+    # Return pending and auth_failed (not rejected — those are intentionally hidden)
+    pending_list = [v for v in sites.values() if v.get("status") in ("pending", "auth_failed")]
     return {"pending": pending_list}
 
 
@@ -5975,25 +6004,52 @@ async function loadPendingSites() {
     const data = await resp.json();
     const pending = data.pending || [];
     if (!pending.length) { banner.style.display = 'none'; return; }
-    let html = '<div style="padding:14px 16px;border:1px solid #b8860b;border-radius:8px;background:rgba(184,134,11,0.12)">';
-    html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">';
-    html += '<span style="font-size:16px">&#9888;</span>';
-    html += '<strong style="color:#daa520">' + pending.length + ' site' + (pending.length !== 1 ? 's' : '') + ' waiting for approval</strong>';
-    html += '</div>';
-    for (const s of pending) {
-      const ago = s.last_seen ? timeAgo(s.last_seen) : 'just now';
-      html += '<div style="display:flex;align-items:center;gap:12px;padding:8px 10px;margin-bottom:4px;background:var(--card-bg);border-radius:6px;border:1px solid var(--border)">';
-      html += '<div style="flex:1">';
-      html += '<strong style="color:var(--fg)">' + escapeHtml(s.node_id) + '</strong>';
-      html += '<span style="color:var(--muted);font-size:12px;margin-left:8px">' + escapeHtml(s.url) + '</span>';
-      html += '<span style="color:var(--muted);font-size:12px;margin-left:8px">v' + escapeHtml(s.version || '?') + '</span>';
-      html += '<span style="color:var(--muted);font-size:11px;margin-left:8px">last seen ' + ago + '</span>';
+    const pendingOk = pending.filter(s => s.status === 'pending');
+    const authFailed = pending.filter(s => s.status === 'auth_failed');
+    let html = '';
+    // Show auth failures prominently in red
+    if (authFailed.length) {
+      html += '<div style="padding:14px 16px;border:1px solid #ef4444;border-radius:8px;background:rgba(239,68,68,0.1);margin-bottom:8px">';
+      html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">';
+      html += '<span style="font-size:16px">&#10060;</span>';
+      html += '<strong style="color:#ef4444">' + authFailed.length + ' site' + (authFailed.length !== 1 ? 's' : '') + ' failed authentication</strong>';
       html += '</div>';
-      html += '<button onclick="approveSite(&quot;' + escapeHtml(s.node_id) + '&quot;)" style="padding:4px 14px;border-radius:4px;background:#22c55e;color:#fff;border:none;cursor:pointer;font-size:12px;font-weight:600">Approve</button>';
-      html += '<button onclick="rejectSite(&quot;' + escapeHtml(s.node_id) + '&quot;)" style="padding:4px 14px;border-radius:4px;background:#ef4444;color:#fff;border:none;cursor:pointer;font-size:12px;font-weight:600">Reject</button>';
+      for (const s of authFailed) {
+        const ago = s.last_seen ? timeAgo(s.last_seen) : 'just now';
+        html += '<div style="display:flex;align-items:center;gap:12px;padding:8px 10px;margin-bottom:4px;background:var(--card-bg);border-radius:6px;border:1px solid #ef4444">';
+        html += '<div style="flex:1">';
+        html += '<strong style="color:var(--fg)">' + escapeHtml(s.node_id) + '</strong>';
+        html += '<span style="color:var(--muted);font-size:12px;margin-left:8px">' + escapeHtml(s.url) + '</span>';
+        html += '<div style="color:#ef4444;font-size:12px;margin-top:4px">' + escapeHtml(s.error || 'Authentication failed') + '</div>';
+        html += '<span style="color:var(--muted);font-size:11px">last attempt ' + ago + '</span>';
+        html += '</div>';
+        html += '<button onclick="dismissFailedSite(&quot;' + escapeHtml(s.node_id) + '&quot;)" style="padding:4px 14px;border-radius:4px;background:transparent;color:var(--muted);border:1px solid var(--border);cursor:pointer;font-size:12px">Dismiss</button>';
+        html += '</div>';
+      }
       html += '</div>';
     }
-    html += '</div>';
+    // Show pending approvals in amber
+    if (pendingOk.length) {
+      html += '<div style="padding:14px 16px;border:1px solid #b8860b;border-radius:8px;background:rgba(184,134,11,0.12)">';
+      html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">';
+      html += '<span style="font-size:16px">&#9888;</span>';
+      html += '<strong style="color:#daa520">' + pendingOk.length + ' site' + (pendingOk.length !== 1 ? 's' : '') + ' waiting for approval</strong>';
+      html += '</div>';
+      for (const s of pendingOk) {
+        const ago = s.last_seen ? timeAgo(s.last_seen) : 'just now';
+        html += '<div style="display:flex;align-items:center;gap:12px;padding:8px 10px;margin-bottom:4px;background:var(--card-bg);border-radius:6px;border:1px solid var(--border)">';
+        html += '<div style="flex:1">';
+        html += '<strong style="color:var(--fg)">' + escapeHtml(s.node_id) + '</strong>';
+        html += '<span style="color:var(--muted);font-size:12px;margin-left:8px">' + escapeHtml(s.url) + '</span>';
+        html += '<span style="color:var(--muted);font-size:12px;margin-left:8px">v' + escapeHtml(s.version || '?') + '</span>';
+        html += '<span style="color:var(--muted);font-size:11px;margin-left:8px">last seen ' + ago + '</span>';
+        html += '</div>';
+        html += '<button onclick="approveSite(&quot;' + escapeHtml(s.node_id) + '&quot;)" style="padding:4px 14px;border-radius:4px;background:#22c55e;color:#fff;border:none;cursor:pointer;font-size:12px;font-weight:600">Approve</button>';
+        html += '<button onclick="rejectSite(&quot;' + escapeHtml(s.node_id) + '&quot;)" style="padding:4px 14px;border-radius:4px;background:#ef4444;color:#fff;border:none;cursor:pointer;font-size:12px;font-weight:600">Reject</button>';
+        html += '</div>';
+      }
+      html += '</div>';
+    }
     banner.innerHTML = html;
     banner.style.display = 'block';
   } catch (e) {
@@ -6033,6 +6089,19 @@ async function rejectSite(nodeId) {
     }
   } catch (e) {
     console.error('rejectSite failed:', e);
+  }
+}
+
+async function dismissFailedSite(nodeId) {
+  try {
+    const resp = await fetch(BASE + '/api/nodes/reject', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({node_id: nodeId, token: _authToken || ''})
+    });
+    if (resp.ok) await loadPendingSites();
+  } catch (e) {
+    console.error('dismissFailedSite failed:', e);
   }
 }
 

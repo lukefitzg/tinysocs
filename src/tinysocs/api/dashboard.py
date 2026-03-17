@@ -5981,8 +5981,8 @@ async function loadPendingSites() {
       html += '<span style="color:var(--muted);font-size:12px;margin-left:8px">v' + escapeHtml(s.version || '?') + '</span>';
       html += '<span style="color:var(--muted);font-size:11px;margin-left:8px">last seen ' + ago + '</span>';
       html += '</div>';
-      html += '<button onclick="approveSite(\'' + escapeHtml(s.node_id) + '\')" style="padding:4px 14px;border-radius:4px;background:#22c55e;color:#fff;border:none;cursor:pointer;font-size:12px;font-weight:600">Approve</button>';
-      html += '<button onclick="rejectSite(\'' + escapeHtml(s.node_id) + '\')" style="padding:4px 14px;border-radius:4px;background:#ef4444;color:#fff;border:none;cursor:pointer;font-size:12px;font-weight:600">Reject</button>';
+      html += '<button onclick="approveSite(&quot;' + escapeHtml(s.node_id) + '&quot;)" style="padding:4px 14px;border-radius:4px;background:#22c55e;color:#fff;border:none;cursor:pointer;font-size:12px;font-weight:600">Approve</button>';
+      html += '<button onclick="rejectSite(&quot;' + escapeHtml(s.node_id) + '&quot;)" style="padding:4px 14px;border-radius:4px;background:#ef4444;color:#fff;border:none;cursor:pointer;font-size:12px;font-weight:600">Reject</button>';
       html += '</div>';
     }
     html += '</div>';

@@ -5315,7 +5315,7 @@ select { cursor: pointer; }
 
 <div class="tab-bar" id="tabBar">
   <button class="active" data-tab="overview" onclick="switchTab('overview')">Overview</button>
-  <button data-tab="sites" onclick="switchTab('sites')" id="sitesTabBtn" style="display:none">Sites</button>
+  <button data-tab="sites" onclick="switchTab('sites')" id="sitesTabBtn">Sites</button>
   <button data-tab="fleet" onclick="switchTab('fleet')">Fleet</button>
   <button data-tab="data" onclick="switchTab('data')">Data</button>
   <button data-tab="detections" onclick="switchTab('detections')">Detections</button>
@@ -5353,7 +5353,7 @@ select { cursor: pointer; }
         <h3 style="margin:0">Managed Sites</h3>
         <div style="display:flex;align-items:center;gap:12px">
           <span id="sitesCount" style="color:var(--muted);font-size:13px"></span>
-          <button onclick="askAIAboutWidget('sites')" style="font-size:11px;padding:3px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;white-space:nowrap" title="Ask the AI assistant about federation sites">Ask AI</button>
+          <button onclick="askAIAboutWidget('sites')" style="padding:6px 16px;font-size:13px;border-radius:6px;background:var(--accent);color:#fff;border:none;cursor:pointer;white-space:nowrap" title="Ask the AI assistant about federation sites">Ask AI</button>
           <button onclick="showAddSiteForm()" id="addSiteBtn" style="padding:6px 16px;font-size:13px;border-radius:6px;background:var(--accent);color:#fff;border:none;cursor:pointer">+ Add Site</button>
         </div>
       </div>
@@ -5366,6 +5366,8 @@ select { cursor: pointer; }
         <div style="color:var(--muted);font-size:12px;margin-top:6px">Enter the IP address or hostname of the remote TinySocs Site. Port defaults to 8081 if not specified.</div>
         <div id="addSiteError" style="color:var(--red,#ef4444);font-size:13px;margin-top:4px;display:none"></div>
       </div>
+      <!-- Sites tab aggregate banner (dedicated container to prevent duplication) -->
+      <div id="sitesAggBanner"></div>
       <!-- Phase 21: Pending site approvals -->
       <div id="pendingSitesBanner" style="display:none;margin-bottom:12px"></div>
       <div class="sites-grid" id="sitesGrid"></div>
@@ -5804,40 +5806,46 @@ async function loadSites() {
     return (a.node_id || '').localeCompare(b.node_id || '');
   });
 
-  // Build aggregate banner
-  let html = '';
+  // Build aggregate banner into dedicated container (prevents duplication)
   const agg = d.aggregate;
-  if (agg) {
-    html += '<div class="sites-aggregate" onclick="switchTab(\\'overview\\')">';
-    html += '<span class="agg-val">' + nodes.length + ' site' + (nodes.length !== 1 ? 's' : '') + '</span>';
-    html += '<span class="agg-sep">&middot;</span>';
-    html += '<span class="agg-val">' + (agg.total_alerts_24h || 0) + ' alerts</span>';
-    if (agg.total_critical > 0) {
-      html += '<span class="agg-sep">&middot;</span>';
-      html += '<span class="agg-crit">' + agg.total_critical + ' critical</span>';
+  const aggContainer = document.getElementById('sitesAggBanner');
+  if (aggContainer) {
+    if (agg) {
+      let aggHtml = '<div class="sites-aggregate" onclick="switchTab(\\'overview\\')">';
+      aggHtml += '<span class="agg-val">' + nodes.length + ' site' + (nodes.length !== 1 ? 's' : '') + '</span>';
+      aggHtml += '<span class="agg-sep">&middot;</span>';
+      aggHtml += '<span class="agg-val">' + (agg.total_alerts_24h || 0) + ' alerts</span>';
+      if (agg.total_critical > 0) {
+        aggHtml += '<span class="agg-sep">&middot;</span>';
+        aggHtml += '<span class="agg-crit">' + agg.total_critical + ' critical</span>';
+      }
+      if (agg.total_high > 0) {
+        aggHtml += '<span class="agg-sep">&middot;</span>';
+        aggHtml += '<span style="color:#e67e22;font-weight:600">' + agg.total_high + ' high</span>';
+      }
+      if (agg.total_medium > 0) {
+        aggHtml += '<span class="agg-sep">&middot;</span>';
+        aggHtml += '<span style="color:#e67e22">' + agg.total_medium + ' medium</span>';
+      }
+      if (agg.total_low > 0) {
+        aggHtml += '<span class="agg-sep">&middot;</span>';
+        aggHtml += '<span style="color:#f1c40f">' + agg.total_low + ' low</span>';
+      }
+      aggHtml += '<span class="agg-sep">&middot;</span>';
+      aggHtml += '<span class="agg-val">' + (agg.total_hosts || 0) + ' hosts</span>';
+      if (agg.sites_unreachable > 0) {
+        aggHtml += '<span class="agg-sep">&middot;</span>';
+        aggHtml += '<span style="color:#ef4444;font-weight:600">' + agg.sites_unreachable + ' unreachable</span>';
+      }
+      aggHtml += '</div>';
+      aggContainer.innerHTML = aggHtml;
+    } else {
+      aggContainer.innerHTML = '';
     }
-    if (agg.total_high > 0) {
-      html += '<span class="agg-sep">&middot;</span>';
-      html += '<span style="color:#e67e22;font-weight:600">' + agg.total_high + ' high</span>';
-    }
-    if (agg.total_medium > 0) {
-      html += '<span class="agg-sep">&middot;</span>';
-      html += '<span style="color:#e67e22">' + agg.total_medium + ' medium</span>';
-    }
-    if (agg.total_low > 0) {
-      html += '<span class="agg-sep">&middot;</span>';
-      html += '<span style="color:#f1c40f">' + agg.total_low + ' low</span>';
-    }
-    html += '<span class="agg-sep">&middot;</span>';
-    html += '<span class="agg-val">' + (agg.total_hosts || 0) + ' hosts</span>';
-    if (agg.sites_unreachable > 0) {
-      html += '<span class="agg-sep">&middot;</span>';
-      html += '<span style="color:#ef4444;font-weight:600">' + agg.sites_unreachable + ' unreachable</span>';
-    }
-    html += '</div>';
   }
 
   // Build site cards
+  let html = '';
   for (const n of nodes) {
     const statusCls = n.status || 'unreachable';
     const statusLabel = statusCls.charAt(0).toUpperCase() + statusCls.slice(1);
@@ -6115,14 +6123,12 @@ async function loadOverviewAggregate() {
 }
 
 async function initSitesTab() {
-  // Check if Sites tab should be visible (multi-node or demo mode)
-  const d = await fetchJSON('/api/nodes');
-  _sitesCache = d;  // cache for aggregate banner
-  const nodes = d.nodes || [];
-  const btn = document.getElementById('sitesTabBtn');
-  if (nodes.length > 0) {
-    btn.style.display = '';
-    _sitesVisible = true;
+  // Sites tab is always visible now (no display:none).
+  // Just mark _sitesVisible and pre-cache the nodes data for the aggregate banner.
+  _sitesVisible = true;
+  if (!_sitesCache) {
+    const d = await fetchJSON('/api/nodes');
+    _sitesCache = d;
   }
 }
 

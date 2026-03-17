@@ -15898,11 +15898,12 @@ function Install-TinySocsSysmon {
       if ($s) {
         Write-TinySocsLog "Purging stale service registration: $name (Status: $($s.Status))"
         Stop-Service -Name $name -Force -ErrorAction SilentlyContinue
+        sc.exe stop $name 2>$null | Out-Null
         sc.exe delete $name 2>$null | Out-Null
         Start-Sleep -Milliseconds 500
       }
     }
-    # Also remove stale driver binary from Windows root (left by prior installs)
+    # Remove stale driver binary from System32\drivers
     foreach ($drvFile in @('SysmonDrv.sys')) {
       $drvPath = Join-Path $env:SystemRoot "System32\drivers\$drvFile"
       if (Test-Path $drvPath) {
@@ -15910,6 +15911,17 @@ function Install-TinySocsSysmon {
         Remove-Item $drvPath -Force -ErrorAction SilentlyContinue
       }
     }
+    # Remove stale Sysmon executables from Windows root — Sysmon copies itself
+    # here during install, and leftover copies block reinstall with a different arch.
+    foreach ($exeFile in @('Sysmon64.exe','Sysmon64a.exe','Sysmon.exe')) {
+      $exePath = Join-Path $env:SystemRoot $exeFile
+      if (Test-Path $exePath) {
+        Write-TinySocsLog "Removing stale Sysmon binary: $exePath"
+        Remove-Item $exePath -Force -ErrorAction SilentlyContinue
+      }
+    }
+    # Give SCM time to fully release service handles
+    Start-Sleep -Seconds 2
   }
 
   # Log architecture for diagnostics
@@ -15920,9 +15932,21 @@ function Install-TinySocsSysmon {
   # which overwrites $LASTEXITCODE, so we can't rely on it after cleanup calls).
   $sysmonInstallExitCode = 0
 
+  # Determine which service name the chosen binary will register as
+  $expectedSvcName = if ($SysmonExePath -match 'Sysmon64a') { 'Sysmon64a' } else { 'Sysmon64' }
+  $wrongSvcName    = if ($expectedSvcName -eq 'Sysmon64a') { 'Sysmon64' } else { 'Sysmon64a' }
+
+  # If a service for the WRONG architecture exists, purge it completely first
+  $wrongSvc = Get-Service -Name $wrongSvcName -ErrorAction SilentlyContinue
+  if ($wrongSvc) {
+    Write-TinySocsLog "Found $wrongSvcName service (wrong arch for $expectedSvcName) -- purging before install..."
+    try { & (Join-Path $env:SystemRoot "$wrongSvcName.exe") -u force 2>&1 | Out-Null } catch { }
+    Start-Sleep -Seconds 2
+    _PurgeStaleSysmonServices
+  }
+
   # Install or update — ARM64 registers as "Sysmon64a", x64 as "Sysmon64"
-  $svc = Get-Service -Name "Sysmon64" -ErrorAction SilentlyContinue
-  if (-not $svc) { $svc = Get-Service -Name "Sysmon64a" -ErrorAction SilentlyContinue }
+  $svc = Get-Service -Name $expectedSvcName -ErrorAction SilentlyContinue
   if ($svc) {
     if ($svc.Status -eq 'Running') {
       Write-TinySocsLog "Sysmon service ($($svc.Name)) found and running -- updating configuration..."
@@ -15936,10 +15960,8 @@ function Install-TinySocsSysmon {
       Write-TinySocsLog "Sysmon service ($($svc.Name)) found but not running (Status: $($svc.Status)) -- force-reinstalling..."
       try { & $SysmonExePath -u force 2>&1 | ForEach-Object { Write-Host $_ } } catch { }
       Write-TinySocsLog "Sysmon -u force exit code: $LASTEXITCODE"
-      # If -u force failed or left stale registrations, purge via sc.exe
       Start-Sleep -Seconds 2
       _PurgeStaleSysmonServices
-      Start-Sleep -Seconds 1
       Write-TinySocsLog "Installing Sysmon (fresh)..."
       & $SysmonExePath -accepteula -i "$ConfigPath" 2>&1 | ForEach-Object { Write-Host $_ }
       $sysmonInstallExitCode = $LASTEXITCODE

@@ -15893,10 +15893,26 @@ function Install-TinySocsSysmon {
   # Sysmon -u sometimes leaves orphaned SCM entries when the driver binary was
   # deleted before uninstall, preventing fresh installs (exit code 13).
   function _PurgeStaleSysmonServices {
+    # Sysmon protects its own services — sc.exe delete alone returns "Access is denied".
+    # We must use the Sysmon binary's own -u flag to uninstall properly first.
+    # Try both arch variants from C:\Windows\ (where Sysmon copies itself) and our bin dir.
+    foreach ($exeName in @('Sysmon64a.exe','Sysmon64.exe')) {
+      foreach ($searchDir in @($env:SystemRoot, (Join-Path $env:ProgramFiles 'TinySocs\bin'))) {
+        $exePath = Join-Path $searchDir $exeName
+        if (Test-Path $exePath) {
+          Write-TinySocsLog "Running $exePath -u force to uninstall Sysmon..."
+          try { & $exePath -u force 2>&1 | ForEach-Object { Write-Host $_ } } catch { }
+          Start-Sleep -Seconds 2
+          break  # Only need to run -u once per variant
+        }
+      }
+    }
+
+    # Now clean up any leftover service registrations (sc.exe should work after -u force)
     foreach ($name in @('Sysmon64','Sysmon64a','SysmonDrv')) {
       $s = Get-Service -Name $name -ErrorAction SilentlyContinue
       if ($s) {
-        Write-TinySocsLog "Purging stale service registration: $name (Status: $($s.Status))"
+        Write-TinySocsLog "Purging leftover service registration: $name (Status: $($s.Status))"
         Stop-Service -Name $name -Force -ErrorAction SilentlyContinue
         sc.exe stop $name 2>$null | Out-Null
         sc.exe delete $name 2>$null | Out-Null
@@ -15936,12 +15952,11 @@ function Install-TinySocsSysmon {
   $expectedSvcName = if ($SysmonExePath -match 'Sysmon64a') { 'Sysmon64a' } else { 'Sysmon64' }
   $wrongSvcName    = if ($expectedSvcName -eq 'Sysmon64a') { 'Sysmon64' } else { 'Sysmon64a' }
 
-  # If a service for the WRONG architecture exists, purge it completely first
+  # If a service for the WRONG architecture exists, purge it completely first.
+  # _PurgeStaleSysmonServices now runs Sysmon -u force internally, so just call it.
   $wrongSvc = Get-Service -Name $wrongSvcName -ErrorAction SilentlyContinue
   if ($wrongSvc) {
     Write-TinySocsLog "Found $wrongSvcName service (wrong arch for $expectedSvcName) -- purging before install..."
-    try { & (Join-Path $env:SystemRoot "$wrongSvcName.exe") -u force 2>&1 | Out-Null } catch { }
-    Start-Sleep -Seconds 2
     _PurgeStaleSysmonServices
   }
 

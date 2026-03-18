@@ -133,11 +133,17 @@ foreach ($exeName in $_sysmonOrder) {
 }
 
 # Try sc.exe cleanup for any remaining service registrations
+# NOTE: Do NOT use Stop-Service on SysmonDrv — it's a kernel driver that
+# blocks indefinitely. Use sc.exe with a timeout, then fall through to
+# the registry nuke below.
 foreach ($svcName in @('Sysmon64','Sysmon64a','SysmonDrv')) {
     $svc = Get-Service -Name $svcName -ErrorAction SilentlyContinue
     if ($svc) {
         Write-Host "  Removing stale Sysmon service: $svcName"
-        Stop-Service -Name $svcName -Force -ErrorAction SilentlyContinue
+        if ($svcName -ne 'SysmonDrv') {
+            # Only stop user-mode services; driver requires -u or registry removal
+            Stop-Service -Name $svcName -Force -ErrorAction SilentlyContinue
+        }
         sc.exe stop $svcName 2>$null | Out-Null
         sc.exe delete $svcName 2>$null | Out-Null
     }

@@ -133,7 +133,7 @@ foreach ($exeName in $_sysmonOrder) {
 }
 
 # Try sc.exe cleanup for any remaining service registrations
-# NOTE: Do NOT use Stop-Service on SysmonDrv — it's a kernel driver that
+# NOTE: Do NOT use Stop-Service on SysmonDrv -- it's a kernel driver that
 # blocks indefinitely. Use sc.exe with a timeout, then fall through to
 # the registry nuke below.
 foreach ($svcName in @('Sysmon64','Sysmon64a','SysmonDrv')) {
@@ -250,7 +250,7 @@ if (-not (Test-Path $osVendorCheck)) {
     if (-not (Test-Path $zipDest)) {
         Write-Host "  Downloading OpenSearch 3.3.2 (~300MB, one-time only)..."
         $downloaded = $false
-        # Prefer curl.exe (built into Windows 10+) — handles TLS better than Invoke-WebRequest
+        # Prefer curl.exe (built into Windows 10+) -- handles TLS better than Invoke-WebRequest
         $curlExe = Get-Command curl.exe -ErrorAction SilentlyContinue
         if ($curlExe) {
             try {
@@ -327,7 +327,7 @@ $ErrorActionPreference = 'Stop'
 Set-Location $savedLocation
 
 # ============================================================
-# STEP 3b: Download Sysmon (Phase 14 M2) — includes ARM64 binary (Sysmon64a.exe)
+# STEP 3b: Download Sysmon (Phase 14 M2) -- includes ARM64 binary (Sysmon64a.exe)
 # ============================================================
 $sysmonScript = Join-Path $RepoRoot 'scripts\Download-Sysmon.ps1'
 $sysmonExe  = Join-Path $RepoRoot 'sysmon-bin\Sysmon64.exe'
@@ -393,10 +393,10 @@ if ($iscc) {
         try {
             Remove-Item $setupExe -Force -ErrorAction Stop
         } catch {
-            # File still locked — rename it out of the way
+            # File still locked -- rename it out of the way
             $bakName = "TinySocs-Setup.exe.old-$(Get-Date -Format 'HHmmss')"
             $bakPath = Join-Path (Split-Path $setupExe) $bakName
-            Write-Host "  Cannot delete locked Setup.exe — renaming to $bakName" -ForegroundColor Yellow
+            Write-Host "  Cannot delete locked Setup.exe -- renaming to $bakName" -ForegroundColor Yellow
             try {
                 Move-Item $setupExe $bakPath -Force -ErrorAction Stop
             } catch {
@@ -563,7 +563,7 @@ if (Test-Path $envFile) {
     Write-Host "    assistant.env not found" -ForegroundColor Yellow
 }
 
-# Phase 14: Check Sysmon — prefer the Running service (ARM64 may have both
+# Phase 14: Check Sysmon - prefer the Running service (ARM64 may have both
 # Sysmon64 [Stopped/stale] and Sysmon64a [Running]).
 Write-Host ""
 Write-Host "  Sysmon:"

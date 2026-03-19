@@ -378,8 +378,34 @@ if (-not $iscc) {
 if ($iscc) {
     Write-Host "  Using ISCC: $iscc"
     $setupExe = Join-Path (Split-Path $issFile) 'TinySocs-Setup.exe'
-    # Remove stale exe so a failed compile can't launch an old installer
-    if (Test-Path $setupExe) { Remove-Item $setupExe -Force }
+    # Remove stale exe so a failed compile can't launch an old installer.
+    # The exe is often locked by Explorer preview, AV scanners, or a still-running
+    # installer process. Try to kill the process, then rename as fallback.
+    if (Test-Path $setupExe) {
+        # Kill any running installer first
+        Get-Process -ErrorAction SilentlyContinue | Where-Object {
+            try { $_.MainModule.FileName -eq $setupExe } catch { $false }
+        } | ForEach-Object {
+            Write-Host "  Killing running TinySocs-Setup.exe (PID $($_.Id))..." -ForegroundColor Yellow
+            Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 1
+        }
+        try {
+            Remove-Item $setupExe -Force -ErrorAction Stop
+        } catch {
+            # File still locked — rename it out of the way
+            $bakName = "TinySocs-Setup.exe.old-$(Get-Date -Format 'HHmmss')"
+            $bakPath = Join-Path (Split-Path $setupExe) $bakName
+            Write-Host "  Cannot delete locked Setup.exe — renaming to $bakName" -ForegroundColor Yellow
+            try {
+                Move-Item $setupExe $bakPath -Force -ErrorAction Stop
+            } catch {
+                Write-Host "  ERROR: TinySocs-Setup.exe is locked and cannot be renamed." -ForegroundColor Red
+                Write-Host "  Close any Explorer windows showing the folder, or reboot and retry." -ForegroundColor Red
+                exit 1
+            }
+        }
+    }
     & $iscc $issFile
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  ISCC compile FAILED (exit code $LASTEXITCODE). Fix the errors above and re-run." -ForegroundColor Red

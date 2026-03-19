@@ -2540,10 +2540,29 @@ begin
         '      Write-Host ''[TinySocs][Inno] No cert generator available; creating self-signed cert for Site node...''' + CRLF +
         '      try {' + CRLF +
         '        $hostname = [System.Net.Dns]::GetHostName()' + CRLF +
-        '        $cert = New-SelfSignedCertificate -DnsName $hostname,''localhost'' -CertStoreLocation ''Cert:\LocalMachine\My'' -NotAfter (Get-Date).AddYears(5) -KeyAlgorithm RSA -KeyLength 2048' + CRLF +
+        '        # Include LAN IPs as SANs so the Hub can reach us by IP' + CRLF +
+        '        $lanIps = @()' + CRLF +
+        '        try { $lanIps = @([System.Net.Dns]::GetHostAddresses($hostname) | Where-Object { $_.AddressFamily -eq ''InterNetwork'' } | ForEach-Object { $_.IPAddressToString }) } catch { }' + CRLF +
+        '        $sanBuilder = New-Object System.Security.Cryptography.X509Certificates.SubjectAlternativeNameBuilder' + CRLF +
+        '        $sanBuilder.AddDnsName($hostname)' + CRLF +
+        '        $sanBuilder.AddDnsName(''localhost'')' + CRLF +
+        '        $sanBuilder.AddIpAddress([System.Net.IPAddress]::Parse(''127.0.0.1''))' + CRLF +
+        '        foreach ($ip in $lanIps) { try { $sanBuilder.AddIpAddress([System.Net.IPAddress]::Parse($ip)) } catch { } }' + CRLF +
+        '        $dnsNames = @($hostname, ''localhost'') + @($lanIps)' + CRLF +
+        '        $cert = New-SelfSignedCertificate -DnsName $dnsNames -CertStoreLocation ''Cert:\LocalMachine\My'' -NotAfter (Get-Date).AddYears(5) -KeyAlgorithm RSA -KeyLength 2048 -KeyExportPolicy Exportable' + CRLF +
+        '        # Export certificate PEM' + CRLF +
         '        $certPem = "-----BEGIN CERTIFICATE-----`n" + [Convert]::ToBase64String($cert.RawData, [Base64FormattingOptions]::InsertLineBreaks) + "`n-----END CERTIFICATE-----"' + CRLF +
         '        $certPem | Set-Content -Path $certPath -Encoding ASCII' + CRLF +
-        '        $keyBytes = $cert.PrivateKey.ExportPkcs8PrivateKey()' + CRLF +
+        '        # Export private key PEM — use CNG PKCS#8 blob (works on PS 5.x/.NET 4.6.2+)' + CRLF +
+        '        $rsa = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($cert)' + CRLF +
+        '        $keyBytes = $null' + CRLF +
+        '        if ($rsa.Key -and $rsa.Key.GetType().GetMethod(''Export'')) {' + CRLF +
+        '          # CNG-backed key: export PKCS#8 directly' + CRLF +
+        '          $keyBytes = $rsa.Key.Export([System.Security.Cryptography.CngKeyBlobFormat]::Pkcs8PrivateBlob)' + CRLF +
+        '        } else {' + CRLF +
+        '          # Fallback for non-CNG: try ExportPkcs8PrivateKey (.NET 5+)' + CRLF +
+        '          $keyBytes = $rsa.ExportPkcs8PrivateKey()' + CRLF +
+        '        }' + CRLF +
         '        $keyPem = "-----BEGIN PRIVATE KEY-----`n" + [Convert]::ToBase64String($keyBytes, [Base64FormattingOptions]::InsertLineBreaks) + "`n-----END PRIVATE KEY-----"' + CRLF +
         '        $keyPem | Set-Content -Path $keyPath -Encoding ASCII' + CRLF +
         '        Write-Host (''[TinySocs][Inno] Self-signed TLS cert created: '' + $certPath)' + CRLF +

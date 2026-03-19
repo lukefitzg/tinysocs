@@ -1042,7 +1042,11 @@ def _discover_self_url() -> str:
         local_ip = "127.0.0.1"
 
     port = _get_int_env("PORT") or _get_int_env("NODE_PORT") or 8081
-    return f"https://{local_ip}:{port}"
+    # Use the correct scheme based on whether TLS is actually configured
+    tls_cert = os.getenv("TINYSOCS_TLS_CERT", "").strip()
+    tls_key = os.getenv("TINYSOCS_TLS_KEY", "").strip()
+    scheme = "https" if (tls_cert and tls_key and Path(tls_cert).is_file() and Path(tls_key).is_file()) else "http"
+    return f"{scheme}://{local_ip}:{port}"
 
 
 def _registration_loop() -> None:

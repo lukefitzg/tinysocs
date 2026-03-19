@@ -2308,6 +2308,7 @@ async def api_fleet_host_detail(hostname: str = Query(...)):
 # ---------------------------------------------------------------------------
 _NODES_LIST: Optional[List[str]] = None
 _node_id_to_url: Dict[str, str] = {}  # Phase 18 M3: cache for proxy lookups
+_url_to_node_id: Dict[str, str] = {}  # Reverse mapping: persist node_id for unreachable sites
 
 
 def _get_node_urls() -> List[str]:
@@ -2364,6 +2365,8 @@ async def api_nodes():
             # Process /meta
             if meta_data is None:
                 node_info["error"] = f"Cannot reach {url}"
+                # Use cached node_id from approval if available
+                node_info["node_id"] = _url_to_node_id.get(url, "")
                 # Fallback: node unreachable but we can still query OpenSearch
                 # directly for alert and fleet data to populate the site card.
                 try:
@@ -2406,9 +2409,10 @@ async def api_nodes():
             node_info["version"] = meta_data.get("version", "")
             node_info["reachable"] = True
 
-            # Update node_id → url cache for proxy lookups
+            # Update bidirectional node_id ↔ url caches for proxy lookups
             if node_info["node_id"]:
                 _node_id_to_url[node_info["node_id"]] = url
+                _url_to_node_id[url] = node_info["node_id"]
 
             # Process /evidence/head
             if head_data and head_data.get("ok"):
@@ -2800,6 +2804,11 @@ async def api_nodes_approve(body: Dict[str, Any] = Body(...)):
                 pass
         os.environ["TINYSOCS_NODES"] = new_val
         _NODES_LIST = None
+
+    # Cache the node_id ↔ url mapping so unreachable sites still show names
+    _url_to_node_id[url] = node_id
+    if node_id:
+        _node_id_to_url[node_id] = url
 
     # Remove from pending
     del pending["sites"][node_id]
@@ -5841,6 +5850,9 @@ async function loadSites() {
   });
 
   // Build aggregate banner into dedicated container (prevents duplication)
+  // Hide the overview-agg-banner to prevent two banners showing simultaneously
+  const overviewAgg = document.getElementById('overview-agg-banner');
+  if (overviewAgg) overviewAgg.style.display = 'none';
   const agg = d.aggregate;
   const aggContainer = document.getElementById('sitesAggBanner');
   if (aggContainer) {
@@ -5894,7 +5906,8 @@ async function loadSites() {
 
     // Use node_id as the focus key; fall back to url for unreachable sites
     const focusKey = n.node_id || n.url || '';
-    html += '<div class="site-card' + (hasCritical ? ' has-critical' : '') + '" onclick="focusSite(\\'' + escapeHtml(focusKey) + '\\')">';
+    const displayName = n.node_id || n.url || 'Unknown';
+    html += '<div class="site-card' + (hasCritical ? ' has-critical' : '') + '" onclick="focusSite(\\'' + escapeHtml(focusKey) + '\\',\\'' + escapeHtml(displayName) + '\\')">';
     html += '<div class="site-card-header">';
     html += '<span class="site-status ' + statusCls + '"></span>';
     html += '<strong style="flex:1">' + escapeHtml(n.node_id || n.url) + '</strong>';
@@ -6142,15 +6155,16 @@ function focusedHostname() {
   return (_focusedSite && _focusedSite === _localNodeId) ? _focusedSite : null;
 }
 
-function focusSite(nodeId) {
+function focusSite(nodeId, displayName) {
   if (_focusedSite === nodeId) return;  // already focused
   _focusedSite = nodeId;
-  try { sessionStorage.setItem('tinysocs_focused_site', nodeId); } catch(e) {}
+  const name = displayName || nodeId || 'Unknown';
+  try { sessionStorage.setItem('tinysocs_focused_site', nodeId); sessionStorage.setItem('tinysocs_focused_name', name); } catch(e) {}
   // Show the site focus banner
   const banner = document.getElementById('siteFocusBanner');
   if (banner) { banner.classList.add('visible'); }
   const label = document.getElementById('sfbSiteName');
-  if (label) { label.textContent = 'Viewing: ' + nodeId; }
+  if (label) { label.textContent = 'Viewing: ' + name; }
   // Hide the overview aggregate banner (we're viewing one site, not all)
   const aggBanner = document.getElementById('overview-agg-banner');
   if (aggBanner) aggBanner.style.display = 'none';
@@ -6161,7 +6175,7 @@ function focusSite(nodeId) {
 
 function unfocusSite() {
   _focusedSite = null;
-  try { sessionStorage.removeItem('tinysocs_focused_site'); } catch(e) {}
+  try { sessionStorage.removeItem('tinysocs_focused_site'); sessionStorage.removeItem('tinysocs_focused_name'); } catch(e) {}
   // Hide the site focus banner
   const banner = document.getElementById('siteFocusBanner');
   if (banner) { banner.classList.remove('visible'); }
@@ -8293,10 +8307,11 @@ function unlockDashboard() {
     var storedSite = sessionStorage.getItem('tinysocs_focused_site');
     if (storedSite) {
       _focusedSite = storedSite;
+      var storedName = sessionStorage.getItem('tinysocs_focused_name') || storedSite;
       var banner = document.getElementById('siteFocusBanner');
       if (banner) banner.classList.add('visible');
       var label = document.getElementById('sfbSiteName');
-      if (label) label.textContent = 'Viewing: ' + storedSite;
+      if (label) label.textContent = 'Viewing: ' + storedName;
       // Re-switch to the current tab to load site-specific data
       _tabLoaded = {};
       switchTab(tab);

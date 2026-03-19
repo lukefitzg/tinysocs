@@ -6224,9 +6224,9 @@ async function loadOverviewAggregate() {
     html += '<span style="color:#ef4444;font-weight:600">' + agg.sites_unreachable + ' unreachable</span>';
   }
   banner.innerHTML = html;
-  // Only show if we're actually on the overview tab (eager-load may call this
-  // from the background while the user is on a different tab like Sites).
-  banner.style.display = (_activeTab === 'overview') ? '' : 'none';
+  // Only show if we're on the overview tab AND not focused on a single site
+  // (eager-load may call this from the background while on a different tab).
+  banner.style.display = (_activeTab === 'overview' && !_focusedSite) ? '' : 'none';
 }
 
 async function initSitesTab() {

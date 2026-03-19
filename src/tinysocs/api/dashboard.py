@@ -2874,6 +2874,11 @@ async def api_site_proxy(node_id: str, path: str, request: Request):
                 pass
         url = _node_id_to_url.get(node_id)
 
+    # Fallback: the focus key may be a URL itself (unreachable sites have no node_id)
+    if url is None and node_id.startswith(("https://", "http://")):
+        if node_id.rstrip("/") in [u.rstrip("/") for u in _get_node_urls()]:
+            url = node_id.rstrip("/")
+
     if url is None:
         return JSONResponse(status_code=404, content={"error": f"Unknown site: {node_id}"})
 
@@ -5887,7 +5892,9 @@ async function loadSites() {
     const versionBadge = n.version && n.version !== nodes[0].version
       ? ' <span class="badge badge-medium">outdated</span>' : '';
 
-    html += '<div class="site-card' + (hasCritical ? ' has-critical' : '') + '" onclick="focusSite(\\'' + escapeHtml(n.node_id || '') + '\\')">';
+    // Use node_id as the focus key; fall back to url for unreachable sites
+    const focusKey = n.node_id || n.url || '';
+    html += '<div class="site-card' + (hasCritical ? ' has-critical' : '') + '" onclick="focusSite(\\'' + escapeHtml(focusKey) + '\\')">';
     html += '<div class="site-card-header">';
     html += '<span class="site-status ' + statusCls + '"></span>';
     html += '<strong style="flex:1">' + escapeHtml(n.node_id || n.url) + '</strong>';
@@ -6000,7 +6007,10 @@ async function loadPendingSites() {
   if (!banner) return;
   try {
     const resp = await fetch(BASE + '/api/nodes/pending', {headers: {'Authorization': 'Bearer ' + (_authToken || '')}});
-    if (!resp.ok) { banner.style.display = 'none'; return; }
+    if (!resp.ok) {
+      if (resp.status === 401) { _handleSessionExpired(); }
+      banner.style.display = 'none'; return;
+    }
     const data = await resp.json();
     const pending = data.pending || [];
     if (!pending.length) { banner.style.display = 'none'; return; }
@@ -6058,6 +6068,13 @@ async function loadPendingSites() {
 }
 
 async function approveSite(nodeId) {
+  // Show connecting feedback immediately
+  const banner = document.getElementById('pendingSitesBanner');
+  if (banner) {
+    banner.innerHTML = '<div style="padding:14px 16px;border:1px solid #22c55e;border-radius:8px;background:rgba(34,197,94,0.1);color:#22c55e;font-weight:600">' +
+      'Approved &mdash; connecting to ' + escapeHtml(nodeId) + '&hellip; This may take a moment.' +
+      '</div>';
+  }
   try {
     const resp = await fetch(BASE + '/api/nodes/approve', {
       method: 'POST',
@@ -6066,12 +6083,17 @@ async function approveSite(nodeId) {
     });
     const data = await resp.json();
     if (resp.ok && data.ok) {
+      // Brief delay to let the new site become reachable before refreshing
+      await new Promise(r => setTimeout(r, 2000));
       await loadPendingSites();
       await loadSites();
       initSitesTab();
+    } else {
+      if (banner) banner.innerHTML = '<div style="padding:14px 16px;border:1px solid #ef4444;border-radius:8px;background:rgba(239,68,68,0.1);color:#ef4444">Approval failed: ' + escapeHtml(data.error || 'unknown error') + '</div>';
     }
   } catch (e) {
     console.error('approveSite failed:', e);
+    if (banner) banner.innerHTML = '<div style="padding:14px 16px;border:1px solid #ef4444;border-radius:8px;background:rgba(239,68,68,0.1);color:#ef4444">Approval failed: ' + escapeHtml(e.message) + '</div>';
   }
 }
 
@@ -6188,7 +6210,9 @@ async function loadOverviewAggregate() {
     html += '<span style="color:#ef4444;font-weight:600">' + agg.sites_unreachable + ' unreachable</span>';
   }
   banner.innerHTML = html;
-  banner.style.display = '';
+  // Only show if we're actually on the overview tab (eager-load may call this
+  // from the background while the user is on a different tab like Sites).
+  banner.style.display = (_activeTab === 'overview') ? '' : 'none';
 }
 
 async function initSitesTab() {
@@ -8309,6 +8333,16 @@ function doLogout() {
   _dashboardUnlocked = false;
   try { sessionStorage.removeItem('tinysocs_auth'); } catch(e) {}
   showLoginGate();
+}
+
+let _sessionExpiredShown = false;
+function _handleSessionExpired() {
+  // Avoid spamming the user with multiple prompts from parallel requests
+  if (_sessionExpiredShown) return;
+  _sessionExpiredShown = true;
+  document.getElementById('lastUpdate').textContent = 'Session expired — please log in again';
+  doLogout();
+  _sessionExpiredShown = false;
 }
 
 async function changePassword() {

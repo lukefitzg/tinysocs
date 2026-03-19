@@ -106,7 +106,7 @@ def _env_bool(name: str, default: bool) -> bool:
 def _get_siem_auth():
     """Return (user, pass) tuple for OpenSearch Basic Auth, or None if unset."""
     user = os.getenv("SIEM_USER", "admin")
-    pw = os.getenv("SIEM_PASS", "admin")
+    pw = os.getenv("SIEM_PASS", "")
     if user:
         return (user, pw)
     return None
@@ -129,23 +129,7 @@ def _get_siem_base_url() -> str:
     return url.rstrip("/")
 
 
-def _get_tls_verify_flag() -> bool:
-    """
-    Decide whether to verify TLS when calling the SIEM / OpenSearch.
-
-    Precedence:
-      1) SIEM_SSL_VERIFY
-      2) OPENSEARCH_VERIFY_SSL
-    Defaults to False (friendly to local/self-signed TinyBox clusters).
-    """
-    siem_var = "SIEM_SSL_VERIFY"
-    os_var = "OPENSEARCH_VERIFY_SSL"
-    if os.getenv(siem_var) is not None:
-        return _env_bool(siem_var, False)
-    elif os.getenv(os_var) is not None:
-        return _env_bool(os_var, False)
-    else:
-        return False
+from tinysocs.tls import resolve_ca_cert
 
 
 def _os_search_raw(index_pattern: str, body: dict, size: int = 0) -> dict:
@@ -173,7 +157,7 @@ def _os_search_raw(index_pattern: str, body: dict, size: int = 0) -> dict:
     if "size" not in payload:
         payload["size"] = size
 
-    verify = _get_tls_verify_flag()
+    verify = resolve_ca_cert()
     auth = _get_siem_auth()
 
     print(
@@ -1092,7 +1076,7 @@ def _registration_loop() -> None:
                     "Content-Type": "application/json",
                 },
                 timeout=15,
-                verify=False,
+                verify=False,  # Federation: Hub uses self-signed cert; verify=False is intentional
             )
 
             if resp.status_code == 401:

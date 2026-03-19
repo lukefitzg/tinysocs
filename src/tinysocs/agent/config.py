@@ -51,7 +51,7 @@ def load() -> Config:
 
     siem_url = os.getenv("SIEM_URL", "https://localhost:9201")
     siem_user = os.getenv("SIEM_USER", "admin")
-    siem_pass = os.getenv("SIEM_PASS", "ChangeMe123!")
+    siem_pass = os.getenv("SIEM_PASS", "")
     ssl_verify = _to_bool(os.getenv("SIEM_SSL_VERIFY"), False)
 
     # Cross-platform default; ensure parent directory exists

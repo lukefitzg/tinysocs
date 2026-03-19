@@ -109,8 +109,8 @@ NODE_TLS_VERIFY: bool = not _env_bool("TINYSOCS_INSECURE_SKIP_VERIFY", True)  # 
 
 SIEM_URL: str = os.getenv("SIEM_URL", "https://localhost:9201")
 SIEM_USER: str = os.getenv("SIEM_USER", "admin")
-SIEM_PASS: str = os.getenv("SIEM_PASS", "admin")
-SIEM_VERIFY: bool = _tls_verify_from("SIEM_SSL_VERIFY", True)
+SIEM_PASS: str = os.getenv("SIEM_PASS", "")
+from tinysocs.tls import resolve_ca_cert
 SIEM_TIMEOUT: float = float(os.getenv("SIEM_TIMEOUT_SECONDS", "30"))
 
 REQUEST_TIMEOUT: float = float(os.getenv("REQUEST_TIMEOUT_SEC", "30"))
@@ -209,7 +209,7 @@ def _search_latest_anchor(node_url: str, node_id: str) -> Optional[Dict[str, Any
         "sort": [{"anchored_at": {"order": "desc"}}],
         "query": {"bool": {"should": should, "minimum_should_match": 1}},
     }
-    r = requests.post(search_url, auth=_es_auth(), verify=SIEM_VERIFY, json=q, timeout=SIEM_TIMEOUT)
+    r = requests.post(search_url, auth=_es_auth(), verify=resolve_ca_cert(), json=q, timeout=SIEM_TIMEOUT)
     r.raise_for_status()
     hits = r.json().get("hits", {}).get("hits", [])
     if not hits:

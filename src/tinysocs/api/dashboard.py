@@ -305,85 +305,9 @@ _load_assistant_env()
 
 
 # ---------------------------------------------------------------------------
-# TLS CA cert resolution
+# TLS CA cert resolution (delegated to shared module)
 # ---------------------------------------------------------------------------
-_ca_pem_cache: Optional[str] = None
-
-
-def _ensure_pem(cert_path: Path) -> str:
-    """Return a PEM file path for the given cert. Converts DER->PEM if needed."""
-    raw = cert_path.read_bytes()
-    if raw[:27] == b"-----BEGIN CERTIFICATE-----":
-        print(f"[dashboard] CA cert: already PEM -> {cert_path}")
-        return str(cert_path)
-
-    # DER-encoded: convert to PEM
-    import base64, tempfile
-    print(f"[dashboard] CA cert: DER detected ({len(raw)} bytes, first4={raw[:4].hex()}), converting to PEM")
-    b64 = base64.encodebytes(raw).decode("ascii")
-    pem = f"-----BEGIN CERTIFICATE-----\n{b64}-----END CERTIFICATE-----\n"
-    # Try to write next to the original
-    pem_path = cert_path.parent / "ca-converted.pem"
-    try:
-        pem_path.write_text(pem, encoding="ascii")
-        print(f"[dashboard] CA cert: DER->PEM converted -> {pem_path}")
-        return str(pem_path)
-    except Exception as exc:
-        print(f"[dashboard] CA cert: write to {pem_path} failed: {exc}")
-        fd, tmp = tempfile.mkstemp(suffix=".pem", prefix="tinysocs-ca-")
-        os.write(fd, pem.encode("ascii"))
-        os.close(fd)
-        print(f"[dashboard] CA cert: DER->PEM converted -> {tmp} (temp)")
-        return tmp
-
-
-def _resolve_ca_cert() -> Any:
-    """Find the TinyBox CA certificate for OpenSearch TLS verification.
-
-    Returns a path to a PEM file (str), True for system bundle, or False to skip.
-    Converts DER-encoded certs to PEM automatically.
-    """
-    global _ca_pem_cache
-    if _ca_pem_cache is not None:
-        return _ca_pem_cache
-
-    # 0. Explicit disable — honour SIEM_SSL_VERIFY=false before anything else
-    verify_str = os.getenv("SIEM_SSL_VERIFY", "").lower()
-    if verify_str in ("false", "0", "no"):
-        print("[dashboard] CA cert: verification disabled (SIEM_SSL_VERIFY=false)")
-        _ca_pem_cache = False  # type: ignore[assignment]
-        return False
-
-    # 1. Explicit CA cert path
-    explicit = os.getenv("SIEM_CA_CERT", "")
-    if explicit and Path(explicit).is_file():
-        print(f"[dashboard] CA cert: SIEM_CA_CERT={explicit}")
-        _ca_pem_cache = _ensure_pem(Path(explicit))
-        return _ca_pem_cache
-
-    if verify_str in ("true", "1", "yes"):
-        print("[dashboard] CA cert: using system bundle (SIEM_SSL_VERIFY=true)")
-        _ca_pem_cache = True  # type: ignore[assignment]
-        return True
-
-    # 2. Auto-discover TinyBox CA cert
-    pd = os.getenv("ProgramData", "C:\\ProgramData")
-    candidates = [
-        Path(pd) / "TinySocs" / "OpenSearch" / "config" / "root-ca.pem",
-        Path(pd) / "TinySocs" / "OpenSearch" / "config" / "certs" / "ca.pem",
-        Path(pd) / "TinySocs" / "OpenSearch" / "config" / "certs" / "ca.cer",
-    ]
-    for cert_path in candidates:
-        if not cert_path.is_file():
-            continue
-        print(f"[dashboard] CA cert: found {cert_path}")
-        _ca_pem_cache = _ensure_pem(cert_path)
-        return _ca_pem_cache
-
-    # 3. No cert found — disable verification with a warning
-    print(f"[dashboard] CA cert: NO cert found (SIEM_SSL_VERIFY={verify_str!r}); verify=False")
-    _ca_pem_cache = False  # type: ignore[assignment]
-    return False
+from tinysocs.tls import resolve_ca_cert as _resolve_ca_cert
 
 
 # ---------------------------------------------------------------------------
@@ -416,7 +340,7 @@ def _os_query(index: str, body: Dict[str, Any], size: int = 0) -> Dict[str, Any]
 
     url = os.getenv("SIEM_URL", "https://localhost:9201")
     user = os.getenv("SIEM_USER", "admin")
-    passwd = os.getenv("SIEM_PASS", "admin")
+    passwd = os.getenv("SIEM_PASS", "")
     verify = _resolve_ca_cert()
 
     body["size"] = size
@@ -1636,7 +1560,7 @@ def api_alerts_purge(body: Dict[str, Any] = Body(...)):
 
     url = os.getenv("SIEM_URL", "https://localhost:9201")
     user = os.getenv("SIEM_USER", "admin")
-    passwd = os.getenv("SIEM_PASS", "admin")
+    passwd = os.getenv("SIEM_PASS", "")
     verify = _resolve_ca_cert()
 
     delete_body = {
@@ -2343,6 +2267,7 @@ async def api_nodes():
     import httpx
     nodes_out: List[Dict[str, Any]] = []
 
+    # Federation: Sites use self-signed certs; verify=False is intentional
     async with httpx.AsyncClient(verify=False, timeout=5.0) as client:
         for url in node_urls:
             node_info: Dict[str, Any] = {
@@ -3050,7 +2975,7 @@ def api_indices():
 
     url = os.getenv("SIEM_URL", "https://localhost:9201")
     user = os.getenv("SIEM_USER", "admin")
-    passwd = os.getenv("SIEM_PASS", "admin")
+    passwd = os.getenv("SIEM_PASS", "")
     verify = _resolve_ca_cert()
 
     indices_info: List[Dict[str, Any]] = []
@@ -4501,8 +4426,8 @@ def api_settings_post(body: Dict[str, Any] = Body(...)):
 
     # Clear CA cert cache if SIEM settings changed
     if any(k.startswith("SIEM_") for k in filtered):
-        global _ca_pem_cache
-        _ca_pem_cache = None
+        import tinysocs.tls as _tls_mod
+        _tls_mod._ca_pem_cache = None
 
     # Clear chat sessions if LLM settings changed (new provider = fresh context)
     if any(k.startswith(("LLM_", "OPENAI_", "ANTHROPIC_", "OFFLINE_")) for k in filtered):
@@ -4584,7 +4509,7 @@ def api_diag():
     ca = _resolve_ca_cert()
     url = os.getenv("SIEM_URL", "https://localhost:9201")
     user = os.getenv("SIEM_USER", "admin")
-    passwd = os.getenv("SIEM_PASS", "admin")
+    passwd = os.getenv("SIEM_PASS", "")
 
     diag: Dict[str, Any] = {
         "siem_url": url,

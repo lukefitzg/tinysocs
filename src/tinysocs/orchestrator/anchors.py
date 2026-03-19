@@ -52,8 +52,8 @@ ALIAS = os.getenv("TINYSOCS_ANCHORS_ALIAS", "tinysocs_anchors")
 
 SIEM_URL    = os.getenv("SIEM_URL", "http://127.0.0.1:9200")
 SIEM_USER   = os.getenv("SIEM_USER", "admin")
-SIEM_PASS   = os.getenv("SIEM_PASS", "admin")
-VERIFY_TLS  = str(os.getenv("SIEM_SSL_VERIFY", "true")).strip().lower() not in ("0", "false", "no", "off")
+SIEM_PASS   = os.getenv("SIEM_PASS", "")
+from tinysocs.tls import resolve_ca_cert
 
 def _is_local_siem(url: str) -> bool:
     """
@@ -82,11 +82,11 @@ ANCHORS_REPLICAS = _parse_int_env("TINYSOCS_ANCHORS_REPLICAS")
 if ANCHORS_REPLICAS is None:
     ANCHORS_REPLICAS = DEFAULT_REPLICAS
 
-print(f"[anchors] SIEM_URL={SIEM_URL} verify={VERIFY_TLS} user={SIEM_USER} replicas={ANCHORS_REPLICAS}")
+print(f"[anchors] SIEM_URL={SIEM_URL} verify={resolve_ca_cert()} user={SIEM_USER} replicas={ANCHORS_REPLICAS}")
 
 try:
     import urllib3  # type: ignore
-    if not VERIFY_TLS:
+    if not resolve_ca_cert():
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 except Exception:
     pass
@@ -130,7 +130,7 @@ def _get_alias_indices() -> List[str]:
     """Return indices currently holding the alias (empty if alias doesn't exist)."""
     url = urljoin(SIEM_URL.rstrip("/") + "/", f"_alias/{ALIAS}")
     try:
-        r = requests.get(url, auth=_auth(), verify=VERIFY_TLS, timeout=15)
+        r = requests.get(url, auth=_auth(), verify=resolve_ca_cert(), timeout=15)
         if r.status_code == 404:
             return []
         r.raise_for_status()
@@ -143,12 +143,12 @@ def _get_alias_indices() -> List[str]:
 
 def _index_exists(name: str) -> bool:
     url = urljoin(SIEM_URL.rstrip("/") + "/", name)
-    r = requests.head(url, auth=_auth(), verify=VERIFY_TLS, timeout=10)
+    r = requests.head(url, auth=_auth(), verify=resolve_ca_cert(), timeout=10)
     return r.status_code == 200
 
 def _create_index(name: str) -> None:
     url = urljoin(SIEM_URL.rstrip("/") + "/", name)
-    r = requests.put(url, auth=_auth(), json=MAPPING, verify=VERIFY_TLS, timeout=20)
+    r = requests.put(url, auth=_auth(), json=MAPPING, verify=resolve_ca_cert(), timeout=20)
     if not (200 <= r.status_code < 300):
         raise RuntimeError(f"create_index failed: HTTP {r.status_code}: {r.text}")
 
@@ -160,7 +160,7 @@ def _ensure_replicas(name: str) -> None:
     url = urljoin(SIEM_URL.rstrip("/") + "/", f"{name}/_settings")
     payload = {"index": {"number_of_replicas": ANCHORS_REPLICAS}}
     try:
-        r = requests.put(url, auth=_auth(), json=payload, verify=VERIFY_TLS, timeout=20)
+        r = requests.put(url, auth=_auth(), json=payload, verify=resolve_ca_cert(), timeout=20)
         if not (200 <= r.status_code < 300):
             # Don't hard-fail the whole ensure path for a tuning setting.
             print(f"[anchors] WARN: set replicas failed for {name}: HTTP {r.status_code}: {(r.text or '').strip()}", file=sys.stderr)
@@ -175,14 +175,14 @@ def _update_alias_exclusive(target_index: str, current_indices: List[str]) -> No
             actions.append({"remove": {"index": idx, "alias": ALIAS, "must_exist": False}})
     actions.append({"add": {"index": target_index, "alias": ALIAS}})
     url = urljoin(SIEM_URL.rstrip("/") + "/", "_aliases")
-    r = requests.post(url, auth=_auth(), json={"actions": actions}, verify=VERIFY_TLS, timeout=20)
+    r = requests.post(url, auth=_auth(), json={"actions": actions}, verify=resolve_ca_cert(), timeout=20)
     if not (200 <= r.status_code < 300):
         raise RuntimeError(f"_aliases update failed: HTTP {r.status_code}: {r.text}")
 
 def _list_daily_indices() -> List[Tuple[str, dt.date]]:
     """Return list of (index_name, date) for indices matching ALIAS-YYYY.MM.DD."""
     url = urljoin(SIEM_URL.rstrip("/") + "/", f"_cat/indices/{ALIAS}-*?h=index&s=index&format=json")
-    r = requests.get(url, auth=_auth(), verify=VERIFY_TLS, timeout=20)
+    r = requests.get(url, auth=_auth(), verify=resolve_ca_cert(), timeout=20)
     r.raise_for_status()
     out: List[Tuple[str, dt.date]] = []
     for row in r.json():
@@ -220,7 +220,7 @@ def prune_old_indices(retention_days: int, dry: bool) -> Dict[str, Any]:
     if not dry:
         for name in victims:
             url = urljoin(SIEM_URL.rstrip("/") + "/", name)
-            r = requests.delete(url, auth=_auth(), verify=VERIFY_TLS, timeout=60)
+            r = requests.delete(url, auth=_auth(), verify=resolve_ca_cert(), timeout=60)
             if 200 <= r.status_code < 300:
                 deleted.append(name)
             else:

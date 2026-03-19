@@ -56,69 +56,9 @@ _load_assistant_env()
 
 
 # ---------------------------------------------------------------------------
-# TLS CA cert resolution (matches dashboard.py logic)
+# TLS CA cert resolution (delegated to shared module)
 # ---------------------------------------------------------------------------
-_ca_pem_cache: Optional[str] = None
-
-
-def _ensure_pem(cert_path: Path) -> str:
-    """Return a PEM file path for the given cert. Converts DER->PEM if needed."""
-    raw = cert_path.read_bytes()
-    if raw[:27] == b"-----BEGIN CERTIFICATE-----":
-        return str(cert_path)
-
-    # DER-encoded: convert to PEM
-    import base64, tempfile
-    b64 = base64.encodebytes(raw).decode("ascii")
-    pem = f"-----BEGIN CERTIFICATE-----\n{b64}-----END CERTIFICATE-----\n"
-    pem_path = cert_path.parent / "ca-converted.pem"
-    try:
-        pem_path.write_text(pem, encoding="ascii")
-        return str(pem_path)
-    except Exception:
-        fd, tmp = tempfile.mkstemp(suffix=".pem", prefix="tinysocs-ca-")
-        os.write(fd, pem.encode("ascii"))
-        os.close(fd)
-        return tmp
-
-
-def _resolve_ca_cert() -> Any:
-    """Find the TinyBox CA certificate for OpenSearch TLS verification.
-
-    Returns a path to a PEM file (str), True for system bundle, or False to skip.
-    Converts DER-encoded certs to PEM automatically.
-    """
-    global _ca_pem_cache
-    if _ca_pem_cache is not None:
-        return _ca_pem_cache
-
-    # 1. Explicit env override
-    explicit = os.getenv("SIEM_CA_CERT", "")
-    if explicit and Path(explicit).is_file():
-        _ca_pem_cache = _ensure_pem(Path(explicit))
-        return _ca_pem_cache
-
-    verify_str = os.getenv("SIEM_SSL_VERIFY", "").lower()
-    if verify_str in ("true", "1", "yes"):
-        _ca_pem_cache = True  # type: ignore[assignment]
-        return True
-
-    # 2. Auto-discover TinyBox CA cert
-    pd = os.getenv("ProgramData", "C:\\ProgramData")
-    candidates = [
-        Path(pd) / "TinySocs" / "OpenSearch" / "config" / "root-ca.pem",
-        Path(pd) / "TinySocs" / "OpenSearch" / "config" / "certs" / "ca.pem",
-        Path(pd) / "TinySocs" / "OpenSearch" / "config" / "certs" / "ca.cer",
-    ]
-    for cert_path in candidates:
-        if not cert_path.is_file():
-            continue
-        _ca_pem_cache = _ensure_pem(cert_path)
-        return _ca_pem_cache
-
-    # 3. No cert found - disable verification with a warning
-    _ca_pem_cache = False  # type: ignore[assignment]
-    return False
+from tinysocs.tls import resolve_ca_cert as _resolve_ca_cert
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +70,7 @@ def _os_query(index: str, body: Dict[str, Any], size: int = 0) -> Dict[str, Any]
 
     url = os.getenv("SIEM_URL", "https://localhost:9201")
     user = os.getenv("SIEM_USER", "admin")
-    passwd = os.getenv("SIEM_PASS", "admin")
+    passwd = os.getenv("SIEM_PASS", "")
     verify = _resolve_ca_cert()
 
     body["size"] = size

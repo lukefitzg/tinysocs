@@ -16,6 +16,9 @@ from requests.exceptions import ReadTimeout as ReqReadTimeout
 from urllib3.exceptions import ProtocolError
 
 
+from tinysocs.tls import resolve_ca_cert
+
+
 def _truthy(v: str | None) -> bool:
     return str(v or "").strip().lower() in ("1", "true", "yes", "y", "on")
 
@@ -56,11 +59,11 @@ class OpenSearchClient:
             or "https://localhost:9201"
         )
         user = os.getenv("SIEM_USER") or os.getenv("OPENSEARCH_USER") or "admin"
-        pwd  = os.getenv("SIEM_PASS") or os.getenv("OPENSEARCH_PASS") or "ChangeMe123!"
-        verify = _truthy(os.getenv("SIEM_SSL_VERIFY", os.getenv("OPENSEARCH_VERIFY_SSL", "false")))
+        pwd  = os.getenv("SIEM_PASS") or os.getenv("OPENSEARCH_PASS") or ""
+        tls_result = resolve_ca_cert()
         timeout = float(os.getenv("SIEM_TIMEOUT_SECONDS", "20"))
 
-        self._cfg = dict(url=url, user=user, pwd=pwd, verify=verify, timeout=timeout)
+        self._cfg = dict(url=url, user=user, pwd=pwd, tls_result=tls_result, timeout=timeout)
         self._mk_client()
 
         # Best-effort connectivity probe (non-fatal).
@@ -79,11 +82,22 @@ class OpenSearchClient:
     # ---------- internals ----------
 
     def _mk_client(self):
-        url     = self._cfg["url"]
-        user    = self._cfg["user"]
-        pwd     = self._cfg["pwd"]
-        verify  = self._cfg["verify"]
-        timeout = self._cfg["timeout"]
+        url        = self._cfg["url"]
+        user       = self._cfg["user"]
+        pwd        = self._cfg["pwd"]
+        tls_result = self._cfg["tls_result"]
+        timeout    = self._cfg["timeout"]
+
+        # resolve_ca_cert() returns str (PEM path), True (system bundle), or False (skip)
+        if isinstance(tls_result, str):
+            verify_certs = True
+            ca_certs = tls_result
+        elif tls_result is True:
+            verify_certs = True
+            ca_certs = None
+        else:
+            verify_certs = False
+            ca_certs = None
 
         p = urlparse(url)
         host_cfg = {
@@ -96,8 +110,9 @@ class OpenSearchClient:
             hosts=[host_cfg],
             http_auth=(user, pwd),
             use_ssl=(p.scheme == "https"),
-            verify_certs=verify,
-            ssl_assert_hostname=verify,
+            verify_certs=verify_certs,
+            ca_certs=ca_certs,
+            ssl_assert_hostname=verify_certs,
             ssl_show_warn=False,
             ssl_version=ssl.PROTOCOL_TLSv1_2,
             connection_class=RequestsHttpConnection,

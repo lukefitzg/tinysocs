@@ -162,10 +162,11 @@ HIDE_ZERO_RULES: bool = _env_bool("HIDE_ZERO_RULES", True)
 
 SIEM_URL: str = os.getenv("SIEM_URL", "http://127.0.0.1:9200")
 SIEM_USER: str = os.getenv("SIEM_USER", "admin")
-SIEM_PASS: str = os.getenv("SIEM_PASS", "admin")
-SIEM_VERIFY: bool = _tls_verify_from("SIEM_SSL_VERIFY", default=False)
+SIEM_PASS: str = os.getenv("SIEM_PASS", "")
 
-print(f"[master] SIEM_URL={SIEM_URL} verify={SIEM_VERIFY} user={SIEM_USER}")
+from tinysocs.tls import resolve_ca_cert
+
+print(f"[master] SIEM_URL={SIEM_URL} verify={resolve_ca_cert()} user={SIEM_USER}")
 
 # Optional ensure-anchors pre-flight (import lazily)
 try:
@@ -202,7 +203,7 @@ def _maybe_ensure_anchors() -> None:
 # silence local TLS warnings if verify is disabled
 try:
     import urllib3  # type: ignore
-    if (not SIEM_VERIFY) or (not NODE_TLS_VERIFY):
+    if (not resolve_ca_cert()) or (not NODE_TLS_VERIFY):
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 except Exception:
     pass
@@ -833,7 +834,7 @@ def _es_auth() -> HTTPBasicAuth:
 
 def _es_index(doc: Dict[str, Any]) -> None:
     post_url = urljoin(SIEM_URL.rstrip("/") + "/", "tinysocs_anchors/_doc")
-    r = requests.post(post_url, auth=_es_auth(), verify=SIEM_VERIFY, json=doc, timeout=REQUEST_TIMEOUT_SEC)
+    r = requests.post(post_url, auth=_es_auth(), verify=resolve_ca_cert(), json=doc, timeout=REQUEST_TIMEOUT_SEC)
     r.raise_for_status()
 # ----------------------------------------------------
 

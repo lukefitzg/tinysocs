@@ -42,10 +42,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import sys
 import requests
+import urllib3
 import uvicorn
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel, Field
+
+# Suppress InsecureRequestWarning when verify=False
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Fix for PyInstaller-compiled binaries: the bundled certifi CA bundle
+# can be corrupt or incompatible with the bundled OpenSSL, causing
+# NO_CERTIFICATE_OR_CRL_FOUND even with verify=False.
+if getattr(sys, "frozen", False):
+    for _ev in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"):
+        os.environ.pop(_ev, None)
 
 
 # ---------- permissive .env autoload (repo/.env or tinysocs/.env) ----------

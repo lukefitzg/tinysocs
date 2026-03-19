@@ -2324,7 +2324,8 @@ async def _fetch_node_json(client: Any, url: str, path: str) -> Optional[Dict[st
     try:
         resp = await client.get(f"{url.rstrip('/')}{path}")
         return resp.json()
-    except Exception:
+    except Exception as exc:
+        print(f"[dashboard] _fetch_node_json FAILED: {url}{path} -- {type(exc).__name__}: {exc}", flush=True)
         return None
 
 

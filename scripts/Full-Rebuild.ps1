@@ -477,16 +477,7 @@ $dashUrl = $null
 try {
     # Skip cert validation for self-signed CA
     if (-not ([System.Management.Automation.PSTypeName]'TrustAll').Type) {
-        Add-Type @"
-using System.Net;
-using System.Net.Security;
-using System.Security.Cryptography.X509Certificates;
-public class TrustAll {
-    public static void Enable() {
-        ServicePointManager.ServerCertificateValidationCallback = delegate { return true; };
-    }
-}
-"@
+        Add-Type -Language CSharp -TypeDefinition 'using System.Net; using System.Net.Security; using System.Security.Cryptography.X509Certificates; public class TrustAll { public static void Enable() { ServicePointManager.ServerCertificateValidationCallback = delegate { return true; }; } }'
     }
     [TrustAll]::Enable()
     $resp = Invoke-WebRequest -Uri 'https://localhost:8090/dashboard/' -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop

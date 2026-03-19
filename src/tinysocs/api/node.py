@@ -8,21 +8,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-import sys
 import requests
 import urllib3
 from fastapi import FastAPI, HTTPException, Request, Body, Query
 
-# Suppress InsecureRequestWarning when verify=False
+# Suppress InsecureRequestWarning for federation connections (verify=False)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-# Fix for PyInstaller-compiled binaries: the bundled certifi CA bundle
-# can be corrupt or incompatible with the bundled OpenSSL, causing
-# NO_CERTIFICATE_OR_CRL_FOUND even with verify=False.  Remove any
-# env vars that force-load a cert bundle on startup.
-if getattr(sys, "frozen", False):
-    for _ev in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"):
-        os.environ.pop(_ev, None)
 
 from tinysocs.agent.detections.registry import RULES, Rule  # <-- NEW
 

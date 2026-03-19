@@ -9,7 +9,7 @@ cert-discovery logic across dashboard.py, node.py, master.py, etc.
 Returns:
   - str:  path to a PEM CA certificate file
   - True: use the system certificate bundle
-  - False: disable verification (only when explicitly requested or no cert found)
+  - False: disable verification (ONLY when explicitly requested via SIEM_SSL_VERIFY=false)
 
 Env vars (in precedence order):
   SIEM_SSL_VERIFY   "false" disables, "true" uses system bundle
@@ -110,7 +110,13 @@ def resolve_ca_cert() -> Any:
         _ca_pem_cache = _ensure_pem(cert_path)
         return _ca_pem_cache
 
-    # 3. No cert found -- disable verification with a warning
-    print(f"[tls] CA cert: NO cert found (SIEM_SSL_VERIFY={verify_str!r}); verify=False")
-    _ca_pem_cache = False
-    return False
+    # 3. No cert found -- use system certificate bundle (secure default).
+    # Only SIEM_SSL_VERIFY=false (checked above) disables verification.
+    # The system bundle will verify against OS-trusted CAs, which is the
+    # correct secure fallback for production installs.
+    print(
+        f"[tls] CA cert: no TinyBox CA cert found; using system certificate "
+        f"bundle for verification (set SIEM_SSL_VERIFY=false to disable)"
+    )
+    _ca_pem_cache = True
+    return True

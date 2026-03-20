@@ -571,13 +571,41 @@ Write-Host ""
 Write-Host "  OpenSearch TLS cert check:"
 $caCer = [Environment]::GetEnvironmentVariable('SIEM_CA_CERT','Machine')
 if ($caCer -and (Test-Path $caCer) -and $caCer -match '\.(cer|der)$') {
-    $caPem = [IO.Path]::ChangeExtension($caCer, '-converted.pem')
+    $caPem = ($caCer -replace '\.(cer|der)$', '-converted.pem')
     Write-Host "    Converting DER cert to PEM: $caCer -> $caPem"
     certutil -encode $caCer $caPem 2>$null | Out-Null
     if (Test-Path $caPem) {
         [Environment]::SetEnvironmentVariable('SIEM_CA_CERT', $caPem, 'Machine')
         Write-Host "    Updated SIEM_CA_CERT to PEM path" -ForegroundColor Green
     }
+}
+# Ensure TINYSOCS_NODES is set (on fresh Hub installs the Machine env may be empty)
+$existingNodes = [Environment]::GetEnvironmentVariable('TINYSOCS_NODES','Machine')
+if (-not $existingNodes) {
+    $defaultNodes = 'https://127.0.0.1:8081'
+    [Environment]::SetEnvironmentVariable('TINYSOCS_NODES', $defaultNodes, 'Machine')
+    Write-Host "    Set default TINYSOCS_NODES=$defaultNodes" -ForegroundColor Green
+    # Also update NSSM AppEnvironmentExtra if the service exists
+    $nssmPath = Join-Path $env:ProgramFiles 'TinySocs\bin\nssm.exe'
+    $svcRegPath = 'HKLM:\SYSTEM\CurrentControlSet\Services\TinySocsAssistant\Parameters'
+    if ((Test-Path $nssmPath) -and (Test-Path $svcRegPath)) {
+        try {
+            $envExtra = (Get-ItemProperty -Path $svcRegPath -Name AppEnvironmentExtra -ErrorAction Stop).AppEnvironmentExtra
+            $envExtra = @($envExtra) + @("TINYSOCS_NODES=$defaultNodes")
+            Set-ItemProperty -Path $svcRegPath -Name AppEnvironmentExtra -Value $envExtra -Type MultiString
+            Write-Host "    Added TINYSOCS_NODES to NSSM AppEnvironmentExtra" -ForegroundColor Green
+        } catch {
+            Write-Host "    Could not update NSSM env: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+    }
+} else {
+    Write-Host "    TINYSOCS_NODES=$existingNodes" -ForegroundColor Green
+}
+# Remove REQUESTS_CA_BUNDLE if set (breaks Python requests library session.verify)
+$rcab = [Environment]::GetEnvironmentVariable('REQUESTS_CA_BUNDLE','Machine')
+if ($rcab) {
+    [Environment]::SetEnvironmentVariable('REQUESTS_CA_BUNDLE', $null, 'Machine')
+    Write-Host "    Removed stale REQUESTS_CA_BUNDLE from machine env" -ForegroundColor Yellow
 }
 # Restart the service so it picks up the updated env vars
 if (Get-Service TinySocsAssistant -ErrorAction SilentlyContinue) {

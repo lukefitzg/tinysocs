@@ -256,9 +256,11 @@ if (-not [string]::IsNullOrWhiteSpace($siemCaPath)) {
         }
       }
 
-      # Export CA bundle path for common TLS stacks (requests/curl/OpenSSL)
+      # Export CA bundle path for common TLS stacks (curl/OpenSSL).
+      # NOTE: Do NOT set REQUESTS_CA_BUNDLE -- the Python requests library
+      # reads it and overrides explicit session.verify settings, breaking our
+      # custom SSLContext in tls.py.  Use SIEM_CA_CERT / SIEM_CA_BUNDLE only.
       $env:SIEM_CA_BUNDLE     = $finalCaPath
-      $env:REQUESTS_CA_BUNDLE = $finalCaPath
       $env:SSL_CERT_FILE      = $finalCaPath
       $env:CURL_CA_BUNDLE     = $finalCaPath
 
@@ -275,8 +277,8 @@ if (-not [string]::IsNullOrWhiteSpace($siemCaPath)) {
 }
 
 # One loud summary line so the task log proves what the child saw
-Write-TS ("EnvSummary: SIEM_URL={0} SIEM_SSL_VERIFY={1} SIEM_CA_BUNDLE={2} REQUESTS_CA_BUNDLE={3}" -f `
-  $env:SIEM_URL, $env:SIEM_SSL_VERIFY, $env:SIEM_CA_BUNDLE, $env:REQUESTS_CA_BUNDLE)
+Write-TS ("EnvSummary: SIEM_URL={0} SIEM_SSL_VERIFY={1} SIEM_CA_BUNDLE={2}" -f `
+  $env:SIEM_URL, $env:SIEM_SSL_VERIFY, $env:SIEM_CA_BUNDLE)
 
 $exe = Join-Path $installRoot "bin\TinySocsMaster.exe"
 if (-not (Test-Path -LiteralPath $exe)) {

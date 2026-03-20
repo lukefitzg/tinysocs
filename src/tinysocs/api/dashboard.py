@@ -5818,8 +5818,15 @@ async function loadSites() {
   _sitesCache = d;  // cache for aggregate banner
   if (d.error && !d.nodes) { grid.innerHTML = '<div class="empty">' + escapeHtml(d.error) + '</div>'; return; }
   const nodes = d.nodes || [];
+  const addBtn = document.getElementById('addSiteBtn');
+  if (!nodes.length) {
+    countEl.textContent = '';
+    if (addBtn) addBtn.style.display = 'none';
+    grid.innerHTML = '<div class="empty" style="padding:3rem 1rem;text-align:center;display:flex;flex-direction:column;align-items:center;gap:12px"><div style="font-size:14px;color:var(--muted)">No remote sites configured</div><button onclick="showAddSiteForm()" style="padding:8px 20px;border-radius:6px;background:var(--accent);color:#fff;border:none;cursor:pointer;font-size:13px">+ Add your first site</button></div>';
+    return;
+  }
   countEl.textContent = nodes.length + ' site' + (nodes.length !== 1 ? 's' : '');
-  if (!nodes.length) { grid.innerHTML = '<div class="empty" style="padding:2rem;text-align:center"><div style="margin-bottom:8px">No remote sites configured</div><button onclick="showAddSiteForm()" style="padding:6px 16px;border-radius:6px;background:var(--accent);color:#fff;border:none;cursor:pointer;font-size:13px">+ Add your first site</button></div>'; return; }
+  if (addBtn) addBtn.style.display = '';
 
   // Sort: critical alerts first, then total alerts desc, then alphabetically
   nodes.sort(function(a, b) {
@@ -7686,40 +7693,52 @@ function testRuleInExplorer(idx) {
 }
 
 function refreshAll() {
-  document.getElementById('lastUpdate').textContent = 'Refreshing...';
+  const updateEl = document.getElementById('lastUpdate');
+  updateEl.textContent = 'Refreshing...';
   _tabLoaded = {};  // allow data reload
-  // Only refresh widgets on the active tab
-  const tasks = [];
-  switch(_activeTab) {
-    case 'sites':
-      tasks.push(loadSites());
-      break;
-    case 'overview':
-      tasks.push(loadSummary(), loadTimeline(), loadDetections());
-      if (_sitesVisible) { _sitesCache = null; tasks.push(loadOverviewAggregate()); }
-      break;
-    case 'fleet':
-      tasks.push(loadFleet());
-      break;
-    case 'data':
-      if (_eventsLive) tasks.push(loadEvents(true));
-      break;
-    case 'detections':
-      loadRules();
-      break;
-    case 'compliance':
-      tasks.push(loadComplianceReport());
-      loadMitreCoverage();
-      break;
+  // Safety timeout: if refresh hangs for 30s, clear the "Refreshing..." text
+  const safetyTimer = setTimeout(() => {
+    if (updateEl.textContent === 'Refreshing...') {
+      updateEl.textContent = 'Update timed out \u2014 ' + new Date().toLocaleTimeString();
+    }
+  }, 30000);
+  try {
+    // Only refresh widgets on the active tab
+    const tasks = [];
+    switch(_activeTab) {
+      case 'sites':
+        tasks.push(loadSites());
+        break;
+      case 'overview':
+        tasks.push(loadSummary(), loadTimeline(), loadDetections());
+        if (_sitesVisible) { _sitesCache = null; tasks.push(loadOverviewAggregate()); }
+        break;
+      case 'fleet':
+        tasks.push(loadFleet());
+        break;
+      case 'data':
+        if (_eventsLive) tasks.push(loadEvents(true));
+        break;
+      case 'detections':
+        tasks.push(loadRules());
+        break;
+      case 'compliance':
+        tasks.push(loadComplianceReport(), loadMitreCoverage());
+        break;
+    }
+    _tabLoaded[_activeTab] = true;
+    Promise.all(tasks)
+      .then(() => {
+        updateEl.textContent = 'Updated ' + new Date().toLocaleTimeString();
+      })
+      .catch(() => {
+        updateEl.textContent = 'SIEM not connected \u2014 ' + new Date().toLocaleTimeString();
+      })
+      .finally(() => { clearTimeout(safetyTimer); });
+  } catch(e) {
+    clearTimeout(safetyTimer);
+    updateEl.textContent = 'Refresh error \u2014 ' + new Date().toLocaleTimeString();
   }
-  _tabLoaded[_activeTab] = true;
-  Promise.all(tasks)
-    .then(() => {
-      document.getElementById('lastUpdate').textContent = 'Updated ' + new Date().toLocaleTimeString();
-    })
-    .catch(() => {
-      document.getElementById('lastUpdate').textContent = 'SIEM not connected — ' + new Date().toLocaleTimeString();
-    });
 }
 
 // ---- Utility ----
@@ -8241,27 +8260,33 @@ let _authToken = null;
 let _dashboardUnlocked = false;
 
 async function doLogin() {
+  const errEl = document.getElementById('loginError');
   try {
     const pw = document.getElementById('loginPassword').value;
-    const errEl = document.getElementById('loginError');
     errEl.textContent = '';
     if (!pw) { errEl.textContent = 'Please enter a password'; return; }
     errEl.textContent = 'Signing in\u2026';
     const url = BASE + '/api/auth/login';
-    const r = await fetch(url, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({password: pw}),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    let r;
+    try {
+      r = await fetch(url, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({password: pw}),
+        signal: controller.signal,
+      });
+    } finally { clearTimeout(timeout); }
+    if (!r.ok) { errEl.textContent = 'Login failed (HTTP ' + r.status + ')'; return; }
     const d = await r.json();
     if (d.error) { errEl.textContent = d.error; return; }
     _authToken = d.token;
     try { sessionStorage.setItem('tinysocs_auth', _authToken); } catch(e) {}
     unlockDashboard();
   } catch(e) {
-    var el = document.getElementById('loginError');
-    var msg = 'Login error: ' + (e.message || String(e));
-    if (el) el.textContent = msg;
+    var msg = e.name === 'AbortError' ? 'Login timed out — please try again' : 'Login error: ' + (e.message || String(e));
+    if (errEl) errEl.textContent = msg;
   }
 }
 

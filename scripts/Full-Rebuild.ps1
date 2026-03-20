@@ -563,47 +563,25 @@ if (Test-Path $envFile) {
     Write-Host "    assistant.env not found" -ForegroundColor Yellow
 }
 
-# Phase 13b: Fix OpenSearch SSL env vars.
-# The installer sets SIEM_CA_CERT to a DER cert and SIEM_SSL_VERIFY=true,
-# but the PyInstaller-bundled OpenSSL cannot load DER certs.  Since
-# OpenSearch is localhost-only, set SIEM_SSL_VERIFY=false and convert the
-# DER cert to PEM for any future use.
+# Phase 13b: Ensure OpenSearch CA cert is PEM (not DER).
+# The installer may set SIEM_CA_CERT to a DER cert (.cer).  Python's SSL
+# needs PEM.  The installer's Resolve-TinySocsLocalCaCertPath now does
+# this conversion, but belt-and-suspenders: convert here too.
 Write-Host ""
-Write-Host "  OpenSearch SSL fix:"
+Write-Host "  OpenSearch TLS cert check:"
 $caCer = [Environment]::GetEnvironmentVariable('SIEM_CA_CERT','Machine')
-if ($caCer -and (Test-Path $caCer) -and $caCer -match '\.cer$') {
-    $caPem = $caCer -replace '\.cer$', '-certutil.pem'
+if ($caCer -and (Test-Path $caCer) -and $caCer -match '\.(cer|der)$') {
+    $caPem = [IO.Path]::ChangeExtension($caCer, '-converted.pem')
     Write-Host "    Converting DER cert to PEM: $caCer -> $caPem"
     certutil -encode $caCer $caPem 2>$null | Out-Null
-    [Environment]::SetEnvironmentVariable('SIEM_CA_CERT', $caPem, 'Machine')
-}
-$currentVerify = [Environment]::GetEnvironmentVariable('SIEM_SSL_VERIFY','Machine')
-if ($currentVerify -ne 'false') {
-    Write-Host "    Setting SIEM_SSL_VERIFY=false (OpenSearch is localhost-only)"
-    [Environment]::SetEnvironmentVariable('SIEM_SSL_VERIFY', 'false', 'Machine')
-}
-# Also update the NSSM env if the service exists
-$nssmPath = Join-Path $env:ProgramFiles 'TinySocs\bin\nssm.exe'
-if ((Test-Path $nssmPath) -and (Get-Service TinySocsAssistant -ErrorAction SilentlyContinue)) {
-    $regPath = 'HKLM:\SYSTEM\CurrentControlSet\Services\TinySocsAssistant\Parameters'
-    try {
-        $envExtra = (Get-ItemProperty -Path $regPath -Name AppEnvironmentExtra -ErrorAction Stop).AppEnvironmentExtra
-        $updated = @()
-        foreach ($line in $envExtra) {
-            if ($line -match '^SIEM_SSL_VERIFY=') { $updated += 'SIEM_SSL_VERIFY=false' }
-            elseif ($line -match '^SIEM_CA_CERT=' -and $caPem) { $updated += "SIEM_CA_CERT=$caPem" }
-            else { $updated += $line }
-        }
-        Set-ItemProperty -Path $regPath -Name AppEnvironmentExtra -Value $updated -Type MultiString
-        Write-Host "    Updated NSSM AppEnvironmentExtra" -ForegroundColor Green
-    } catch {
-        Write-Host "    Could not update NSSM env: $($_.Exception.Message)" -ForegroundColor Yellow
+    if (Test-Path $caPem) {
+        [Environment]::SetEnvironmentVariable('SIEM_CA_CERT', $caPem, 'Machine')
+        Write-Host "    Updated SIEM_CA_CERT to PEM path" -ForegroundColor Green
     }
 }
-# Restart the service so it picks up the updated machine env vars
-# (the installer starts it before Phase 13b runs)
+# Restart the service so it picks up the updated env vars
 if (Get-Service TinySocsAssistant -ErrorAction SilentlyContinue) {
-    Write-Host "    Restarting TinySocsAssistant to apply SSL env changes..."
+    Write-Host "    Restarting TinySocsAssistant to apply env changes..."
     Restart-Service TinySocsAssistant -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 3
 }

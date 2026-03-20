@@ -1,15 +1,15 @@
 # tinysocs/tls.py
 """
-Shared TLS certificate resolution for OpenSearch connections.
+Shared TLS certificate resolution and SSL-aware HTTP for OpenSearch.
 
-All TinySocs components that talk to OpenSearch should use resolve_ca_cert()
-to determine the correct TLS verification mode. This avoids duplicating
-cert-discovery logic across dashboard.py, node.py, master.py, etc.
+All TinySocs components that talk to OpenSearch should use:
+  - resolve_ca_cert()     to find the CA cert (returns PEM path, True, or False)
+  - make_ssl_context()    to build an ssl.SSLContext from the resolved cert
+  - get_opensearch_session()  to get a requests.Session with proper TLS
 
-Returns:
-  - str:  path to a PEM CA certificate file
-  - True: use the system certificate bundle
-  - False: disable verification (ONLY when explicitly requested via SIEM_SSL_VERIFY=false)
+This avoids duplicating cert-discovery logic across dashboard.py, node.py,
+master.py, etc. and ensures PyInstaller-bundled OpenSSL never uses certifi
+(which may be corrupt in frozen builds).
 
 Env vars (in precedence order):
   SIEM_SSL_VERIFY   "false" disables, "true" uses system bundle
@@ -21,18 +21,20 @@ Auto-discovery paths (Windows TinyBox installs):
   %ProgramData%\\TinySocs\\OpenSearch\\config\\certs\\ca.cer
   %ProgramData%\\TinySocs\\OpenSearch\\config\\certs\\ca-converted.pem
 
-NOTE: Federation connections (Hub<->Site) use self-signed node certs and
-intentionally bypass this module. Only OpenSearch connections should use
-resolve_ca_cert().
+NOTE: Federation connections (Hub<->Site) use certificate pinning via
+federation_certs.py and intentionally bypass this module.
 """
 
 from __future__ import annotations
 
 import os
+import ssl
 from pathlib import Path
 from typing import Any, Optional, Union
 
 _ca_pem_cache: Optional[Union[str, bool]] = None
+_ssl_ctx_cache: Optional[ssl.SSLContext] = None
+_session_cache: Optional[Any] = None
 
 
 def _ensure_pem(cert_path: Path) -> str:
@@ -141,3 +143,97 @@ def resolve_ca_cert() -> Any:
     )
     _ca_pem_cache = True
     return True
+
+
+def make_ssl_context() -> ssl.SSLContext:
+    """Build an SSLContext from resolve_ca_cert() result.
+
+    This bypasses certifi entirely -- critical for PyInstaller frozen builds
+    where the bundled certifi CA bundle may be corrupt or missing.
+    """
+    global _ssl_ctx_cache
+    if _ssl_ctx_cache is not None:
+        return _ssl_ctx_cache
+
+    tls_result = resolve_ca_cert()
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+
+    if tls_result is False:
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    elif isinstance(tls_result, str):
+        ctx.load_verify_locations(tls_result)
+    # else True: uses system trust store (default for PROTOCOL_TLS_CLIENT)
+
+    _ssl_ctx_cache = ctx
+    return ctx
+
+
+def get_opensearch_session():
+    """Return a requests.Session with proper TLS for OpenSearch.
+
+    Uses a custom HTTPAdapter that injects our SSLContext, bypassing
+    certifi.where() which is broken in PyInstaller frozen builds.
+
+    Also overrides merge_environment_settings to prevent REQUESTS_CA_BUNDLE
+    and CURL_CA_BUNDLE env vars from overriding our verify setting (these
+    may point to DER files that requests cannot read).
+
+    All OpenSearch HTTP calls should use this session.
+    """
+    global _session_cache
+    if _session_cache is not None:
+        return _session_cache
+
+    import requests
+    from requests.adapters import HTTPAdapter
+
+    ssl_ctx = make_ssl_context()
+    tls_result = resolve_ca_cert()
+
+    # Determine the correct verify value from our TLS config
+    if tls_result is False:
+        _verify = False
+    elif isinstance(tls_result, str):
+        _verify = tls_result
+    else:
+        _verify = True
+
+    class _OpenSearchAdapter(HTTPAdapter):
+        """HTTPS adapter using our explicit SSLContext."""
+        def init_poolmanager(self, *args, **kwargs):
+            kwargs["ssl_context"] = ssl_ctx
+            return super().init_poolmanager(*args, **kwargs)
+
+    class _OpenSearchSession(requests.Session):
+        """Session that prevents env vars from overriding our TLS config.
+
+        The requests library reads REQUESTS_CA_BUNDLE / CURL_CA_BUNDLE from
+        the environment in merge_environment_settings() and uses them to
+        override session.verify.  These env vars may point to DER certs that
+        requests cannot read.  We override the method to always use our
+        resolve_ca_cert() result instead.
+        """
+        def merge_environment_settings(self, url, proxies, stream, verify, cert):
+            # Let requests handle proxies/stream normally, but always
+            # use our TLS verify setting
+            settings = super().merge_environment_settings(
+                url, proxies, stream, verify, cert,
+            )
+            settings["verify"] = _verify
+            return settings
+
+    session = _OpenSearchSession()
+    session.mount("https://", _OpenSearchAdapter())
+    session.verify = _verify
+
+    # Suppress InsecureRequestWarning when verify is disabled
+    if tls_result is False:
+        try:
+            import urllib3
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        except Exception:
+            pass
+
+    _session_cache = session
+    return session

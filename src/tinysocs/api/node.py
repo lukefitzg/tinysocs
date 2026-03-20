@@ -120,7 +120,7 @@ def _get_siem_base_url() -> str:
     return url.rstrip("/")
 
 
-from tinysocs.tls import resolve_ca_cert
+from tinysocs.tls import resolve_ca_cert, get_opensearch_session
 
 
 def _os_search_raw(index_pattern: str, body: dict, size: int = 0) -> dict:
@@ -134,13 +134,6 @@ def _os_search_raw(index_pattern: str, body: dict, size: int = 0) -> dict:
     Mirrors dashboard.py's _os_query pattern: suppress InsecureRequestWarning,
     manual status-code check (no raise_for_status), log response body on errors.
     """
-    # Suppress InsecureRequestWarning (matches dashboard.py)
-    try:
-        import urllib3 as _u3
-        _u3.disable_warnings(_u3.exceptions.InsecureRequestWarning)
-    except Exception:
-        pass
-
     base = _get_siem_base_url()
     url = f"{base}/{index_pattern}/_search?ignore_unavailable=true&allow_no_indices=true"
 
@@ -148,21 +141,22 @@ def _os_search_raw(index_pattern: str, body: dict, size: int = 0) -> dict:
     if "size" not in payload:
         payload["size"] = size
 
-    verify = resolve_ca_cert()
+    # Use the shared SSL-aware session (bypasses certifi, uses explicit SSLContext)
+    session = get_opensearch_session()
     auth = _get_siem_auth()
 
     print(
         f"[tinysocs-node] OpenSearch query url={url} "
         f"index_pattern={index_pattern} size={payload.get('size', size)} "
-        f"verify={verify} auth={'set' if auth else 'None'}",
+        f"verify={session.verify} auth={'set' if auth else 'None'}",
         flush=True,
     )
 
     empty: dict = {"hits": {"total": {"value": 0}, "hits": []}, "aggregations": {}}
 
     try:
-        resp = requests.post(
-            url, json=payload, timeout=(5, 15), verify=verify, auth=auth,
+        resp = session.post(
+            url, json=payload, timeout=(5, 15), auth=auth,
         )
         # Match dashboard.py: do NOT use raise_for_status().
         # Handle 4xx/5xx manually so we can log the response body for debugging.

@@ -9,6 +9,26 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+# --------------------------------------------------------------------------- #
+# PyInstaller SSL fix: the bundled certifi CA bundle may be missing or
+# incompatible with the bundled OpenSSL, causing NO_CERTIFICATE_OR_CRL_FOUND
+# errors even when verify=False.  Clearing the stale env vars lets OpenSSL
+# fall back to the OS trust store (Windows) or skip verification when
+# verify=False is explicitly requested.  This does NOT weaken security:
+# explicit verify=path still works, and verify=False is only used when the
+# operator sets SIEM_SSL_VERIFY=false.
+# --------------------------------------------------------------------------- #
+if getattr(sys, "frozen", False):
+    for _ev in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"):
+        _bundled = os.environ.get(_ev, "")
+        if _bundled and not os.path.isfile(_bundled):
+            print(
+                f"[quickstart] clearing stale {_ev}={_bundled} "
+                f"(file does not exist in frozen bundle)",
+                flush=True,
+            )
+            os.environ.pop(_ev, None)
+
 try:
     from dotenv import load_dotenv
 except Exception:  # pragma: no cover

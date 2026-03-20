@@ -563,6 +563,44 @@ if (Test-Path $envFile) {
     Write-Host "    assistant.env not found" -ForegroundColor Yellow
 }
 
+# Phase 13b: Fix OpenSearch SSL env vars.
+# The installer sets SIEM_CA_CERT to a DER cert and SIEM_SSL_VERIFY=true,
+# but the PyInstaller-bundled OpenSSL cannot load DER certs.  Since
+# OpenSearch is localhost-only, set SIEM_SSL_VERIFY=false and convert the
+# DER cert to PEM for any future use.
+Write-Host ""
+Write-Host "  OpenSearch SSL fix:"
+$caCer = [Environment]::GetEnvironmentVariable('SIEM_CA_CERT','Machine')
+if ($caCer -and (Test-Path $caCer) -and $caCer -match '\.cer$') {
+    $caPem = $caCer -replace '\.cer$', '-certutil.pem'
+    Write-Host "    Converting DER cert to PEM: $caCer -> $caPem"
+    certutil -encode $caCer $caPem 2>$null | Out-Null
+    [Environment]::SetEnvironmentVariable('SIEM_CA_CERT', $caPem, 'Machine')
+}
+$currentVerify = [Environment]::GetEnvironmentVariable('SIEM_SSL_VERIFY','Machine')
+if ($currentVerify -ne 'false') {
+    Write-Host "    Setting SIEM_SSL_VERIFY=false (OpenSearch is localhost-only)"
+    [Environment]::SetEnvironmentVariable('SIEM_SSL_VERIFY', 'false', 'Machine')
+}
+# Also update the NSSM env if the service exists
+$nssmPath = Join-Path $env:ProgramFiles 'TinySocs\bin\nssm.exe'
+if ((Test-Path $nssmPath) -and (Get-Service TinySocsAssistant -ErrorAction SilentlyContinue)) {
+    $regPath = 'HKLM:\SYSTEM\CurrentControlSet\Services\TinySocsAssistant\Parameters'
+    try {
+        $envExtra = (Get-ItemProperty -Path $regPath -Name AppEnvironmentExtra -ErrorAction Stop).AppEnvironmentExtra
+        $updated = @()
+        foreach ($line in $envExtra) {
+            if ($line -match '^SIEM_SSL_VERIFY=') { $updated += 'SIEM_SSL_VERIFY=false' }
+            elseif ($line -match '^SIEM_CA_CERT=' -and $caPem) { $updated += "SIEM_CA_CERT=$caPem" }
+            else { $updated += $line }
+        }
+        Set-ItemProperty -Path $regPath -Name AppEnvironmentExtra -Value $updated -Type MultiString
+        Write-Host "    Updated NSSM AppEnvironmentExtra" -ForegroundColor Green
+    } catch {
+        Write-Host "    Could not update NSSM env: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+}
+
 # Phase 14: Check Sysmon - prefer the Running service (ARM64 may have both
 # Sysmon64 [Stopped/stale] and Sysmon64a [Running]).
 Write-Host ""

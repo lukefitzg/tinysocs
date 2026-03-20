@@ -5000,7 +5000,7 @@ tr:hover { background: rgba(74, 144, 217, 0.05); }
 .btn-reject:hover { opacity: 0.85; }
 .btn-sm:disabled { opacity: 0.4; cursor: not-allowed; }
 
-#events-content { height: 420px; overflow-y: auto; }
+#events-content { overflow-y: visible; }
 
 /* Threat intelligence badges */
 .threat-badge { display:inline-flex; align-items:center; gap:3px; font-size:10px; padding:1px 6px; border-radius:3px; cursor:pointer; font-weight:600; }

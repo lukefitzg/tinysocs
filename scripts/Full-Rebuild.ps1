@@ -600,6 +600,13 @@ if ((Test-Path $nssmPath) -and (Get-Service TinySocsAssistant -ErrorAction Silen
         Write-Host "    Could not update NSSM env: $($_.Exception.Message)" -ForegroundColor Yellow
     }
 }
+# Restart the service so it picks up the updated machine env vars
+# (the installer starts it before Phase 13b runs)
+if (Get-Service TinySocsAssistant -ErrorAction SilentlyContinue) {
+    Write-Host "    Restarting TinySocsAssistant to apply SSL env changes..."
+    Restart-Service TinySocsAssistant -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 3
+}
 
 # Phase 14: Check Sysmon - prefer the Running service (ARM64 may have both
 # Sysmon64 [Stopped/stale] and Sysmon64a [Running]).

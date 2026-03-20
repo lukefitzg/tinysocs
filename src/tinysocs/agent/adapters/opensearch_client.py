@@ -8,7 +8,7 @@ import typing as t
 from urllib.parse import urlparse
 
 from opensearchpy import OpenSearch
-from opensearchpy.connection import RequestsHttpConnection
+from opensearchpy.connection import RequestsHttpConnection, Urllib3HttpConnection
 from opensearchpy.exceptions import ConnectionError as OSConnError
 from opensearchpy.exceptions import ConnectionTimeout as OSTimeout
 from requests.exceptions import ConnectionError as ReqConnError
@@ -106,16 +106,36 @@ class OpenSearchClient:
             "scheme": p.scheme or "https",
         }
 
+        # opensearch-py's RequestsHttpConnection internally calls
+        # certifi.where() even with verify_certs=False, and the certifi
+        # bundle may be corrupt in PyInstaller builds.  Use
+        # Urllib3HttpConnection instead -- it accepts ssl_context directly
+        # and bypasses certifi entirely.
+        import warnings
+        warnings.filterwarnings("ignore", message=".*ssl_context.*SSL related kwargs.*")
+        try:
+            import urllib3 as _u3
+            _u3.disable_warnings(_u3.exceptions.InsecureRequestWarning)
+        except Exception:
+            pass
+
+        ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        if not verify_certs:
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = ssl.CERT_NONE
+        elif ca_certs:
+            ssl_ctx.load_verify_locations(ca_certs)
+        # else: uses system trust store (default)
+
         self.os = OpenSearch(
             hosts=[host_cfg],
             http_auth=(user, pwd),
             use_ssl=(p.scheme == "https"),
             verify_certs=verify_certs,
-            ca_certs=ca_certs,
             ssl_assert_hostname=verify_certs,
             ssl_show_warn=False,
-            ssl_version=ssl.PROTOCOL_TLSv1_2,
-            connection_class=RequestsHttpConnection,
+            ssl_context=ssl_ctx,
+            connection_class=Urllib3HttpConnection,
             headers={"connection": "close", "user-agent": "tinysocs/0.1"},
             http_compress=False,
             timeout=timeout,

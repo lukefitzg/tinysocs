@@ -42,19 +42,40 @@ def _ensure_pem(cert_path: Path) -> str:
         print(f"[tls] CA cert: already PEM -> {cert_path}")
         return str(cert_path)
 
-    # DER-encoded: convert to PEM
-    import base64
+    # DER-encoded: check if the installer already converted it via certutil
+    pre_converted = cert_path.parent / "ca-converted.pem"
+    if pre_converted.is_file():
+        pre_raw = pre_converted.read_bytes()
+        if pre_raw[:27] == b"-----BEGIN CERTIFICATE-----":
+            print(f"[tls] CA cert: DER detected, using pre-converted PEM -> {pre_converted}")
+            return str(pre_converted)
+
+    # Fallback: convert DER->PEM via certutil (Windows) or Python base64
+    import subprocess
     import tempfile
 
     print(f"[tls] CA cert: DER detected ({len(raw)} bytes, first4={raw[:4].hex()}), converting to PEM")
+    pem_path = cert_path.parent / "ca-converted.pem"
+
+    # Prefer certutil (Windows native) -- produces PEM that all OpenSSL builds can load
+    try:
+        r = subprocess.run(
+            ["certutil", "-encode", str(cert_path), str(pem_path)],
+            capture_output=True, timeout=10,
+        )
+        if r.returncode == 0 and pem_path.is_file():
+            print(f"[tls] CA cert: DER->PEM converted via certutil -> {pem_path}")
+            return str(pem_path)
+    except Exception as exc:
+        print(f"[tls] CA cert: certutil conversion failed: {exc}")
+
+    # Last resort: Python base64 conversion
+    import base64
     b64 = base64.encodebytes(raw).decode("ascii")
     pem = f"-----BEGIN CERTIFICATE-----\n{b64}-----END CERTIFICATE-----\n"
-
-    # Try to write next to the original
-    pem_path = cert_path.parent / "ca-converted.pem"
     try:
         pem_path.write_text(pem, encoding="ascii")
-        print(f"[tls] CA cert: DER->PEM converted -> {pem_path}")
+        print(f"[tls] CA cert: DER->PEM converted via Python -> {pem_path}")
         return str(pem_path)
     except Exception as exc:
         print(f"[tls] CA cert: write to {pem_path} failed: {exc}")

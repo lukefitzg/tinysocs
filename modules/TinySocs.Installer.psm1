@@ -13532,10 +13532,12 @@ function Resolve-TinySocsLocalCaCertPath {
   )
 
   # Prefer the canonical TinyBox ProgramData path (per Quickstart.iss [Dirs]/seed).
+  # PEM files are listed first so they are preferred over DER (.cer) files.
   $candidates = @(
     (Join-Path $DataRoot 'OpenSearch\certs\root-ca.pem'),
-    (Join-Path $DataRoot 'OpenSearch\certs\ca.crt'),
     (Join-Path $DataRoot 'OpenSearch\certs\ca.pem'),
+    (Join-Path $DataRoot 'OpenSearch\certs\ca-converted.pem'),
+    (Join-Path $DataRoot 'OpenSearch\certs\ca.crt'),
     (Join-Path $DataRoot 'OpenSearch\certs\ca.cer'),
 
     # Back-compat / older conventions (harmless to probe)
@@ -13545,7 +13547,25 @@ function Resolve-TinySocsLocalCaCertPath {
 
   foreach ($p in $candidates) {
     try {
-      if ($p -and (Test-Path $p -PathType Leaf)) { return $p }
+      if ($p -and (Test-Path $p -PathType Leaf)) {
+        # If the file is DER-encoded (.cer), convert to PEM using certutil.
+        # Python's OpenSSL (especially in PyInstaller builds) cannot load DER
+        # certs reliably. PEM is the universal format.
+        if ($p -match '\.(cer|der)$') {
+          $pemPath = [IO.Path]::ChangeExtension($p, '-converted.pem')
+          try {
+            $null = certutil -encode $p $pemPath 2>&1
+            if (Test-Path $pemPath -PathType Leaf) {
+              Write-Verbose "Converted DER cert to PEM: $p -> $pemPath"
+              return $pemPath
+            }
+          } catch {
+            Write-Verbose "certutil DER->PEM conversion failed for $p : $_"
+          }
+          # Fallback: return the DER path if conversion failed
+        }
+        return $p
+      }
     } catch { }
   }
 

@@ -13231,7 +13231,7 @@ function Register-TinySocsServices {
   # Defaults (but allow Pair-TinySocs / Machine env to override)
   $port = [Environment]::GetEnvironmentVariable("PORT","Machine"); if (-not $port) { $port = "8081" }
   $siem = [Environment]::GetEnvironmentVariable("SIEM_URL","Machine"); if (-not $siem) { $siem = "https://localhost:9201" }
-  $ssl  = [Environment]::GetEnvironmentVariable("SIEM_SSL_VERIFY","Machine"); if (-not $ssl) { $ssl = "false" }
+  $ssl  = [Environment]::GetEnvironmentVariable("SIEM_SSL_VERIFY","Machine"); if (-not $ssl) { $ssl = "true" }
   $priv = [Environment]::GetEnvironmentVariable("PRIVACY_MODE","Machine"); if (-not $priv) { $priv = "abstract" }
 
   # SIEM credentials — needed by node.py to query alerts/fleet from OpenSearch.

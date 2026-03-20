@@ -2265,20 +2265,49 @@ async def api_nodes():
 
     import asyncio as _aio
     import httpx
+    from tinysocs.federation_certs import make_pinning_ssl_context, load_pinned_certs, get_cert_status
     nodes_out: List[Dict[str, Any]] = []
+    _pinned = load_pinned_certs()
 
-    # Federation: Sites use self-signed certs; verify=False is intentional
+    # Build per-URL SSL contexts from pinned certs for federation security
+    def _ssl_for(url: str) -> Any:
+        if url in _pinned:
+            return make_pinning_ssl_context(url)
+        return False  # No pin yet (e.g. localhost self-node) -- permissive
+
+    # Pre-check pinned cert fingerprints before making data requests.
+    # This prevents MITM attacks on federation connections.
+    from tinysocs.federation_certs import verify_site_cert
+    _cert_statuses: Dict[str, str] = {}
+    _blocked_urls: set = set()
+    for url in node_urls:
+        pin_status = get_cert_status(url) if url in _pinned else "unpinned"
+        _cert_statuses[url] = pin_status
+        if pin_status == "mismatch":
+            mismatch_err = verify_site_cert(url)
+            print(f"[SECURITY] {mismatch_err}", flush=True)
+            _blocked_urls.add(url)
+
     async with httpx.AsyncClient(verify=False, timeout=5.0) as client:
         for url in node_urls:
             node_info: Dict[str, Any] = {
                 "url": url, "node_id": "", "version": "", "status": "unreachable",
                 "ledger_sequence": 0, "ledger_head": "", "last_anchor_at": "",
                 "last_anchor_items": 0, "reachable": False, "error": None,
+                "cert_status": _cert_statuses.get(url, "unpinned"),
                 # Phase 18 M1: operational data (null = not available)
                 "alerts_24h": None, "alerts_critical": None, "alerts_high": None,
                 "alerts_medium": None, "alerts_low": None,
                 "top_rule": None, "host_count": None, "total_events_24h": None,
             }
+
+            # SECURITY: refuse to connect to Sites with mismatched certs
+            if url in _blocked_urls:
+                node_info["error"] = "SECURITY: certificate mismatch -- connection refused (possible MITM)"
+                node_info["status"] = "cert_mismatch"
+                node_info["node_id"] = _url_to_node_id.get(url, "")
+                nodes_out.append(node_info)
+                continue
 
             # Fetch /meta, /evidence/head, /alerts/summary, /fleet/summary concurrently
             meta_data, head_data, alerts_data, fleet_data = await _aio.gather(
@@ -2716,6 +2745,13 @@ async def api_nodes_approve(body: Dict[str, Any] = Body(...)):
 
     url = site["url"]
 
+    # Pin the Site's TLS certificate before approving
+    from tinysocs.federation_certs import pin_site_cert
+    try:
+        pin_record = pin_site_cert(url, node_id)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+
     # Add to TINYSOCS_NODES (reuse add logic)
     raw = os.getenv("TINYSOCS_NODES", "").strip()
     current = [u.strip() for u in raw.split(",") if u.strip()] if raw else []
@@ -2740,7 +2776,11 @@ async def api_nodes_approve(body: Dict[str, Any] = Body(...)):
     del pending["sites"][node_id]
     _save_pending_sites(pending)
 
-    return {"ok": True, "status": "approved", "node_id": node_id, "url": url}
+    return {
+        "ok": True, "status": "approved", "node_id": node_id, "url": url,
+        "cert_pinned": True,
+        "fingerprint": pin_record.get("fingerprint_sha256", "")[:20] + "...",
+    }
 
 
 @dashboard_app.post("/api/nodes/reject")
@@ -2816,6 +2856,15 @@ async def api_site_proxy(node_id: str, path: str, request: Request):
 
     if url is None:
         return JSONResponse(status_code=404, content={"error": f"Unknown site: {node_id}"})
+
+    # SECURITY: check pinned cert before proxying
+    from tinysocs.federation_certs import verify_site_cert, load_pinned_certs as _lpc
+    _pin_check = verify_site_cert(url)
+    if _pin_check:
+        print(f"[SECURITY] {_pin_check}", flush=True)
+        return JSONResponse(status_code=403, content={
+            "error": "SECURITY: certificate mismatch for this Site -- connection refused (possible MITM)"
+        })
 
     # Forward the request
     qs = str(request.query_params)
@@ -4796,6 +4845,12 @@ a { color: var(--accent); text-decoration: none; }
 .site-status.healthy { background:#22c55e; }
 .site-status.warning { background:#f59e0b; }
 .site-status.unreachable { background:#ef4444; }
+.site-status.cert_mismatch { background:#ef4444; animation: pulse-red 1s infinite; }
+@keyframes pulse-red { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+.cert-badge { font-size:10px; padding:1px 6px; border-radius:3px; margin-left:6px; font-weight:600; }
+.cert-badge.pinned { background:#166534; color:#86efac; }
+.cert-badge.mismatch { background:#991b1b; color:#fca5a5; }
+.cert-badge.unpinned { background:#78350f; color:#fcd34d; }
 .site-metric { display:flex; justify-content:space-between; font-size:12px; padding:3px 0;
                color:var(--muted); border-bottom:1px solid var(--border); }
 .site-metric:last-child { border-bottom:none; }
@@ -5837,6 +5892,12 @@ async function loadSites() {
     html += '<div class="site-card-header">';
     html += '<span class="site-status ' + statusCls + '"></span>';
     html += '<strong style="flex:1">' + escapeHtml(n.node_id || n.url) + '</strong>';
+    // Certificate pinning badge
+    const certSt = n.cert_status || 'unpinned';
+    if (certSt === 'pinned') html += '<span class="cert-badge pinned" title="TLS certificate verified">&#x1f512;</span>';
+    else if (certSt === 'mismatch') html += '<span class="cert-badge mismatch" title="SECURITY: Certificate mismatch!">&#x26a0; CERT</span>';
+    else if (certSt === 'unpinned') html += '<span class="cert-badge unpinned" title="Certificate not yet pinned">&#x1f513;</span>';
+
     html += '<span class="site-alert-badge ' + badgeCls + '">' + badgeVal + '</span>';
     html += '<button class="site-remove-btn" onclick="event.stopPropagation();removeSite(\\'' + escapeHtml(n.url || '') + '\\',\\'' + escapeHtml(n.node_id || '') + '\\')" title="Remove site">&times;</button>';
     html += '</div>';

@@ -1090,6 +1090,24 @@ def _registration_loop() -> None:
 
                 if status == "approved":
                     print(f"[tinysocs-node] Registration approved by Hub", flush=True)
+                    # Pin the Hub's TLS cert for future connections
+                    try:
+                        from tinysocs.federation_certs import fetch_cert_info, save_pinned_certs, load_pinned_certs, _pinned_certs_path
+                        hub_cert = fetch_cert_info(_HUB_URL)
+                        if hub_cert:
+                            pinned = load_pinned_certs()
+                            pinned[_HUB_URL] = {
+                                "node_id": "hub",
+                                "fingerprint_sha256": hub_cert["fingerprint_sha256"],
+                                "subject": hub_cert["subject"],
+                                "not_after": hub_cert["not_after"],
+                                "pinned_at": datetime.now(timezone.utc).isoformat(),
+                                "pem": hub_cert["pem"],
+                            }
+                            save_pinned_certs(pinned)
+                            print(f"[tinysocs-node] Pinned Hub cert: {hub_cert['fingerprint_sha256'][:20]}...", flush=True)
+                    except Exception as pin_exc:
+                        print(f"[tinysocs-node] Could not pin Hub cert (non-fatal): {pin_exc}", flush=True)
                     return
                 elif status == "rejected":
                     print(f"[tinysocs-node] Registration rejected by Hub", flush=True)

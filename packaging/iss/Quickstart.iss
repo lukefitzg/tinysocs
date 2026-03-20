@@ -2995,9 +2995,21 @@ begin
         '  # Phase 19 M3: Generate node TLS cert and update TinySocsNode service env' + CRLF +
         '  Write-Host "[TinySocs][Inno] Phase 19: Generating node TLS certificate for Hub..."' + CRLF +
         '  $nodeCerts = New-TinySocsNodeCert' + CRLF +
-        '  # Add node TLS paths to TinySocsNode NSSM env' + CRLF +
+        '  # Write node TLS paths to assistant.env (Hub embeds node in TinySocsAssistant)' + CRLF +
+        '  if ($nodeCerts -and $nodeCerts.CertPath) {' + CRLF +
+        '    $envFile = Join-Path $env:ProgramData "TinySocs\Assistant\assistant.env"' + CRLF +
+        '    if (Test-Path $envFile) {' + CRLF +
+        '      $lines = @(Get-Content $envFile)' + CRLF +
+        '      $lines = $lines | Where-Object { $_ -notmatch "^TINYSOCS_TLS_(CERT|KEY)=" }' + CRLF +
+        '      $lines += ("TINYSOCS_TLS_CERT=" + $nodeCerts.CertPath)' + CRLF +
+        '      $lines += ("TINYSOCS_TLS_KEY=" + $nodeCerts.KeyPath)' + CRLF +
+        '      Set-Content -Path $envFile -Value $lines -Encoding UTF8' + CRLF +
+        '      Write-Host "[TinySocs][Inno] Phase 19: Node TLS cert paths written to assistant.env."' + CRLF +
+        '    }' + CRLF +
+        '  }' + CRLF +
+        '  # Also update TinySocsNode NSSM env if it exists (Site role has a separate service)' + CRLF +
         '  $nssm = Join-Path "' + PsEscape(AppDir) + '" "bin\nssm.exe"' + CRLF +
-        '  if (Test-Path $nssm) {' + CRLF +
+        '  if ((Test-Path $nssm) -and $nodeCerts -and $nodeCerts.CertPath) {' + CRLF +
         '    try {' + CRLF +
         '      $nssmKey = "HKLM:\SYSTEM\CurrentControlSet\Services\TinySocsNode\Parameters"' + CRLF +
         '      if (Test-Path $nssmKey) {' + CRLF +
@@ -3009,7 +3021,7 @@ begin
         '        $curEnv += ("TINYSOCS_TLS_KEY=" + $nodeCerts.KeyPath)' + CRLF +
         '        $formatted = Format-TinySocsNssmEnvExtra $curEnv' + CRLF +
         '        & $nssm set TinySocsNode AppEnvironmentExtra $formatted | Out-Null' + CRLF +
-        '        Write-Host "[TinySocs][Inno] Phase 19: TinySocsNode env updated with TLS cert paths."' + CRLF +
+        '        Write-Host "[TinySocs][Inno] Phase 19: TinySocsNode NSSM env updated with TLS cert paths."' + CRLF +
         '        try { & $nssm restart TinySocsNode | Out-Null } catch { }' + CRLF +
         '      }' + CRLF +
         '    } catch { Write-Warning ("[TinySocs][Inno] Phase 19: Failed to update TinySocsNode TLS env: " + $_.Exception.Message) }' + CRLF +

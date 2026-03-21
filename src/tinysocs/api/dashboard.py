@@ -5019,6 +5019,12 @@ tr:hover { background: rgba(74, 144, 217, 0.05); }
 .timeline-card { min-height: 200px; height: auto; overflow: visible; }
 .timeline-card h2 { margin-bottom: 0; }
 
+/* Match main-content widget heights to assistant panel (top:90px, bottom:16px) */
+#event-explorer-card { max-height: calc(100vh - 106px); overflow-y: auto; box-sizing: border-box; }
+#tab-fleet.active { display: flex !important; flex-direction: column; max-height: calc(100vh - 106px); }
+#tab-fleet .card.full.timeline-card { flex: 1; min-height: 300px; overflow: visible; }
+#tab-detections > .card:first-child { min-height: calc(100vh - 106px); max-height: calc(100vh - 106px); overflow-y: auto; box-sizing: border-box; }
+
 /* Shared pager */
 .pager { display: flex; align-items: center; justify-content: center; gap: 8px;
   padding: 8px 0 0 0; font-size: 11px; color: var(--muted); border-top: 1px solid var(--border); }

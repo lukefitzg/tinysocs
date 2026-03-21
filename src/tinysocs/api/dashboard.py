@@ -6442,8 +6442,8 @@ let _detectionCache = [];
 let _openDetectionIdx = -1;       // which row is currently expanded
 let _detectionSummaries = {};     // idx -> summary text (persists across refresh)
 let _detectionsPage = 0;
-// Dynamic: fit detections to remaining space below alert summary+timeline (~500px used above)
-const _DETECTIONS_PER_PAGE = Math.max(3, Math.floor((window.innerHeight - 500 - 80) / 36));
+// Dynamic: fit detections to remaining space below alert summary+timeline
+let _DETECTIONS_PER_PAGE = Math.max(3, Math.floor((window.innerHeight - 420 - 80) / 32));
 
 async function loadDetections() {
   const el = document.getElementById('detections-content');
@@ -7144,8 +7144,8 @@ let _eventsCache = [];
 let _eventsIdx = '';
 let _eventsPage = 0;
 let _eventsLive = false;
-// Dynamic: fit rows to available card height (row ~42px, header+toolbar+pager ~180px)
-const _EVENTS_PER_PAGE = Math.max(5, Math.floor((window.innerHeight - 106 - 180) / 42));
+// Dynamic: fit rows to available card height. Recalculated on first render.
+let _EVENTS_PER_PAGE = Math.max(8, Math.floor((window.innerHeight - 120 - 150) / 32));
 
 function toggleEventsLive(on) { _eventsLive = on; }
 
@@ -7499,8 +7499,8 @@ async function refreshHostTimeline() {
 let _rulesCache = [];
 let _openRuleIdx = -1;
 let _rulesPage = 0;
-// Dynamic: fit rules to available card height (rule ~38px, category headers ~30px, header+pager ~140px, ~3 categories visible)
-const _RULES_PER_PAGE = Math.max(5, Math.floor((window.innerHeight - 106 - 140 - 90) / 38));
+// Dynamic: fit rules to available card height (category headers add ~30px each, ~3 visible)
+let _RULES_PER_PAGE = Math.max(5, Math.floor((window.innerHeight - 120 - 130 - 90) / 32));
 
 async function loadRules() {
   const el = document.getElementById('rules-content');

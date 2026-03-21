@@ -14992,12 +14992,19 @@ function Test-TinySocsHealth {
     $results += @{ Check = "Assistant Service"; Status = "WARN"; Detail = $_.Exception.Message }
   }
 
-  # Assistant API responding (http://localhost:8081/meta — node API, unauthenticated)
+  # Assistant API responding (node API on 8081 -- try HTTPS first, fall back to HTTP)
   try {
     $assistSvc2 = Get-Service -Name "TinySocsAssistant" -ErrorAction SilentlyContinue
     if ($assistSvc2 -and $assistSvc2.Status -eq 'Running') {
       try {
-        $metaResponse = Invoke-RestMethod -Uri "http://localhost:8081/meta" -TimeoutSec 5 -ErrorAction Stop
+        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+        $metaResponse = $null
+        try {
+          $metaResponse = Invoke-RestMethod -Uri "https://localhost:8081/meta" -TimeoutSec 5 -ErrorAction Stop
+        } catch {
+          $metaResponse = Invoke-RestMethod -Uri "http://localhost:8081/meta" -TimeoutSec 5 -ErrorAction Stop
+        }
         if ($metaResponse) {
           $results += @{ Check = "Assistant API"; Status = "PASS"; Detail = "Responding on 8081" }
         } else {

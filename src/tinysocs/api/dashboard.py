@@ -5029,7 +5029,12 @@ tr:hover { background: rgba(74, 144, 217, 0.05); }
 #event-explorer-card .pager { flex-shrink: 0; }
 #tab-fleet.active { display: flex !important; flex-direction: column; height: calc(100vh - 106px); max-height: calc(100vh - 106px); }
 #tab-fleet > .card:first-child { flex-shrink: 0; }
-#tab-fleet .card.full.timeline-card { flex: 1; min-height: 300px; overflow: visible; }
+#tab-fleet .card.full.timeline-card { flex: 1; min-height: 300px; overflow: visible;
+  display: flex; flex-direction: column; }
+#tab-fleet .card.full.timeline-card > div:first-child { flex-shrink: 0; }
+#hostTimelineChart { flex: 1; min-height: 0; }
+#hostTimelineChart svg, #hostTimelineChart canvas { width: 100% !important; height: 100% !important; }
+#hostTimelineLegend { flex-shrink: 0; }
 #tab-detections > .card:first-child { height: calc(100vh - 106px); max-height: calc(100vh - 106px); box-sizing: border-box;
   display: flex; flex-direction: column; }
 #tab-detections > .card:first-child .card-header-sticky { flex-shrink: 0; }
@@ -7405,8 +7410,10 @@ async function refreshHostTimeline() {
   });
   const maxY = Math.max(1, ...stackedMax.map(s => s[s.length - 1] || 0));
 
-  // SVG dimensions
-  const W = 900, H = 220;
+  // SVG dimensions — use container height for responsive sizing
+  const W = 900;
+  const containerH = el.clientHeight || el.parentElement.clientHeight;
+  const H = Math.max(220, containerH - 10);
   const pad = {top: 16, right: 16, bottom: 28, left: 46};
   const plotW = W - pad.left - pad.right;
   const plotH = H - pad.top - pad.bottom;
@@ -7418,7 +7425,7 @@ async function refreshHostTimeline() {
   for (let t = 0; t <= maxY; t += step) yTicks.push(t);
   if (yTicks[yTicks.length - 1] < maxY) yTicks.push(Math.ceil(maxY));
 
-  let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-height:220px" xmlns="http://www.w3.org/2000/svg">`;
+  let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:100%" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">`;
 
   // Grid lines + Y labels
   for (const t of yTicks) {

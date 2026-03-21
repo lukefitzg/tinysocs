@@ -1,15 +1,14 @@
 # tinysocs/api/bot_actions.py
 from __future__ import annotations
 
-import hashlib
-import hmac
 import os
 from typing import Any, Dict, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from tinysocs.agent.actions_queue import stage_actions
+from tinysocs.api.auth import make_verify_hmac
 
 router = APIRouter(prefix="/bot", tags=["bot"])
 
@@ -18,46 +17,14 @@ ALLOWED_ACTIONS: set[str] = {
     "ack_incident", "open_ticket", "disable_user", "isolate_host", "block_ip"
 }
 
-# --- HMAC verification (accept ts OR ts|nonce OR ts.nonce; raw or 'sha256=' prefix) ---
-def _consteq(a: str, b: str) -> bool:
-    try:  # constant-time compare
-        return hmac.compare_digest(a, b)
-    except Exception:
-        return a == b
+# --- HMAC verification (centralized, with timestamp + replay protection) ---
+_bot_secret = os.getenv("BOT_SHARED_SECRET", "")
+if not _bot_secret:
+    import sys as _sys
+    print("[bot_actions] FATAL: BOT_SHARED_SECRET must be set.", file=_sys.stderr, flush=True)
+    _sys.exit(1)
 
-def _normalize_sig(sig: str) -> str:
-    sig = sig.strip()
-    if sig.lower().startswith("sha256="):
-        sig = sig.split("=", 1)[1]
-    return sig
-
-def _calc_mac(secret: str, msg: str) -> str:
-    return hmac.new(secret.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256).hexdigest()
-
-def verify_hmac(request: Request) -> None:
-    secret = os.getenv("BOT_SHARED_SECRET", "")
-    if not secret:
-        raise HTTPException(status_code=503, detail="BOT_SHARED_SECRET not set")
-
-    ts = request.headers.get("X-TinySOCS-Timestamp")
-    if not ts:
-        raise HTTPException(status_code=401, detail="missing timestamp")
-
-    nonce = request.headers.get("X-TinySOCS-Nonce", "")
-    provided = request.headers.get("X-TinySOCS-Signature") or ""
-    provided = _normalize_sig(provided)
-
-    # Accept any of the three message shapes
-    candidates = [ts]
-    if nonce:
-        candidates.append(f"{ts}|{nonce}")
-        candidates.append(f"{ts}.{nonce}")
-
-    for msg in candidates:
-        if _consteq(_calc_mac(secret, msg), provided):
-            return
-
-    raise HTTPException(status_code=401, detail="bad signature")
+verify_hmac = make_verify_hmac(_bot_secret)
 
 
 def write_action(

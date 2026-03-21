@@ -92,6 +92,7 @@ desktop.ini
 data/queue-rot/*
 !data/queue-rot/.gitkeep
 data/actions_queue.json
+data/actions_queue.jsonl
 
 # -----------------------
 # Bundled vendor bins you DO want tracked
@@ -147,9 +148,9 @@ config/*
 ledger/*.jsonl
 ledger/head.json
 
-# Ignore Windows-style queue paths created on macOS during dev
-C:\ProgramData\TinySocs\Collector\agent\queue/
-C:\ProgramData\TinySocs\Collector\agent\queue/**
+# Ignore queue paths created during agent runs (any platform)
+**/agent/queue/
+**/Collector/agent/queue/**
 
 # Ignore local queue segment files created during agent runs
 segment-*.jsonl
@@ -158,3 +159,26 @@ segment-*.jsonl
 # Build/deploy staging artefacts (contain large binaries)
 deploy-staging/
 publish/
+
+# -----------------------
+# Certificates / keys (never commit)
+# -----------------------
+*.pfx
+*.p12
+*.key
+*.pem
+!OpenSearch/**/*.pem
+
+# -----------------------
+# Runtime log data (keep .gitkeep only)
+# -----------------------
+logs/*.json
+logs/*.txt
+logs/*.raw.txt
+
+# -----------------------
+# Additional editor / merge artefacts
+# -----------------------
+*.swp
+*.swo
+*.orig

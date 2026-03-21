@@ -1,6 +1,5 @@
 # tinysocs/api/node.py
 import hashlib
-import hmac
 import json
 import os
 import time
@@ -43,7 +42,7 @@ def _load_secret() -> str:
 
     Precedence:
       1) MASTER_SHARED_SECRET   (set on both master and node)
-      2) dev-secret-change-me   (dev fallback)
+      2) FATAL error (no fallback)
     """
     master_secret = os.getenv("MASTER_SHARED_SECRET")
 
@@ -55,26 +54,22 @@ def _load_secret() -> str:
         )
         return master_secret
 
-    dev = "dev-secret-change-me"
-    sha = hashlib.sha256(dev.encode("utf-8")).hexdigest()
+    import sys
     print(
-        "[tinysocs-node] WARNING: no MASTER_SHARED_SECRET; "
-        f"falling back to dev-secret-change-me; secret_sha256={sha}",
+        "[tinysocs-node] FATAL: MASTER_SHARED_SECRET must be set. "
+        "Refusing to start with no shared secret.",
+        file=sys.stderr,
         flush=True,
     )
-    return dev
+    sys.exit(1)
 
 
 # HMAC secret:
 # - MASTER_SHARED_SECRET: single source of truth for both master and node
-# - dev-secret-change-me: last-resort fallback for dev
 SECRET = _load_secret()
 
 SKEW_SECS = int(os.getenv("TINYSOCS_SKEW_SECS", "300"))
 NODE_ID = os.getenv("TINYSOCS_NODE_ID") or os.getenv("COMPUTERNAME") or "local"
-
-# Simple per-process replay cache for HMAC tokens
-_REPLAY_CACHE: set[str] = set()
 
 
 # ---------------------------------------------------------------------------
@@ -233,53 +228,10 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _normalize_sig(sig_hdr: str) -> str:
-    """Accept 'sha256=<hex>' or raw '<hex>'."""
-    if not sig_hdr:
-        return ""
-    if sig_hdr.startswith("sha256="):
-        return sig_hdr.split("=", 1)[1]
-    return sig_hdr
+# HMAC verification — centralized in tinysocs.api.auth
+from tinysocs.api.auth import make_verify_hmac as _make_verify_hmac
 
-
-def _verify_hmac(req: Request) -> None:
-    ts = req.headers.get("X-TinySOCS-Timestamp")
-    sig_hdr = req.headers.get("X-TinySOCS-Signature")
-
-    if not ts or not sig_hdr:
-        raise HTTPException(status_code=401, detail="missing hmac headers")
-
-    try:
-        ts_int = int(ts)
-    except ValueError:
-        raise HTTPException(status_code=401, detail="bad timestamp")
-
-    if abs(int(time.time()) - ts_int) > SKEW_SECS:
-        raise HTTPException(status_code=401, detail="clock_skew")
-
-    provided = _normalize_sig(sig_hdr).lower().strip()
-    calc = hmac.new(
-        SECRET.encode("utf-8"),
-        ts.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest().lower()
-
-    token = f"{ts}:{provided}"
-    if token in _REPLAY_CACHE:
-        raise HTTPException(status_code=401, detail="replay")
-    _REPLAY_CACHE.add(token)
-
-    if not hmac.compare_digest(calc, provided):
-        try:
-            secret_sha = hashlib.sha256(SECRET.encode("utf-8")).hexdigest()
-        except Exception:
-            secret_sha = "error"
-        print(
-            f"[tinysocs-node] HMAC mismatch ts={ts} provided={provided} "
-            f"calc={calc} secret_sha256={secret_sha}",
-            flush=True,
-        )
-        raise HTTPException(status_code=401, detail="bad_signature")
+_verify_hmac = _make_verify_hmac(SECRET, skew_secs=SKEW_SECS)
 
 
 def _append_jsonl(entry: dict) -> None:
@@ -578,7 +530,7 @@ async def get_head() -> dict:
 
 @app.post("/evidence/append")
 async def post_append(req: Request) -> dict:
-    _verify_hmac(req)
+    await _verify_hmac(req)
     body = await req.json()
     incoming = {
         "stable_hash": body.get("stable_hash"),

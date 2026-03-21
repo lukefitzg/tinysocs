@@ -36,14 +36,17 @@ def _bot_env(tmp_path_factory):
     """Set env vars the bot module needs, before it's imported."""
     tmp = tmp_path_factory.mktemp("e2e")
     os.environ["BOT_SHARED_SECRET"] = _BOT_SECRET
+    os.environ["MASTER_SHARED_SECRET"] = _BOT_SECRET
     os.environ["TINYSOCS_QUEUE_PATH"] = str(tmp / "queue.jsonl")
     os.environ["TINYSOCS_AUDIT_DIR"] = str(tmp / "audit")
     os.environ["TINYSOCS_HMAC_STYLE"] = "pipe"
     # Prevent real node calls
     os.environ["TINYSOCS_NODES"] = "http://127.0.0.1:1"
+    os.environ["TINYSOCS_INSECURE_SKIP_VERIFY"] = "1"
     yield
-    for k in ("BOT_SHARED_SECRET", "TINYSOCS_QUEUE_PATH", "TINYSOCS_AUDIT_DIR",
-              "TINYSOCS_HMAC_STYLE", "TINYSOCS_NODES"):
+    for k in ("BOT_SHARED_SECRET", "MASTER_SHARED_SECRET", "TINYSOCS_QUEUE_PATH",
+              "TINYSOCS_AUDIT_DIR", "TINYSOCS_HMAC_STYLE", "TINYSOCS_NODES",
+              "TINYSOCS_INSECURE_SKIP_VERIFY"):
         os.environ.pop(k, None)
 
 
@@ -125,26 +128,21 @@ class TestActionLifecycleE2E:
         assert resp2.status_code == 200
         assert resp2.json()["status"] == "staged"
 
-        # 3. Approve
+        # 3. Approve (executor acknowledges — operator handles manually)
         resp3 = client.post("/bot/approve", json={
             "action_id": action_id,
             "approved_by": "e2e-operator",
         }, headers=_hmac_headers())
         assert resp3.status_code == 200
         result = resp3.json()
-        # dry_run=True means the handler reports success without real system changes
-        assert result["status"] == "completed"
+        assert result["status"] == "acknowledged"
         assert result["dry_run"] is True
-        assert result["result"]["success"] is True
-        assert "DRY RUN" in result["result"]["detail"]
 
         # 4. Check final status
         resp4 = client.get(f"/bot/actions/{action_id}/status", headers=_hmac_headers())
         assert resp4.status_code == 200
         final = resp4.json()
-        assert final["status"] == "completed"
-        assert final["approved_at"] is not None
-        assert final["completed_at"] is not None
+        assert final["status"] == "acknowledged"
 
     def test_approve_nonexistent_returns_404(self, client):
         resp = client.post("/bot/approve", json={

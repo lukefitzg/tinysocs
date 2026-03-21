@@ -85,20 +85,33 @@ def _create_session_token() -> str:
     return token
 
 
+_MAX_SESSIONS = 500  # cap to prevent unbounded growth
+_session_gc_counter = 0
+
+
 def _validate_session(token: str) -> bool:
     """Check if a session token is valid and not expired.
     Implements sliding-window renewal: each successful check extends the TTL."""
+    global _session_gc_counter
     import time
     if not token:
         return False
     expiry = _active_sessions.get(token)
     if expiry is None:
         return False
-    if time.time() > expiry:
+    now = time.time()
+    if now > expiry:
         _active_sessions.pop(token, None)
         return False
     # Sliding renewal — extend session on every valid request
-    _active_sessions[token] = time.time() + _SESSION_TTL
+    _active_sessions[token] = now + _SESSION_TTL
+    # Periodic GC: prune expired sessions when dict grows large
+    _session_gc_counter += 1
+    if _session_gc_counter >= 50 or len(_active_sessions) > _MAX_SESSIONS:
+        _session_gc_counter = 0
+        stale = [k for k, exp in _active_sessions.items() if exp <= now]
+        for k in stale:
+            _active_sessions.pop(k, None)
     return True
 
 
@@ -5183,10 +5196,10 @@ tr:hover { background: rgba(74, 144, 217, 0.05); }
 #hostTimelineChart { flex: 1; min-height: 0; }
 #hostTimelineChart svg, #hostTimelineChart canvas { width: 100% !important; height: 100% !important; }
 #hostTimelineLegend { flex-shrink: 0; }
-#tab-detections > .card:first-child { height: calc(100vh - 120px); max-height: calc(100vh - 120px); box-sizing: border-box;
+#tab-detections > .card:first-child { box-sizing: border-box;
   display: flex; flex-direction: column; }
 #tab-detections > .card:first-child .card-header-sticky { flex-shrink: 0; }
-#tab-detections > .card:first-child > div:not(.card-header-sticky):not(.pager) { flex: 1; overflow-y: auto; min-height: 0; }
+#tab-detections > .card:first-child > div:not(.card-header-sticky):not(.pager) { flex: 1; min-height: 0; }
 #tab-detections > .card:first-child .pager { flex-shrink: 0; margin-top: auto; }
 
 /* Shared pager */

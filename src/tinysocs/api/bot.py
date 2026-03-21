@@ -19,7 +19,7 @@ Env:
   MASTER_SHARED_SECRET           Reused when calling node /evidence/append (fallback for NODE_SECRET)
   NODE_SECRET                    Optional override for the secret used to call /evidence/append
   TINYSOCS_NODES                 Comma list; first is used to append ledger (default http://localhost:8081)
-  TINYSOCS_INSECURE_SKIP_VERIFY  "1" to skip TLS verify to node (default 1)
+  TINYSOCS_INSECURE_SKIP_VERIFY  "1" to skip TLS verify to node (default 0 = verify)
   TINYSOCS_QUEUE_PATH            Path to actions queue JSONL (fallback if local actions_queue module not present)
   ACTIONS_QUEUE_PATH             Legacy/fallback env name for queue path
   TINYSOCS_SKEW_SECS             Override inbound skew seconds (default 300)
@@ -95,10 +95,23 @@ def _env(name: str, default: Optional[str] = None) -> Optional[str]:
     return v if v is not None else default
 
 BOT_SECRET = (_env("BOT_SHARED_SECRET", "") or "")
-NODE_SECRET = (_env("NODE_SECRET", _env("MASTER_SHARED_SECRET", "dev-secret-change-me")) or "dev-secret-change-me")
+
+_node_secret_raw = _env("NODE_SECRET", _env("MASTER_SHARED_SECRET", ""))
+if not _node_secret_raw:
+    import sys
+    print(
+        "[bot] FATAL: NODE_SECRET or MASTER_SHARED_SECRET must be set. "
+        "Refusing to start with no shared secret.",
+        file=sys.stderr,
+        flush=True,
+    )
+    sys.exit(1)
+NODE_SECRET: str = _node_secret_raw
+
 NODES = [x.strip() for x in (_env("TINYSOCS_NODES", "https://localhost:8081") or "").split(",") if x.strip()]
 NODE_URL = NODES[0] if NODES else "https://localhost:8081"
-NODE_TLS_VERIFY = str(_env("TINYSOCS_INSECURE_SKIP_VERIFY", "1")).lower() not in ("1", "true", "yes", "on")
+# Default: verify TLS. Set TINYSOCS_INSECURE_SKIP_VERIFY=1 to disable (dev/lab only).
+NODE_TLS_VERIFY = str(_env("TINYSOCS_INSECURE_SKIP_VERIFY", "0")).lower() not in ("1", "true", "yes", "on")
 
 # Queue path (fallback if we can't import a project-level actions_queue module)
 _queue_path_env = _env("TINYSOCS_QUEUE_PATH") or _env("ACTIONS_QUEUE_PATH")
@@ -107,11 +120,7 @@ FALLBACK_QUEUE_PATH = Path(_queue_path_env or str(Path(__file__).resolve().paren
 ALLOWED_SKEW_SECONDS = int(_env("TINYSOCS_SKEW_SECS", "300") or "300")
 REPLAY_CACHE_SECONDS = 300
 
-# HMAC style for inbound requests (default 'pipe' to match master & PS helpers)
-HMAC_STYLE = (_env("TINYSOCS_HMAC_STYLE", "pipe") or "pipe").strip().lower()
-
-# Replay cache keyed by the exact signed message (ts / ts|nonce / ts.nonce)
-_recent_ts: Dict[str, int] = {}  # replay_key -> expiry epoch
+from tinysocs.api.auth import make_verify_hmac
 
 # ---------- Try to use the project's existing actions_queue.py ---------------
 _aq = None
@@ -144,50 +153,40 @@ def _effective_queue_path() -> Path:
     return p
 
 # ---------- HMAC auth (inbound) ----------
-def _gc(now: int) -> None:
-    stale = [k for k, exp in _recent_ts.items() if exp <= now]
-    for k in stale:
-        _recent_ts.pop(k, None)
+# Uses centralized auth module (tinysocs.api.auth) for HMAC verification.
+if not BOT_SECRET:
+    import sys as _sys_bot
+    print("[bot] FATAL: BOT_SHARED_SECRET must be set.", file=_sys_bot.stderr, flush=True)
+    _sys_bot.exit(1)
 
-def verify_hmac(request: Request) -> None:
-    if not BOT_SECRET:
-        raise HTTPException(status_code=500, detail="BOT_SHARED_SECRET not set")
+verify_hmac = make_verify_hmac(BOT_SECRET, skew_secs=ALLOWED_SKEW_SECONDS)
 
-    ts_hdr  = request.headers.get("X-TinySOCS-Timestamp")
-    sig_hdr = request.headers.get("X-TinySOCS-Signature", "")
-    nonce   = request.headers.get("X-TinySOCS-Nonce")
+# ---------- Rate limiting (per-IP, in-memory) ----------
+_RATE_LIMIT_WINDOW = 60   # seconds
+_RATE_LIMIT_MAX = 30       # max requests per window per IP
+_rate_buckets: Dict[str, List[float]] = {}
 
-    # For pipe/dot, nonce is required
-    if not ts_hdr or not sig_hdr or (HMAC_STYLE in ("pipe", "dot") and not nonce):
-        raise HTTPException(status_code=401, detail="Missing auth headers")
+_rate_gc_counter = 0
 
-    try:
-        ts = int(ts_hdr)
-    except ValueError:
-        raise HTTPException(status_code=401, detail="Invalid timestamp")
-
-    now = int(time.time())
-    if abs(now - ts) > ALLOWED_SKEW_SECONDS:
-        raise HTTPException(status_code=401, detail="Timestamp skew too large")
-
-    if HMAC_STYLE == "dot":
-        msg = f"{ts}.{nonce}"
-    elif HMAC_STYLE == "pipe":
-        msg = f"{ts}|{nonce}"
-    else:  # 'ts'
-        msg = str(ts)
-
-    calc = hmac.new(BOT_SECRET.encode("utf-8"), msg.encode("utf-8"), hashlib.sha256).hexdigest()
-    provided = sig_hdr.split("=", 1)[1] if sig_hdr.startswith("sha256=") else sig_hdr
-    if not hmac.compare_digest(calc, provided):
-        raise HTTPException(status_code=401, detail="Bad signature")
-
-    # Replay protection keyed by the exact message string
-    _gc(now)
-    exp = _recent_ts.get(msg)
-    if exp and exp > now:
-        raise HTTPException(status_code=401, detail="Replay detected")
-    _recent_ts[msg] = now + REPLAY_CACHE_SECONDS
+def _check_rate_limit(request: Request) -> None:
+    """Simple sliding-window rate limiter for action endpoints."""
+    global _rate_gc_counter
+    client_ip = request.client.host if request.client else "unknown"
+    now = time.time()
+    bucket = _rate_buckets.setdefault(client_ip, [])
+    # Prune old entries
+    cutoff = now - _RATE_LIMIT_WINDOW
+    _rate_buckets[client_ip] = bucket = [t for t in bucket if t > cutoff]
+    if len(bucket) >= _RATE_LIMIT_MAX:
+        raise HTTPException(status_code=429, detail="Rate limit exceeded")
+    bucket.append(now)
+    # Periodic GC: remove stale IPs
+    _rate_gc_counter += 1
+    if _rate_gc_counter >= 100 or len(_rate_buckets) > 1000:
+        _rate_gc_counter = 0
+        stale = [k for k, v in _rate_buckets.items() if not v or v[-1] < cutoff]
+        for k in stale:
+            _rate_buckets.pop(k, None)
 
 # ---------- Queue + ledger helpers ----------
 def _fallback_queue_append(obj: Dict[str, Any]) -> Path:
@@ -346,10 +345,20 @@ def _guard_params(action: str, params: Dict[str, Any]) -> None:
         user = str(params.get("user", "")).strip()
         if not user:
             raise HTTPException(status_code=400, detail="disable_user requires 'user'")
+        if len(user) > 256:
+            raise HTTPException(status_code=400, detail="username too long (max 256)")
+        import re
+        if not re.match(r'^[A-Za-z0-9._\\@/ -]+$', user):
+            raise HTTPException(status_code=400, detail="invalid username characters")
     elif action == "isolate_host":
         host = str(params.get("host", "")).strip()
         if not host:
             raise HTTPException(status_code=400, detail="isolate_host requires 'host'")
+        if len(host) > 253:
+            raise HTTPException(status_code=400, detail="hostname too long (max 253)")
+        import re
+        if not re.match(r'^[A-Za-z0-9._-]+$', host):
+            raise HTTPException(status_code=400, detail="invalid hostname characters")
     elif action == "open_ticket":
         # accept either 'title' or 'summary' for convenience
         title = str(params.get("title", "")).strip() or str(params.get("summary", "")).strip()
@@ -403,7 +412,7 @@ class ActionStatusResponse(BaseModel):
     completed_at: Optional[str] = None
     result: Optional[Dict[str, Any]] = None
 
-@app.post("/bot/ack", dependencies=[Depends(verify_hmac)])
+@app.post("/bot/ack", dependencies=[Depends(verify_hmac), Depends(_check_rate_limit)])
 def bot_ack(body: AckBody = Body(...)) -> Dict[str, Any]:
     entry = {
         "kind": "bot_action",
@@ -417,7 +426,7 @@ def bot_ack(body: AckBody = Body(...)) -> Dict[str, Any]:
     ledger_res = _post_ledger(entry)
     return {"queued": True, "ledger": ledger_res, "node": NODE_URL, "path": str(qpath)}
 
-@app.post("/bot/exec", dependencies=[Depends(verify_hmac)])
+@app.post("/bot/exec", dependencies=[Depends(verify_hmac), Depends(_check_rate_limit)])
 def bot_exec(body: ExecBody = Body(...)) -> Dict[str, Any]:
     if body.action not in ALLOWED_ACTIONS:
         raise HTTPException(status_code=400, detail=f"action not allowed: {body.action}")
@@ -451,7 +460,7 @@ def bot_exec(body: ExecBody = Body(...)) -> Dict[str, Any]:
     return {"queued": True, "ledger": ledger_res, "node": NODE_URL, "path": str(qpath), "action_id": executor_id}
 
 # ---- Action Approval (Phase 12) ----
-@app.post("/bot/approve", dependencies=[Depends(verify_hmac)])
+@app.post("/bot/approve", dependencies=[Depends(verify_hmac), Depends(_check_rate_limit)])
 def bot_approve(body: ApproveBody = Body(...)) -> Dict[str, Any]:
     if not _HAS_EXECUTOR:
         raise HTTPException(status_code=501, detail="Action executor not available")
@@ -542,12 +551,17 @@ def bot_actions(
     return ActionsResponse(items=out, count=len(out), next_cursor=None)
 
 # ---- Diagnostic endpoint: try all shapes and return their statuses (HMAC-protected) ----
+_DIAG_ENABLED = str(os.getenv("BOT_ENABLE_DIAG", "0")).strip().lower() in ("1", "true", "yes", "on")
+
 @app.post("/bot/_diag/ledger-shapes", dependencies=[Depends(verify_hmac)])
 def bot_diag_ledger_shapes(sample: Dict[str, Any] = Body(default=None)) -> Dict[str, Any]:
     """
     Test all body shapes against /evidence/append and return per-shape results.
     If no sample provided, a minimal bot_action ack is used.
+    Requires BOT_ENABLE_DIAG=1.
     """
+    if not _DIAG_ENABLED:
+        raise HTTPException(status_code=403, detail="diag disabled (set BOT_ENABLE_DIAG=1)")
     entry = sample or {
         "kind": "bot_action",
         "action": "ack_incident",
@@ -596,8 +610,8 @@ def bot_diag_queue_append_sample() -> Dict[str, Any]:
     Append a couple of canned items to the queue for quick testing.
     Enable with BOT_ENABLE_DIAG=1 (or true/yes/on).
     """
-    if str(os.getenv("BOT_ENABLE_DIAG", "0")).strip().lower() not in ("1", "true", "yes", "on"):
-        raise HTTPException(status_code=403, detail="diag disabled")
+    if not _DIAG_ENABLED:
+        raise HTTPException(status_code=403, detail="diag disabled (set BOT_ENABLE_DIAG=1)")
     ts = _now()
     entries = [
         {

@@ -20,7 +20,7 @@ Env knobs (with sensible defaults):
   MASTER_RETRY_MIN_MS            Min backoff in ms (default 250)
   MASTER_RETRY_MAX_MS            Max backoff in ms (default 750)
   MASTER_DEADLINE_SEC            Overall deadline seconds (default 30 if not provided via --deadline)
-  TINYSOCS_INSECURE_SKIP_VERIFY  "1" to skip TLS verify for node calls (default 1 for lab)
+  TINYSOCS_INSECURE_SKIP_VERIFY  "1" to skip TLS verify for node calls (default 0 = verify)
   PRIVACY_MODE                   "abstract" (default) | "raw" | "redact" (passed to anchor metadata)
   ENSURE_ANCHORS                 "1" (default) to pre-flight create alias/mapping if missing
   FANOUT_WAIT_ALL                "1" to wait for all nodes (until deadline) instead of returning after first result
@@ -138,18 +138,18 @@ def _load_secret() -> str:
         print(f"[master] using MASTER_SHARED_SECRET; secret_sha256={sha}")
         return master_secret
 
-    dev = "dev-secret-change-me"
-    sha = hashlib.sha256(dev.encode("utf-8")).hexdigest()
+    import sys
     print(
-        f"[master] WARNING: no NODE_SECRET/MASTER_SHARED_SECRET; "
-        f"falling back to dev-secret-change-me; secret_sha256={sha}"
+        "[master] FATAL: NODE_SECRET or MASTER_SHARED_SECRET must be set. "
+        "Refusing to start with no shared secret.",
+        file=sys.stderr,
     )
-    return dev
+    sys.exit(1)
 
 
 NODES: List[str] = [x.strip() for x in os.getenv("TINYSOCS_NODES", "http://localhost:8081").split(",") if x.strip()]
 SECRET: str = _load_secret()
-NODE_TLS_VERIFY: bool = not _env_bool("TINYSOCS_INSECURE_SKIP_VERIFY", True)  # default skip verify (lab)
+NODE_TLS_VERIFY: bool = not _env_bool("TINYSOCS_INSECURE_SKIP_VERIFY", False)  # default: verify TLS
 
 REQUEST_TIMEOUT_SEC: float = float(os.getenv("REQUEST_TIMEOUT_SEC", "30"))
 MASTER_RETRIES: int = int(os.getenv("MASTER_RETRIES", "3"))

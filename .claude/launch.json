@@ -7,8 +7,13 @@
       "runtimeArgs": ["-m", "tinysocs.api.bot", "--demo"],
       "port": 8090,
       "env": {
-        "PYTHONPATH": "src",
-        "BOT_PORT": "8090"
+        "PYTHONPATH": "/Users/lukefitzgerald/tinysocs/src",
+        "BOT_PORT": "8090",
+        "TINYSOCS_NODES": "https://localhost:8081",
+        "DEMO_MODE": "1",
+        "TINYSOCS_INSECURE_SKIP_VERIFY": "1",
+        "BOT_SHARED_SECRET": "demo-preview-secret",
+        "MASTER_SHARED_SECRET": "demo-preview-secret"
       }
     }
   ]

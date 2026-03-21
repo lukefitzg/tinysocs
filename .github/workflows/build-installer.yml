@@ -49,9 +49,16 @@ jobs:
         shell: pwsh
         run: |
           $url = "https://artifacts.opensearch.org/releases/bundle/opensearch/2.18.0/opensearch-2.18.0-windows-x64.zip"
+          $expectedHash = "e2db6ee1fb22e917a2f1e6c2bf2e40e2c41a3a5e5a7c8fe4f4dcf8b1bda5d7a3"  # TODO: update with actual SHA256
           $zip = "opensearch.zip"
           Write-Host "Downloading OpenSearch..."
           Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+          $actualHash = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLower()
+          Write-Host "Downloaded hash: $actualHash"
+          # Uncomment to enforce hash verification once the correct hash is recorded:
+          # if ($actualHash -ne $expectedHash) {
+          #   throw "SHA256 mismatch for OpenSearch download! Expected=$expectedHash Got=$actualHash"
+          # }
           New-Item -ItemType Directory -Path "vendor/opensearch-3.3.2-windows-x64" -Force | Out-Null
           Expand-Archive -Path $zip -DestinationPath "vendor/opensearch-3.3.2-windows-x64" -Force
           Remove-Item $zip

@@ -24,6 +24,12 @@ services:
         hard: -1
     volumes:
       - opensearch-data:/usr/share/opensearch/data
+    deploy:
+      resources:
+        limits:
+          memory: 4g
+        reservations:
+          memory: 2g
     healthcheck:
       test: ["CMD-SHELL", "curl -skf -u ${SIEM_USER}:${SIEM_PASS} https://localhost:9200/_cluster/health > /dev/null"]
       interval: 15s
@@ -40,7 +46,8 @@ services:
       - OPENSEARCH_HOSTS=["https://opensearch:9200"]
       - OPENSEARCH_USERNAME=${SIEM_USER}
       - OPENSEARCH_PASSWORD=${SIEM_PASS}
-      - OPENSEARCH_SSL_VERIFICATIONMODE=none
+      # NOTE: Set to 'full' in production. 'none' is for dev/lab only.
+      - OPENSEARCH_SSL_VERIFICATIONMODE=${OPENSEARCH_SSL_VERIFICATIONMODE:-none}
     ports:
       - "5602:5601"   # direct access (dev)
     depends_on:

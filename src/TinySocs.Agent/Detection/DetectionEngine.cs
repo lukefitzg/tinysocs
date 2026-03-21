@@ -14,7 +14,11 @@ namespace TinySocs.Agent.Detection
     public sealed class DetectionEngine
     {
         private readonly ILogger<DetectionEngine> _logger;
-        private List<DetectionRule> _rules;
+        private volatile List<DetectionRule> _rules;
+
+        // Lock protects all mutable state (_windows, _lastAlertTime, pruning counters).
+        // The engine may be called from concurrent event processing pipelines.
+        private readonly object _stateLock = new object();
 
         // In-memory sliding windows: ruleId -> groupKey -> list of event timestamps
         private readonly Dictionary<string, Dictionary<string, List<EventOccurrence>>> _windows;
@@ -51,30 +55,33 @@ namespace TinySocs.Agent.Detection
         {
             var alerts = new List<AlertDocument>();
 
-            // Periodic window pruning to prevent unbounded memory growth
-            _evaluationsSincePrune++;
-            if (_evaluationsSincePrune >= PruneEveryNEvaluations)
+            lock (_stateLock)
             {
-                PruneExpiredWindows();
-                _evaluationsSincePrune = 0;
-            }
-
-            foreach (var rule in _rules)
-            {
-                if (!rule.Enabled)
+                // Periodic window pruning to prevent unbounded memory growth
+                _evaluationsSincePrune++;
+                if (_evaluationsSincePrune >= PruneEveryNEvaluations)
                 {
-                    continue;
+                    PruneExpiredWindows();
+                    _evaluationsSincePrune = 0;
                 }
 
-                if (rule.Type == "threshold_by_key")
+                foreach (var rule in _rules)
                 {
-                    var alert = EvaluateThresholdByKey(rule, evt);
-                    if (alert != null)
+                    if (!rule.Enabled)
                     {
-                        alerts.Add(alert);
+                        continue;
                     }
+
+                    if (rule.Type == "threshold_by_key")
+                    {
+                        var alert = EvaluateThresholdByKey(rule, evt);
+                        if (alert != null)
+                        {
+                            alerts.Add(alert);
+                        }
+                    }
+                    // Future: add other rule types (match_single, cardinality, etc.)
                 }
-                // Future: add other rule types (match_single, cardinality, etc.)
             }
 
             return alerts;

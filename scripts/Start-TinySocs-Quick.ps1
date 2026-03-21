@@ -345,12 +345,25 @@ function Start-TinySocs-Ready {
   # 3) SIEM + Core defaults
   if (-not $env:SIEM_URL)               { Set-Item Env:SIEM_URL "https://127.0.0.1:9201" }
   if (-not $env:SIEM_USER)              { Set-Item Env:SIEM_USER "admin" }
-  if (-not $env:SIEM_PASS)              { Set-Item Env:SIEM_PASS "ChangeMe123!" }
+  if (-not $env:SIEM_PASS) {
+    Write-Error "SIEM_PASS must be set. Export it before running this script."
+    exit 1
+  }
   if (-not $env:SIEM_SSL_VERIFY)        { Set-Item Env:SIEM_SSL_VERIFY "0" }
   if (-not $env:TINYSOCS_NODES)         { Set-Item Env:TINYSOCS_NODES "http://localhost:$NodePort" }
-  if (-not $env:MASTER_SHARED_SECRET)   { Set-Item Env:MASTER_SHARED_SECRET "dev-secret-change-me" }
+  if (-not $env:MASTER_SHARED_SECRET) {
+    # Generate a random secret for quickstart sessions
+    $randomSecret = -join ((65..90) + (97..122) + (48..57) | Get-Random -Count 32 | ForEach-Object { [char]$_ })
+    Write-Warning "MASTER_SHARED_SECRET not set — generating random secret for this session."
+    Set-Item Env:MASTER_SHARED_SECRET $randomSecret
+  }
   if (-not $env:NODE_SECRET)            { Set-Item Env:NODE_SECRET $env:MASTER_SHARED_SECRET }
-  if (-not $env:BOT_SHARED_SECRET)      { Set-Item Env:BOT_SHARED_SECRET "supersecret" }
+  if (-not $env:BOT_SHARED_SECRET) {
+    # Generate a random secret for quickstart sessions
+    $randomBotSecret = -join ((65..90) + (97..122) + (48..57) | Get-Random -Count 32 | ForEach-Object { [char]$_ })
+    Write-Warning "BOT_SHARED_SECRET not set — generating random secret for this session."
+    Set-Item Env:BOT_SHARED_SECRET $randomBotSecret
+  }
   if (-not $env:ENSURE_ANCHORS)         { Set-Item Env:ENSURE_ANCHORS "1" }
   if (-not $env:TINYSOCS_INSECURE_SKIP_VERIFY) { Set-Item Env:TINYSOCS_INSECURE_SKIP_VERIFY "1" }
   if (-not $env:TINYSOCS_HMAC_STYLE)    { Set-Item Env:TINYSOCS_HMAC_STYLE "pipe" }

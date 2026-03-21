@@ -14993,25 +14993,52 @@ function Test-TinySocsHealth {
   }
 
   # Assistant API responding (node API on 8081 -- try HTTPS first, fall back to HTTP)
+  # Uses curl.exe as primary method because PS 5.1 Invoke-RestMethod frequently fails
+  # on self-signed TLS even after setting ServerCertificateValidationCallback (the
+  # callback must be "primed" by a prior request in the same session, which isn't
+  # guaranteed here).  curl.exe -ks handles self-signed certs reliably.
   try {
     $assistSvc2 = Get-Service -Name "TinySocsAssistant" -ErrorAction SilentlyContinue
     if ($assistSvc2 -and $assistSvc2.Status -eq 'Running') {
+      $metaOk = $false
+      $metaErr = ""
+      # Attempt 1: curl.exe (handles self-signed certs natively with -k)
       try {
-        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
-        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
-        $metaResponse = $null
+        $curlExe = Get-Command curl.exe -ErrorAction SilentlyContinue
+        if ($curlExe) {
+          $curlOut = & curl.exe -ks --connect-timeout 5 "https://localhost:8081/meta" 2>&1
+          if ($LASTEXITCODE -eq 0 -and $curlOut) {
+            $metaOk = $true
+          } else {
+            # HTTPS failed, try HTTP
+            $curlOut = & curl.exe -ks --connect-timeout 5 "http://localhost:8081/meta" 2>&1
+            if ($LASTEXITCODE -eq 0 -and $curlOut) { $metaOk = $true }
+          }
+        }
+      } catch { <# curl.exe not available, fall through #> }
+      # Attempt 2: Invoke-RestMethod with TLS bypass (fallback)
+      if (-not $metaOk) {
         try {
-          $metaResponse = Invoke-RestMethod -Uri "https://localhost:8081/meta" -TimeoutSec 5 -ErrorAction Stop
+          [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+          if (-not [System.Net.ServicePointManager]::ServerCertificateValidationCallback) {
+            [System.Net.ServicePointManager]::ServerCertificateValidationCallback = `
+              [System.Net.Security.RemoteCertificateValidationCallback]{ param($sender,$cert,$chain,$errors) return $true }
+          }
+          $metaResponse = $null
+          try {
+            $metaResponse = Invoke-RestMethod -Uri "https://localhost:8081/meta" -TimeoutSec 5 -ErrorAction Stop
+          } catch {
+            $metaResponse = Invoke-RestMethod -Uri "http://localhost:8081/meta" -TimeoutSec 5 -ErrorAction Stop
+          }
+          if ($metaResponse) { $metaOk = $true }
         } catch {
-          $metaResponse = Invoke-RestMethod -Uri "http://localhost:8081/meta" -TimeoutSec 5 -ErrorAction Stop
+          $metaErr = $_.Exception.Message
         }
-        if ($metaResponse) {
-          $results += @{ Check = "Assistant API"; Status = "PASS"; Detail = "Responding on 8081" }
-        } else {
-          $results += @{ Check = "Assistant API"; Status = "WARN"; Detail = "Empty response" }
-        }
-      } catch {
-        $results += @{ Check = "Assistant API"; Status = "WARN"; Detail = "Not responding: $($_.Exception.Message)" }
+      }
+      if ($metaOk) {
+        $results += @{ Check = "Assistant API"; Status = "PASS"; Detail = "Responding on 8081" }
+      } else {
+        $results += @{ Check = "Assistant API"; Status = "WARN"; Detail = "Not responding: $metaErr" }
       }
     } else {
       $results += @{ Check = "Assistant API"; Status = "WARN"; Detail = "Service not running; skipped" }

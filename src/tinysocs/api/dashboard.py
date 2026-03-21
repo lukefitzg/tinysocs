@@ -5029,6 +5029,19 @@ tr:hover { background: rgba(74, 144, 217, 0.05); }
 #event-explorer-card .explorer-toolbar { flex-shrink: 0; }
 #event-explorer-card .explorer-table-wrap { flex: 1; overflow: hidden; min-height: 0; }
 #event-explorer-card .pager { flex-shrink: 0; }
+/* Event Explorer: copyable cells, expandable message, sortable headers */
+#event-explorer-card td { cursor: pointer; user-select: text; position: relative; }
+#event-explorer-card td:hover { background: rgba(74,144,217,0.06); }
+#event-explorer-card th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+#event-explorer-card th.sortable:hover { color: var(--accent); }
+#event-explorer-card th .sort-arrow { font-size: 10px; margin-left: 3px; opacity: 0.6; }
+#event-explorer-card tr.expanded td.msg-cell { white-space: pre-wrap !important; max-width: none !important;
+  text-overflow: clip !important; overflow: visible !important; word-break: break-word; }
+.copy-toast { position: fixed; background: #27ae60; color: #fff; padding: 4px 12px;
+  border-radius: 4px; font-size: 11px; pointer-events: none; z-index: 9999;
+  animation: copyFade 1.2s ease forwards; }
+@keyframes copyFade { 0% { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(-12px); } }
 #tab-fleet.active { display: flex !important; flex-direction: column; height: calc(100vh - 120px); max-height: calc(100vh - 120px); }
 #tab-fleet > .card:first-child { flex-shrink: 0; }
 #tab-fleet .card.full.timeline-card { flex: 1; min-height: 300px; overflow: visible;
@@ -5070,8 +5083,13 @@ tr:hover { background: rgba(74, 144, 217, 0.05); }
 .rule-detail pre { background: var(--bg); padding: 8px; border-radius: 4px; font-size: 11px;
   overflow-x: auto; white-space: pre-wrap; word-break: break-all; margin: 4px 0; }
 
-/* Fired Detections panel */
-.detections-card { max-height: calc(100vh - 120px); overflow: hidden; box-sizing: border-box; }
+/* Fired Detections panel — match assistant panel height (top:90px + gap) */
+.detections-card { max-height: calc(100vh - 120px); overflow: hidden; box-sizing: border-box;
+  display: flex; flex-direction: column; }
+.detections-card .card-header-sticky { flex-shrink: 0; }
+.detections-card .card-body { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.detections-card .card-body > div:first-child { flex: 1; overflow-y: auto; min-height: 0; }
+.detections-card .pager { flex-shrink: 0; }
 .detection-row { padding: 8px 0; border-bottom: 1px solid var(--border); cursor: pointer;
                  transition: background 0.15s; }
 .detection-row:hover { background: rgba(74, 144, 217, 0.05); }
@@ -6442,8 +6460,8 @@ let _detectionCache = [];
 let _openDetectionIdx = -1;       // which row is currently expanded
 let _detectionSummaries = {};     // idx -> summary text (persists across refresh)
 let _detectionsPage = 0;
-// Dynamic: fit detections to remaining space below alert summary+timeline
-let _DETECTIONS_PER_PAGE = Math.max(3, Math.floor((window.innerHeight - 420 - 80) / 32));
+// Dynamic: fit detections to viewport (same pattern as Event Explorer)
+let _DETECTIONS_PER_PAGE = Math.max(5, Math.floor((window.innerHeight - 120 - 150) / 42));
 
 async function loadDetections() {
   const el = document.getElementById('detections-content');
@@ -7146,8 +7164,38 @@ let _eventsPage = 0;
 let _eventsLive = false;
 // Dynamic: fit rows to available card height. Recalculated on first render.
 let _EVENTS_PER_PAGE = Math.max(8, Math.floor((window.innerHeight - 120 - 150) / 32));
+let _eventsSortCol = 'timestamp';
+let _eventsSortAsc = false;  // default: TIME descending
+let _expandedEventRows = new Set();
 
 function toggleEventsLive(on) { _eventsLive = on; }
+
+function sortEventsBy(col) {
+  if (_eventsSortCol === col) { _eventsSortAsc = !_eventsSortAsc; }
+  else { _eventsSortCol = col; _eventsSortAsc = col !== 'timestamp'; }
+  renderEvents();
+}
+
+function copyCell(ev) {
+  const td = ev.target.closest('td');
+  if (!td) return;
+  const text = td.getAttribute('data-full') || td.textContent;
+  navigator.clipboard.writeText(text).then(() => {
+    const toast = document.createElement('div');
+    toast.className = 'copy-toast';
+    toast.textContent = 'Copied!';
+    toast.style.left = ev.clientX + 'px';
+    toast.style.top = (ev.clientY - 28) + 'px';
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 1300);
+  });
+}
+
+function toggleEventMsg(rowIdx) {
+  if (_expandedEventRows.has(rowIdx)) _expandedEventRows.delete(rowIdx);
+  else _expandedEventRows.add(rowIdx);
+  renderEvents();
+}
 
 function ensureCardVisible(id) {
   const cardTabMap = {summary:'overview',timeline:'overview',detections:'overview',
@@ -7179,23 +7227,61 @@ function renderEvents() {
   const events = _eventsCache;
   const idx = _eventsIdx;
 
+  // Client-side sort on current data
+  const sortKey = _eventsSortCol;
+  const sortDir = _eventsSortAsc ? 1 : -1;
+  const sorted = [...events].sort((a, b) => {
+    let va = a[sortKey] || '', vb = b[sortKey] || '';
+    if (sortKey === 'timestamp') { va = new Date(va || 0).getTime(); vb = new Date(vb || 0).getTime(); }
+    else if (sortKey === 'event_id') { va = parseInt(va) || 0; vb = parseInt(vb) || 0; }
+    else { va = String(va).toLowerCase(); vb = String(vb).toLowerCase(); }
+    return va < vb ? -sortDir : va > vb ? sortDir : 0;
+  });
+
   // Pagination
-  const totalItems = events.length;
+  const totalItems = sorted.length;
   const totalPages = Math.ceil(totalItems / _EVENTS_PER_PAGE);
   if (_eventsPage >= totalPages) _eventsPage = totalPages - 1;
   if (_eventsPage < 0) _eventsPage = 0;
   const pageStart = _eventsPage * _EVENTS_PER_PAGE;
-  const pageEvents = events.slice(pageStart, pageStart + _EVENTS_PER_PAGE);
+  const pageEvents = sorted.slice(pageStart, pageStart + _EVENTS_PER_PAGE);
 
   const isAlerts = idx.includes('alerts');
-  let html = isAlerts
-    ? '<table><tr><th>Time</th><th>Host</th><th>Rule</th><th>Severity</th><th>Description</th></tr>'
-    : '<table><tr><th>Time</th><th>Host</th><th>Channel</th><th>ID</th><th>Message</th></tr>';
-  for (const e of pageEvents) {
+  const arrow = (col) => _eventsSortCol === col ? (_eventsSortAsc ? '<span class="sort-arrow">&#9650;</span>' : '<span class="sort-arrow">&#9660;</span>') : '';
+  let html;
+  if (isAlerts) {
+    html = '<table><tr>'
+      + `<th class="sortable" onclick="sortEventsBy('timestamp')">Time${arrow('timestamp')}</th>`
+      + `<th class="sortable" onclick="sortEventsBy('host')">Host${arrow('host')}</th>`
+      + `<th class="sortable" onclick="sortEventsBy('rule_name')">Rule${arrow('rule_name')}</th>`
+      + `<th class="sortable" onclick="sortEventsBy('severity')">Severity${arrow('severity')}</th>`
+      + `<th class="sortable" onclick="sortEventsBy('message')">Description${arrow('message')}</th>`
+      + '</tr>';
+  } else {
+    html = '<table><tr>'
+      + `<th class="sortable" onclick="sortEventsBy('timestamp')">Time${arrow('timestamp')}</th>`
+      + `<th class="sortable" onclick="sortEventsBy('host')">Host${arrow('host')}</th>`
+      + `<th class="sortable" onclick="sortEventsBy('channel')">Channel${arrow('channel')}</th>`
+      + `<th class="sortable" onclick="sortEventsBy('event_id')">ID${arrow('event_id')}</th>`
+      + `<th class="sortable" onclick="sortEventsBy('message')">Message${arrow('message')}</th>`
+      + '</tr>';
+  }
+  for (let ri = 0; ri < pageEvents.length; ri++) {
+    const e = pageEvents[ri];
+    const globalIdx = pageStart + ri;
     const t = e.timestamp ? new Date(e.timestamp).toLocaleString() : '';
-    const msg = (e.message || '').substring(0, 120);
-    const hostLink = e.host ? `<a href="#" style="color:var(--accent);text-decoration:none" onclick="event.preventDefault();openHostTimeline('${escapeHtml(e.host)}')">${escapeHtml(e.host)}</a>` : '';
-    html += `<tr><td style="white-space:nowrap">${t}</td><td>${hostLink}</td><td>${e.channel}</td><td>${e.event_id}</td><td style="font-size:12px;color:var(--muted)">${msg}</td></tr>`;
+    const fullMsg = e.message || '';
+    const isExpanded = _expandedEventRows.has(globalIdx);
+    const msg = isExpanded ? escapeHtml(fullMsg) : escapeHtml(fullMsg.substring(0, 120)) + (fullMsg.length > 120 ? '...' : '');
+    const hostLink = e.host ? `<a href="#" style="color:var(--accent);text-decoration:none" onclick="event.preventDefault();event.stopPropagation();openHostTimeline('${escapeHtml(e.host)}')">${escapeHtml(e.host)}</a>` : '';
+    const expandedClass = isExpanded ? ' class="expanded"' : '';
+    html += `<tr${expandedClass} onclick="copyCell(event)">`;
+    html += `<td style="white-space:nowrap" data-full="${escapeHtml(t)}">${t}</td>`;
+    html += `<td data-full="${escapeHtml(e.host || '')}">${hostLink}</td>`;
+    html += `<td data-full="${escapeHtml(e.channel || '')}">${escapeHtml(e.channel || '')}</td>`;
+    html += `<td data-full="${escapeHtml(String(e.event_id || ''))}">${escapeHtml(String(e.event_id || ''))}</td>`;
+    html += `<td class="msg-cell" style="font-size:12px;color:var(--muted);${isExpanded ? '' : 'max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'}" data-full="${escapeHtml(fullMsg)}" onclick="event.stopPropagation();toggleEventMsg(${globalIdx})">${msg}</td>`;
+    html += '</tr>';
   }
   html += '</table>';
 
@@ -7499,8 +7585,8 @@ async function refreshHostTimeline() {
 let _rulesCache = [];
 let _openRuleIdx = -1;
 let _rulesPage = 0;
-// Dynamic: fit rules to available card height (category headers add ~30px each, ~3 visible)
-let _RULES_PER_PAGE = Math.max(5, Math.floor((window.innerHeight - 120 - 130 - 90) / 32));
+// Dynamic: fit rules to viewport height (same pattern as Event Explorer / detections)
+let _RULES_PER_PAGE = Math.max(5, Math.floor((window.innerHeight - 120 - 180) / 36));
 
 async function loadRules() {
   const el = document.getElementById('rules-content');

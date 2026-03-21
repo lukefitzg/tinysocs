@@ -6438,7 +6438,7 @@ let _detectionCache = [];
 let _openDetectionIdx = -1;       // which row is currently expanded
 let _detectionSummaries = {};     // idx -> summary text (persists across refresh)
 let _detectionsPage = 0;
-const _DETECTIONS_PER_PAGE = 10;
+const _DETECTIONS_PER_PAGE = 20;
 
 async function loadDetections() {
   const el = document.getElementById('detections-content');
@@ -6579,16 +6579,24 @@ function renderDetections() {
     html += '</div>';
   }
 
-  // Pager
-  if (totalPages > 1) {
-    html += `<div class="pager">`;
-    html += `<button onclick="detectionsPagePrev()" ${_detectionsPage === 0 ? 'disabled' : ''}>&laquo; Prev</button>`;
-    html += `<span>Page ${_detectionsPage + 1} of ${totalPages} (${totalItems} detections)</span>`;
-    html += `<button onclick="detectionsPageNext()" ${_detectionsPage >= totalPages - 1 ? 'disabled' : ''}>Next &raquo;</button>`;
-    html += '</div>';
-  }
-
   el.innerHTML = html;
+
+  // Pager — rendered outside the scrollable content area
+  let detPager = document.getElementById('detections-pager');
+  if (!detPager) {
+    detPager = document.createElement('div');
+    detPager.id = 'detections-pager';
+    detPager.className = 'pager';
+    el.parentNode.appendChild(detPager);
+  }
+  if (totalPages > 1) {
+    detPager.innerHTML = `<button onclick="detectionsPagePrev()" ${_detectionsPage === 0 ? 'disabled' : ''}>&laquo; Prev</button>`
+      + `<span>Page ${_detectionsPage + 1} of ${totalPages} (${totalItems} detections)</span>`
+      + `<button onclick="detectionsPageNext()" ${_detectionsPage >= totalPages - 1 ? 'disabled' : ''}>Next &raquo;</button>`;
+    detPager.style.display = '';
+  } else {
+    detPager.style.display = 'none';
+  }
 }
 
 function detectionsPagePrev() { _detectionsPage = Math.max(0, _detectionsPage - 1); _openDetectionIdx = -1; renderDetections(); }
@@ -6830,7 +6838,7 @@ function showInLogs(idx) {
 let _fleetCache = [];
 let _openFleetIdx = -1;
 let _fleetPage = 0;
-const _FLEET_PER_PAGE = 10;
+const _FLEET_PER_PAGE = 20;
 let _fleetVersionMap = {};
 let _threatIntelStatus = null;
 
@@ -7131,7 +7139,7 @@ let _eventsCache = [];
 let _eventsIdx = '';
 let _eventsPage = 0;
 let _eventsLive = false;
-const _EVENTS_PER_PAGE = 15;
+const _EVENTS_PER_PAGE = 25;
 
 function toggleEventsLive(on) { _eventsLive = on; }
 
@@ -7483,7 +7491,7 @@ async function refreshHostTimeline() {
 let _rulesCache = [];
 let _openRuleIdx = -1;
 let _rulesPage = 0;
-const _RULES_PER_PAGE = 10;
+const _RULES_PER_PAGE = 20;
 
 async function loadRules() {
   const el = document.getElementById('rules-content');
@@ -7585,16 +7593,24 @@ function renderRules() {
     }
   }
 
-  // Pager
-  if (totalPages > 1) {
-    html += `<div class="pager">`;
-    html += `<button onclick="rulesPagePrev()" ${_rulesPage === 0 ? 'disabled' : ''}>&laquo; Prev</button>`;
-    html += `<span>Page ${_rulesPage + 1} of ${totalPages} (${totalRules} rules)</span>`;
-    html += `<button onclick="rulesPageNext()" ${_rulesPage >= totalPages - 1 ? 'disabled' : ''}>Next &raquo;</button>`;
-    html += '</div>';
-  }
-
   el.innerHTML = html;
+
+  // Pager — rendered outside the scrollable content area
+  let rulesPager = document.getElementById('rules-pager');
+  if (!rulesPager) {
+    rulesPager = document.createElement('div');
+    rulesPager.id = 'rules-pager';
+    rulesPager.className = 'pager';
+    el.parentNode.appendChild(rulesPager);
+  }
+  if (totalPages > 1) {
+    rulesPager.innerHTML = `<button onclick="rulesPagePrev()" ${_rulesPage === 0 ? 'disabled' : ''}>&laquo; Prev</button>`
+      + `<span>Page ${_rulesPage + 1} of ${totalPages} (${totalRules} rules)</span>`
+      + `<button onclick="rulesPageNext()" ${_rulesPage >= totalPages - 1 ? 'disabled' : ''}>Next &raquo;</button>`;
+    rulesPager.style.display = '';
+  } else {
+    rulesPager.style.display = 'none';
+  }
 }
 
 function rulesPagePrev() { _rulesPage = Math.max(0, _rulesPage - 1); _openRuleIdx = -1; renderRules(); }

@@ -4986,6 +4986,7 @@ a { color: var(--accent); text-decoration: none; }
 .cert-badge.pinned { background:#166534; color:#86efac; }
 .cert-badge.mismatch { background:#991b1b; color:#fca5a5; }
 .cert-badge.unpinned { background:#78350f; color:#fcd34d; }
+.cert-badge.local { background:#374151; color:#9ca3af; }
 .site-metric { display:flex; justify-content:space-between; font-size:12px; padding:3px 0;
                color:var(--muted); border-bottom:1px solid var(--border); }
 .site-metric:last-child { border-bottom:none; }
@@ -5972,19 +5973,27 @@ function showTip(evt, text) {
 }
 function hideTip() { if (_tipEl) _tipEl.style.display = 'none'; }
 
+let _initialLoadComplete = false;
+
 async function fetchJSON(path) {
-  try {
-    const opts = {};
-    if (_authToken) { opts.headers = { 'Authorization': 'Bearer ' + _authToken }; }
-    const r = await fetch(BASE + path, opts);
-    if (r.status === 401) {
-      // Only force logout for auth-specific endpoints; data endpoints
-      // may transiently 401 during startup or token renewal races.
-      return { error: 'unauthorized' };
+  const maxRetries = _initialLoadComplete ? 0 : 2;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const opts = {};
+      if (_authToken) { opts.headers = { 'Authorization': 'Bearer ' + _authToken }; }
+      const r = await fetch(BASE + path, opts);
+      if (r.status === 401) {
+        return { error: 'unauthorized' };
+      }
+      return await r.json();
+    } catch(e) {
+      if (attempt < maxRetries) {
+        await new Promise(res => setTimeout(res, 2000));
+        continue;
+      }
+      const msg = _initialLoadComplete ? e.message : 'Loading...';
+      return { error: msg };
     }
-    return await r.json();
-  } catch(e) {
-    return { error: e.message };
   }
 }
 
@@ -6085,8 +6094,10 @@ async function loadSites() {
     html += '<strong style="flex:1">' + escapeHtml(n.node_id || n.url) + '</strong>';
     // Certificate pinning badge
     const certSt = n.cert_status || 'unpinned';
+    const isLocalNode = (n.url && /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(n.url)) || (n.node_id && n.node_id === _localNodeId);
     if (certSt === 'pinned') html += '<span class="cert-badge pinned" title="TLS certificate verified">&#x1f512;</span>';
     else if (certSt === 'mismatch') html += '<span class="cert-badge mismatch" title="SECURITY: Certificate mismatch!">&#x26a0; CERT</span>';
+    else if (isLocalNode) html += '<span class="cert-badge local" title="Local node (no pinning needed)">&#x1f512;</span>';
     else if (certSt === 'unpinned') html += '<span class="cert-badge unpinned" title="Certificate not yet pinned">&#x1f513;</span>';
 
     html += '<span class="site-alert-badge ' + badgeCls + '">' + badgeVal + '</span>';
@@ -8011,6 +8022,7 @@ function refreshAll() {
     _tabLoaded[_activeTab] = true;
     Promise.all(tasks)
       .then(() => {
+        _initialLoadComplete = true;
         updateEl.textContent = 'Updated ' + new Date().toLocaleTimeString();
       })
       .catch(() => {

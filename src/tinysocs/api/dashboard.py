@@ -5185,7 +5185,7 @@ tr:hover { background: rgba(74, 144, 217, 0.05); }
 #tab-detections > .card:first-child { height: calc(100vh - 120px); max-height: calc(100vh - 120px); box-sizing: border-box;
   display: flex; flex-direction: column; }
 #tab-detections > .card:first-child .card-header-sticky { flex-shrink: 0; }
-#tab-detections > .card:first-child > div:not(.card-header-sticky) { flex: 1; overflow: hidden; min-height: 0; }
+#tab-detections > .card:first-child > div:not(.card-header-sticky):not(.pager) { flex: 1; overflow-y: auto; min-height: 0; }
 #tab-detections > .card:first-child .pager { flex-shrink: 0; margin-top: auto; }
 
 /* Shared pager */
@@ -7822,13 +7822,15 @@ function renderRules() {
 
   el.innerHTML = html;
 
-  // Pager — rendered outside the scrollable content area
+  // Pager — must be a direct child of the card (flex sibling), not inside the scrollable content
   let rulesPager = document.getElementById('rules-pager');
   if (!rulesPager) {
     rulesPager = document.createElement('div');
     rulesPager.id = 'rules-pager';
     rulesPager.className = 'pager';
-    el.parentNode.appendChild(rulesPager);
+    // Append to the card element itself (grandparent of content), not the scrollable content div
+    const card = el.closest('.card') || el.parentNode;
+    card.appendChild(rulesPager);
   }
   if (totalPages > 1) {
     rulesPager.innerHTML = `<button onclick="rulesPagePrev()" ${_rulesPage === 0 ? 'disabled' : ''}>&laquo; Prev</button>`

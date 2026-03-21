@@ -5027,7 +5027,8 @@ tr:hover { background: rgba(74, 144, 217, 0.05); }
 #event-explorer-card .explorer-toolbar { flex-shrink: 0; }
 #event-explorer-card .explorer-table-wrap { flex: 1; overflow-y: auto; min-height: 0; }
 #event-explorer-card .pager { flex-shrink: 0; }
-#tab-fleet.active { display: flex !important; flex-direction: column; max-height: calc(100vh - 106px); }
+#tab-fleet.active { display: flex !important; flex-direction: column; height: calc(100vh - 106px); max-height: calc(100vh - 106px); }
+#tab-fleet > .card:first-child { flex-shrink: 0; }
 #tab-fleet .card.full.timeline-card { flex: 1; min-height: 300px; overflow: visible; }
 #tab-detections > .card:first-child { height: calc(100vh - 106px); max-height: calc(100vh - 106px); box-sizing: border-box;
   display: flex; flex-direction: column; }

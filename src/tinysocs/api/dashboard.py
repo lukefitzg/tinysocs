@@ -5020,10 +5020,20 @@ tr:hover { background: rgba(74, 144, 217, 0.05); }
 .timeline-card h2 { margin-bottom: 0; }
 
 /* Match main-content widget heights to assistant panel (top:90px, bottom:16px) */
-#event-explorer-card { max-height: calc(100vh - 106px); overflow-y: auto; box-sizing: border-box; }
+#event-explorer-card { height: calc(100vh - 106px); max-height: calc(100vh - 106px); box-sizing: border-box;
+  display: flex; flex-direction: column; }
+#event-explorer-card .card-header-sticky { flex-shrink: 0; }
+#event-explorer-card .card-body { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+#event-explorer-card .explorer-toolbar { flex-shrink: 0; }
+#event-explorer-card .explorer-table-wrap { flex: 1; overflow-y: auto; min-height: 0; }
+#event-explorer-card .pager { flex-shrink: 0; }
 #tab-fleet.active { display: flex !important; flex-direction: column; max-height: calc(100vh - 106px); }
 #tab-fleet .card.full.timeline-card { flex: 1; min-height: 300px; overflow: visible; }
-#tab-detections > .card:first-child { min-height: calc(100vh - 106px); max-height: calc(100vh - 106px); overflow-y: auto; box-sizing: border-box; }
+#tab-detections > .card:first-child { height: calc(100vh - 106px); max-height: calc(100vh - 106px); box-sizing: border-box;
+  display: flex; flex-direction: column; }
+#tab-detections > .card:first-child .card-header-sticky { flex-shrink: 0; }
+#tab-detections > .card:first-child > div:not(.card-header-sticky) { flex: 1; overflow-y: auto; min-height: 0; }
+#tab-detections > .card:first-child .pager { flex-shrink: 0; margin-top: auto; }
 
 /* Shared pager */
 .pager { display: flex; align-items: center; justify-content: center; gap: 8px;
@@ -5516,7 +5526,7 @@ select { cursor: pointer; }
             </label>
           </div>
           <div id="schema-panel" style="display:none;max-height:200px;overflow-y:auto;margin-bottom:8px;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;font-size:12px"></div>
-          <div id="events-content"><div class="loading">Loading...</div></div>
+          <div id="events-content" class="explorer-table-wrap"><div class="loading">Loading...</div></div>
         </div>
       </div>
     </div>
@@ -7175,16 +7185,24 @@ function renderEvents() {
   }
   html += '</table>';
 
-  // Pager
-  if (totalPages > 1) {
-    html += `<div class="pager">`;
-    html += `<button onclick="eventsPagePrev()" ${_eventsPage === 0 ? 'disabled' : ''}>&laquo; Prev</button>`;
-    html += `<span>Page ${_eventsPage + 1} of ${totalPages} (${totalItems} events)</span>`;
-    html += `<button onclick="eventsPageNext()" ${_eventsPage >= totalPages - 1 ? 'disabled' : ''}>Next &raquo;</button>`;
-    html += '</div>';
-  }
-
   el.innerHTML = html;
+
+  // Pager — rendered outside the scrollable table area
+  let pagerEl = document.getElementById('events-pager');
+  if (!pagerEl) {
+    pagerEl = document.createElement('div');
+    pagerEl.id = 'events-pager';
+    pagerEl.className = 'pager';
+    el.parentNode.appendChild(pagerEl);
+  }
+  if (totalPages > 1) {
+    pagerEl.innerHTML = `<button onclick="eventsPagePrev()" ${_eventsPage === 0 ? 'disabled' : ''}>&laquo; Prev</button>`
+      + `<span>Page ${_eventsPage + 1} of ${totalPages} (${totalItems} events)</span>`
+      + `<button onclick="eventsPageNext()" ${_eventsPage >= totalPages - 1 ? 'disabled' : ''}>Next &raquo;</button>`;
+    pagerEl.style.display = '';
+  } else {
+    pagerEl.style.display = 'none';
+  }
 }
 
 function eventsPagePrev() { _eventsPage = Math.max(0, _eventsPage - 1); renderEvents(); }

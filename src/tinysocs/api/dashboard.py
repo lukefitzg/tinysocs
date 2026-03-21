@@ -1373,19 +1373,43 @@ async def api_alert_timeline(
     }
     resp = await _safe_query_async("tinysocs-alerts-*", body)
     buckets = resp.get("aggregations", {}).get("timeline", {}).get("buckets", [])
+    local_buckets = [
+        {
+            "time": b.get("key_as_string", ""),
+            "count": b.get("doc_count", 0),
+            "severity": {
+                s["key"]: s["doc_count"]
+                for s in b.get("by_severity", {}).get("buckets", [])
+            },
+        }
+        for b in buckets
+    ]
+
+    # --- Fan-out: merge timeline buckets from all remote nodes (All Sites view) ---
+    if _get_node_urls() and not hostname:
+        remote_results = await _fan_out_nodes("alerts/timeline", {"hours": str(hours)})
+        # Index local buckets by time for merging
+        bucket_map: Dict[str, Dict[str, Any]] = {b["time"]: b for b in local_buckets}
+        for rd in remote_results:
+            for rb in rd.get("buckets", []):
+                t = rb.get("time", "")
+                if not t:
+                    continue
+                if t in bucket_map:
+                    bucket_map[t]["count"] += rb.get("count", 0)
+                    for sev_key, sev_count in rb.get("severity", {}).items():
+                        bucket_map[t]["severity"][sev_key] = bucket_map[t]["severity"].get(sev_key, 0) + sev_count
+                else:
+                    bucket_map[t] = {
+                        "time": t,
+                        "count": rb.get("count", 0),
+                        "severity": dict(rb.get("severity", {})),
+                    }
+        local_buckets = sorted(bucket_map.values(), key=lambda b: b["time"])
+
     return {
         "hours": hours,
-        "buckets": [
-            {
-                "time": b.get("key_as_string", ""),
-                "count": b.get("doc_count", 0),
-                "severity": {
-                    s["key"]: s["doc_count"]
-                    for s in b.get("by_severity", {}).get("buckets", [])
-                },
-            }
-            for b in buckets
-        ],
+        "buckets": local_buckets,
         "error": resp.get("error"),
     }
 
@@ -1447,6 +1471,31 @@ async def api_alert_summary(
         for b in resp_hosts.get("aggregations", {}).get("by_host", {}).get("buckets", [])
     ]
 
+    # --- Fan-out: merge alert summaries from all remote nodes (All Sites view) ---
+    if _get_node_urls():
+        remote_results = await _fan_out_nodes("alerts/summary", {"hours": str(hours)})
+        for rd in remote_results:
+            total += rd.get("total", 0)
+            for sev_key, sev_count in rd.get("severity", {}).items():
+                severity[sev_key] = severity.get(sev_key, 0) + sev_count
+            for rr in rd.get("top_rules", []):
+                existing = next((r for r in top_rules if r["rule"] == rr.get("rule")), None)
+                if existing:
+                    existing["count"] += rr.get("count", 0)
+                else:
+                    top_rules.append({"rule": rr.get("rule", ""), "count": rr.get("count", 0)})
+            for rh in rd.get("top_hosts", []):
+                existing = next((h for h in top_hosts if h["host"] == rh.get("host")), None)
+                if existing:
+                    existing["count"] += rh.get("count", 0)
+                else:
+                    top_hosts.append({"host": rh.get("host", ""), "count": rh.get("count", 0)})
+        # Re-sort top lists by count descending and trim
+        top_rules.sort(key=lambda r: r["count"], reverse=True)
+        top_rules = top_rules[:10]
+        top_hosts.sort(key=lambda h: h["count"], reverse=True)
+        top_hosts = top_hosts[:10]
+
     return {
         "hours": hours,
         "total": total,
@@ -1507,6 +1556,23 @@ async def api_detections_fired(
         det["status"] = state.get("status", "new")
         det["tags"] = state.get("tags", [])
         det["notes"] = state.get("notes", "")
+
+    # --- Fan-out: merge detections from all remote nodes (All Sites view) ---
+    if _get_node_urls():
+        remote_results = await _fan_out_nodes(
+            "detections/fired", {"hours": str(hours), "limit": str(limit)}
+        )
+        for rd in remote_results:
+            for rdet in rd.get("detections", []):
+                # Avoid duplicates by alert_id
+                if not any(d.get("id") == rdet.get("id") or
+                           (d.get("alert_id") and d.get("alert_id") == rdet.get("alert_id"))
+                           for d in detections):
+                    detections.append(rdet)
+            total += rd.get("total", 0)
+        # Re-sort by timestamp descending and trim to limit
+        detections.sort(key=lambda d: d.get("timestamp", ""), reverse=True)
+        detections = detections[:limit]
 
     return {"detections": detections, "total": total, "error": resp.get("error")}
 
@@ -2192,6 +2258,29 @@ async def api_fleet_health():
             "last_ship_time": hb.get("last_ship_time", ""),
             "heartbeat_ts": hb.get("heartbeat_ts", ""),
         })
+    # --- Fan-out: merge hosts from all remote nodes (All Sites view) ---
+    if _get_node_urls():
+        remote_results = await _fan_out_nodes("fleet/health")
+        for rd in remote_results:
+            for rh in rd.get("hosts", []):
+                # Avoid duplicates (remote host already present from local OS)
+                if not any(h["hostname"] == rh.get("hostname") for h in hosts):
+                    hosts.append({
+                        "hostname": rh.get("hostname", ""),
+                        "event_count": rh.get("event_count", 0),
+                        "last_seen": rh.get("last_seen", ""),
+                        "first_seen": rh.get("first_seen", ""),
+                        "alert_count": rh.get("alert_count", 0),
+                        "alert_severities": rh.get("alert_severities", {}),
+                        "active_detections": rh.get("active_detections", [])[:5],
+                        "agent_version": rh.get("agent_version", ""),
+                        "uptime": rh.get("uptime", ""),
+                        "events_shipped": rh.get("events_shipped", 0),
+                        "queue_files": rh.get("queue_files", 0),
+                        "last_ship_time": rh.get("last_ship_time", ""),
+                        "heartbeat_ts": rh.get("heartbeat_ts", ""),
+                    })
+
     return {"hosts": hosts, "error": resp.get("error")}
 
 
@@ -2254,6 +2343,35 @@ async def _fetch_node_json(client: Any, url: str, path: str) -> Optional[Dict[st
     except Exception as exc:
         print(f"[dashboard] _fetch_node_json FAILED: {url}{path} -- {type(exc).__name__}: {exc}", flush=True)
         return None
+
+
+async def _fan_out_nodes(path: str, params: Optional[Dict[str, str]] = None, timeout: float = 8.0) -> List[Dict[str, Any]]:
+    """Query *all* configured remote nodes in parallel, returning a list of non-None responses.
+
+    Used by dashboard endpoints in the "All Sites" view to aggregate data
+    from every federated Site.  The Hub's own local data is NOT included here
+    (callers merge it separately).
+    """
+    node_urls = _get_node_urls()
+    if not node_urls:
+        return []
+    import httpx
+    qs = "&".join(f"{k}={v}" for k, v in (params or {}).items())
+    suffix = f"?{qs}" if qs else ""
+    results: List[Dict[str, Any]] = []
+    try:
+        async with httpx.AsyncClient(verify=False, timeout=timeout) as client:
+            coros = [
+                _fetch_node_json(client, url, f"/{path.lstrip('/')}{suffix}")
+                for url in node_urls
+            ]
+            raw = await asyncio.gather(*coros, return_exceptions=True)
+            for r in raw:
+                if isinstance(r, dict):
+                    results.append(r)
+    except Exception as exc:
+        print(f"[dashboard] _fan_out_nodes({path}) error: {exc}", flush=True)
+    return results
 
 
 @dashboard_app.get("/api/nodes")
@@ -3152,6 +3270,20 @@ async def api_events_recent(
                 "message": (src.get("message", "") or "")[:300],
                 "host": (src.get("winlog", {}) or {}).get("computer_name", (src.get("agent", {}) or {}).get("hostname", "")),
             })
+    # --- Fan-out: merge events from all remote nodes (All Sites view) ---
+    if _get_node_urls():
+        fan_params = {"limit": str(limit), "index": index}
+        if q:
+            fan_params["q"] = q
+        if time_range:
+            fan_params["time_range"] = time_range
+        remote_results = await _fan_out_nodes("events/recent", fan_params)
+        for rd in remote_results:
+            events.extend(rd.get("events", []))
+        # Re-sort merged events by timestamp (most recent first) and trim to limit
+        events.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
+        events = events[:limit]
+
     return {"events": events, "total": len(events), "index": index, "error": resp.get("error")}
 
 

@@ -5022,14 +5022,14 @@ tr:hover { background: rgba(74, 144, 217, 0.05); }
 .timeline-card h2 { margin-bottom: 0; }
 
 /* Match main-content widget heights to assistant panel (top:90px, bottom:16px) */
-#event-explorer-card { height: calc(100vh - 106px); max-height: calc(100vh - 106px); box-sizing: border-box;
+#event-explorer-card { height: calc(100vh - 120px); max-height: calc(100vh - 120px); box-sizing: border-box;
   display: flex; flex-direction: column; }
 #event-explorer-card .card-header-sticky { flex-shrink: 0; }
 #event-explorer-card .card-body { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 #event-explorer-card .explorer-toolbar { flex-shrink: 0; }
 #event-explorer-card .explorer-table-wrap { flex: 1; overflow: hidden; min-height: 0; }
 #event-explorer-card .pager { flex-shrink: 0; }
-#tab-fleet.active { display: flex !important; flex-direction: column; height: calc(100vh - 106px); max-height: calc(100vh - 106px); }
+#tab-fleet.active { display: flex !important; flex-direction: column; height: calc(100vh - 120px); max-height: calc(100vh - 120px); }
 #tab-fleet > .card:first-child { flex-shrink: 0; }
 #tab-fleet .card.full.timeline-card { flex: 1; min-height: 300px; overflow: visible;
   display: flex; flex-direction: column; }
@@ -5037,7 +5037,7 @@ tr:hover { background: rgba(74, 144, 217, 0.05); }
 #hostTimelineChart { flex: 1; min-height: 0; }
 #hostTimelineChart svg, #hostTimelineChart canvas { width: 100% !important; height: 100% !important; }
 #hostTimelineLegend { flex-shrink: 0; }
-#tab-detections > .card:first-child { height: calc(100vh - 106px); max-height: calc(100vh - 106px); box-sizing: border-box;
+#tab-detections > .card:first-child { height: calc(100vh - 120px); max-height: calc(100vh - 120px); box-sizing: border-box;
   display: flex; flex-direction: column; }
 #tab-detections > .card:first-child .card-header-sticky { flex-shrink: 0; }
 #tab-detections > .card:first-child > div:not(.card-header-sticky) { flex: 1; overflow: hidden; min-height: 0; }
@@ -5071,7 +5071,7 @@ tr:hover { background: rgba(74, 144, 217, 0.05); }
   overflow-x: auto; white-space: pre-wrap; word-break: break-all; margin: 4px 0; }
 
 /* Fired Detections panel */
-.detections-card { max-height: calc(100vh - 106px); overflow: hidden; box-sizing: border-box; }
+.detections-card { max-height: calc(100vh - 120px); overflow: hidden; box-sizing: border-box; }
 .detection-row { padding: 8px 0; border-bottom: 1px solid var(--border); cursor: pointer;
                  transition: background 0.15s; }
 .detection-row:hover { background: rgba(74, 144, 217, 0.05); }
@@ -6442,7 +6442,8 @@ let _detectionCache = [];
 let _openDetectionIdx = -1;       // which row is currently expanded
 let _detectionSummaries = {};     // idx -> summary text (persists across refresh)
 let _detectionsPage = 0;
-const _DETECTIONS_PER_PAGE = 5;
+// Dynamic: fit detections to remaining space below alert summary+timeline (~500px used above)
+const _DETECTIONS_PER_PAGE = Math.max(3, Math.floor((window.innerHeight - 500 - 80) / 36));
 
 async function loadDetections() {
   const el = document.getElementById('detections-content');
@@ -7143,7 +7144,8 @@ let _eventsCache = [];
 let _eventsIdx = '';
 let _eventsPage = 0;
 let _eventsLive = false;
-const _EVENTS_PER_PAGE = 8;
+// Dynamic: fit rows to available card height (row ~42px, header+toolbar+pager ~180px)
+const _EVENTS_PER_PAGE = Math.max(5, Math.floor((window.innerHeight - 106 - 180) / 42));
 
 function toggleEventsLive(on) { _eventsLive = on; }
 
@@ -7497,7 +7499,8 @@ async function refreshHostTimeline() {
 let _rulesCache = [];
 let _openRuleIdx = -1;
 let _rulesPage = 0;
-const _RULES_PER_PAGE = 8;
+// Dynamic: fit rules to available card height (rule ~38px, category headers ~30px, header+pager ~140px, ~3 categories visible)
+const _RULES_PER_PAGE = Math.max(5, Math.floor((window.innerHeight - 106 - 140 - 90) / 38));
 
 async function loadRules() {
   const el = document.getElementById('rules-content');

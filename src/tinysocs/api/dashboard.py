@@ -86,7 +86,8 @@ def _create_session_token() -> str:
 
 
 def _validate_session(token: str) -> bool:
-    """Check if a session token is valid and not expired."""
+    """Check if a session token is valid and not expired.
+    Implements sliding-window renewal: each successful check extends the TTL."""
     import time
     if not token:
         return False
@@ -96,6 +97,8 @@ def _validate_session(token: str) -> bool:
     if time.time() > expiry:
         _active_sessions.pop(token, None)
         return False
+    # Sliding renewal — extend session on every valid request
+    _active_sessions[token] = time.time() + _SESSION_TTL
     return True
 
 
@@ -5797,7 +5800,17 @@ function hideTip() { if (_tipEl) _tipEl.style.display = 'none'; }
 
 async function fetchJSON(path) {
   try {
-    const r = await fetch(BASE + path);
+    const opts = {};
+    if (_authToken) { opts.headers = { 'Authorization': 'Bearer ' + _authToken }; }
+    const r = await fetch(BASE + path, opts);
+    if (r.status === 401) {
+      document.getElementById('dashboardContent').style.visibility = 'hidden';
+      document.getElementById('loginGate').style.display = 'flex';
+      const ts = document.getElementById('headerTimestamp');
+      if (ts) ts.textContent = 'Session expired -- please log in again';
+      _dashboardUnlocked = false;
+      return { error: 'session_expired' };
+    }
     return await r.json();
   } catch(e) {
     return { error: e.message };

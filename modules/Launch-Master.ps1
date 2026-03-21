@@ -257,7 +257,7 @@ if (-not [string]::IsNullOrWhiteSpace($siemCaPath)) {
       }
 
       # Export CA bundle path for common TLS stacks (curl/OpenSSL).
-      # NOTE: Do NOT set REQUESTS_CA_BUNDLE -- the Python requests library
+      # NOTE: Do NOT set REQUESTS_CA_BUNDLE here — the Python requests library
       # reads it and overrides explicit session.verify settings, breaking our
       # custom SSLContext in tls.py.  Use SIEM_CA_CERT / SIEM_CA_BUNDLE only.
       $env:SIEM_CA_BUNDLE     = $finalCaPath

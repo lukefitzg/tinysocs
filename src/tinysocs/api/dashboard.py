@@ -5003,7 +5003,9 @@ tr:hover { background: rgba(74, 144, 217, 0.05); }
 .btn-reject:hover { opacity: 0.85; }
 .btn-sm:disabled { opacity: 0.4; cursor: not-allowed; }
 
-#events-content { overflow-y: visible; }
+#events-content { overflow: hidden; }
+#events-content table { table-layout: fixed; width: 100%; }
+#events-content td, #events-content th { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Threat intelligence badges */
 .threat-badge { display:inline-flex; align-items:center; gap:3px; font-size:10px; padding:1px 6px; border-radius:3px; cursor:pointer; font-weight:600; }
@@ -5025,7 +5027,7 @@ tr:hover { background: rgba(74, 144, 217, 0.05); }
 #event-explorer-card .card-header-sticky { flex-shrink: 0; }
 #event-explorer-card .card-body { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 #event-explorer-card .explorer-toolbar { flex-shrink: 0; }
-#event-explorer-card .explorer-table-wrap { flex: 1; overflow-y: auto; min-height: 0; }
+#event-explorer-card .explorer-table-wrap { flex: 1; overflow: hidden; min-height: 0; }
 #event-explorer-card .pager { flex-shrink: 0; }
 #tab-fleet.active { display: flex !important; flex-direction: column; height: calc(100vh - 106px); max-height: calc(100vh - 106px); }
 #tab-fleet > .card:first-child { flex-shrink: 0; }
@@ -5038,7 +5040,7 @@ tr:hover { background: rgba(74, 144, 217, 0.05); }
 #tab-detections > .card:first-child { height: calc(100vh - 106px); max-height: calc(100vh - 106px); box-sizing: border-box;
   display: flex; flex-direction: column; }
 #tab-detections > .card:first-child .card-header-sticky { flex-shrink: 0; }
-#tab-detections > .card:first-child > div:not(.card-header-sticky) { flex: 1; overflow-y: auto; min-height: 0; }
+#tab-detections > .card:first-child > div:not(.card-header-sticky) { flex: 1; overflow: hidden; min-height: 0; }
 #tab-detections > .card:first-child .pager { flex-shrink: 0; margin-top: auto; }
 
 /* Shared pager */
@@ -5069,7 +5071,7 @@ tr:hover { background: rgba(74, 144, 217, 0.05); }
   overflow-x: auto; white-space: pre-wrap; word-break: break-all; margin: 4px 0; }
 
 /* Fired Detections panel */
-.detections-card { }
+.detections-card { max-height: calc(100vh - 106px); overflow: hidden; box-sizing: border-box; }
 .detection-row { padding: 8px 0; border-bottom: 1px solid var(--border); cursor: pointer;
                  transition: background 0.15s; }
 .detection-row:hover { background: rgba(74, 144, 217, 0.05); }
@@ -5826,12 +5828,9 @@ async function fetchJSON(path) {
     if (_authToken) { opts.headers = { 'Authorization': 'Bearer ' + _authToken }; }
     const r = await fetch(BASE + path, opts);
     if (r.status === 401) {
-      document.getElementById('dashboardContent').style.visibility = 'hidden';
-      document.getElementById('loginGate').style.display = 'flex';
-      const ts = document.getElementById('headerTimestamp');
-      if (ts) ts.textContent = 'Session expired -- please log in again';
-      _dashboardUnlocked = false;
-      return { error: 'session_expired' };
+      // Only force logout for auth-specific endpoints; data endpoints
+      // may transiently 401 during startup or token renewal races.
+      return { error: 'unauthorized' };
     }
     return await r.json();
   } catch(e) {
@@ -6050,7 +6049,6 @@ async function loadPendingSites() {
   try {
     const resp = await fetch(BASE + '/api/nodes/pending', {headers: {'Authorization': 'Bearer ' + (_authToken || '')}});
     if (!resp.ok) {
-      if (resp.status === 401) { _handleSessionExpired(); }
       banner.style.display = 'none'; return;
     }
     const data = await resp.json();
@@ -6444,7 +6442,7 @@ let _detectionCache = [];
 let _openDetectionIdx = -1;       // which row is currently expanded
 let _detectionSummaries = {};     // idx -> summary text (persists across refresh)
 let _detectionsPage = 0;
-const _DETECTIONS_PER_PAGE = 20;
+const _DETECTIONS_PER_PAGE = 5;
 
 async function loadDetections() {
   const el = document.getElementById('detections-content');
@@ -7145,7 +7143,7 @@ let _eventsCache = [];
 let _eventsIdx = '';
 let _eventsPage = 0;
 let _eventsLive = false;
-const _EVENTS_PER_PAGE = 25;
+const _EVENTS_PER_PAGE = 8;
 
 function toggleEventsLive(on) { _eventsLive = on; }
 
@@ -7499,7 +7497,7 @@ async function refreshHostTimeline() {
 let _rulesCache = [];
 let _openRuleIdx = -1;
 let _rulesPage = 0;
-const _RULES_PER_PAGE = 20;
+const _RULES_PER_PAGE = 8;
 
 async function loadRules() {
   const el = document.getElementById('rules-content');

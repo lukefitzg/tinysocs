@@ -312,7 +312,7 @@ foreach ($spec in $specNames) {
     if (Test-Path $specPath) {
         $name = [System.IO.Path]::GetFileNameWithoutExtension($spec)
         Write-Host "  Building $name..."
-        $pyOut = pyinstaller $specPath --distpath $distDir --noconfirm 2>&1
+        $pyOut = pyinstaller $specPath --distpath $distDir --noconfirm --clean 2>&1
         if ($LASTEXITCODE -eq 0) {
             Write-Host "    $name built." -ForegroundColor Green
         } else {

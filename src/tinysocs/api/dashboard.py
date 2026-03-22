@@ -6306,7 +6306,7 @@ select { cursor: pointer; }
       </div>
 
       <!-- Storage -->
-      <div class="card">
+      <div class="card full">
         <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
           <h2 style="margin:0;flex:1">Storage</h2>
           <button onclick="askAIAboutWidget('storage')" style="margin-left:auto;font-size:11px;padding:3px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;white-space:nowrap" title="Ask the AI assistant about this widget">Ask AI</button>

@@ -1786,6 +1786,69 @@ def _human_bytes(b: int) -> str:
     return f"{b:.1f} PB"
 
 
+# ---------------------------------------------------------------------------
+# HEC Token management (dashboard-side CRUD, delegates to node token store)
+# ---------------------------------------------------------------------------
+
+@dashboard_app.get("/api/settings/hec-tokens")
+async def api_list_hec_tokens(request: Request):
+    """List HEC tokens (names, IDs, dates — never raw tokens)."""
+    _verify_dashboard_session(request)
+    try:
+        from tinysocs.api.node import list_hec_tokens
+        return {"ok": True, "tokens": list_hec_tokens()}
+    except ImportError:
+        return {"ok": True, "tokens": [], "note": "Node module not available"}
+
+
+@dashboard_app.post("/api/settings/hec-tokens")
+async def api_create_hec_token(request: Request):
+    """Create a new HEC bearer token. Returns the raw token ONCE."""
+    _verify_dashboard_session(request)
+    body = await request.json()
+    pw = body.get("admin_password", "")
+    if pw != _get_admin_password():
+        return JSONResponse({"error": "Invalid admin password"}, status_code=401)
+    name = body.get("name", "").strip()
+    if not name:
+        return JSONResponse({"error": "Token name is required"}, status_code=400)
+    if len(name) > 64:
+        return JSONResponse({"error": "Token name too long (max 64 chars)"}, status_code=400)
+    try:
+        from tinysocs.api.node import create_hec_token
+        token_id, raw_token = create_hec_token(name)
+        return {"ok": True, "id": token_id, "name": name, "token": raw_token}
+    except ImportError:
+        return JSONResponse({"error": "Node module not available"}, status_code=500)
+
+
+@dashboard_app.delete("/api/settings/hec-tokens/{token_id}")
+async def api_revoke_hec_token(token_id: str, request: Request):
+    """Revoke a HEC token by ID."""
+    _verify_dashboard_session(request)
+    body = await request.json()
+    pw = body.get("admin_password", "")
+    if pw != _get_admin_password():
+        return JSONResponse({"error": "Invalid admin password"}, status_code=401)
+    try:
+        from tinysocs.api.node import revoke_hec_token
+        if revoke_hec_token(token_id):
+            return {"ok": True, "revoked": token_id}
+        return JSONResponse({"error": "Token not found"}, status_code=404)
+    except ImportError:
+        return JSONResponse({"error": "Node module not available"}, status_code=500)
+
+
+def _verify_dashboard_session(request: Request) -> None:
+    """Quick session check — raises 401 if not authenticated."""
+    auth = request.headers.get("authorization", "")
+    if auth.startswith("Bearer "):
+        token = auth.split(" ", 1)[1].strip()
+        if _validate_session(token):
+            return
+    raise HTTPException(status_code=401, detail="Not authenticated")
+
+
 def _parse_os_size(s: str) -> int:
     """Parse OpenSearch size string like '500mb', '1.2gb' to bytes."""
     if not s:
@@ -6032,6 +6095,18 @@ select { cursor: pointer; }
         <span id="retentionStatus" style="font-size:12px;margin-left:8px"></span>
       </div>
 
+      <div class="section-title">HEC Tokens</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px">
+        Bearer tokens for the HTTP Event Collector endpoint (<code>POST /hec</code>).
+        External tools (firewalls, syslog, etc.) use these to authenticate when sending logs.
+      </div>
+      <div id="hecTokensList" style="margin-bottom:8px;font-size:12px">Loading...</div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input type="text" id="hecTokenName" placeholder="Token name (e.g. pfsense)" style="width:200px;font-size:12px">
+        <button class="btn-save" onclick="createHecToken()" style="font-size:12px;padding:4px 12px">Create Token</button>
+      </div>
+      <div id="hecTokenResult" style="margin-top:6px;font-size:12px"></div>
+
       <div class="section-title">SIEM Connection</div>
       <div class="field">
         <label>SIEM URL</label>
@@ -9110,6 +9185,7 @@ function populateSettings(d) {
   document.getElementById('settingsStatus').innerHTML = '';
   // Load email notification settings from agent-config.yml
   loadNotificationSettings();
+  loadHecTokens();
 }
 
 async function loadNotificationSettings() {
@@ -9214,6 +9290,76 @@ async function saveRetentionSettings() {
   } catch(e) {
     statusEl.innerHTML = `<span style="color:var(--red)">${escapeHtml(e.message)}</span>`;
   }
+}
+
+// ---- HEC Token Management ----
+async function loadHecTokens() {
+  const el = document.getElementById('hecTokensList');
+  if (!el) return;
+  try {
+    const r = await fetch(BASE + '/api/settings/hec-tokens', {headers: {'Authorization': 'Bearer ' + sessionToken}});
+    const d = await r.json();
+    if (!d.ok || !d.tokens || d.tokens.length === 0) {
+      el.innerHTML = '<span style="color:var(--muted)">No tokens created yet</span>';
+      return;
+    }
+    let html = '<table style="width:100%;border-collapse:collapse;font-size:12px">';
+    html += '<tr style="color:var(--muted);font-size:11px"><td>Name</td><td>Created</td><td>Last Used</td><td></td></tr>';
+    for (const t of d.tokens) {
+      const created = t.created ? new Date(t.created).toLocaleDateString() : '\u2014';
+      const used = t.last_used ? new Date(t.last_used).toLocaleString() : 'Never';
+      html += `<tr><td>${escapeHtml(t.name)}</td><td>${created}</td><td>${used}</td>`;
+      html += `<td><button onclick="revokeHecToken('${t.id}')" style="font-size:11px;padding:2px 8px;background:var(--red);color:#fff;border:none;border-radius:3px;cursor:pointer">Revoke</button></td></tr>`;
+    }
+    html += '</table>';
+    el.innerHTML = html;
+  } catch(e) {
+    el.innerHTML = `<span style="color:var(--red)">Failed to load tokens</span>`;
+  }
+}
+
+async function createHecToken() {
+  const nameEl = document.getElementById('hecTokenName');
+  const resultEl = document.getElementById('hecTokenResult');
+  const name = (nameEl?.value || '').trim();
+  if (!name) { resultEl.innerHTML = '<span style="color:var(--red)">Enter a token name</span>'; return; }
+  try {
+    const r = await fetch(BASE + '/api/settings/hec-tokens', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + sessionToken},
+      body: JSON.stringify({admin_password: settingsPassword, name: name}),
+    });
+    const d = await r.json();
+    if (d.ok && d.token) {
+      resultEl.innerHTML = `<div style="padding:8px;background:var(--bg);border:1px solid var(--green);border-radius:4px">` +
+        `<div style="color:var(--green);font-weight:600;margin-bottom:4px">Token created \u2014 copy it now (shown only once):</div>` +
+        `<input type="text" value="${escapeHtml(d.token)}" readonly onclick="this.select()" style="width:100%;font-family:monospace;font-size:13px;padding:4px;background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:3px">` +
+        `</div>`;
+      nameEl.value = '';
+      loadHecTokens();
+    } else {
+      resultEl.innerHTML = `<span style="color:var(--red)">${escapeHtml(d.error || 'Failed')}</span>`;
+    }
+  } catch(e) {
+    resultEl.innerHTML = `<span style="color:var(--red)">${escapeHtml(e.message)}</span>`;
+  }
+}
+
+async function revokeHecToken(tokenId) {
+  if (!confirm('Revoke this token? Any integrations using it will stop working.')) return;
+  try {
+    const r = await fetch(BASE + '/api/settings/hec-tokens/' + tokenId, {
+      method: 'DELETE',
+      headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + sessionToken},
+      body: JSON.stringify({admin_password: settingsPassword}),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      loadHecTokens();
+      const resultEl = document.getElementById('hecTokenResult');
+      if (resultEl) resultEl.innerHTML = '<span style="color:var(--green)">Token revoked</span>';
+    }
+  } catch(e) { /* ignore */ }
 }
 
 async function testWebhook() {

@@ -9,10 +9,13 @@ from typing import Any, Optional
 
 import requests
 import urllib3
-from fastapi import FastAPI, HTTPException, Request, Body, Query
+from fastapi import Depends, FastAPI, HTTPException, Request, Body, Query
 
 # Suppress InsecureRequestWarning for federation connections (verify=False)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse as StarletteJSONResponse
 
 from tinysocs.agent.detections.registry import RULES, Rule  # <-- NEW
 
@@ -23,6 +26,67 @@ app = FastAPI(title="TinySOCS Node API")
 
 # Minimal import string for external runners (kept for reference)
 APP_IMPORT = "tinysocs.api.node:app"
+
+# ---------------------------------------------------------------------------
+# Global request body size limit (5 MB)
+# ---------------------------------------------------------------------------
+_MAX_BODY_BYTES = 5 * 1024 * 1024
+
+
+class _MaxBodySizeMiddleware(BaseHTTPMiddleware):
+    """Reject requests whose Content-Length exceeds the limit before reading."""
+
+    async def dispatch(self, request, call_next):
+        cl = request.headers.get("content-length")
+        if cl and int(cl) > _MAX_BODY_BYTES:
+            return StarletteJSONResponse(
+                {"error": f"Payload too large (max {_MAX_BODY_BYTES} bytes)"},
+                status_code=413,
+            )
+        return await call_next(request)
+
+
+app.add_middleware(_MaxBodySizeMiddleware)
+
+# ---------------------------------------------------------------------------
+# Rate limiting (per-IP, in-memory sliding window)
+# ---------------------------------------------------------------------------
+_RATE_WRITE_WINDOW = 60     # seconds
+_RATE_WRITE_MAX = 100       # max write requests per window per IP
+_RATE_READ_WINDOW = 60
+_RATE_READ_MAX = 200        # max read requests per window per IP
+_rate_write_buckets: dict[str, list[float]] = {}
+_rate_read_buckets: dict[str, list[float]] = {}
+_rate_gc_counter = 0
+
+
+def _rate_limit(request: Request, buckets: dict, max_req: int, window: int) -> None:
+    """Generic sliding-window rate limiter."""
+    global _rate_gc_counter
+    client_ip = request.client.host if request.client else "unknown"
+    now = time.time()
+    bucket = buckets.setdefault(client_ip, [])
+    cutoff = now - window
+    buckets[client_ip] = bucket = [t for t in bucket if t > cutoff]
+    if len(bucket) >= max_req:
+        raise HTTPException(status_code=429, detail="Rate limit exceeded")
+    bucket.append(now)
+    _rate_gc_counter += 1
+    if _rate_gc_counter >= 100 or len(buckets) > 1000:
+        _rate_gc_counter = 0
+        stale = [k for k, v in buckets.items() if not v or v[-1] < cutoff]
+        for k in stale:
+            buckets.pop(k, None)
+
+
+def _check_write_rate(request: Request) -> None:
+    """Rate limiter for write endpoints (100/min)."""
+    _rate_limit(request, _rate_write_buckets, _RATE_WRITE_MAX, _RATE_WRITE_WINDOW)
+
+
+def _check_read_rate(request: Request) -> None:
+    """Rate limiter for read endpoints (200/min)."""
+    _rate_limit(request, _rate_read_buckets, _RATE_READ_MAX, _RATE_READ_WINDOW)
 
 # ---------------------------------------------------------------------------
 # Config / paths
@@ -234,6 +298,121 @@ from tinysocs.api.auth import make_verify_hmac as _make_verify_hmac
 _verify_hmac = _make_verify_hmac(SECRET, skew_secs=SKEW_SECS)
 
 
+# Optional HMAC auth for read endpoints (off by default for backward compat)
+_NODE_AUTH_READS = _env_bool("TINYSOCS_NODE_AUTH_READS", False)
+
+
+async def _verify_hmac_if_enabled(request: Request) -> None:
+    """HMAC auth for read endpoints — only enforced if TINYSOCS_NODE_AUTH_READS=1."""
+    if _NODE_AUTH_READS:
+        await _verify_hmac(request)
+
+
+# ---------------------------------------------------------------------------
+# HEC Bearer Token management
+# ---------------------------------------------------------------------------
+import secrets as _secrets
+
+_HEC_TOKENS_FILE = Path(os.getenv("TINYSOCS_DATA_DIR", os.getenv("PROGRAMDATA", "")))
+if _HEC_TOKENS_FILE == Path(""):
+    _HEC_TOKENS_FILE = Path(".")
+_HEC_TOKENS_FILE = _HEC_TOKENS_FILE / "TinySocs" / "hec-tokens.json"
+
+_hec_tokens: list[dict] = []
+_hec_tokens_loaded = False
+
+
+def _load_hec_tokens() -> list[dict]:
+    """Load HEC tokens from disk."""
+    global _hec_tokens, _hec_tokens_loaded
+    if _hec_tokens_loaded:
+        return _hec_tokens
+    try:
+        if _HEC_TOKENS_FILE.is_file():
+            _hec_tokens = json.loads(_HEC_TOKENS_FILE.read_text())
+        else:
+            _hec_tokens = []
+    except Exception:
+        _hec_tokens = []
+    _hec_tokens_loaded = True
+    return _hec_tokens
+
+
+def _save_hec_tokens() -> None:
+    """Persist HEC tokens to disk."""
+    _HEC_TOKENS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _HEC_TOKENS_FILE.write_text(json.dumps(_hec_tokens, indent=2))
+
+
+def _hash_token(raw: str) -> str:
+    """SHA-256 hash of a raw token."""
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def create_hec_token(name: str) -> tuple[str, str]:
+    """Create a new HEC token. Returns (token_id, raw_token)."""
+    _load_hec_tokens()
+    token_id = "tok_" + _secrets.token_hex(6)
+    raw_token = _secrets.token_urlsafe(32)
+    entry = {
+        "id": token_id,
+        "token_hash": _hash_token(raw_token),
+        "name": name,
+        "created": datetime.now(timezone.utc).isoformat(),
+        "last_used": None,
+    }
+    _hec_tokens.append(entry)
+    _save_hec_tokens()
+    return token_id, raw_token
+
+
+def revoke_hec_token(token_id: str) -> bool:
+    """Revoke a HEC token by ID. Returns True if found and removed."""
+    _load_hec_tokens()
+    before = len(_hec_tokens)
+    _hec_tokens[:] = [t for t in _hec_tokens if t["id"] != token_id]
+    if len(_hec_tokens) < before:
+        _save_hec_tokens()
+        return True
+    return False
+
+
+def list_hec_tokens() -> list[dict]:
+    """List HEC tokens (without hashes)."""
+    _load_hec_tokens()
+    return [
+        {"id": t["id"], "name": t["name"], "created": t["created"], "last_used": t.get("last_used")}
+        for t in _hec_tokens
+    ]
+
+
+def _verify_bearer_token(raw_token: str) -> bool:
+    """Verify a bearer token against stored hashes. Updates last_used on success."""
+    _load_hec_tokens()
+    h = _hash_token(raw_token)
+    for t in _hec_tokens:
+        if hashlib.sha256(raw_token.encode()).hexdigest() == t["token_hash"]:
+            t["last_used"] = datetime.now(timezone.utc).isoformat()
+            try:
+                _save_hec_tokens()
+            except Exception:
+                pass  # Best-effort last_used update
+            return True
+    return False
+
+
+async def _verify_hec_auth(request: Request) -> None:
+    """Verify HEC authentication: accepts Bearer token OR HMAC headers."""
+    auth_hdr = request.headers.get("authorization", "")
+    if auth_hdr.lower().startswith("bearer "):
+        raw = auth_hdr.split(" ", 1)[1].strip()
+        if not _verify_bearer_token(raw):
+            raise HTTPException(status_code=401, detail="Invalid bearer token")
+        return
+    # Fall back to HMAC auth
+    await _verify_hmac(request)
+
+
 def _append_jsonl(entry: dict) -> None:
     fpath = LEDGER_DIR / (datetime.now().strftime("%Y-%m-%d") + ".jsonl")
     with open(fpath, "a", encoding="utf-8") as f:
@@ -383,7 +562,7 @@ async def get_meta() -> dict:
 
 # ------------------------- Agg / Sample -------------------------
 
-@app.get("/agg")
+@app.get("/agg", dependencies=[Depends(_verify_hmac_if_enabled), Depends(_check_read_rate)])
 async def agg_get(
     rules: str = Query("default"),
     window: str = Query("15m"),
@@ -411,7 +590,7 @@ async def agg_get(
     return evidence
 
 
-@app.post("/agg")
+@app.post("/agg", dependencies=[Depends(_verify_hmac_if_enabled), Depends(_check_read_rate)])
 async def agg_post(payload: dict = Body(...)) -> list[dict[str, Any]]:
     """
     POST variant of /agg for JSON payloads.
@@ -445,7 +624,7 @@ async def agg_post(payload: dict = Body(...)) -> list[dict[str, Any]]:
     return evidence
 
 
-@app.get("/sample")
+@app.get("/sample", dependencies=[Depends(_verify_hmac_if_enabled), Depends(_check_read_rate)])
 async def sample_get(
     rules: str = Query("default"),
     window: str = Query("15m"),
@@ -497,7 +676,7 @@ async def sample_get(
     return docs
 
 
-@app.post("/sample")
+@app.post("/sample", dependencies=[Depends(_verify_hmac_if_enabled), Depends(_check_read_rate)])
 async def sample_post(payload: dict = Body(...)) -> list[dict[str, Any]]:
     rules = payload.get("rules", "default")
     window = payload.get("window", "15m")
@@ -520,7 +699,7 @@ async def sample_post(payload: dict = Body(...)) -> list[dict[str, Any]]:
 
 
 # --------------------------- Evidence ---------------------------
-@app.get("/evidence/head")
+@app.get("/evidence/head", dependencies=[Depends(_verify_hmac_if_enabled), Depends(_check_read_rate)])
 async def get_head() -> dict:
     head = _read_head()
     if not head.get("ok"):
@@ -528,9 +707,8 @@ async def get_head() -> dict:
     return head
 
 
-@app.post("/evidence/append")
+@app.post("/evidence/append", dependencies=[Depends(_verify_hmac), Depends(_check_write_rate)])
 async def post_append(req: Request) -> dict:
-    await _verify_hmac(req)
     body = await req.json()
     incoming = {
         "stable_hash": body.get("stable_hash"),
@@ -571,7 +749,7 @@ def _os_total(resp: dict) -> int:
     return total_hit.get("value", 0) if isinstance(total_hit, dict) else int(total_hit)
 
 
-@app.get("/alerts/summary")
+@app.get("/alerts/summary", dependencies=[Depends(_verify_hmac_if_enabled), Depends(_check_read_rate)])
 async def alerts_summary(hours: int = Query(24, ge=1, le=720)) -> dict:
     """
     Alert summary for the local site: total, by severity, top rules, top hosts.
@@ -625,7 +803,7 @@ async def alerts_summary(hours: int = Query(24, ge=1, le=720)) -> dict:
     }
 
 
-@app.get("/fleet/summary")
+@app.get("/fleet/summary", dependencies=[Depends(_verify_hmac_if_enabled), Depends(_check_read_rate)])
 async def fleet_summary() -> dict:
     """
     Fleet composition: host count, total events (24h), per-host summary.
@@ -666,7 +844,7 @@ async def fleet_summary() -> dict:
     }
 
 
-@app.get("/alerts/timeline")
+@app.get("/alerts/timeline", dependencies=[Depends(_verify_hmac_if_enabled), Depends(_check_read_rate)])
 async def alerts_timeline(hours: int = Query(24, ge=1, le=720)) -> dict:
     """
     Hourly bucketed alert counts with per-severity breakdown.
@@ -702,7 +880,7 @@ async def alerts_timeline(hours: int = Query(24, ge=1, le=720)) -> dict:
     }
 
 
-@app.get("/detections/fired")
+@app.get("/detections/fired", dependencies=[Depends(_verify_hmac_if_enabled), Depends(_check_read_rate)])
 async def detections_fired(
     hours: int = Query(24, ge=1, le=720),
     limit: int = Query(30, ge=1, le=200),
@@ -749,7 +927,7 @@ async def detections_fired(
     return {"detections": detections, "total": total}
 
 
-@app.get("/fleet/health")
+@app.get("/fleet/health", dependencies=[Depends(_verify_hmac_if_enabled), Depends(_check_read_rate)])
 async def fleet_health() -> dict:
     """
     Detailed per-host fleet status with alert counts.
@@ -822,7 +1000,7 @@ async def fleet_health() -> dict:
     return {"hosts": hosts}
 
 
-@app.get("/events/recent")
+@app.get("/events/recent", dependencies=[Depends(_verify_hmac_if_enabled), Depends(_check_read_rate)])
 async def events_recent(
     limit: int = Query(50, ge=1, le=500),
     q: str = Query("", description="KQL filter"),
@@ -882,7 +1060,7 @@ async def events_recent(
     return {"events": events, "total": len(events), "index": index}
 
 
-@app.get("/host/timeline")
+@app.get("/host/timeline", dependencies=[Depends(_verify_hmac_if_enabled), Depends(_check_read_rate)])
 async def host_timeline(
     hostname: str = Query("", description="Host to query (blank = all hosts)"),
     hours: int = Query(24, ge=1, le=720),
@@ -1092,16 +1270,9 @@ _HEC_MAX_EVENTS = 1000
 _HEC_MAX_BODY_BYTES = 5 * 1024 * 1024  # 5 MB
 
 
-@app.post("/hec")
+@app.post("/hec", dependencies=[Depends(_verify_hec_auth), Depends(_check_write_rate)])
 async def post_hec(req: Request) -> dict:
     """Ingest custom log events via HTTP Event Collector."""
-    await _verify_hmac(req)
-
-    # Body size check
-    content_length = int(req.headers.get("content-length", 0))
-    if content_length > _HEC_MAX_BODY_BYTES:
-        raise HTTPException(413, f"Request body exceeds {_HEC_MAX_BODY_BYTES} byte limit")
-
     body = await req.json()
 
     # Accept single event or batch

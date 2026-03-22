@@ -370,6 +370,24 @@ def _guard_params(action: str, params: Dict[str, Any]) -> None:
 # ---------- App ----------
 app = FastAPI(title="TinySocs Bot Bridge", version="0.2.0")
 
+# Global body size limit (1 MB for bot/dashboard)
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse as _StarletteJSONResponse
+
+_BOT_MAX_BODY_BYTES = 1 * 1024 * 1024  # 1 MB
+
+class _BotMaxBodySizeMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        cl = request.headers.get("content-length")
+        if cl and int(cl) > _BOT_MAX_BODY_BYTES:
+            return _StarletteJSONResponse(
+                {"error": f"Payload too large (max {_BOT_MAX_BODY_BYTES} bytes)"},
+                status_code=413,
+            )
+        return await call_next(request)
+
+app.add_middleware(_BotMaxBodySizeMiddleware)
+
 # ---------- Phase 17 M0: Early --demo detection (before dashboard import) ----------
 # Must set env var BEFORE importing dashboard, since _DEMO_MODE and _DASHBOARD_HTML
 # are evaluated at module load time.

@@ -1422,11 +1422,9 @@ begin
   L.Left := 0;
   L.Top := AlertRetEdit.Top + ScaleY(36);
   L.Width := RetentionPage.SurfaceWidth;
-  L.Height := ScaleY(36);
   L.Font.Color := clGray;
-  L.WordWrap := True;
-  L.AutoSize := False;
-  L.Caption := 'Retention can be changed later in Dashboard Settings. Shorter retention uses less disk space.';
+  L.AutoSize := True;
+  L.Caption := 'Editable later in Dashboard Settings. Shorter retention saves disk space.';
 
   { ---- Page 6: Dashboard Access (Phase 14 M0) ---- }
   DashAccessPage := CreateCustomPage(RetentionPage.ID, 'Dashboard Access',
@@ -2257,6 +2255,28 @@ begin
         '  if ($needsWrite) {' + CRLF +
         '    [System.IO.File]::WriteAllText($pdYml, $ymlRaw, (New-Object System.Text.UTF8Encoding($false)))' + CRLF +
         '    Write-Host ''[TinySocs][Inno] TB-10e: Added discovery.type/network.host to opensearch.yml''' + CRLF +
+        '  }' + CRLF +
+        '}' + CRLF +
+        '' + CRLF +
+
+        '# TB-10e-disk: Ensure disk watermark settings in opensearch.yml' + CRLF +
+        'if (Test-Path -LiteralPath $pdYml -PathType Leaf) {' + CRLF +
+        '  $ymlRaw = Get-Content -LiteralPath $pdYml -Raw' + CRLF +
+        '  if ($ymlRaw -notmatch ''(?m)^\s*cluster\.routing\.allocation\.disk\.watermark\.low\s*:'') {' + CRLF +
+        '    $watermarks = @(' + CRLF +
+        '      '''',' + CRLF +
+        '      ''# Disk watermarks — prevent OpenSearch from filling the disk'',' + CRLF +
+        '      ''cluster.routing.allocation.disk.watermark.low: 80%'',' + CRLF +
+        '      ''cluster.routing.allocation.disk.watermark.high: 85%'',' + CRLF +
+        '      ''cluster.routing.allocation.disk.watermark.flood_stage: 90%'',' + CRLF +
+        '      ''cluster.routing.allocation.disk.watermark.flood_stage.frozen: 95%'',' + CRLF +
+        '      ''cluster.info.update.interval: 60s''' + CRLF +
+        '    ) -join "`r`n"' + CRLF +
+        '    $ymlRaw = $ymlRaw.TrimEnd() + "`r`n" + $watermarks + "`r`n"' + CRLF +
+        '    [System.IO.File]::WriteAllText($pdYml, $ymlRaw, (New-Object System.Text.UTF8Encoding($false)))' + CRLF +
+        '    Write-Host ''[TinySocs][Inno] TB-10e-disk: Added disk watermark settings to opensearch.yml''' + CRLF +
+        '  } else {' + CRLF +
+        '    Write-Host ''[TinySocs][Inno] TB-10e-disk: Disk watermarks already present''' + CRLF +
         '  }' + CRLF +
         '}' + CRLF +
         '' + CRLF +

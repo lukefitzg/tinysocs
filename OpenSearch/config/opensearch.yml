@@ -51,3 +51,14 @@ plugins.security.nodes_dn:
 
 # Optional but useful (later tighten roles)
 plugins.security.restapi.roles_enabled: ["all_access","security_rest_api_access"]
+
+########## Disk Watermarks ##########
+# Prevent shard allocation when disk is filling up.
+# low:  stop allocating NEW shards to this node
+# high: start relocating EXISTING shards off this node
+# flood: make indices read-only to prevent data loss
+cluster.routing.allocation.disk.watermark.low: 80%
+cluster.routing.allocation.disk.watermark.high: 85%
+cluster.routing.allocation.disk.watermark.flood_stage: 90%
+cluster.routing.allocation.disk.watermark.flood_stage.frozen: 95%
+cluster.info.update.interval: 60s

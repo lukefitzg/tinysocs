@@ -1701,6 +1701,287 @@ def api_alerts_retention():
 
 
 # ---------------------------------------------------------------------------
+# Retention settings + Storage stats
+# ---------------------------------------------------------------------------
+
+@dashboard_app.get("/api/settings/retention")
+def api_get_retention():
+    """Get current retention settings."""
+    return {
+        "winlog_days": int(os.getenv("WINLOG_RETENTION_DAYS", "30")),
+        "alert_days": int(os.getenv("ALERT_RETENTION_DAYS", "90")),
+    }
+
+
+@dashboard_app.post("/api/settings/retention")
+async def api_set_retention(request: Request):
+    """Update retention settings and apply ISM policies to OpenSearch."""
+    body = await request.json()
+    pw = body.get("admin_password", "")
+    if not _check_admin_password(pw):
+        return JSONResponse({"error": "Invalid admin password"}, status_code=401)
+
+    winlog_days = body.get("winlog_days")
+    alert_days = body.get("alert_days")
+
+    if winlog_days is not None:
+        winlog_days = int(winlog_days)
+        if not 7 <= winlog_days <= 365:
+            return JSONResponse({"error": "winlog_days must be 7-365"}, status_code=400)
+
+    if alert_days is not None:
+        alert_days = int(alert_days)
+        if not 7 <= alert_days <= 365:
+            return JSONResponse({"error": "alert_days must be 7-365"}, status_code=400)
+
+    # Write to assistant.env
+    env_path = _find_assistant_env()
+    updates = {}
+    if winlog_days is not None:
+        updates["WINLOG_RETENTION_DAYS"] = str(winlog_days)
+        os.environ["WINLOG_RETENTION_DAYS"] = str(winlog_days)
+    if alert_days is not None:
+        updates["ALERT_RETENTION_DAYS"] = str(alert_days)
+        os.environ["ALERT_RETENTION_DAYS"] = str(alert_days)
+
+    if env_path and updates:
+        try:
+            _write_env_file(env_path, updates)
+        except Exception as exc:
+            return JSONResponse({"error": f"Failed to write env file: {exc}"}, status_code=500)
+
+    # Apply ISM policies via bootstrap module
+    try:
+        from tinysocs.tinybox.opensearch_bootstrap import apply_retention_policies
+        results = apply_retention_policies(winlog_days=winlog_days, alert_days=alert_days)
+        all_ok = all(r.get("ok") for r in results.values())
+    except Exception as exc:
+        return {"ok": False, "error": f"ISM policy update failed: {exc}", "env_updated": True}
+
+    return {
+        "ok": all_ok,
+        "winlog_days": winlog_days or int(os.getenv("WINLOG_RETENTION_DAYS", "30")),
+        "alert_days": alert_days or int(os.getenv("ALERT_RETENTION_DAYS", "90")),
+        "ism_results": results,
+    }
+
+
+def _human_bytes(b: int) -> str:
+    """Format byte count as human-readable string."""
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if abs(b) < 1024:
+            return f"{b:.1f} {unit}" if unit != "B" else f"{b} {unit}"
+        b /= 1024
+    return f"{b:.1f} PB"
+
+
+def _parse_os_size(s: str) -> int:
+    """Parse OpenSearch size string like '500mb', '1.2gb' to bytes."""
+    if not s:
+        return 0
+    s = s.strip().lower()
+    multipliers = {"b": 1, "kb": 1024, "mb": 1024**2, "gb": 1024**3, "tb": 1024**4}
+    for suffix, mult in sorted(multipliers.items(), key=lambda x: -len(x[0])):
+        if s.endswith(suffix):
+            try:
+                return int(float(s[: -len(suffix)]) * mult)
+            except ValueError:
+                return 0
+    try:
+        return int(s)
+    except ValueError:
+        return 0
+
+
+def _demo_storage_stats() -> dict:
+    """Synthetic storage stats for demo mode."""
+    return {
+        "indices": {
+            "winlog": {
+                "doc_count": 125340,
+                "size_bytes": 524288000,
+                "size_human": "500.0 MB",
+                "index_count": 18,
+                "retention_days": int(os.getenv("WINLOG_RETENTION_DAYS", "30")),
+            },
+            "alerts": {
+                "doc_count": 3420,
+                "size_bytes": 15728640,
+                "size_human": "15.0 MB",
+                "index_count": 42,
+                "retention_days": int(os.getenv("ALERT_RETENTION_DAYS", "90")),
+            },
+            "other": {
+                "doc_count": 48,
+                "size_bytes": 65536,
+                "size_human": "64.0 KB",
+                "index_count": 2,
+            },
+            "total": {
+                "doc_count": 128808,
+                "size_bytes": 540082176,
+                "size_human": "515.1 MB",
+                "index_count": 62,
+            },
+        },
+        "disk": {
+            "total_bytes": 107374182400,
+            "available_bytes": 85899345920,
+            "used_percent": 20.0,
+            "status": "healthy",
+            "total_human": "100.0 GB",
+            "available_human": "80.0 GB",
+        },
+        "cluster_status": "green",
+    }
+
+
+@dashboard_app.get("/api/storage/stats")
+async def api_storage_stats():
+    """Get storage usage stats: index sizes, disk usage, cluster health."""
+    if os.getenv("TINYSOCS_DEMO_MODE") == "1":
+        return _demo_storage_stats()
+
+    siem_url = os.getenv("SIEM_URL", "https://localhost:9201").rstrip("/")
+    try:
+        import requests as _req
+        from tinysocs.tls import get_siem_ssl_context
+
+        ssl_ctx = get_siem_ssl_context()
+        auth = (os.getenv("SIEM_USER", "admin"), os.getenv("SIEM_PASS", ""))
+        verify = ssl_ctx if ssl_ctx else False
+        timeout = 10
+
+        # 1. Index sizes
+        idx_resp = _req.get(
+            f"{siem_url}/_cat/indices/tinysocs-*?format=json&h=index,docs.count,store.size",
+            auth=auth, verify=verify, timeout=timeout,
+        )
+        indices_raw = idx_resp.json() if idx_resp.status_code == 200 else []
+
+        winlog_docs = winlog_bytes = winlog_count = 0
+        alert_docs = alert_bytes = alert_count = 0
+        other_docs = other_bytes = other_count = 0
+
+        for idx in indices_raw:
+            name = idx.get("index", "")
+            docs = int(idx.get("docs.count", 0) or 0)
+            size = _parse_os_size(idx.get("store.size", "0"))
+            if name.startswith("tinysocs-winlog-"):
+                winlog_docs += docs
+                winlog_bytes += size
+                winlog_count += 1
+            elif name.startswith("tinysocs-alerts-"):
+                alert_docs += docs
+                alert_bytes += size
+                alert_count += 1
+            else:
+                other_docs += docs
+                other_bytes += size
+                other_count += 1
+
+        total_docs = winlog_docs + alert_docs + other_docs
+        total_bytes = winlog_bytes + alert_bytes + other_bytes
+        total_count = winlog_count + alert_count + other_count
+
+        # 2. Disk usage
+        disk_resp = _req.get(
+            f"{siem_url}/_nodes/stats/fs",
+            auth=auth, verify=verify, timeout=timeout,
+        )
+        disk_total = disk_avail = 0
+        if disk_resp.status_code == 200:
+            nodes_data = disk_resp.json().get("nodes", {})
+            for node in nodes_data.values():
+                fs = node.get("fs", {}).get("total", {})
+                disk_total += fs.get("total_in_bytes", 0)
+                disk_avail += fs.get("available_in_bytes", 0)
+
+        disk_used_pct = round((1 - disk_avail / disk_total) * 100, 1) if disk_total > 0 else 0
+        if disk_used_pct >= 85:
+            disk_status = "critical"
+        elif disk_used_pct >= 70:
+            disk_status = "warning"
+        else:
+            disk_status = "healthy"
+
+        # 3. Cluster health
+        health_resp = _req.get(
+            f"{siem_url}/_cluster/health",
+            auth=auth, verify=verify, timeout=timeout,
+        )
+        cluster_status = health_resp.json().get("status", "unknown") if health_resp.status_code == 200 else "unknown"
+
+        result = {
+            "indices": {
+                "winlog": {
+                    "doc_count": winlog_docs, "size_bytes": winlog_bytes,
+                    "size_human": _human_bytes(winlog_bytes), "index_count": winlog_count,
+                    "retention_days": int(os.getenv("WINLOG_RETENTION_DAYS", "30")),
+                },
+                "alerts": {
+                    "doc_count": alert_docs, "size_bytes": alert_bytes,
+                    "size_human": _human_bytes(alert_bytes), "index_count": alert_count,
+                    "retention_days": int(os.getenv("ALERT_RETENTION_DAYS", "90")),
+                },
+                "other": {
+                    "doc_count": other_docs, "size_bytes": other_bytes,
+                    "size_human": _human_bytes(other_bytes), "index_count": other_count,
+                },
+                "total": {
+                    "doc_count": total_docs, "size_bytes": total_bytes,
+                    "size_human": _human_bytes(total_bytes), "index_count": total_count,
+                },
+            },
+            "disk": {
+                "total_bytes": disk_total, "available_bytes": disk_avail,
+                "used_percent": disk_used_pct, "status": disk_status,
+                "total_human": _human_bytes(disk_total),
+                "available_human": _human_bytes(disk_avail),
+            },
+            "cluster_status": cluster_status,
+        }
+
+        # Fire disk space alert if usage is critical (once per 24h)
+        global _disk_alert_last_fire
+        import time as _time
+        now_ts = _time.time()
+        if disk_used_pct >= 80 and (now_ts - _disk_alert_last_fire) > 86400:
+            try:
+                from datetime import datetime, timezone
+                alert_doc = {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "alert": {
+                        "id": f"TS-DISK-001|disk|{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:00:00Z')}",
+                        "rule_id": "TS-DISK-001",
+                        "rule_name": "disk_space_warning",
+                        "severity": "critical" if disk_used_pct >= 90 else "high",
+                        "description": f"Disk usage at {disk_used_pct}% — consider reducing retention or expanding storage",
+                        "event_count": 1,
+                        "first_seen": datetime.now(timezone.utc).isoformat(),
+                        "last_seen": datetime.now(timezone.utc).isoformat(),
+                    },
+                    "source": {"disk_used_percent": disk_used_pct, "available": _human_bytes(disk_avail)},
+                }
+                idx_name = f"tinysocs-alerts-{datetime.now(timezone.utc).strftime('%Y.%m.%d')}"
+                _req.post(
+                    f"{siem_url}/{idx_name}/_doc",
+                    json=alert_doc, auth=auth, verify=verify, timeout=5,
+                )
+                _disk_alert_last_fire = now_ts
+            except Exception:
+                pass  # Best-effort alerting
+
+        return result
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+# Disk space alert cooldown (in-memory, once per 24h)
+_disk_alert_last_fire: float = 0.0
+
+
+# ---------------------------------------------------------------------------
 # Alert Rules management — custom rules stored as JSON, built-in rules read from YAML
 # ---------------------------------------------------------------------------
 _custom_rules: List[Dict[str, Any]] = []
@@ -4203,6 +4484,7 @@ _SETTINGS_KEYS = [
     "WEBHOOK_URL", "WEBHOOK_ENABLED",
     "NOTIFY_SLACK", "SLACK_WEBHOOK_URL",
     "ABUSEIPDB_API_KEY", "OTX_API_KEY", "GREYNOISE_API_KEY",
+    "WINLOG_RETENTION_DAYS", "ALERT_RETENTION_DAYS",
 ]
 
 # Keys whose values should be masked in GET responses
@@ -5486,6 +5768,23 @@ select { cursor: pointer; }
         <span id="threatIntelTestStatus" style="font-size:12px;margin-left:8px"></span>
       </div>
 
+      <div class="section-title">Data Retention</div>
+      <p style="color:var(--muted);font-size:12px;margin-bottom:8px">How long to keep data before automatic deletion (7\u2013365 days).</p>
+      <div class="field" style="display:flex;gap:12px;align-items:center">
+        <div style="flex:1">
+          <label>Event Log Retention (days)</label>
+          <input type="number" id="s_WINLOG_RETENTION_DAYS" min="7" max="365" value="30" style="width:80px">
+        </div>
+        <div style="flex:1">
+          <label>Alert Retention (days)</label>
+          <input type="number" id="s_ALERT_RETENTION_DAYS" min="7" max="365" value="90" style="width:80px">
+        </div>
+      </div>
+      <div style="margin-top:4px">
+        <button class="btn-save" onclick="saveRetentionSettings()" style="font-size:12px;padding:4px 12px">Save Retention</button>
+        <span id="retentionStatus" style="font-size:12px;margin-left:8px"></span>
+      </div>
+
       <div class="section-title">SIEM Connection</div>
       <div class="field">
         <label>SIEM URL</label>
@@ -5609,6 +5908,17 @@ select { cursor: pointer; }
         </div>
         <div class="card-body" id="body-timeline">
           <div id="timeline-content"><div class="loading">Loading...</div></div>
+        </div>
+      </div>
+
+      <!-- Storage -->
+      <div class="card">
+        <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
+          <h2 style="margin:0;flex:1">Storage</h2>
+          <button onclick="askAIAboutWidget('storage')" style="margin-left:auto;font-size:11px;padding:3px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;white-space:nowrap" title="Ask the AI assistant about this widget">Ask AI</button>
+        </div>
+        <div class="card-body" id="body-storage">
+          <div id="storage-content"><div class="loading">Loading...</div></div>
         </div>
       </div>
 
@@ -5944,7 +6254,7 @@ function loadTabData(tabId) {
   _tabLoaded[tabId] = true;
   switch(tabId) {
     case 'sites': loadSites(); break;
-    case 'overview': loadSummary(); loadTimeline(); loadDetections(); loadOverviewAggregate(); break;
+    case 'overview': loadSummary(); loadTimeline(); loadDetections(); loadStorage(); loadOverviewAggregate(); break;
     case 'fleet': loadFleet(); break;
     case 'data': loadEvents(); break;
     case 'detections': loadRules(); loadActions(); break;
@@ -6566,6 +6876,67 @@ async function loadTimeline() {
   el.innerHTML = svg + legend;
 }
 
+// ---- Storage Widget ----
+async function loadStorage() {
+  const el = document.getElementById('storage-content');
+  if (!el) return;
+  const d = await fetchJSON(`${apiBase()}/storage/stats`);
+  if (d.error) { el.innerHTML = `<div class="empty">${d.error}</div>`; return; }
+
+  const disk = d.disk || {};
+  const idx = d.indices || {};
+  const pct = disk.used_percent || 0;
+  const barColor = pct >= 85 ? 'var(--red)' : pct >= 70 ? 'var(--orange)' : 'var(--green)';
+
+  let html = '<div style="display:flex;gap:16px;align-items:flex-start">';
+
+  // Left: disk bar
+  html += '<div style="flex:1;min-width:120px">';
+  html += '<div style="font-size:11px;color:var(--muted);margin-bottom:4px">Disk Usage</div>';
+  html += `<div style="background:var(--bg);border-radius:4px;height:18px;overflow:hidden;border:1px solid var(--border)">`;
+  html += `<div style="height:100%;width:${Math.min(pct, 100)}%;background:${barColor};border-radius:3px;transition:width 0.3s"></div>`;
+  html += '</div>';
+  html += `<div style="font-size:12px;margin-top:4px"><strong>${pct}%</strong> used`;
+  if (disk.total_human) html += ` &mdash; ${disk.available_human} free of ${disk.total_human}`;
+  html += '</div>';
+  if (pct >= 85) html += '<div style="font-size:11px;color:var(--red);margin-top:2px">&#x26A0; Disk critically full &mdash; reduce retention or expand storage</div>';
+  else if (pct >= 70) html += '<div style="font-size:11px;color:var(--orange);margin-top:2px">&#x26A0; Disk usage elevated</div>';
+  html += '</div>';
+
+  // Right: index breakdown
+  html += '<div style="flex:1;min-width:180px">';
+  html += '<table style="width:100%;font-size:12px;border-collapse:collapse">';
+  html += '<tr style="color:var(--muted);font-size:11px"><td>Index</td><td style="text-align:right">Docs</td><td style="text-align:right">Size</td><td style="text-align:right">Retention</td></tr>';
+  const rows = [
+    ['Event Logs', idx.winlog],
+    ['Alerts', idx.alerts],
+    ['Other', idx.other],
+  ];
+  for (const [label, data] of rows) {
+    if (!data) continue;
+    const docs = (data.doc_count || 0).toLocaleString();
+    const size = data.size_human || '0 B';
+    const ret = data.retention_days ? data.retention_days + 'd' : '\u2014';
+    html += `<tr><td>${label}</td><td style="text-align:right">${docs}</td><td style="text-align:right">${size}</td><td style="text-align:right">${ret}</td></tr>`;
+  }
+  if (idx.total) {
+    const docs = (idx.total.doc_count || 0).toLocaleString();
+    const size = idx.total.size_human || '0 B';
+    html += `<tr style="font-weight:600;border-top:1px solid var(--border)"><td>Total</td><td style="text-align:right">${docs}</td><td style="text-align:right">${size}</td><td></td></tr>`;
+  }
+  html += '</table>';
+  html += '</div>';
+
+  html += '</div>';
+
+  // Cluster status badge
+  const cs = d.cluster_status || 'unknown';
+  const csColor = cs === 'green' ? 'var(--green)' : cs === 'yellow' ? 'var(--orange)' : 'var(--red)';
+  html += `<div style="margin-top:6px;font-size:11px;color:var(--muted)">Cluster: <span style="color:${csColor};font-weight:600">${cs}</span></div>`;
+
+  el.innerHTML = html;
+}
+
 // ---- Threat Intel Enrichment ----
 let _enrichmentCache = {};  // ioc_value -> enrichment data
 
@@ -6969,6 +7340,11 @@ function askAIAboutWidget(widgetId) {
       const el = document.getElementById('rules-content');
       const text = el ? el.innerText.substring(0, 500) : '';
       return `I'm looking at the Alert Rules in TinySocs. Here's what I see:\n${text}\n\nCan you explain:\n1. What are detection rules and how do they work in TinySocs?\n2. How do I create a new rule using the rule builder?\n3. How do I upload a rule pack (YAML/JSON)?\n4. How do I tune rules — adjust thresholds, group-by fields, or set cooldown periods?\n5. How do I suppress false positives or disable noisy rules?`;
+    },
+    storage: () => {
+      const el = document.getElementById('storage-content');
+      const text = el ? el.innerText.substring(0, 500) : '';
+      return `Analyze the storage status for me. Here's what the dashboard shows:\n${text}\n\nAre there any concerns about disk usage or data retention? Should I adjust retention settings?`;
     },
   };
   const fn = prompts[widgetId];
@@ -8016,7 +8392,7 @@ function refreshAll() {
         tasks.push(loadSites());
         break;
       case 'overview':
-        tasks.push(loadSummary(), loadTimeline(), loadDetections());
+        tasks.push(loadSummary(), loadTimeline(), loadDetections(), loadStorage());
         if (_sitesVisible) { _sitesCache = null; tasks.push(loadOverviewAggregate()); }
         break;
       case 'fleet':
@@ -8329,7 +8705,8 @@ function populateSettings(d) {
   const fields = ['LLM_MODE','OPENAI_API_KEY','OPENAI_MODEL','ANTHROPIC_API_KEY','ANTHROPIC_MODEL',
     'OFFLINE_LLM_URL','OFFLINE_LLM_MODEL','WEBHOOK_URL','WEBHOOK_ENABLED',
     'SIEM_URL','SIEM_USER',
-    'ABUSEIPDB_API_KEY','OTX_API_KEY','GREYNOISE_API_KEY'];
+    'ABUSEIPDB_API_KEY','OTX_API_KEY','GREYNOISE_API_KEY',
+    'WINLOG_RETENTION_DAYS','ALERT_RETENTION_DAYS'];
   for (const f of fields) {
     const el = document.getElementById('s_' + f);
     if (el) {
@@ -8340,6 +8717,9 @@ function populateSettings(d) {
       }
     }
   }
+  // Set retention defaults if not configured
+  if (!s['WINLOG_RETENTION_DAYS']) { const el = document.getElementById('s_WINLOG_RETENTION_DAYS'); if (el) el.value = '30'; }
+  if (!s['ALERT_RETENTION_DAYS']) { const el = document.getElementById('s_ALERT_RETENTION_DAYS'); if (el) el.value = '90'; }
   updateProviderFields();
   document.getElementById('settingsStatus').innerHTML = '';
   // Load email notification settings from agent-config.yml
@@ -8419,6 +8799,33 @@ async function saveSettings() {
     }
   } catch(e) {
     statusEl.innerHTML = `<div class="status-msg err">${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function saveRetentionSettings() {
+  const winlog = parseInt(document.getElementById('s_WINLOG_RETENTION_DAYS')?.value || '30');
+  const alerts = parseInt(document.getElementById('s_ALERT_RETENTION_DAYS')?.value || '90');
+  const statusEl = document.getElementById('retentionStatus');
+  if (winlog < 7 || winlog > 365 || alerts < 7 || alerts > 365) {
+    statusEl.innerHTML = '<span style="color:var(--red)">Values must be 7\u2013365 days</span>';
+    return;
+  }
+  statusEl.innerHTML = '<span style="color:var(--muted)">Saving...</span>';
+  try {
+    const r = await fetch(BASE + '/api/settings/retention', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({admin_password: settingsPassword, winlog_days: winlog, alert_days: alerts}),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      statusEl.innerHTML = '<span style="color:var(--green)">Saved \\u2714</span>';
+      setTimeout(() => { statusEl.innerHTML = ''; }, 3000);
+    } else {
+      statusEl.innerHTML = `<span style="color:var(--red)">${escapeHtml(d.error || 'Failed')}</span>`;
+    }
+  } catch(e) {
+    statusEl.innerHTML = `<span style="color:var(--red)">${escapeHtml(e.message)}</span>`;
   }
 }
 

@@ -400,6 +400,13 @@ var
   SiemPass: String;
   HeartbeatMinutes: Integer;
   AnchorsRetentionDays: Integer;
+  WinlogRetentionDays: Integer;
+  AlertRetentionDays: Integer;
+
+  { Data Retention page }
+  RetentionPage: TWizardPage;
+  WinlogRetEdit: TNewEdit;
+  AlertRetEdit: TNewEdit;
 
   LlmMode: String;
   LlmApiKey: String;
@@ -1373,8 +1380,50 @@ begin
   L.Font.Color := clGray;
   L.Caption := 'Leave blank to skip. Keys can also be configured later in Dashboard Settings.';
 
+  { ---- Page 5b: Data Retention ---- }
+  RetentionPage := CreateCustomPage(ThreatIntelPage.ID, 'Data Retention',
+    'Configure how long event logs and alerts are kept before automatic deletion.');
+
+  L := TNewStaticText.Create(RetentionPage.Surface);
+  L.Parent := RetentionPage.Surface;
+  L.Left := 0;
+  L.Top := ScaleY(4);
+  L.Width := RetentionPage.SurfaceWidth;
+  L.Caption := 'Event log retention (days, 7-365):';
+
+  WinlogRetEdit := TNewEdit.Create(RetentionPage.Surface);
+  WinlogRetEdit.Parent := RetentionPage.Surface;
+  WinlogRetEdit.Left := 0;
+  WinlogRetEdit.Top := L.Top + ScaleY(18);
+  WinlogRetEdit.Width := ScaleX(80);
+  WinlogRetEdit.Text := '30';
+
+  L := TNewStaticText.Create(RetentionPage.Surface);
+  L.Parent := RetentionPage.Surface;
+  L.Left := 0;
+  L.Top := WinlogRetEdit.Top + ScaleY(32);
+  L.Width := RetentionPage.SurfaceWidth;
+  L.Caption := 'Alert retention (days, 7-365):';
+
+  AlertRetEdit := TNewEdit.Create(RetentionPage.Surface);
+  AlertRetEdit.Parent := RetentionPage.Surface;
+  AlertRetEdit.Left := 0;
+  AlertRetEdit.Top := L.Top + ScaleY(18);
+  AlertRetEdit.Width := ScaleX(80);
+  AlertRetEdit.Text := '90';
+
+  L := TNewStaticText.Create(RetentionPage.Surface);
+  L.Parent := RetentionPage.Surface;
+  L.Left := 0;
+  L.Top := AlertRetEdit.Top + ScaleY(36);
+  L.Width := RetentionPage.SurfaceWidth;
+  L.Font.Color := clGray;
+  L.WordWrap := True;
+  L.AutoSize := True;
+  L.Caption := 'Retention can be changed later in Dashboard Settings. Shorter retention uses less disk space.';
+
   { ---- Page 6: Dashboard Access (Phase 14 M0) ---- }
-  DashAccessPage := CreateCustomPage(ThreatIntelPage.ID, 'Dashboard Access',
+  DashAccessPage := CreateCustomPage(RetentionPage.ID, 'Dashboard Access',
     'Choose how the dashboard can be accessed.');
 
   L := TNewStaticText.Create(DashAccessPage.Surface);
@@ -1465,6 +1514,8 @@ begin
   InstallTinyBox := True;
   ForceTinyBoxConfig := False;
   AnchorsRetentionDays := 45;
+  WinlogRetentionDays := 30;
+  AlertRetentionDays := 90;
   HeartbeatMinutes := 15;
   RemoveDataOnUninstall := False;
   NodePort := '8081';
@@ -1506,10 +1557,10 @@ begin
   if PageID = HubSitesPage.ID then
     Result := (SelectedRole <> ROLE_HUB);
 
-  { Hub-only pages: LLM, Notifications, Threat Intel, Dashboard Access, Sysmon }
+  { Hub-only pages: LLM, Notifications, Threat Intel, Retention, Dashboard Access, Sysmon }
   if (PageID = LlmPage.ID) or (PageID = NotifPage.ID) or
-     (PageID = ThreatIntelPage.ID) or (PageID = DashAccessPage.ID) or
-     (PageID = SysmonPage.ID) then
+     (PageID = ThreatIntelPage.ID) or (PageID = RetentionPage.ID) or
+     (PageID = DashAccessPage.ID) or (PageID = SysmonPage.ID) then
     Result := (SelectedRole <> ROLE_HUB);
 
   { SIEM password field is Hub-only; Site uses Security page for shared secret only }
@@ -1701,6 +1752,15 @@ begin
     AbuseIPDBKey := Trim(AbuseIPDBKeyEdit.Text);
     OTXKey := Trim(OTXKeyEdit.Text);
     GreyNoiseKey := Trim(GreyNoiseKeyEdit.Text);
+  end
+  else if CurPageID = RetentionPage.ID then
+  begin
+    WinlogRetentionDays := StrToIntDef(Trim(WinlogRetEdit.Text), 30);
+    AlertRetentionDays := StrToIntDef(Trim(AlertRetEdit.Text), 90);
+    if WinlogRetentionDays < 7 then WinlogRetentionDays := 7;
+    if WinlogRetentionDays > 365 then WinlogRetentionDays := 365;
+    if AlertRetentionDays < 7 then AlertRetentionDays := 7;
+    if AlertRetentionDays > 365 then AlertRetentionDays := 365;
   end;
 end;
 
@@ -2834,8 +2894,10 @@ begin
         '  $content = $content -replace ''(?m)^ABUSEIPDB_API_KEY=.*$'', (''ABUSEIPDB_API_KEY='' + ''' + PsEscape(AbuseIPDBKey) + ''')' + CRLF +
         '  $content = $content -replace ''(?m)^OTX_API_KEY=.*$'', (''OTX_API_KEY='' + ''' + PsEscape(OTXKey) + ''')' + CRLF +
         '  $content = $content -replace ''(?m)^GREYNOISE_API_KEY=.*$'', (''GREYNOISE_API_KEY='' + ''' + PsEscape(GreyNoiseKey) + ''')' + CRLF +
+        '  $content = $content -replace ''(?m)^WINLOG_RETENTION_DAYS=.*$'', ''WINLOG_RETENTION_DAYS=' + IntToStr(WinlogRetentionDays) + '''' + CRLF +
+        '  $content = $content -replace ''(?m)^ALERT_RETENTION_DAYS=.*$'', ''ALERT_RETENTION_DAYS=' + IntToStr(AlertRetentionDays) + '''' + CRLF +
         '  Set-Content -Path $envFile -Value $content -Force' + CRLF +
-        '  Write-Host ''[TinySocs][Inno] assistant.env updated with SIEM + LLM + webhook + threat-intel credentials''' + CRLF +
+        '  Write-Host ''[TinySocs][Inno] assistant.env updated with SIEM + LLM + webhook + threat-intel + retention credentials''' + CRLF +
         '}' + CRLF +
         '' + CRLF +
         '# Reconcile SIEM_PASS with CredMan (Phase 10 credential probe may have' + CRLF +

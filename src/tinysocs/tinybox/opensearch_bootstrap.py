@@ -243,10 +243,100 @@ def _ensure_templates_and_aliases() -> None:
             sys.exit(1)
 
 
+def _build_retention_policy(description: str, index_pattern: str, retention_days: int) -> Dict[str, Any]:
+    """Build an ISM policy JSON for time-based index deletion."""
+    return {
+        "policy": {
+            "description": description,
+            "default_state": "open",
+            "states": [
+                {
+                    "name": "open",
+                    "actions": [],
+                    "transitions": [
+                        {
+                            "state_name": "delete",
+                            "conditions": {"min_index_age": f"{retention_days}d"},
+                        }
+                    ],
+                },
+                {
+                    "name": "delete",
+                    "actions": [{"delete": {}}],
+                    "transitions": [],
+                },
+            ],
+            "ism_template": [{"index_patterns": [index_pattern], "priority": 100}],
+        }
+    }
+
+
+def apply_retention_policies(
+    winlog_days: Optional[int] = None,
+    alert_days: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Apply ISM retention policies to OpenSearch.
+
+    Reads retention days from parameters or env vars (WINLOG_RETENTION_DAYS,
+    ALERT_RETENTION_DAYS). Clamps values to 7–365 range.
+
+    Returns dict with status per policy.
+    """
+    if winlog_days is None:
+        winlog_days = int(os.environ.get("WINLOG_RETENTION_DAYS", "30"))
+    if alert_days is None:
+        alert_days = int(os.environ.get("ALERT_RETENTION_DAYS", "90"))
+
+    winlog_days = max(7, min(365, winlog_days))
+    alert_days = max(7, min(365, alert_days))
+
+    results: Dict[str, Any] = {}
+
+    policies = [
+        (
+            "tinysocs-winlog-retention",
+            _build_retention_policy(
+                f"TinySocs winlog index retention: delete indices older than {winlog_days} days",
+                "tinysocs-winlog-*",
+                winlog_days,
+            ),
+        ),
+        (
+            "tinysocs-alerts-retention",
+            _build_retention_policy(
+                f"TinySocs alerts index retention: delete indices older than {alert_days} days",
+                "tinysocs-alerts-*",
+                alert_days,
+            ),
+        ),
+    ]
+
+    for name, body in policies:
+        # Try to get existing policy to extract seq_no/primary_term for update
+        get_status, get_resp = _http_json("GET", f"/_plugins/_ism/policies/{name}")
+        if get_status == 200 and "_seq_no" in get_resp:
+            seq_no = get_resp["_seq_no"]
+            primary_term = get_resp["_primary_term"]
+            put_path = f"/_plugins/_ism/policies/{name}?if_seq_no={seq_no}&if_primary_term={primary_term}"
+        else:
+            put_path = f"/_plugins/_ism/policies/{name}"
+
+        status, resp = _http_json("PUT", put_path, body)
+        if 200 <= status < 300:
+            print(f"[tinybox-bootstrap] ISM policy applied: {name} ({body['policy']['states'][0]['transitions'][0]['conditions']['min_index_age']})")
+            results[name] = {"ok": True, "status": status}
+        else:
+            print(f"[tinybox-bootstrap] WARN: ISM policy failed: {name} (status={status}) :: {resp}", file=sys.stderr)
+            results[name] = {"ok": False, "status": status, "error": resp}
+
+    return results
+
+
 def main(argv: list[str] | None = None) -> int:
     print("[tinybox-bootstrap] Starting TinyBox OpenSearch bootstrap...")
     _check_cluster()
     _ensure_templates_and_aliases()
+    apply_retention_policies()
     print("[tinybox-bootstrap] Done.")
     return 0
 

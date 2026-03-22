@@ -1710,6 +1710,7 @@ def api_get_retention():
     return {
         "winlog_days": int(os.getenv("WINLOG_RETENTION_DAYS", "30")),
         "alert_days": int(os.getenv("ALERT_RETENTION_DAYS", "90")),
+        "custom_days": int(os.getenv("CUSTOM_RETENTION_DAYS", "30")),
     }
 
 
@@ -1723,6 +1724,7 @@ async def api_set_retention(request: Request):
 
     winlog_days = body.get("winlog_days")
     alert_days = body.get("alert_days")
+    custom_days = body.get("custom_days")
 
     if winlog_days is not None:
         winlog_days = int(winlog_days)
@@ -1734,6 +1736,11 @@ async def api_set_retention(request: Request):
         if not 7 <= alert_days <= 365:
             return JSONResponse({"error": "alert_days must be 7-365"}, status_code=400)
 
+    if custom_days is not None:
+        custom_days = int(custom_days)
+        if not 7 <= custom_days <= 365:
+            return JSONResponse({"error": "custom_days must be 7-365"}, status_code=400)
+
     # Write to assistant.env
     env_path = _find_assistant_env()
     updates = {}
@@ -1743,6 +1750,9 @@ async def api_set_retention(request: Request):
     if alert_days is not None:
         updates["ALERT_RETENTION_DAYS"] = str(alert_days)
         os.environ["ALERT_RETENTION_DAYS"] = str(alert_days)
+    if custom_days is not None:
+        updates["CUSTOM_RETENTION_DAYS"] = str(custom_days)
+        os.environ["CUSTOM_RETENTION_DAYS"] = str(custom_days)
 
     if env_path and updates:
         try:
@@ -1753,7 +1763,7 @@ async def api_set_retention(request: Request):
     # Apply ISM policies via bootstrap module
     try:
         from tinysocs.tinybox.opensearch_bootstrap import apply_retention_policies
-        results = apply_retention_policies(winlog_days=winlog_days, alert_days=alert_days)
+        results = apply_retention_policies(winlog_days=winlog_days, alert_days=alert_days, custom_days=custom_days)
         all_ok = all(r.get("ok") for r in results.values())
     except Exception as exc:
         return {"ok": False, "error": f"ISM policy update failed: {exc}", "env_updated": True}
@@ -1762,6 +1772,7 @@ async def api_set_retention(request: Request):
         "ok": all_ok,
         "winlog_days": winlog_days or int(os.getenv("WINLOG_RETENTION_DAYS", "30")),
         "alert_days": alert_days or int(os.getenv("ALERT_RETENTION_DAYS", "90")),
+        "custom_days": custom_days or int(os.getenv("CUSTOM_RETENTION_DAYS", "30")),
         "ism_results": results,
     }
 
@@ -1861,6 +1872,7 @@ async def api_storage_stats():
 
         winlog_docs = winlog_bytes = winlog_count = 0
         alert_docs = alert_bytes = alert_count = 0
+        custom_docs = custom_bytes = custom_count = 0
         other_docs = other_bytes = other_count = 0
 
         for idx in indices_raw:
@@ -1875,14 +1887,18 @@ async def api_storage_stats():
                 alert_docs += docs
                 alert_bytes += size
                 alert_count += 1
+            elif name.startswith("tinysocs-custom-"):
+                custom_docs += docs
+                custom_bytes += size
+                custom_count += 1
             else:
                 other_docs += docs
                 other_bytes += size
                 other_count += 1
 
-        total_docs = winlog_docs + alert_docs + other_docs
-        total_bytes = winlog_bytes + alert_bytes + other_bytes
-        total_count = winlog_count + alert_count + other_count
+        total_docs = winlog_docs + alert_docs + custom_docs + other_docs
+        total_bytes = winlog_bytes + alert_bytes + custom_bytes + other_bytes
+        total_count = winlog_count + alert_count + custom_count + other_count
 
         # 2. Disk usage
         disk_resp = _req.get(
@@ -1923,6 +1939,11 @@ async def api_storage_stats():
                     "doc_count": alert_docs, "size_bytes": alert_bytes,
                     "size_human": _human_bytes(alert_bytes), "index_count": alert_count,
                     "retention_days": int(os.getenv("ALERT_RETENTION_DAYS", "90")),
+                },
+                "custom": {
+                    "doc_count": custom_docs, "size_bytes": custom_bytes,
+                    "size_human": _human_bytes(custom_bytes), "index_count": custom_count,
+                    "retention_days": int(os.getenv("CUSTOM_RETENTION_DAYS", "30")),
                 },
                 "other": {
                     "doc_count": other_docs, "size_bytes": other_bytes,
@@ -6001,6 +6022,10 @@ select { cursor: pointer; }
           <label>Alert Retention (days)</label>
           <input type="number" id="s_ALERT_RETENTION_DAYS" min="7" max="365" value="90" style="width:80px">
         </div>
+        <div style="flex:1">
+          <label>Custom/HEC Log Retention (days)</label>
+          <input type="number" id="s_CUSTOM_RETENTION_DAYS" min="7" max="365" value="30" style="width:80px">
+        </div>
       </div>
       <div style="margin-top:4px">
         <button class="btn-save" onclick="saveRetentionSettings()" style="font-size:12px;padding:4px 12px">Save Retention</button>
@@ -7152,6 +7177,7 @@ async function loadStorage() {
   const rows = [
     ['Event Logs', idx.winlog],
     ['Alerts', idx.alerts],
+    ['Custom (HEC)', idx.custom],
     ['Other', idx.other],
   ];
   for (const [label, data] of rows) {
@@ -9065,7 +9091,7 @@ function populateSettings(d) {
     'OFFLINE_LLM_URL','OFFLINE_LLM_MODEL','WEBHOOK_URL','WEBHOOK_ENABLED',
     'SIEM_URL','SIEM_USER',
     'ABUSEIPDB_API_KEY','OTX_API_KEY','GREYNOISE_API_KEY',
-    'WINLOG_RETENTION_DAYS','ALERT_RETENTION_DAYS'];
+    'WINLOG_RETENTION_DAYS','ALERT_RETENTION_DAYS','CUSTOM_RETENTION_DAYS'];
   for (const f of fields) {
     const el = document.getElementById('s_' + f);
     if (el) {
@@ -9079,6 +9105,7 @@ function populateSettings(d) {
   // Set retention defaults if not configured
   if (!s['WINLOG_RETENTION_DAYS']) { const el = document.getElementById('s_WINLOG_RETENTION_DAYS'); if (el) el.value = '30'; }
   if (!s['ALERT_RETENTION_DAYS']) { const el = document.getElementById('s_ALERT_RETENTION_DAYS'); if (el) el.value = '90'; }
+  if (!s['CUSTOM_RETENTION_DAYS']) { const el = document.getElementById('s_CUSTOM_RETENTION_DAYS'); if (el) el.value = '30'; }
   updateProviderFields();
   document.getElementById('settingsStatus').innerHTML = '';
   // Load email notification settings from agent-config.yml
@@ -9164,8 +9191,9 @@ async function saveSettings() {
 async function saveRetentionSettings() {
   const winlog = parseInt(document.getElementById('s_WINLOG_RETENTION_DAYS')?.value || '30');
   const alerts = parseInt(document.getElementById('s_ALERT_RETENTION_DAYS')?.value || '90');
+  const custom = parseInt(document.getElementById('s_CUSTOM_RETENTION_DAYS')?.value || '30');
   const statusEl = document.getElementById('retentionStatus');
-  if (winlog < 7 || winlog > 365 || alerts < 7 || alerts > 365) {
+  if (winlog < 7 || winlog > 365 || alerts < 7 || alerts > 365 || custom < 7 || custom > 365) {
     statusEl.innerHTML = '<span style="color:var(--red)">Values must be 7\u2013365 days</span>';
     return;
   }
@@ -9174,7 +9202,7 @@ async function saveRetentionSettings() {
     const r = await fetch(BASE + '/api/settings/retention', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({admin_password: settingsPassword, winlog_days: winlog, alert_days: alerts}),
+      body: JSON.stringify({admin_password: settingsPassword, winlog_days: winlog, alert_days: alerts, custom_days: custom}),
     });
     const d = await r.json();
     if (d.ok) {

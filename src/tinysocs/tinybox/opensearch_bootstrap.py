@@ -274,11 +274,12 @@ def _build_retention_policy(description: str, index_pattern: str, retention_days
 def apply_retention_policies(
     winlog_days: Optional[int] = None,
     alert_days: Optional[int] = None,
+    custom_days: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Apply ISM retention policies to OpenSearch.
 
     Reads retention days from parameters or env vars (WINLOG_RETENTION_DAYS,
-    ALERT_RETENTION_DAYS). Clamps values to 7–365 range.
+    ALERT_RETENTION_DAYS, CUSTOM_RETENTION_DAYS). Clamps values to 7–365 range.
 
     Returns dict with status per policy.
     """
@@ -286,9 +287,12 @@ def apply_retention_policies(
         winlog_days = int(os.environ.get("WINLOG_RETENTION_DAYS", "30"))
     if alert_days is None:
         alert_days = int(os.environ.get("ALERT_RETENTION_DAYS", "90"))
+    if custom_days is None:
+        custom_days = int(os.environ.get("CUSTOM_RETENTION_DAYS", "30"))
 
     winlog_days = max(7, min(365, winlog_days))
     alert_days = max(7, min(365, alert_days))
+    custom_days = max(7, min(365, custom_days))
 
     results: Dict[str, Any] = {}
 
@@ -307,6 +311,14 @@ def apply_retention_policies(
                 f"TinySocs alerts index retention: delete indices older than {alert_days} days",
                 "tinysocs-alerts-*",
                 alert_days,
+            ),
+        ),
+        (
+            "tinysocs-custom-retention",
+            _build_retention_policy(
+                f"TinySocs custom log index retention: delete indices older than {custom_days} days",
+                "tinysocs-custom-*",
+                custom_days,
             ),
         ),
     ]

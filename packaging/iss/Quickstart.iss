@@ -402,11 +402,13 @@ var
   AnchorsRetentionDays: Integer;
   WinlogRetentionDays: Integer;
   AlertRetentionDays: Integer;
+  CustomRetentionDays: Integer;
 
   { Data Retention page }
   RetentionPage: TWizardPage;
   WinlogRetEdit: TNewEdit;
   AlertRetEdit: TNewEdit;
+  CustomRetEdit: TNewEdit;
 
   LlmMode: String;
   LlmApiKey: String;
@@ -1420,7 +1422,21 @@ begin
   L := TNewStaticText.Create(RetentionPage.Surface);
   L.Parent := RetentionPage.Surface;
   L.Left := 0;
-  L.Top := AlertRetEdit.Top + ScaleY(36);
+  L.Top := AlertRetEdit.Top + ScaleY(32);
+  L.Width := RetentionPage.SurfaceWidth;
+  L.Caption := 'Custom/HEC log retention (days, 7-365):';
+
+  CustomRetEdit := TNewEdit.Create(RetentionPage.Surface);
+  CustomRetEdit.Parent := RetentionPage.Surface;
+  CustomRetEdit.Left := 0;
+  CustomRetEdit.Top := L.Top + ScaleY(18);
+  CustomRetEdit.Width := ScaleX(80);
+  CustomRetEdit.Text := '30';
+
+  L := TNewStaticText.Create(RetentionPage.Surface);
+  L.Parent := RetentionPage.Surface;
+  L.Left := 0;
+  L.Top := CustomRetEdit.Top + ScaleY(36);
   L.Width := RetentionPage.SurfaceWidth;
   L.Font.Color := clGray;
   L.AutoSize := True;
@@ -1520,6 +1536,7 @@ begin
   AnchorsRetentionDays := 45;
   WinlogRetentionDays := 30;
   AlertRetentionDays := 90;
+  CustomRetentionDays := 30;
   HeartbeatMinutes := 15;
   RemoveDataOnUninstall := False;
   NodePort := '8081';
@@ -1761,10 +1778,13 @@ begin
   begin
     WinlogRetentionDays := StrToIntDef(Trim(WinlogRetEdit.Text), 30);
     AlertRetentionDays := StrToIntDef(Trim(AlertRetEdit.Text), 90);
+    CustomRetentionDays := StrToIntDef(Trim(CustomRetEdit.Text), 30);
     if WinlogRetentionDays < 7 then WinlogRetentionDays := 7;
     if WinlogRetentionDays > 365 then WinlogRetentionDays := 365;
     if AlertRetentionDays < 7 then AlertRetentionDays := 7;
     if AlertRetentionDays > 365 then AlertRetentionDays := 365;
+    if CustomRetentionDays < 7 then CustomRetentionDays := 7;
+    if CustomRetentionDays > 365 then CustomRetentionDays := 365;
   end;
 end;
 
@@ -2922,6 +2942,7 @@ begin
         '  $content = $content -replace ''(?m)^GREYNOISE_API_KEY=.*$'', (''GREYNOISE_API_KEY='' + ''' + PsEscape(GreyNoiseKey) + ''')' + CRLF +
         '  $content = $content -replace ''(?m)^WINLOG_RETENTION_DAYS=.*$'', ''WINLOG_RETENTION_DAYS=' + IntToStr(WinlogRetentionDays) + '''' + CRLF +
         '  $content = $content -replace ''(?m)^ALERT_RETENTION_DAYS=.*$'', ''ALERT_RETENTION_DAYS=' + IntToStr(AlertRetentionDays) + '''' + CRLF +
+        '  $content = $content -replace ''(?m)^CUSTOM_RETENTION_DAYS=.*$'', ''CUSTOM_RETENTION_DAYS=' + IntToStr(CustomRetentionDays) + '''' + CRLF +
         '  Set-Content -Path $envFile -Value $content -Force' + CRLF +
         '  Write-Host ''[TinySocs][Inno] assistant.env updated with SIEM + LLM + webhook + threat-intel + retention credentials''' + CRLF +
         '}' + CRLF +

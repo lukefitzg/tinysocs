@@ -1080,6 +1080,131 @@ def _start_registration_thread() -> None:
     print(f"[tinysocs-node] Auto-registration started (hub={_HUB_URL})", flush=True)
 
 
+# ---------------------------------------------------------------------------
+# HEC (HTTP Event Collector) — generic log ingestion endpoint
+# ---------------------------------------------------------------------------
+# Accepts arbitrary JSON events and bulk-indexes them into tinysocs-custom-*.
+# Auth: HMAC (same as /evidence/append).
+# Max: 1000 events per request, 5 MB body.
+# ---------------------------------------------------------------------------
+
+_HEC_MAX_EVENTS = 1000
+_HEC_MAX_BODY_BYTES = 5 * 1024 * 1024  # 5 MB
+
+
+@app.post("/hec")
+async def post_hec(req: Request) -> dict:
+    """Ingest custom log events via HTTP Event Collector."""
+    await _verify_hmac(req)
+
+    # Body size check
+    content_length = int(req.headers.get("content-length", 0))
+    if content_length > _HEC_MAX_BODY_BYTES:
+        raise HTTPException(413, f"Request body exceeds {_HEC_MAX_BODY_BYTES} byte limit")
+
+    body = await req.json()
+
+    # Accept single event or batch
+    events_raw: list
+    if "events" in body and isinstance(body["events"], list):
+        events_raw = body["events"]
+    elif "event" in body:
+        events_raw = [body]
+    else:
+        raise HTTPException(400, "Request must contain 'event' (single) or 'events' (batch)")
+
+    if len(events_raw) > _HEC_MAX_EVENTS:
+        raise HTTPException(
+            400,
+            f"Batch exceeds {_HEC_MAX_EVENTS} event limit (got {len(events_raw)})",
+        )
+
+    if not events_raw:
+        return {"ok": True, "indexed": 0, "errors": []}
+
+    # Build bulk request body
+    now_iso_str = datetime.now(timezone.utc).isoformat()
+    today_suffix = datetime.now(timezone.utc).strftime("%Y.%m.%d")
+    index_name = f"tinysocs-custom-{today_suffix}"
+
+    bulk_lines: list[str] = []
+    for evt_wrapper in events_raw:
+        evt = evt_wrapper.get("event") if isinstance(evt_wrapper, dict) else evt_wrapper
+        if evt is None:
+            continue
+
+        # Build the document
+        doc: dict[str, Any] = {}
+
+        # Timestamp: preserve if present, otherwise use now
+        ts = None
+        if isinstance(evt, dict):
+            ts = evt.get("@timestamp") or evt.get("timestamp")
+        if isinstance(evt_wrapper, dict) and not ts:
+            ts = evt_wrapper.get("timestamp")
+        doc["@timestamp"] = ts or now_iso_str
+        doc["timestamp"] = doc["@timestamp"]
+
+        # Source metadata
+        if isinstance(evt_wrapper, dict):
+            if evt_wrapper.get("source"):
+                doc["source"] = evt_wrapper["source"]
+            if evt_wrapper.get("sourcetype"):
+                doc["sourcetype"] = evt_wrapper["sourcetype"]
+
+        # The actual event data
+        doc["event"] = evt
+
+        # TinySocs metadata
+        doc["tinysocs"] = {
+            "input_name": "hec",
+            "node_id": NODE_ID,
+            "hec_ingested": True,
+        }
+
+        bulk_lines.append(json.dumps({"index": {"_index": index_name}}))
+        bulk_lines.append(json.dumps(doc))
+
+    if not bulk_lines:
+        return {"ok": True, "indexed": 0, "errors": []}
+
+    bulk_body = "\n".join(bulk_lines) + "\n"
+
+    # Send to OpenSearch
+    siem_url = _get_siem_base_url()
+    auth = _get_siem_auth()
+    ca = resolve_ca_cert()
+
+    try:
+        sess = get_opensearch_session()
+        resp = sess.post(
+            f"{siem_url}/_bulk",
+            data=bulk_body,
+            headers={"Content-Type": "application/x-ndjson"},
+            auth=auth,
+            verify=ca if ca else False,
+            timeout=30,
+        )
+        resp.raise_for_status()
+        result = resp.json()
+
+        indexed = 0
+        errors: list[str] = []
+        for item in result.get("items", []):
+            action = item.get("index", {})
+            if action.get("status") in (200, 201):
+                indexed += 1
+            else:
+                err = action.get("error", {})
+                err_msg = err.get("reason", str(err)) if isinstance(err, dict) else str(err)
+                errors.append(err_msg[:200])
+
+        return {"ok": len(errors) == 0, "indexed": indexed, "errors": errors[:10]}
+
+    except Exception as exc:
+        raise HTTPException(502, f"OpenSearch bulk index failed: {exc}")
+
+
 @app.on_event("startup")
 async def _on_startup():
     _start_registration_thread()

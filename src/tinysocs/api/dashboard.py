@@ -2423,9 +2423,9 @@ def api_detection_summarize(body: Dict[str, Any] = Body(...)):
 
     try:
         if llm_mode in ("anthropic", "claude"):
-            result = _chat_anthropic(prompt, session_id, ephemeral_messages, system_text, _chat_call_tool)
+            result = _chat_anthropic(prompt, session_id, ephemeral_messages, system_text, _chat_call_tool_masked)
         elif llm_mode == "openai":
-            result = _chat_openai(prompt, session_id, ephemeral_messages, system_text, _chat_call_tool)
+            result = _chat_openai(prompt, session_id, ephemeral_messages, system_text, _chat_call_tool_masked)
         elif llm_mode == "ollama":
             result = _chat_ollama(prompt, session_id, ephemeral_messages, system_text)
         else:
@@ -3759,6 +3759,16 @@ def _chat_index_allowed(idx: str) -> bool:
     return any(fnmatch(idx or "", pat) for pat in _CHAT_ALLOW_INDICES)
 
 
+def _privacy_mask_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply privacy masking to tool results before sending to external LLM."""
+    try:
+        from tinysocs.agent.privacy import coarse_mask
+        masked = json.loads(coarse_mask(json.dumps(result)))
+        return masked
+    except Exception:
+        return result
+
+
 def _chat_call_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     """Execute a tool call using the dashboard's own SIEM connection."""
     args = dict(args or {})
@@ -3796,6 +3806,12 @@ def _chat_call_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         return {"error": f"unknown tool {name}"}
     except Exception as e:
         return {"error": str(e), "tool": name}
+
+
+def _chat_call_tool_masked(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    """Execute a tool and apply privacy masking to the result."""
+    result = _chat_call_tool(name, args)
+    return _privacy_mask_result(result)
 
 
 def _chat_ts_field(index: str) -> str:
@@ -4085,7 +4101,30 @@ def _chat_get_environment_context() -> str:
     except Exception:
         pass  # Non-fatal — chat works without context
 
-    return "\n".join(parts)
+    ctx = "\n".join(parts)
+    try:
+        from tinysocs.agent.privacy import coarse_mask
+        ctx = coarse_mask(ctx)
+    except Exception:
+        pass
+    return ctx
+
+
+@dashboard_app.get("/api/settings/llm-mode")
+def api_llm_mode():
+    """Return the current LLM mode (no auth required — used for consent prompt)."""
+    mode = os.getenv("LLM_MODE", "offline").strip().lower()
+    provider_labels = {
+        "anthropic": "Anthropic (Claude)",
+        "openai": "OpenAI",
+        "ollama": "Ollama (local)",
+        "offline": "Offline",
+    }
+    return {
+        "mode": mode,
+        "label": provider_labels.get(mode, mode),
+        "is_cloud": mode in ("anthropic", "openai"),
+    }
 
 
 @dashboard_app.post("/api/chat")
@@ -4172,9 +4211,9 @@ def api_chat(body: Dict[str, Any] = Body(...)):
 
     # Route to the appropriate LLM backend (use dashboard-local tool dispatcher)
     if llm_mode in ("anthropic", "claude"):
-        result = _chat_anthropic(user_message, session_id, messages, system_text, _chat_call_tool)
+        result = _chat_anthropic(user_message, session_id, messages, system_text, _chat_call_tool_masked)
     elif llm_mode == "openai":
-        result = _chat_openai(user_message, session_id, messages, system_text, _chat_call_tool)
+        result = _chat_openai(user_message, session_id, messages, system_text, _chat_call_tool_masked)
     elif llm_mode == "ollama":
         result = _chat_ollama(user_message, session_id, messages, system_text)
     else:
@@ -4300,7 +4339,7 @@ def _chat_openai(
 
     # Read API key and model fresh from env (use `or` so empty string falls back)
     _OAI_KEY = os.getenv("OPENAI_API_KEY", "")
-    _OAI_MODEL = os.getenv("OPENAI_MODEL") or "gpt-4o-mini"
+    _OAI_MODEL = os.getenv("OPENAI_MODEL") or "gpt-4o"
 
     if not _OAI_KEY:
         return {
@@ -5682,6 +5721,7 @@ select { cursor: pointer; }
       <div id="settingsStatus"></div>
 
       <div class="section-title">LLM Configuration</div>
+      <p style="color:var(--muted);font-size:11px;margin-bottom:8px">&#x2139;&#xFE0F; OpenAI and Anthropic modes send query results to external APIs. For maximum privacy, use Ollama (runs entirely on this machine).</p>
       <div class="field">
         <label>LLM Provider</label>
         <select id="s_LLM_MODE">
@@ -5695,7 +5735,7 @@ select { cursor: pointer; }
         <label>OpenAI API Key</label>
         <input type="text" id="s_OPENAI_API_KEY" placeholder="sk-...">
         <label>OpenAI Model</label>
-        <input type="text" id="s_OPENAI_MODEL" placeholder="gpt-4o-mini">
+        <input type="text" id="s_OPENAI_MODEL" placeholder="gpt-4o">
       </div>
       <div class="field" id="field_anthropic">
         <label>Anthropic API Key</label>
@@ -6205,8 +6245,28 @@ select { cursor: pointer; }
     <button class="assistant-toggle" onclick="toggleAssistant()" id="assistantToggle" title="Toggle assistant panel">&laquo;</button>
     <div class="card assistant-card">
       <div class="assistant-header-inner" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;padding-left:28px">
-        <h2 style="margin:0">Assistant</h2>
+        <div style="display:flex;align-items:center;gap:8px">
+          <h2 style="margin:0">Assistant</h2>
+          <span id="llmModeLabel" style="font-size:10px;padding:2px 6px;border-radius:3px;background:var(--bg);color:var(--muted);border:1px solid var(--border)" title=""></span>
+        </div>
         <button onclick="clearChat()" style="font-size:10px;padding:2px 8px;background:var(--bg);color:var(--muted);border:1px solid var(--border);border-radius:4px;cursor:pointer" title="Start a new conversation">New Chat</button>
+      </div>
+      <!-- Privacy consent overlay (shown once for cloud LLM modes) -->
+      <div id="llmConsentOverlay" style="display:none;position:absolute;inset:0;z-index:10;background:var(--card-bg);padding:20px;overflow-y:auto;border-radius:8px">
+        <h3 style="margin:0 0 12px 0;color:var(--orange)">&#x26A0;&#xFE0F; AI Assistant &mdash; Data Privacy Notice</h3>
+        <p style="font-size:13px;line-height:1.5">The AI assistant uses <strong id="consentProvider">a cloud provider</strong> to analyse your security data. When you ask a question, the following may be sent to the provider's API:</p>
+        <ul style="font-size:13px;line-height:1.8;margin:8px 0">
+          <li>Hostnames and IP addresses (coarsened to /24)</li>
+          <li>Alert summaries and detection rule names</li>
+          <li>Event metadata (event IDs, timestamps, channels)</li>
+          <li>Your conversation history (last 20 messages)</li>
+        </ul>
+        <p style="font-size:13px;line-height:1.5">Email addresses are automatically masked. Raw event payloads are truncated to 8,000 characters per query.</p>
+        <p style="font-size:13px;line-height:1.5;color:var(--muted)">For zero data export, switch to Ollama (local) in Settings.</p>
+        <div style="display:flex;gap:8px;margin-top:16px">
+          <button onclick="acceptLlmConsent()" style="padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:13px">&#x2713; I understand and accept</button>
+          <button onclick="declineLlmConsent()" style="padding:8px 16px;background:var(--bg);color:var(--muted);border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:13px">Use Offline Mode Instead</button>
+        </div>
       </div>
       <div class="chat-container">
         <div class="chat-messages" id="chatMessages">
@@ -8500,10 +8560,70 @@ function clearChat() {
   } catch(e) {}
 }
 
+// ---- LLM Privacy Consent ----
+let _llmMode = null;
+let _llmIsCloud = false;
+
+async function initLlmMode() {
+  try {
+    const r = await fetch(BASE + '/api/settings/llm-mode');
+    const d = await r.json();
+    _llmMode = d.mode;
+    _llmIsCloud = d.is_cloud;
+    const label = document.getElementById('llmModeLabel');
+    if (label) {
+      if (d.is_cloud) {
+        label.innerHTML = '&#x1F512; via ' + escapeHtml(d.label);
+        label.title = 'Data is sent to ' + d.label + ' API for analysis';
+        label.style.color = 'var(--orange)';
+      } else if (d.mode === 'ollama') {
+        label.innerHTML = '&#x1F3E0; Local';
+        label.title = 'All processing happens locally — no data leaves this machine';
+        label.style.color = 'var(--green)';
+      } else {
+        label.innerHTML = '&#x26A1; Offline';
+        label.title = 'No LLM configured';
+        label.style.color = 'var(--muted)';
+      }
+    }
+  } catch(e) {}
+}
+
+function checkLlmConsent() {
+  if (!_llmIsCloud) return true;
+  const consent = localStorage.getItem('tinysocs_llm_consent');
+  if (consent) {
+    try {
+      const c = JSON.parse(consent);
+      if (c.mode === _llmMode && c.accepted) return true;
+    } catch(e) {}
+  }
+  // Show consent overlay
+  const overlay = document.getElementById('llmConsentOverlay');
+  const provider = document.getElementById('consentProvider');
+  if (provider) provider.textContent = _llmMode === 'anthropic' ? 'Anthropic (Claude)' : 'OpenAI';
+  if (overlay) overlay.style.display = 'block';
+  return false;
+}
+
+function acceptLlmConsent() {
+  localStorage.setItem('tinysocs_llm_consent', JSON.stringify({mode: _llmMode, accepted: true, ts: Date.now()}));
+  const overlay = document.getElementById('llmConsentOverlay');
+  if (overlay) overlay.style.display = 'none';
+}
+
+function declineLlmConsent() {
+  const overlay = document.getElementById('llmConsentOverlay');
+  if (overlay) overlay.style.display = 'none';
+}
+
 async function sendChat() {
   const input = document.getElementById('chatInput');
   const msg = input.value.trim();
   if (!msg) return;
+
+  // Check privacy consent for cloud LLM modes
+  if (!checkLlmConsent()) return;
 
   const el = document.getElementById('chatMessages');
   el.innerHTML += `<div class="chat-msg user">${escapeHtml(msg)}</div>`;
@@ -9011,6 +9131,7 @@ function unlockDashboard() {
   document.getElementById('dashboardContent').style.visibility = 'visible';
   try { checkLlmStatus(); } catch(e) {}
   try { restoreChat(); } catch(e) {}
+  try { initLlmMode(); } catch(e) {}
 
   // Restore active tab from URL hash only (not localStorage — it persists
   // across reinstalls and causes stale tab selection)

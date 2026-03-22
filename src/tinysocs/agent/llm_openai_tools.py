@@ -21,7 +21,7 @@ from tinysocs.agent.tools import aggregate, propose_rule, search_kql, stage_acti
 from tinysocs.netutil import is_loopback
 
 API_KEY = os.getenv("OPENAI_API_KEY")
-MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
 DEBUG = os.getenv("DEBUG_LLM") == "1"
 
 # Compacting knobs

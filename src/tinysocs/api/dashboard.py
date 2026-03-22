@@ -593,7 +593,7 @@ def _demo_fleet_health() -> dict:
                 {"event_id": "4625", "count": 842},
                 {"event_id": "1", "count": 2800},
             ],
-            "agent_version": "0.8.0",
+            "agent_version": "0.9.0",
             "node_id": "node-local",
             "uptime": "4d 12h 30m",
             "events_shipped": 12847,
@@ -620,7 +620,7 @@ def _demo_fleet_health() -> dict:
                 {"event_id": "1", "count": 1900},
                 {"event_id": "4663", "count": 1100},
             ],
-            "agent_version": "0.8.0",
+            "agent_version": "0.9.0",
             "node_id": "node-local",
             "uptime": "4d 12h 30m",
             "events_shipped": 8934,
@@ -647,7 +647,7 @@ def _demo_fleet_health() -> dict:
                 {"event_id": "4672", "count": 3200},
                 {"event_id": "4104", "count": 1800},
             ],
-            "agent_version": "0.8.0",
+            "agent_version": "0.9.0",
             "node_id": "node-local",
             "uptime": "12d 3h 15m",
             "events_shipped": 15392,
@@ -739,13 +739,13 @@ def _demo_events_recent(limit: int = 50) -> dict:
 def _demo_version_status() -> dict:
     return {
         "fleet_versions": [
-            {"hostname": "RECEPTION-PC", "agent_version": "0.7.9", "status": "outdated-minor"},
-            {"hostname": "FILESERVER-01", "agent_version": "0.8.0", "status": "current"},
-            {"hostname": "DC-01", "agent_version": "0.8.0", "status": "current"},
+            {"hostname": "RECEPTION-PC", "agent_version": "0.8.9", "status": "outdated-minor"},
+            {"hostname": "FILESERVER-01", "agent_version": "0.9.0", "status": "current"},
+            {"hostname": "DC-01", "agent_version": "0.9.0", "status": "current"},
         ],
         "has_outdated": True,
-        "summary": "1 of 3 agents outdated (RECEPTION-PC: 0.7.9 → 0.8.0)",
-        "manifest": {"current_version": "0.8.0"},
+        "summary": "1 of 3 agents outdated (RECEPTION-PC: 0.8.9 → 0.9.0)",
+        "manifest": {"current_version": "0.9.0"},
     }
 
 
@@ -1179,7 +1179,7 @@ def _demo_site_fleet_health(site_id: str) -> dict:
                 {"event_id": "4624", "count": int(hcfg["events"] * 0.25)},
                 {"event_id": "1", "count": int(hcfg["events"] * 0.20)},
             ],
-            "agent_version": "0.8.0" if site_id != "warehouse" else "0.7.9",
+            "agent_version": "0.9.0" if site_id != "warehouse" else "0.8.9",
             "node_id": site_id,
             "uptime": hcfg["uptime"],
             "events_shipped": hcfg["events"],
@@ -1289,7 +1289,7 @@ def _demo_nodes() -> dict:
         {
             "url": "https://acme-node:8081",
             "node_id": "head-office",
-            "version": "0.8.0",
+            "version": "0.9.0",
             "status": "healthy",
             "ledger_sequence": 347,
             "ledger_head": "a3f2c9e1d4b5a6f7e8d9c0b1a2f3e4d5c6b7a8f9e0d1c2b3a4f5e6d7c8b9a0f1",
@@ -1306,7 +1306,7 @@ def _demo_nodes() -> dict:
         {
             "url": "https://dental-node:8081",
             "node_id": "branch-north",
-            "version": "0.8.0",
+            "version": "0.9.0",
             "status": "healthy",
             "ledger_sequence": 189,
             "ledger_head": "b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3",
@@ -1322,7 +1322,7 @@ def _demo_nodes() -> dict:
         {
             "url": "https://harbor-node:8081",
             "node_id": "warehouse",
-            "version": "0.7.9",
+            "version": "0.8.9",
             "status": "warning",
             "ledger_sequence": 512,
             "ledger_head": "c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4",

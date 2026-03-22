@@ -66,7 +66,7 @@ Walk through each tab:
 - **Ask AI buttons** on each widget header pre-fill contextual prompts
 
 ### Compliance Tab
-- **MITRE ATT&CK coverage**: 31 techniques across 11 tactics (33 annotated rules) — full heatmap grid
+- **MITRE ATT&CK coverage**: 33 techniques across 11 tactics — full heatmap grid
   - Click a tactic cell to expand and see covered technique IDs
   - Navigator layer export available
 - **Compliance frameworks**: select NIST CSF 2.0, HIPAA, or PCI DSS
@@ -78,9 +78,9 @@ Walk through each tab:
 
 ### Sites Tab
 - 3 client sites visible: acme-law, mainst-dental, harbor-ins
-- acme-law: healthy (green), version 0.8.0, 347 ledger entries, 2 detections in last run
-- mainst-dental: healthy (green), version 0.8.0, 189 ledger entries, 0 detections
-- harbor-ins: warning (amber), version 0.7.9 (outdated), 512 ledger entries, 5 detections in last run
+- acme-law: healthy (green), version 0.9.0, 347 ledger entries, 2 detections in last run
+- mainst-dental: healthy (green), version 0.9.0, 189 ledger entries, 0 detections
+- harbor-ins: warning (amber), version 0.8.9 (outdated), 512 ledger entries, 5 detections in last run
 - Talk through: "This is the MSSP view. One dashboard, all your clients. Alert aggregation, ledger integrity verification, centralized version tracking."
 - Point out harbor-ins version drift as a talking point about fleet management
 - **Click a site** to drill into its Overview/Data tabs — in single-node mode, data filters by hostname automatically

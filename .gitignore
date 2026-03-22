@@ -142,6 +142,8 @@ config/*
 !config/agent-config.yml
 !config/agent-config.example.yml
 !config/version-manifest.json
+!config/assistant-knowledge.md
+!config/assistant.env
 !config/.gitkeep
 
 # Dev/test ledger artefacts created when running from repo

@@ -4303,6 +4303,40 @@ def api_chat_history(session_id: str = Query(...)):
     return {"session_id": session_id, "messages": display}
 
 
+# ---------------------------------------------------------------------------
+# Product knowledge injection (cached at module level)
+# ---------------------------------------------------------------------------
+_product_knowledge_cache: Optional[str] = None
+_product_knowledge_loaded = False
+
+
+def _load_product_knowledge() -> str:
+    """Load product knowledge from assistant-knowledge.md (cached after first read)."""
+    global _product_knowledge_cache, _product_knowledge_loaded
+    if _product_knowledge_loaded:
+        return _product_knowledge_cache or ""
+    _product_knowledge_loaded = True
+
+    # Search in multiple locations
+    candidates = [
+        Path(os.getenv("TINYSOCS_KNOWLEDGE_FILE", "")),
+        Path(__file__).resolve().parent.parent.parent.parent / "config" / "assistant-knowledge.md",
+        Path(os.getenv("PROGRAMDATA", "")) / "TinySocs" / "config" / "assistant-knowledge.md",
+        Path("/var/lib/tinysocs/config/assistant-knowledge.md"),
+    ]
+    for p in candidates:
+        try:
+            if p and p.is_file():
+                _product_knowledge_cache = p.read_text(encoding="utf-8")
+                print(f"[tinysocs-dashboard] Loaded product knowledge from {p} ({len(_product_knowledge_cache)} chars)")
+                return _product_knowledge_cache
+        except Exception:
+            continue
+
+    print("[tinysocs-dashboard] No assistant-knowledge.md found — assistant will lack product-specific context")
+    return ""
+
+
 def _chat_get_environment_context() -> str:
     """Query OpenSearch for known hosts and recent alert summary to give the LLM context."""
     parts: list[str] = []
@@ -4448,6 +4482,11 @@ def api_chat(body: Dict[str, Any] = Body(...)):
         "- NEVER invent or guess hostnames. Use ONLY the real hostnames listed below.\n"
         "- If the user says 'my environment', that means ALL monitored hosts — do not filter."
     )
+
+    # Inject product knowledge (cached at module level)
+    knowledge = _load_product_knowledge()
+    if knowledge:
+        system_text += "\n\nPRODUCT KNOWLEDGE:\n" + knowledge
 
     # Inject live environment context (known hosts, alert counts)
     env_context = _chat_get_environment_context()

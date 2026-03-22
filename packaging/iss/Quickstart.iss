@@ -102,6 +102,11 @@ Source: "..\..\config\assistant.env"; \
     DestDir: "{commonappdata}\TinySocs\Assistant"; \
     Flags: ignoreversion onlyifdoesntexist
 
+; Product knowledge for AI assistant (always update on upgrade)
+Source: "..\..\config\assistant-knowledge.md"; \
+    DestDir: "{commonappdata}\TinySocs\config"; \
+    Flags: ignoreversion
+
 ; Modules / helpers
 Source: "..\..\modules\TinySocs.Installer.psm1";   DestDir: "{app}\modules"; Flags: ignoreversion
 Source: "..\..\modules\TinySocs.Uninstall.ps1";    DestDir: "{app}\modules"; Flags: ignoreversion

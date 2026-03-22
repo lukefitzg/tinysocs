@@ -2290,7 +2290,7 @@ begin
         '  if ($ymlRaw -notmatch ''(?m)^\s*cluster\.routing\.allocation\.disk\.watermark\.low\s*:'') {' + CRLF +
         '    $watermarks = @(' + CRLF +
         '      '''',' + CRLF +
-        '      ''# Disk watermarks — prevent OpenSearch from filling the disk'',' + CRLF +
+        '      ''# Disk watermarks - prevent OpenSearch from filling the disk'',' + CRLF +
         '      ''cluster.routing.allocation.disk.watermark.low: 85%'',' + CRLF +
         '      ''cluster.routing.allocation.disk.watermark.high: 90%'',' + CRLF +
         '      ''cluster.routing.allocation.disk.watermark.flood_stage: 95%'',' + CRLF +

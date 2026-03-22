@@ -73,12 +73,12 @@ class TestDemoNodesEndpoint:
             assert node["reachable"] is True
 
     def test_demo_nodes_harbor_version_drift(self):
-        """Harbor Insurance should show version 0.7.9 (outdated)."""
+        """Harbor Insurance should show version 0.8.9 (outdated)."""
         os.environ["TINYSOCS_DEMO_MODE"] = "1"
         d = dashboard_mod._demo_nodes()
         harbor = [n for n in d["nodes"] if n["node_id"] == "warehouse"]
         assert len(harbor) == 1
-        assert harbor[0]["version"] == "0.7.9"
+        assert harbor[0]["version"] == "0.8.9"
         assert harbor[0]["status"] == "warning"
 
     def test_demo_nodes_acme_healthy(self):
@@ -87,7 +87,7 @@ class TestDemoNodesEndpoint:
         acme = [n for n in d["nodes"] if n["node_id"] == "head-office"]
         assert len(acme) == 1
         assert acme[0]["status"] == "healthy"
-        assert acme[0]["version"] == "0.8.0"
+        assert acme[0]["version"] == "0.9.0"
 
     def test_demo_nodes_detection_counts(self):
         """Verify detection counts match plan: acme=2, dental=0, harbor=5."""

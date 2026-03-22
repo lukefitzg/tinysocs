@@ -304,6 +304,15 @@ $ErrorActionPreference = 'Continue'
 
 pip install pyinstaller --quiet 2>&1 | Out-Null
 
+# Force PyInstaller to use the build dir's source, not any editable install.
+# An editable pip install (pip install -e .) causes collect_submodules() to
+# resolve the original repo rather than the build copy.  Prepending the build
+# dir's src/ to PYTHONPATH ensures the build copy takes priority.
+$buildSrcDir = Join-Path $RepoRoot 'src'
+$savedPythonPath = $env:PYTHONPATH
+$env:PYTHONPATH = "$buildSrcDir;$($env:PYTHONPATH)"
+Write-Host "  PYTHONPATH=$($env:PYTHONPATH)"
+
 $specNames = @('TinySocsNode.spec','TinySocsMaster.spec','TinySocsAnchors.spec','packaging\tinysocs-quickstart.spec')
 $distDir = Join-Path $RepoRoot 'dist'
 
@@ -323,6 +332,7 @@ foreach ($spec in $specNames) {
     }
 }
 
+$env:PYTHONPATH = $savedPythonPath
 $ErrorActionPreference = 'Stop'
 Set-Location $savedLocation
 

@@ -2291,10 +2291,9 @@ begin
         '    $watermarks = @(' + CRLF +
         '      '''',' + CRLF +
         '      ''# Disk watermarks — prevent OpenSearch from filling the disk'',' + CRLF +
-        '      ''cluster.routing.allocation.disk.watermark.low: 80%'',' + CRLF +
-        '      ''cluster.routing.allocation.disk.watermark.high: 85%'',' + CRLF +
-        '      ''cluster.routing.allocation.disk.watermark.flood_stage: 90%'',' + CRLF +
-        '      ''cluster.routing.allocation.disk.watermark.flood_stage.frozen: 95%'',' + CRLF +
+        '      ''cluster.routing.allocation.disk.watermark.low: 85%'',' + CRLF +
+        '      ''cluster.routing.allocation.disk.watermark.high: 90%'',' + CRLF +
+        '      ''cluster.routing.allocation.disk.watermark.flood_stage: 95%'',' + CRLF +
         '      ''cluster.info.update.interval: 60s''' + CRLF +
         '    ) -join "`r`n"' + CRLF +
         '    $ymlRaw = $ymlRaw.TrimEnd() + "`r`n" + $watermarks + "`r`n"' + CRLF +

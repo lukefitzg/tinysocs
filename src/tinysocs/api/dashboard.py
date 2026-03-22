@@ -1921,18 +1921,16 @@ async def api_storage_stats():
 
     siem_url = os.getenv("SIEM_URL", "https://localhost:9201").rstrip("/")
     try:
-        import requests as _req
-        from tinysocs.tls import get_siem_ssl_context
+        from tinysocs.tls import get_opensearch_session
 
-        ssl_ctx = get_siem_ssl_context()
+        session = get_opensearch_session()
         auth = (os.getenv("SIEM_USER", "admin"), os.getenv("SIEM_PASS", ""))
-        verify = ssl_ctx if ssl_ctx else False
         timeout = 10
 
         # 1. Index sizes
-        idx_resp = _req.get(
+        idx_resp = session.get(
             f"{siem_url}/_cat/indices/tinysocs-*?format=json&h=index,docs.count,store.size",
-            auth=auth, verify=verify, timeout=timeout,
+            auth=auth, timeout=timeout,
         )
         indices_raw = idx_resp.json() if idx_resp.status_code == 200 else []
 
@@ -1967,9 +1965,9 @@ async def api_storage_stats():
         total_count = winlog_count + alert_count + custom_count + other_count
 
         # 2. Disk usage
-        disk_resp = _req.get(
+        disk_resp = session.get(
             f"{siem_url}/_nodes/stats/fs",
-            auth=auth, verify=verify, timeout=timeout,
+            auth=auth, timeout=timeout,
         )
         disk_total = disk_avail = 0
         if disk_resp.status_code == 200:
@@ -1988,9 +1986,9 @@ async def api_storage_stats():
             disk_status = "healthy"
 
         # 3. Cluster health
-        health_resp = _req.get(
+        health_resp = session.get(
             f"{siem_url}/_cluster/health",
-            auth=auth, verify=verify, timeout=timeout,
+            auth=auth, timeout=timeout,
         )
         cluster_status = health_resp.json().get("status", "unknown") if health_resp.status_code == 200 else "unknown"
 
@@ -2051,9 +2049,9 @@ async def api_storage_stats():
                     "source": {"disk_used_percent": disk_used_pct, "available": _human_bytes(disk_avail)},
                 }
                 idx_name = f"tinysocs-alerts-{datetime.now(timezone.utc).strftime('%Y.%m.%d')}"
-                _req.post(
+                session.post(
                     f"{siem_url}/{idx_name}/_doc",
-                    json=alert_doc, auth=auth, verify=verify, timeout=5,
+                    json=alert_doc, auth=auth, timeout=5,
                 )
                 _disk_alert_last_fire = now_ts
             except Exception:
@@ -2101,19 +2099,17 @@ def _emergency_purge_indices(max_delete: int = 5, target_pct: float = 75.0) -> d
     Returns dict with deleted_indices, freed_bytes, disk_used_pct_after.
     Winlog indices are purged first (highest volume, least critical).
     """
-    import requests as _req
-    from tinysocs.tls import get_siem_ssl_context
+    from tinysocs.tls import get_opensearch_session
 
     siem_url = os.getenv("SIEM_URL", "https://localhost:9201").rstrip("/")
-    ssl_ctx = get_siem_ssl_context()
+    session = get_opensearch_session()
     auth = (os.getenv("SIEM_USER", "admin"), os.getenv("SIEM_PASS", ""))
-    verify = ssl_ctx if ssl_ctx else False
     timeout = 15
 
     # Get all winlog indices sorted by name (oldest date suffix first)
-    resp = _req.get(
+    resp = session.get(
         f"{siem_url}/_cat/indices/tinysocs-winlog-*?format=json&h=index,store.size&s=index:asc",
-        auth=auth, verify=verify, timeout=timeout,
+        auth=auth, timeout=timeout,
     )
     if resp.status_code != 200:
         return {"ok": False, "error": f"Failed to list indices: {resp.status_code}"}
@@ -2128,18 +2124,18 @@ def _emergency_purge_indices(max_delete: int = 5, target_pct: float = 75.0) -> d
     for idx_info in indices[:max_delete]:
         idx_name = idx_info.get("index", "")
         idx_size = _parse_os_size(idx_info.get("store.size", "0"))
-        del_resp = _req.delete(
+        del_resp = session.delete(
             f"{siem_url}/{idx_name}",
-            auth=auth, verify=verify, timeout=timeout,
+            auth=auth, timeout=timeout,
         )
         if del_resp.status_code == 200:
             deleted.append(idx_name)
             freed += idx_size
 
         # Check disk after each deletion
-        disk_resp = _req.get(
+        disk_resp = session.get(
             f"{siem_url}/_nodes/stats/fs",
-            auth=auth, verify=verify, timeout=timeout,
+            auth=auth, timeout=timeout,
         )
         if disk_resp.status_code == 200:
             disk_total = disk_avail = 0
@@ -2153,10 +2149,10 @@ def _emergency_purge_indices(max_delete: int = 5, target_pct: float = 75.0) -> d
 
     # Clear read-only blocks on remaining indices
     try:
-        _req.put(
+        session.put(
             f"{siem_url}/tinysocs-*/_settings",
             json={"index.blocks.read_only_allow_delete": None},
-            auth=auth, verify=verify, timeout=timeout,
+            auth=auth, timeout=timeout,
         )
     except Exception:
         pass  # Best-effort unblock
@@ -2164,9 +2160,9 @@ def _emergency_purge_indices(max_delete: int = 5, target_pct: float = 75.0) -> d
     # Get final disk usage
     disk_after_pct = 0.0
     try:
-        disk_resp = _req.get(
+        disk_resp = session.get(
             f"{siem_url}/_nodes/stats/fs",
-            auth=auth, verify=verify, timeout=timeout,
+            auth=auth, timeout=timeout,
         )
         if disk_resp.status_code == 200:
             dt = da = 0
@@ -2203,14 +2199,12 @@ async def api_emergency_purge(request: Request):
     # Fire informational alert about the purge
     if result.get("ok") and result.get("deleted_indices"):
         try:
-            import requests as _req
             from datetime import datetime, timezone
-            from tinysocs.tls import get_siem_ssl_context
+            from tinysocs.tls import get_opensearch_session
 
             siem_url = os.getenv("SIEM_URL", "https://localhost:9201").rstrip("/")
-            ssl_ctx = get_siem_ssl_context()
+            session = get_opensearch_session()
             auth = (os.getenv("SIEM_USER", "admin"), os.getenv("SIEM_PASS", ""))
-            verify = ssl_ctx if ssl_ctx else False
             alert_doc = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "alert": {
@@ -2230,9 +2224,9 @@ async def api_emergency_purge(request: Request):
                 },
             }
             idx_name = f"tinysocs-alerts-{datetime.now(timezone.utc).strftime('%Y.%m.%d')}"
-            _req.post(
+            session.post(
                 f"{siem_url}/{idx_name}/_doc",
-                json=alert_doc, auth=auth, verify=verify, timeout=5,
+                json=alert_doc, auth=auth, timeout=5,
             )
         except Exception:
             pass  # Best-effort alerting

@@ -4252,7 +4252,12 @@ def _chat_anthropic(
 
     # Read API key and model fresh from env (use `or` so empty string falls back)
     api_key = os.getenv("ANTHROPIC_API_KEY", "")
-    model = os.getenv("ANTHROPIC_MODEL") or "claude-sonnet-4-20250514"
+    model = os.getenv("ANTHROPIC_MODEL", "").strip()
+    if not model:
+        return {
+            "error": "No Anthropic model configured. Set ANTHROPIC_MODEL in Settings (e.g. claude-sonnet-4-20250514).",
+            "session_id": session_id,
+        }
 
     if not api_key:
         return {
@@ -4339,7 +4344,12 @@ def _chat_openai(
 
     # Read API key and model fresh from env (use `or` so empty string falls back)
     _OAI_KEY = os.getenv("OPENAI_API_KEY", "")
-    _OAI_MODEL = os.getenv("OPENAI_MODEL") or "gpt-4o"
+    _OAI_MODEL = os.getenv("OPENAI_MODEL", "").strip()
+    if not _OAI_MODEL:
+        return {
+            "error": "No OpenAI model configured. Set OPENAI_MODEL in Settings (e.g. gpt-4o, gpt-4o-mini).",
+            "session_id": session_id,
+        }
 
     if not _OAI_KEY:
         return {
@@ -5735,13 +5745,13 @@ select { cursor: pointer; }
         <label>OpenAI API Key</label>
         <input type="text" id="s_OPENAI_API_KEY" placeholder="sk-...">
         <label>OpenAI Model</label>
-        <input type="text" id="s_OPENAI_MODEL" placeholder="gpt-4o">
+        <input type="text" id="s_OPENAI_MODEL" placeholder="e.g. gpt-4o, gpt-4o-mini, o1-mini">
       </div>
       <div class="field" id="field_anthropic">
         <label>Anthropic API Key</label>
         <input type="text" id="s_ANTHROPIC_API_KEY" placeholder="sk-ant-...">
         <label>Anthropic Model</label>
-        <input type="text" id="s_ANTHROPIC_MODEL" placeholder="claude-sonnet-4-20250514">
+        <input type="text" id="s_ANTHROPIC_MODEL" placeholder="e.g. claude-sonnet-4-20250514">
       </div>
       <div class="field" id="field_ollama">
         <label>Ollama URL</label>

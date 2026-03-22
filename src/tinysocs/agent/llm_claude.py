@@ -29,7 +29,7 @@ except Exception:
         return False
 
 API_KEY = os.getenv("ANTHROPIC_API_KEY")
-MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
+MODEL = os.getenv("ANTHROPIC_MODEL", "")
 DEBUG = os.getenv("DEBUG_LLM") == "1"
 
 MAX_FINDINGS_FOR_CLOUD = int(os.getenv("MAX_FINDINGS_FOR_CLOUD", "12"))

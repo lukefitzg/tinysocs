@@ -1718,7 +1718,7 @@ async def api_set_retention(request: Request):
     """Update retention settings and apply ISM policies to OpenSearch."""
     body = await request.json()
     pw = body.get("admin_password", "")
-    if not _check_admin_password(pw):
+    if pw != _get_admin_password():
         return JSONResponse({"error": "Invalid admin password"}, status_code=401)
 
     winlog_days = body.get("winlog_days")
@@ -1972,6 +1972,30 @@ async def api_storage_stats():
             except Exception:
                 pass  # Best-effort alerting
 
+        # Auto-purge: if disk is dangerously full, delete oldest winlog indices
+        global _auto_purge_last_run
+        if disk_used_pct >= 88 and (now_ts - _auto_purge_last_run) > 3600:
+            try:
+                purge_result = _emergency_purge_indices(max_delete=3, target_pct=75.0)
+                _auto_purge_last_run = now_ts
+                if purge_result.get("ok") and purge_result.get("deleted_indices"):
+                    result["auto_purge"] = {
+                        "triggered": True,
+                        "deleted": purge_result["deleted_indices"],
+                        "freed_human": purge_result.get("freed_human", ""),
+                        "disk_used_pct_after": purge_result.get("disk_used_pct_after"),
+                    }
+                    # Update the disk stats in the result
+                    if purge_result.get("disk_used_pct_after"):
+                        result["disk"]["used_percent"] = purge_result["disk_used_pct_after"]
+                        result["disk"]["status"] = (
+                            "critical" if purge_result["disk_used_pct_after"] >= 85
+                            else "warning" if purge_result["disk_used_pct_after"] >= 70
+                            else "healthy"
+                        )
+            except Exception:
+                pass  # Best-effort auto-purge
+
         return result
     except Exception as exc:
         return {"error": str(exc)}
@@ -1979,6 +2003,154 @@ async def api_storage_stats():
 
 # Disk space alert cooldown (in-memory, once per 24h)
 _disk_alert_last_fire: float = 0.0
+
+# Emergency auto-purge cooldown (in-memory, once per hour)
+_auto_purge_last_run: float = 0.0
+
+
+def _emergency_purge_indices(max_delete: int = 5, target_pct: float = 75.0) -> dict:
+    """Delete oldest winlog indices to free disk space.
+
+    Returns dict with deleted_indices, freed_bytes, disk_used_pct_after.
+    Winlog indices are purged first (highest volume, least critical).
+    """
+    import requests as _req
+    from tinysocs.tls import get_siem_ssl_context
+
+    siem_url = os.getenv("SIEM_URL", "https://localhost:9201").rstrip("/")
+    ssl_ctx = get_siem_ssl_context()
+    auth = (os.getenv("SIEM_USER", "admin"), os.getenv("SIEM_PASS", ""))
+    verify = ssl_ctx if ssl_ctx else False
+    timeout = 15
+
+    # Get all winlog indices sorted by name (oldest date suffix first)
+    resp = _req.get(
+        f"{siem_url}/_cat/indices/tinysocs-winlog-*?format=json&h=index,store.size&s=index:asc",
+        auth=auth, verify=verify, timeout=timeout,
+    )
+    if resp.status_code != 200:
+        return {"ok": False, "error": f"Failed to list indices: {resp.status_code}"}
+
+    indices = resp.json()
+    if not indices:
+        return {"ok": True, "deleted_indices": [], "freed_bytes": 0, "message": "No winlog indices to purge"}
+
+    deleted = []
+    freed = 0
+
+    for idx_info in indices[:max_delete]:
+        idx_name = idx_info.get("index", "")
+        idx_size = _parse_os_size(idx_info.get("store.size", "0"))
+        del_resp = _req.delete(
+            f"{siem_url}/{idx_name}",
+            auth=auth, verify=verify, timeout=timeout,
+        )
+        if del_resp.status_code == 200:
+            deleted.append(idx_name)
+            freed += idx_size
+
+        # Check disk after each deletion
+        disk_resp = _req.get(
+            f"{siem_url}/_nodes/stats/fs",
+            auth=auth, verify=verify, timeout=timeout,
+        )
+        if disk_resp.status_code == 200:
+            disk_total = disk_avail = 0
+            for node in disk_resp.json().get("nodes", {}).values():
+                fs = node.get("fs", {}).get("total", {})
+                disk_total += fs.get("total_in_bytes", 0)
+                disk_avail += fs.get("available_in_bytes", 0)
+            current_pct = round((1 - disk_avail / disk_total) * 100, 1) if disk_total > 0 else 0
+            if current_pct <= target_pct:
+                break
+
+    # Clear read-only blocks on remaining indices
+    try:
+        _req.put(
+            f"{siem_url}/tinysocs-*/_settings",
+            json={"index.blocks.read_only_allow_delete": None},
+            auth=auth, verify=verify, timeout=timeout,
+        )
+    except Exception:
+        pass  # Best-effort unblock
+
+    # Get final disk usage
+    disk_after_pct = 0.0
+    try:
+        disk_resp = _req.get(
+            f"{siem_url}/_nodes/stats/fs",
+            auth=auth, verify=verify, timeout=timeout,
+        )
+        if disk_resp.status_code == 200:
+            dt = da = 0
+            for node in disk_resp.json().get("nodes", {}).values():
+                fs = node.get("fs", {}).get("total", {})
+                dt += fs.get("total_in_bytes", 0)
+                da += fs.get("available_in_bytes", 0)
+            disk_after_pct = round((1 - da / dt) * 100, 1) if dt > 0 else 0
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "deleted_indices": deleted,
+        "freed_bytes": freed,
+        "freed_human": _human_bytes(freed),
+        "disk_used_pct_after": disk_after_pct,
+    }
+
+
+@dashboard_app.post("/api/storage/emergency-purge")
+async def api_emergency_purge(request: Request):
+    """Delete oldest winlog indices to free disk space immediately."""
+    body = await request.json()
+    pw = body.get("admin_password", "")
+    if pw != _get_admin_password():
+        return JSONResponse({"error": "Invalid admin password"}, status_code=401)
+
+    result = _emergency_purge_indices(
+        max_delete=int(body.get("max_delete", 5)),
+        target_pct=float(body.get("target_pct", 75.0)),
+    )
+
+    # Fire informational alert about the purge
+    if result.get("ok") and result.get("deleted_indices"):
+        try:
+            import requests as _req
+            from datetime import datetime, timezone
+            from tinysocs.tls import get_siem_ssl_context
+
+            siem_url = os.getenv("SIEM_URL", "https://localhost:9201").rstrip("/")
+            ssl_ctx = get_siem_ssl_context()
+            auth = (os.getenv("SIEM_USER", "admin"), os.getenv("SIEM_PASS", ""))
+            verify = ssl_ctx if ssl_ctx else False
+            alert_doc = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "alert": {
+                    "id": f"TS-DISK-002|purge|{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}",
+                    "rule_id": "TS-DISK-002",
+                    "rule_name": "emergency_disk_purge",
+                    "severity": "high",
+                    "description": f"Emergency purge: deleted {len(result['deleted_indices'])} oldest event indices ({result['freed_human']}) to prevent disk-full lockout",
+                    "event_count": 1,
+                    "first_seen": datetime.now(timezone.utc).isoformat(),
+                    "last_seen": datetime.now(timezone.utc).isoformat(),
+                },
+                "source": {
+                    "deleted_indices": result["deleted_indices"],
+                    "freed_bytes": result["freed_bytes"],
+                    "disk_used_pct_after": result.get("disk_used_pct_after"),
+                },
+            }
+            idx_name = f"tinysocs-alerts-{datetime.now(timezone.utc).strftime('%Y.%m.%d')}"
+            _req.post(
+                f"{siem_url}/{idx_name}/_doc",
+                json=alert_doc, auth=auth, verify=verify, timeout=5,
+            )
+        except Exception:
+            pass  # Best-effort alerting
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -7004,7 +7176,64 @@ async function loadStorage() {
   const csColor = cs === 'green' ? 'var(--green)' : cs === 'yellow' ? 'var(--orange)' : 'var(--red)';
   html += `<div style="margin-top:6px;font-size:11px;color:var(--muted)">Cluster: <span style="color:${csColor};font-weight:600">${cs}</span></div>`;
 
+  // Auto-purge notice
+  if (d.auto_purge && d.auto_purge.triggered) {
+    html += `<div style="margin-top:6px;padding:6px 10px;background:rgba(255,165,0,0.1);border:1px solid var(--orange);border-radius:4px;font-size:11px;color:var(--orange)">`;
+    html += `&#x26A0; Auto-purge activated &mdash; deleted ${d.auto_purge.deleted.length} oldest event indices (${d.auto_purge.freed_human}) to prevent disk-full lockout`;
+    html += `</div>`;
+  } else if (pct >= 88) {
+    html += `<div style="margin-top:6px;font-size:11px;color:var(--orange)">&#x26A0; Auto-purge is active &mdash; oldest event logs will be removed automatically if disk reaches 88%</div>`;
+  }
+
+  // "Free Space Now" button when disk is elevated
+  if (pct >= 80) {
+    const btnColor = pct >= 85 ? 'var(--red)' : 'var(--orange)';
+    html += `<div style="margin-top:8px">`;
+    html += `<button id="btn-emergency-purge" onclick="emergencyPurge()" style="padding:4px 14px;font-size:12px;background:${btnColor};color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600">Free Space Now</button>`;
+    html += `<span id="purge-result" style="margin-left:8px;font-size:11px;color:var(--muted)"></span>`;
+    html += `</div>`;
+  }
+
   el.innerHTML = html;
+}
+
+async function emergencyPurge() {
+  const btn = document.getElementById('btn-emergency-purge');
+  const resultEl = document.getElementById('purge-result');
+  if (!btn) return;
+
+  const pw = prompt('Enter admin password to free disk space:');
+  if (!pw) return;
+
+  btn.disabled = true;
+  btn.textContent = 'Purging...';
+  if (resultEl) resultEl.textContent = '';
+
+  try {
+    const resp = await fetch(apiBase() + '/storage/emergency-purge', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({admin_password: pw}),
+    });
+    const d = await resp.json();
+    if (d.error) {
+      if (resultEl) resultEl.innerHTML = `<span style="color:var(--red)">${d.error}</span>`;
+      btn.disabled = false;
+      btn.textContent = 'Free Space Now';
+      return;
+    }
+    if (d.ok && d.deleted_indices && d.deleted_indices.length > 0) {
+      if (resultEl) resultEl.innerHTML = `<span style="color:var(--green)">Deleted ${d.deleted_indices.length} indices, freed ${d.freed_human} &mdash; disk now at ${d.disk_used_pct_after}%</span>`;
+    } else {
+      if (resultEl) resultEl.innerHTML = `<span style="color:var(--muted)">No indices to purge</span>`;
+    }
+    // Refresh storage widget after a short delay
+    setTimeout(() => loadStorage(), 2000);
+  } catch (e) {
+    if (resultEl) resultEl.innerHTML = `<span style="color:var(--red)">Error: ${e.message}</span>`;
+    btn.disabled = false;
+    btn.textContent = 'Free Space Now';
+  }
 }
 
 // ---- Threat Intel Enrichment ----

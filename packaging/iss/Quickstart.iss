@@ -297,8 +297,10 @@ Name: "{app}\OpenSearch\config-template"; Flags: uninsneveruninstall
 [Run]
 ; Post-install configuration is handled in the [Code] ssPostInstall step.
 ; "Launch Dashboard" checkbox shown on the finish page (postinstall flag).
-Filename: "{code:GetDashboardUrl}"; Description: "{code:GetDashboardDescription}"; \
-  Flags: postinstall nowait shellexec skipifsilent
+; Use cmd /c start to open the URL — direct shellexec of https:// URLs
+; can silently fail on some Windows configurations (SmartScreen, GPO, etc.).
+Filename: "cmd"; Parameters: "/c start """" ""{code:GetDashboardUrl}"""; Description: "{code:GetDashboardDescription}"; \
+  Flags: postinstall nowait skipifsilent runhidden
 
 [UninstallRun]
 ; IMPORTANT:

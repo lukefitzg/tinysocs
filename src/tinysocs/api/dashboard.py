@@ -462,7 +462,7 @@ _DEMO_HOSTS = [
 # Demo alerts (offsets in hours from now)
 _DEMO_ALERTS_TEMPLATE = [
     {"offset": -14, "rule_id": "TS-001", "rule_name": "brute_force_logon",
-     "severity": "critical", "host": "RECEPTION-PC",
+     "severity": "critical", "host": "RECEPTION-PC", "source_ip": "203.0.113.47",
      "description": "8 failed logon attempts from 203.0.113.47 for user jdoe in 5 minutes",
      "event_count": 8, "matched_events": 8},
     {"offset": -12, "rule_id": "TS-030", "rule_name": "ps_encoded_command",
@@ -478,7 +478,7 @@ _DEMO_ALERTS_TEMPLATE = [
      "description": "File modified: C:\\ClientFiles\\Mergers\\draft.docx",
      "event_count": 1, "matched_events": 1},
     {"offset": -4, "rule_id": "TS-071", "rule_name": "rdp_brute_force",
-     "severity": "high", "host": "FILESERVER-01",
+     "severity": "high", "host": "FILESERVER-01", "source_ip": "198.51.100.22",
      "description": "Off-hours RDP connection attempt from 198.51.100.22",
      "event_count": 4, "matched_events": 4},
     {"offset": -2, "rule_id": "TS-132", "rule_name": "scheduled_task_created",
@@ -486,8 +486,8 @@ _DEMO_ALERTS_TEMPLATE = [
      "description": "Scheduled task created: WindowsUpdate_Check",
      "event_count": 1, "matched_events": 1},
     {"offset": -0.75, "rule_id": "TS-080", "rule_name": "defender_realtime_disabled",
-     "severity": "high", "host": "RECEPTION-PC",
-     "description": "Windows Defender real-time protection disabled",
+     "severity": "high", "host": "RECEPTION-PC", "source_ip": "192.0.2.15",
+     "description": "Windows Defender real-time protection disabled after connection from 192.0.2.15",
      "event_count": 1, "matched_events": 1},
 ]
 
@@ -552,7 +552,7 @@ def _demo_detections_fired(hours: int = 24, limit: int = 30) -> dict:
     for idx, a in enumerate(_DEMO_ALERTS_TEMPLATE):
         det_id = f"demo-alert-{idx:04d}"
         alert_id = f"{a['rule_id']}|{a['host']}|{_demo_iso(a['offset'])}"
-        detections.append({
+        det = {
             "id": det_id,
             "alert_id": alert_id,
             "rule_id": a["rule_id"],
@@ -568,7 +568,10 @@ def _demo_detections_fired(hours: int = 24, limit: int = 30) -> dict:
             "status": "new",
             "tags": [],
             "notes": "",
-        })
+        }
+        if a.get("source_ip"):
+            det["source_ip"] = a["source_ip"]
+        detections.append(det)
     return {"detections": detections[:limit], "total": len(detections), "error": None}
 
 
@@ -5501,6 +5504,33 @@ async def api_threat_intel_status():
         return {"ok": False, "providers": [], "cache": {}, "error": str(exc)}
 
 
+_DEMO_ENRICHMENT = {
+    "203.0.113.47": {
+        "threat_level": "high",
+        "providers": {
+            "AbuseIPDB": {"score": 87, "reports": 342, "country": "RU", "isp": "HostKey B.V.", "is_tor": False, "last_reported": "2 hours ago"},
+            "GreyNoise": {"classification": "malicious", "noise": True, "riot": False, "name": "brute-forcer", "last_seen": "1 hour ago"},
+            "OTX": {"pulses": 14, "reputation": 72, "country": "RU"},
+        },
+    },
+    "198.51.100.22": {
+        "threat_level": "medium",
+        "providers": {
+            "AbuseIPDB": {"score": 45, "reports": 28, "country": "CN", "isp": "Tencent Cloud", "is_tor": False, "last_reported": "6 hours ago"},
+            "GreyNoise": {"classification": "unknown", "noise": False, "riot": False, "name": "", "last_seen": "3 days ago"},
+            "OTX": {"pulses": 3, "reputation": 35, "country": "CN"},
+        },
+    },
+    "192.0.2.15": {
+        "threat_level": "low",
+        "providers": {
+            "AbuseIPDB": {"score": 12, "reports": 5, "country": "US", "isp": "Amazon AWS", "is_tor": False, "last_reported": "14 days ago"},
+            "GreyNoise": {"classification": "benign", "noise": True, "riot": True, "name": "AWS health check", "last_seen": "1 hour ago"},
+        },
+    },
+}
+
+
 @dashboard_app.get("/api/threat-intel/enrich")
 async def api_threat_intel_enrich(
     ip: str = Query(None),
@@ -5508,6 +5538,15 @@ async def api_threat_intel_enrich(
     file_hash: str = Query(None),
 ):
     """Enrich a single IOC (IP, domain, or hash) on demand."""
+    # Demo mode: return synthetic enrichment data
+    if os.getenv("TINYSOCS_DEMO_MODE") == "1":
+        results = {}
+        if ip and ip in _DEMO_ENRICHMENT:
+            results[ip] = _DEMO_ENRICHMENT[ip]
+        elif ip:
+            results[ip] = {"threat_level": "none", "providers": {}}
+        return {"ok": True, "enrichment": results}
+
     try:
         from tinysocs.agent.threat_intel import enrich_ioc, get_available_providers
         from tinysocs.agent.threat_cache import ThreatCache

@@ -169,6 +169,10 @@ def make_ssl_context() -> ssl.SSLContext:
     return ctx
 
 
+# Backward-compat alias used by dashboard storage widget
+get_siem_ssl_context = make_ssl_context
+
+
 def get_opensearch_session():
     """Return a requests.Session with proper TLS for OpenSearch.
 

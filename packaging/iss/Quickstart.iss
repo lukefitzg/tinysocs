@@ -1163,15 +1163,20 @@ begin
   L.Left := 0;
   L.Top := 0;
   L.Width := LlmPage.SurfaceWidth;
-  L.Caption := 'The assistant uses an LLM to analyze alerts and suggest actions.';
+  L.WordWrap := True;
+  L.AutoSize := False;
+  L.Height := ScaleY(48);
+  L.Caption := 'The assistant uses an LLM to analyze alerts and suggest actions. ' +
+    'OpenAI and Anthropic send query results to external APIs. ' +
+    'For maximum privacy, choose Ollama (all processing stays on this machine).';
 
   LlmModeRadioOpenAI := TRadioButton.Create(LlmPage.Surface);
   LlmModeRadioOpenAI.Parent := LlmPage.Surface;
   LlmModeRadioOpenAI.Left := 0;
-  LlmModeRadioOpenAI.Top := ScaleY(28);
+  LlmModeRadioOpenAI.Top := ScaleY(52);
   LlmModeRadioOpenAI.Width := LlmPage.SurfaceWidth;
   LlmModeRadioOpenAI.Height := ScaleY(20);
-  LlmModeRadioOpenAI.Caption := '&OpenAI (GPT-4o-mini)';
+  LlmModeRadioOpenAI.Caption := '&OpenAI';
 
   LlmModeRadioAnthropic := TRadioButton.Create(LlmPage.Surface);
   LlmModeRadioAnthropic.Parent := LlmPage.Surface;
@@ -1417,9 +1422,10 @@ begin
   L.Left := 0;
   L.Top := AlertRetEdit.Top + ScaleY(36);
   L.Width := RetentionPage.SurfaceWidth;
+  L.Height := ScaleY(36);
   L.Font.Color := clGray;
   L.WordWrap := True;
-  L.AutoSize := True;
+  L.AutoSize := False;
   L.Caption := 'Retention can be changed later in Dashboard Settings. Shorter retention uses less disk space.';
 
   { ---- Page 6: Dashboard Access (Phase 14 M0) ---- }

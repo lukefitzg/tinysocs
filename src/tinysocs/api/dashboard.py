@@ -1780,6 +1780,46 @@ async def api_set_retention(request: Request):
     }
 
 
+@dashboard_app.post("/api/settings/purge-logs")
+async def api_purge_logs(request: Request):
+    """Manually purge logs older than configured retention periods."""
+    body = await request.json()
+    pw = body.get("admin_password", "")
+    if pw != _get_admin_password():
+        return JSONResponse({"error": "Invalid admin password"}, status_code=401)
+
+    winlog_days = int(os.getenv("WINLOG_RETENTION_DAYS", "30"))
+    alert_days = int(os.getenv("ALERT_RETENTION_DAYS", "90"))
+
+    deleted_events = 0
+    deleted_alerts = 0
+    try:
+        from tinysocs.tls import get_opensearch_session
+        session = get_opensearch_session()
+        siem_url = os.getenv("SIEM_URL", "https://localhost:9201").rstrip("/")
+        auth = (os.getenv("SIEM_USER", "admin"), os.getenv("SIEM_PASS", ""))
+        # Delete old event logs
+        r = session.post(
+            f"{siem_url}/tinysocs-winlog-*/_delete_by_query",
+            json={"query": {"range": {"@timestamp": {"lt": f"now-{winlog_days}d"}}}},
+            auth=auth, timeout=30,
+        )
+        if r.status_code == 200:
+            deleted_events = r.json().get("deleted", 0)
+        # Delete old alerts
+        r = session.post(
+            f"{siem_url}/tinysocs-alerts-*/_delete_by_query",
+            json={"query": {"range": {"@timestamp": {"lt": f"now-{alert_days}d"}}}},
+            auth=auth, timeout=30,
+        )
+        if r.status_code == 200:
+            deleted_alerts = r.json().get("deleted", 0)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+    return {"ok": True, "deleted_events": deleted_events, "deleted_alerts": deleted_alerts}
+
+
 def _human_bytes(b: int) -> str:
     """Format byte count as human-readable string."""
     for unit in ("B", "KB", "MB", "GB", "TB"):
@@ -1794,9 +1834,12 @@ def _human_bytes(b: int) -> str:
 # ---------------------------------------------------------------------------
 
 @dashboard_app.get("/api/settings/hec-tokens")
-async def api_list_hec_tokens(request: Request):
+async def api_list_hec_tokens(request: Request, admin_password: str = Query("")):
     """List HEC tokens (names, IDs, dates — never raw tokens)."""
-    _verify_dashboard_session(request)
+    if admin_password and admin_password == _get_admin_password():
+        pass  # password auth OK
+    else:
+        _verify_dashboard_session(request)
     try:
         from tinysocs.api.node import list_hec_tokens
         return {"ok": True, "tokens": list_hec_tokens()}
@@ -1807,7 +1850,6 @@ async def api_list_hec_tokens(request: Request):
 @dashboard_app.post("/api/settings/hec-tokens")
 async def api_create_hec_token(request: Request):
     """Create a new HEC bearer token. Returns the raw token ONCE."""
-    _verify_dashboard_session(request)
     body = await request.json()
     pw = body.get("admin_password", "")
     if pw != _get_admin_password():
@@ -1828,7 +1870,6 @@ async def api_create_hec_token(request: Request):
 @dashboard_app.delete("/api/settings/hec-tokens/{token_id}")
 async def api_revoke_hec_token(token_id: str, request: Request):
     """Revoke a HEC token by ID."""
-    _verify_dashboard_session(request)
     body = await request.json()
     pw = body.get("admin_password", "")
     if pw != _get_admin_password():
@@ -5963,7 +6004,7 @@ select { cursor: pointer; }
   background: rgba(0,0,0,0.6); z-index: 100; align-items: center; justify-content: center; }
 .modal-overlay.open { display: flex; }
 .modal { background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
-  width: 600px; max-width: 95vw; max-height: 85vh; overflow-y: auto; padding: 24px; }
+  width: 900px; max-width: 95vw; max-height: 90vh; overflow-y: auto; padding: 32px; }
 .modal h2 { font-size: 16px; margin-bottom: 16px; color: var(--text); text-transform: none;
   letter-spacing: 0; font-weight: 600; }
 .modal .section-title { font-size: 12px; color: var(--accent); text-transform: uppercase;
@@ -6162,15 +6203,20 @@ select { cursor: pointer; }
           <input type="number" id="s_CUSTOM_RETENTION_DAYS" min="7" max="365" value="30" style="width:80px">
         </div>
       </div>
-      <div style="margin-top:4px">
+      <div style="margin-top:4px;display:flex;gap:12px;align-items:center">
         <button class="btn-save" onclick="saveRetentionSettings()" style="font-size:12px;padding:4px 12px">Save Retention</button>
+        <button onclick="purgeOldLogs()" style="font-size:12px;padding:4px 12px;background:var(--red);color:#fff;border:none;border-radius:4px;cursor:pointer" title="Delete logs older than the configured retention periods">Purge Old Logs Now</button>
         <span id="retentionStatus" style="font-size:12px;margin-left:8px"></span>
       </div>
 
       <div class="section-title">HEC Tokens</div>
       <div style="font-size:11px;color:var(--muted);margin-bottom:6px">
-        Bearer tokens for the HTTP Event Collector endpoint (<code>POST /hec</code>).
+        Bearer tokens for the HTTP Event Collector endpoint.
         External tools (firewalls, syslog, etc.) use these to authenticate when sending logs.
+      </div>
+      <div style="font-size:12px;margin-bottom:8px;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px">
+        <span style="color:var(--muted)">Endpoint URL:</span>
+        <code id="hecEndpointUrl" style="color:var(--accent);margin-left:4px;user-select:all"></code>
       </div>
       <div id="hecTokensList" style="margin-bottom:8px;font-size:12px">Loading...</div>
       <div style="display:flex;gap:8px;align-items:center">
@@ -9255,6 +9301,14 @@ function populateSettings(d) {
   if (!s['CUSTOM_RETENTION_DAYS']) { const el = document.getElementById('s_CUSTOM_RETENTION_DAYS'); if (el) el.value = '30'; }
   updateProviderFields();
   document.getElementById('settingsStatus').innerHTML = '';
+  // Set HEC endpoint URL based on current page location
+  const hecUrlEl = document.getElementById('hecEndpointUrl');
+  if (hecUrlEl) {
+    const proto = location.protocol;
+    const host = location.hostname;
+    const port = '8081';
+    hecUrlEl.textContent = proto + '//' + host + ':' + port + '/hec';
+  }
   // Load email notification settings from agent-config.yml
   loadNotificationSettings();
   loadHecTokens();
@@ -9364,12 +9418,34 @@ async function saveRetentionSettings() {
   }
 }
 
+async function purgeOldLogs() {
+  if (!confirm('This will permanently delete event logs and alerts older than the configured retention periods. Continue?')) return;
+  const statusEl = document.getElementById('retentionStatus');
+  statusEl.innerHTML = '<span style="color:var(--muted)">Purging...</span>';
+  try {
+    const r = await fetch(BASE + '/api/settings/purge-logs', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({admin_password: settingsPassword}),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      statusEl.innerHTML = `<span style="color:var(--green)">Purged: ${d.deleted_events || 0} events, ${d.deleted_alerts || 0} alerts \\u2714</span>`;
+      setTimeout(() => { statusEl.innerHTML = ''; }, 5000);
+    } else {
+      statusEl.innerHTML = `<span style="color:var(--red)">${escapeHtml(d.error || 'Failed')}</span>`;
+    }
+  } catch(e) {
+    statusEl.innerHTML = `<span style="color:var(--red)">${escapeHtml(e.message)}</span>`;
+  }
+}
+
 // ---- HEC Token Management ----
 async function loadHecTokens() {
   const el = document.getElementById('hecTokensList');
   if (!el) return;
   try {
-    const r = await fetch(BASE + '/api/settings/hec-tokens', {headers: {'Authorization': 'Bearer ' + sessionToken}});
+    const r = await fetch(BASE + '/api/settings/hec-tokens?admin_password=' + encodeURIComponent(settingsPassword));
     const d = await r.json();
     if (!d.ok || !d.tokens || d.tokens.length === 0) {
       el.innerHTML = '<span style="color:var(--muted)">No tokens created yet</span>';
@@ -9398,7 +9474,7 @@ async function createHecToken() {
   try {
     const r = await fetch(BASE + '/api/settings/hec-tokens', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + sessionToken},
+      headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({admin_password: settingsPassword, name: name}),
     });
     const d = await r.json();
@@ -9422,7 +9498,7 @@ async function revokeHecToken(tokenId) {
   try {
     const r = await fetch(BASE + '/api/settings/hec-tokens/' + tokenId, {
       method: 'DELETE',
-      headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + sessionToken},
+      headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({admin_password: settingsPassword}),
     });
     const d = await r.json();

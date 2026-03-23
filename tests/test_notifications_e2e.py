@@ -107,6 +107,14 @@ def dashboard_client():
         yield client
 
 
+@pytest.fixture(scope="module")
+def auth_headers(dashboard_client):
+    """Login and return Bearer auth headers for settings API calls."""
+    resp = dashboard_client.post("/api/auth/login", json={"password": "test-password-e2e"})
+    token = resp.json()["token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
 @pytest.fixture
 def webhook_server():
     """Start a local webhook capture server."""
@@ -143,13 +151,12 @@ def smtp_server():
 
 class TestWebhookE2E:
 
-    def test_webhook_delivery_success(self, dashboard_client, webhook_server):
+    def test_webhook_delivery_success(self, dashboard_client, auth_headers, webhook_server):
         """Test that the test-webhook endpoint delivers a payload to a local server."""
         url, received = webhook_server
         resp = dashboard_client.post("/api/settings/test-webhook", json={
-            "admin_password": "test-password-e2e",
             "webhook_url": url,
-        })
+        }, headers=auth_headers)
         assert resp.status_code == 200
         data = resp.json()
         assert data["ok"] is True
@@ -161,44 +168,40 @@ class TestWebhookE2E:
         assert "[TinySocs]" in payload["text"]
         assert "test notification" in payload["text"].lower()
 
-    def test_webhook_delivery_invalid_url(self, dashboard_client):
+    def test_webhook_delivery_invalid_url(self, dashboard_client, auth_headers):
         """Test that connection refused is handled gracefully."""
         # Use a port that's almost certainly not listening
         resp = dashboard_client.post("/api/settings/test-webhook", json={
-            "admin_password": "test-password-e2e",
             "webhook_url": "http://127.0.0.1:1/dead",
-        })
+        }, headers=auth_headers)
         assert resp.status_code == 502
         data = resp.json()
         assert "error" in data
 
-    def test_webhook_no_url_configured(self, dashboard_client):
+    def test_webhook_no_url_configured(self, dashboard_client, auth_headers):
         """Test that missing webhook URL returns 400."""
         # Ensure no WEBHOOK_URL in env either
         with patch.dict(os.environ, {"WEBHOOK_URL": ""}, clear=False):
             resp = dashboard_client.post("/api/settings/test-webhook", json={
-                "admin_password": "test-password-e2e",
                 "webhook_url": "",
-            })
+            }, headers=auth_headers)
             assert resp.status_code == 400
             assert "webhook" in resp.json()["error"].lower()
 
     def test_webhook_auth_required(self, dashboard_client, webhook_server):
-        """Test that test-webhook requires valid admin password."""
+        """Test that test-webhook requires valid session token."""
         url, _ = webhook_server
         resp = dashboard_client.post("/api/settings/test-webhook", json={
-            "admin_password": "wrong-password",
             "webhook_url": url,
         })
         assert resp.status_code == 401
 
-    def test_webhook_payload_format(self, dashboard_client, webhook_server):
+    def test_webhook_payload_format(self, dashboard_client, auth_headers, webhook_server):
         """Verify the webhook payload is Slack-compatible JSON."""
         url, received = webhook_server
         dashboard_client.post("/api/settings/test-webhook", json={
-            "admin_password": "test-password-e2e",
             "webhook_url": url,
-        })
+        }, headers=auth_headers)
         assert len(received) >= 1
         payload = json.loads(received[-1]["body"])
         # Slack-compatible format: must have "text" key
@@ -211,15 +214,14 @@ class TestWebhookE2E:
 
 class TestEmailE2E:
 
-    def test_email_delivery_success(self, dashboard_client, smtp_server):
+    def test_email_delivery_success(self, dashboard_client, auth_headers, smtp_server):
         """Test that the test-email endpoint sends to a local SMTP server."""
         resp = dashboard_client.post("/api/settings/test-email", json={
-            "admin_password": "test-password-e2e",
             "smtp_host": smtp_server.host,
             "smtp_port": smtp_server.port,
             "email_from": "tinysocs@test.local",
             "email_to": "operator@test.local",
-        })
+        }, headers=auth_headers)
         assert resp.status_code == 200
         data = resp.json()
         assert data["ok"] is True
@@ -240,34 +242,31 @@ class TestEmailE2E:
         assert "[TinySocs]" in subject
         assert "Configuration Verified" in subject
 
-    def test_email_connection_refused(self, dashboard_client):
+    def test_email_connection_refused(self, dashboard_client, auth_headers):
         """Test that SMTP connection refused is handled gracefully."""
         resp = dashboard_client.post("/api/settings/test-email", json={
-            "admin_password": "test-password-e2e",
             "smtp_host": "127.0.0.1",
             "smtp_port": 1,  # almost certainly refused
             "email_from": "tinysocs@test.local",
             "email_to": "operator@test.local",
-        })
+        }, headers=auth_headers)
         assert resp.status_code == 502
         assert "error" in resp.json()
 
-    def test_email_missing_config(self, dashboard_client):
+    def test_email_missing_config(self, dashboard_client, auth_headers):
         """Test that missing SMTP host returns 400."""
         resp = dashboard_client.post("/api/settings/test-email", json={
-            "admin_password": "test-password-e2e",
             "smtp_host": "",
             "smtp_port": 587,
             "email_from": "",
             "email_to": "",
-        })
+        }, headers=auth_headers)
         assert resp.status_code == 400
         assert "not configured" in resp.json()["error"].lower()
 
     def test_email_auth_required(self, dashboard_client):
-        """Test that test-email requires valid admin password."""
+        """Test that test-email requires valid session token."""
         resp = dashboard_client.post("/api/settings/test-email", json={
-            "admin_password": "wrong-password",
             "smtp_host": "127.0.0.1",
             "smtp_port": 587,
             "email_from": "a@b.c",
@@ -286,27 +285,27 @@ class TestPasswordAPI:
         assert resp.status_code == 200
         assert resp.json()["configured"] is True
 
-    def test_settings_requires_password(self, dashboard_client):
-        resp = dashboard_client.get("/api/settings", params={"admin_password": "wrong"})
+    def test_settings_requires_auth(self, dashboard_client):
+        resp = dashboard_client.get("/api/settings")
         assert resp.status_code == 401
 
-    def test_settings_correct_password(self, dashboard_client):
-        resp = dashboard_client.get("/api/settings", params={"admin_password": "test-password-e2e"})
+    def test_settings_correct_password(self, dashboard_client, auth_headers):
+        resp = dashboard_client.get("/api/settings", headers=auth_headers)
         assert resp.status_code == 200
         assert "settings" in resp.json()
 
-    def test_change_password_wrong_current(self, dashboard_client):
+    def test_change_password_wrong_current(self, dashboard_client, auth_headers):
         resp = dashboard_client.post("/api/settings/change-password", json={
             "old_password": "wrong",
             "new_password": "new-secure-pw",
-        })
+        }, headers=auth_headers)
         assert resp.status_code == 401
 
-    def test_change_password_too_short(self, dashboard_client):
+    def test_change_password_too_short(self, dashboard_client, auth_headers):
         resp = dashboard_client.post("/api/settings/change-password", json={
             "old_password": "test-password-e2e",
             "new_password": "short",
-        })
+        }, headers=auth_headers)
         assert resp.status_code == 400
 
     def test_setup_password_already_set(self, dashboard_client):

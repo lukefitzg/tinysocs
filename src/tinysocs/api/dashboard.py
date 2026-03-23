@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import Body, FastAPI, Header, Query, Request
+from fastapi import Body, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 dashboard_app = FastAPI(title="TinySocs Dashboard", docs_url=None, redoc_url=None)
@@ -179,11 +179,9 @@ def api_auth_check(authorization: str = Header("")):
 
 
 @dashboard_app.post("/api/auth/change-password")
-def api_auth_change_password(body: Dict[str, Any] = Body(...)):
+def api_auth_change_password(request: Request, body: Dict[str, Any] = Body(...)):
     """Change the admin password (updates SIEM_PASS in assistant.env and live env)."""
-    token = body.get("token", "")
-    if not _validate_session(token):
-        return JSONResponse(status_code=401, content={"error": "Not authenticated"})
+    _verify_dashboard_session(request)
     current_password = body.get("current_password", "")
     new_password = body.get("new_password", "")
     admin_pw = _get_admin_password()
@@ -1720,10 +1718,8 @@ def api_get_retention():
 @dashboard_app.post("/api/settings/retention")
 async def api_set_retention(request: Request):
     """Update retention settings and apply ISM policies to OpenSearch."""
+    _verify_dashboard_session(request)
     body = await request.json()
-    pw = body.get("admin_password", "")
-    if pw != _get_admin_password():
-        return JSONResponse({"error": "Invalid admin password"}, status_code=401)
 
     winlog_days = body.get("winlog_days")
     alert_days = body.get("alert_days")
@@ -1783,10 +1779,8 @@ async def api_set_retention(request: Request):
 @dashboard_app.post("/api/settings/purge-logs")
 async def api_purge_logs(request: Request):
     """Manually purge logs older than configured retention periods."""
+    _verify_dashboard_session(request)
     body = await request.json()
-    pw = body.get("admin_password", "")
-    if pw != _get_admin_password():
-        return JSONResponse({"error": "Invalid admin password"}, status_code=401)
 
     winlog_days = int(os.getenv("WINLOG_RETENTION_DAYS", "30"))
     alert_days = int(os.getenv("ALERT_RETENTION_DAYS", "90"))
@@ -1834,12 +1828,9 @@ def _human_bytes(b: int) -> str:
 # ---------------------------------------------------------------------------
 
 @dashboard_app.get("/api/settings/hec-tokens")
-async def api_list_hec_tokens(request: Request, admin_password: str = Query("")):
+async def api_list_hec_tokens(request: Request):
     """List HEC tokens (names, IDs, dates — never raw tokens)."""
-    if admin_password and admin_password == _get_admin_password():
-        pass  # password auth OK
-    else:
-        _verify_dashboard_session(request)
+    _verify_dashboard_session(request)
     try:
         from tinysocs.api.node import list_hec_tokens
         return {"ok": True, "tokens": list_hec_tokens()}
@@ -1850,10 +1841,8 @@ async def api_list_hec_tokens(request: Request, admin_password: str = Query(""))
 @dashboard_app.post("/api/settings/hec-tokens")
 async def api_create_hec_token(request: Request):
     """Create a new HEC bearer token. Returns the raw token ONCE."""
+    _verify_dashboard_session(request)
     body = await request.json()
-    pw = body.get("admin_password", "")
-    if pw != _get_admin_password():
-        return JSONResponse({"error": "Invalid admin password"}, status_code=401)
     name = body.get("name", "").strip()
     if not name:
         return JSONResponse({"error": "Token name is required"}, status_code=400)
@@ -1870,10 +1859,7 @@ async def api_create_hec_token(request: Request):
 @dashboard_app.delete("/api/settings/hec-tokens/{token_id}")
 async def api_revoke_hec_token(token_id: str, request: Request):
     """Revoke a HEC token by ID."""
-    body = await request.json()
-    pw = body.get("admin_password", "")
-    if pw != _get_admin_password():
-        return JSONResponse({"error": "Invalid admin password"}, status_code=401)
+    _verify_dashboard_session(request)
     try:
         from tinysocs.api.node import revoke_hec_token
         if revoke_hec_token(token_id):
@@ -2227,10 +2213,8 @@ def _emergency_purge_indices(max_delete: int = 5, target_pct: float = 75.0) -> d
 @dashboard_app.post("/api/storage/emergency-purge")
 async def api_emergency_purge(request: Request):
     """Delete oldest winlog indices to free disk space immediately."""
+    _verify_dashboard_session(request)
     body = await request.json()
-    pw = body.get("admin_password", "")
-    if pw != _get_admin_password():
-        return JSONResponse({"error": "Invalid admin password"}, status_code=401)
 
     result = _emergency_purge_indices(
         max_delete=int(body.get("max_delete", 5)),
@@ -4987,13 +4971,9 @@ def _set_notification_config(updates: dict) -> None:
 
 
 @dashboard_app.get("/api/settings/notifications")
-def api_notification_settings_get(admin_password: str = Query("")):
+def api_notification_settings_get(request: Request):
     """Read current notification settings (webhook + email) from agent-config.yml."""
-    current_pw = _get_admin_password()
-    if not current_pw:
-        return JSONResponse(status_code=403, content={"error": "password_not_set"})
-    if admin_password != current_pw:
-        return JSONResponse(status_code=401, content={"error": "Invalid admin password"})
+    _verify_dashboard_session(request)
 
     notif = _get_notification_config()
     email = notif.get("email", {})
@@ -5008,14 +4988,9 @@ def api_notification_settings_get(admin_password: str = Query("")):
 
 
 @dashboard_app.post("/api/settings/notifications")
-def api_notification_settings_post(body: Dict[str, Any] = Body(...)):
+def api_notification_settings_post(request: Request, body: Dict[str, Any] = Body(...)):
     """Update notification settings in agent-config.yml."""
-    admin_password = body.get("admin_password", "")
-    current_pw = _get_admin_password()
-    if not current_pw:
-        return JSONResponse(status_code=403, content={"error": "password_not_set"})
-    if admin_password != current_pw:
-        return JSONResponse(status_code=401, content={"error": "Invalid admin password"})
+    _verify_dashboard_session(request)
 
     settings = body.get("settings", {})
     if not isinstance(settings, dict):
@@ -5072,18 +5047,11 @@ def api_notification_settings_post(body: Dict[str, Any] = Body(...)):
 
 
 @dashboard_app.post("/api/settings/test-webhook")
-def api_test_webhook(body: Dict[str, Any] = Body(...)):
+def api_test_webhook(request: Request, body: Dict[str, Any] = Body(...)):
     """Send a test payload to the configured webhook URL."""
     import requests as _req
 
-    # Accept session token (M0) or legacy admin_password
-    admin_password = body.get("admin_password", "")
-    if not _validate_session(admin_password):
-        current_pw = _get_admin_password()
-        if not current_pw:
-            return JSONResponse(status_code=403, content={"error": "password_not_set"})
-        if admin_password != current_pw:
-            return JSONResponse(status_code=401, content={"error": "Invalid admin password"})
+    _verify_dashboard_session(request)
 
     # Use URL from body (if testing a new URL before saving) or from config
     url = body.get("webhook_url", "").strip()
@@ -5121,19 +5089,12 @@ def api_test_webhook(body: Dict[str, Any] = Body(...)):
 
 
 @dashboard_app.post("/api/settings/test-email")
-def api_test_email(body: Dict[str, Any] = Body(...)):
+def api_test_email(request: Request, body: Dict[str, Any] = Body(...)):
     """Send a test email via the configured SMTP settings."""
     import smtplib
     from email.mime.text import MIMEText
 
-    # Accept session token (M0) or legacy admin_password
-    admin_password = body.get("admin_password", "")
-    if not _validate_session(admin_password):
-        current_pw = _get_admin_password()
-        if not current_pw:
-            return JSONResponse(status_code=403, content={"error": "password_not_set"})
-        if admin_password != current_pw:
-            return JSONResponse(status_code=401, content={"error": "Invalid admin password"})
+    _verify_dashboard_session(request)
 
     # Use values from body (for testing before save) or from agent-config.yml
     smtp_host = body.get("smtp_host", "").strip()
@@ -5209,16 +5170,9 @@ def api_test_email(body: Dict[str, Any] = Body(...)):
 
 
 @dashboard_app.get("/api/settings")
-def api_settings_get(admin_password: str = Query(""), authorization: str = Header("")):
+def api_settings_get(request: Request):
     """Read current settings from assistant.env. Secrets are masked."""
-    # Accept session token (M0) or legacy admin_password
-    token = authorization.replace("Bearer ", "") if authorization.startswith("Bearer ") else ""
-    if not _validate_session(token):
-        current_pw = _get_admin_password()
-        if not current_pw:
-            return JSONResponse(status_code=403, content={"error": "password_not_set"})
-        if not hmac.compare_digest(admin_password, current_pw):
-            return JSONResponse(status_code=401, content={"error": "Invalid admin password"})
+    _verify_dashboard_session(request)
 
     env_path = _find_assistant_env()
     file_values: Dict[str, str] = {}
@@ -5243,17 +5197,9 @@ def api_settings_get(admin_password: str = Query(""), authorization: str = Heade
 
 
 @dashboard_app.post("/api/settings")
-def api_settings_post(body: Dict[str, Any] = Body(...)):
+def api_settings_post(request: Request, body: Dict[str, Any] = Body(...)):
     """Update settings in assistant.env and live environment."""
-    # Accept session token (M0) or legacy admin_password
-    token = body.get("token", "")
-    if not _validate_session(token):
-        admin_password = body.get("admin_password", "")
-        current_pw = _get_admin_password()
-        if not current_pw:
-            return JSONResponse(status_code=403, content={"error": "password_not_set"})
-        if not hmac.compare_digest(admin_password, current_pw):
-            return JSONResponse(status_code=401, content={"error": "Invalid admin password"})
+    _verify_dashboard_session(request)
 
     updates = body.get("settings", {})
     if not isinstance(updates, dict):
@@ -5334,14 +5280,15 @@ def api_setup_password(body: Dict[str, Any] = Body(...)):
 
 
 @dashboard_app.post("/api/settings/change-password")
-def api_change_password(body: Dict[str, Any] = Body(...)):
-    """Change the dashboard/SIEM password. Requires current password."""
+def api_change_password(request: Request, body: Dict[str, Any] = Body(...)):
+    """Change the dashboard/SIEM password. Requires session + current password."""
+    _verify_dashboard_session(request)
     current_pw = _get_admin_password()
     if not current_pw:
         return JSONResponse(status_code=403, content={"error": "password_not_set"})
 
     old_password = body.get("old_password", "")
-    if old_password != current_pw:
+    if not hmac.compare_digest(old_password, current_pw):
         return JSONResponse(status_code=401, content={"error": "Current password is incorrect."})
 
     new_password = body.get("new_password", "").strip()
@@ -7421,8 +7368,7 @@ async function emergencyPurge() {
   const resultEl = document.getElementById('purge-result');
   if (!btn) return;
 
-  const pw = prompt('Enter admin password to free disk space:');
-  if (!pw) return;
+  if (!confirm('This will delete oldest winlog indices to free disk space. Continue?')) return;
 
   btn.disabled = true;
   btn.textContent = 'Purging...';
@@ -7431,8 +7377,8 @@ async function emergencyPurge() {
   try {
     const resp = await fetch(apiBase() + '/storage/emergency-purge', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({admin_password: pw}),
+      headers: authHeaders({'Content-Type': 'application/json'}),
+      body: JSON.stringify({}),
     });
     const d = await resp.json();
     if (d.error) {
@@ -9131,11 +9077,21 @@ async function sendChat() {
 }
 
 // ---- Settings ----
-let settingsPassword = null;
+function authHeaders(extra) {
+  const h = {'Authorization': 'Bearer ' + _authToken};
+  if (extra) Object.assign(h, extra);
+  return h;
+}
 
 async function openSettings() {
   document.getElementById('settingsOverlay').classList.add('open');
-  settingsPassword = null;
+  // Clear stale status messages and password fields on every open
+  ['changePwStatus','changePasswordStatus','settingsStatus','webhookTestStatus','emailTestStatus'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.innerHTML = '';
+  });
+  ['changePwCurrent','changePwNew','changePwConfirm'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.value = '';
+  });
   // Hide all views first
   document.getElementById('settingsLogin').style.display = 'none';
   document.getElementById('settingsSetup').style.display = 'none';
@@ -9156,7 +9112,21 @@ async function openSettings() {
     }
   } catch(e) { /* fall through to login */ }
 
-  // Password is set — show login
+  // If we have a valid session token, skip the password prompt
+  if (_authToken) {
+    try {
+      const r = await fetch(BASE + '/api/settings', { headers: authHeaders() });
+      const d = await r.json();
+      if (!d.error) {
+        document.getElementById('settingsLogin').style.display = 'none';
+        document.getElementById('settingsForm').style.display = 'block';
+        populateSettings(d);
+        return;
+      }
+    } catch(e) {}
+  }
+
+  // No valid session — show login
   document.getElementById('settingsLogin').style.display = 'block';
   document.getElementById('adminPassword').value = '';
   document.getElementById('settingsLoginError').innerHTML = '';
@@ -9164,7 +9134,6 @@ async function openSettings() {
 }
 
 function closeSettings() {
-  settingsPassword = null;
   document.getElementById('settingsOverlay').classList.remove('open');
 }
 
@@ -9193,12 +9162,21 @@ async function submitSetupPassword() {
       errEl.innerHTML = `<div class="status-msg err" style="margin-top:8px">${escapeHtml(d.error)}</div>`;
       return;
     }
-    // Password set — now authenticate and show settings
-    settingsPassword = pw;
+    // Password set — now authenticate to get a session token
+    const loginResp = await fetch(BASE + '/api/auth/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({password: pw}),
+    });
+    const loginData = await loginResp.json();
+    if (loginData.token) {
+      _authToken = loginData.token;
+      try { sessionStorage.setItem('tinysocs_auth', _authToken); } catch(e2) {}
+    }
     document.getElementById('settingsSetup').style.display = 'none';
     errEl.innerHTML = '';
-    // Load settings with new password
-    const r2 = await fetch(BASE + '/api/settings?admin_password=' + encodeURIComponent(pw));
+    // Load settings with session token
+    const r2 = await fetch(BASE + '/api/settings', { headers: authHeaders() });
     const d2 = await r2.json();
     if (!d2.error) {
       document.getElementById('settingsForm').style.display = 'block';
@@ -9213,17 +9191,33 @@ async function settingsAuth() {
   const pw = document.getElementById('adminPassword').value;
   if (!pw) return;
   try {
-    const r = await fetch(BASE + '/api/settings?admin_password=' + encodeURIComponent(pw));
-    const d = await r.json();
-    if (d.error) {
-      const msg = d.error === 'password_not_set' ? 'No password configured.' : d.error;
-      document.getElementById('settingsLoginError').innerHTML = `<div class="status-msg err" style="margin-top:8px">${escapeHtml(msg)}</div>`;
+    // Authenticate via /api/auth/login to get a session token
+    const loginResp = await fetch(BASE + '/api/auth/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({password: pw}),
+    });
+    const loginData = await loginResp.json();
+    if (loginData.error) {
+      document.getElementById('settingsLoginError').innerHTML = `<div class="status-msg err" style="margin-top:8px">${escapeHtml(loginData.error)}</div>`;
       return;
     }
-    settingsPassword = pw;
+    if (loginData.token) {
+      _authToken = loginData.token;
+      try { sessionStorage.setItem('tinysocs_auth', _authToken); } catch(e2) {}
+    }
+    // Now load settings with the session token
+    const r = await fetch(BASE + '/api/settings', { headers: authHeaders() });
+    const d = await r.json();
+    if (d.error) {
+      document.getElementById('settingsLoginError').innerHTML = `<div class="status-msg err" style="margin-top:8px">${escapeHtml(d.error)}</div>`;
+      return;
+    }
     document.getElementById('settingsLogin').style.display = 'none';
     document.getElementById('settingsForm').style.display = 'block';
     populateSettings(d);
+    // Also unlock the main dashboard if not already
+    if (!_dashboardUnlocked) unlockDashboard();
   } catch(e) {
     document.getElementById('settingsLoginError').innerHTML = `<div class="status-msg err" style="margin-top:8px">${escapeHtml(e.message)}</div>`;
   }
@@ -9242,7 +9236,7 @@ async function changePassword() {
   try {
     const r = await fetch(BASE + '/api/settings/change-password', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: authHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify({old_password: current, new_password: newPw}),
     });
     const d = await r.json();
@@ -9250,7 +9244,6 @@ async function changePassword() {
       statusEl.innerHTML = `<div class="status-msg err">${escapeHtml(d.error)}</div>`;
       return;
     }
-    settingsPassword = newPw;
     statusEl.innerHTML = `<div class="status-msg ok">${escapeHtml(d.message)}</div>`;
     document.getElementById('pw_current').value = '';
     document.getElementById('pw_new').value = '';
@@ -9262,10 +9255,9 @@ async function changePassword() {
 
 async function loadSettings() {
   try {
-    const r = await fetch(BASE + '/api/settings?admin_password=' + encodeURIComponent(settingsPassword));
+    const r = await fetch(BASE + '/api/settings', { headers: authHeaders() });
     const d = await r.json();
     if (d.error) {
-      settingsPassword = null;
       openSettings();
       return;
     }
@@ -9316,7 +9308,7 @@ function populateSettings(d) {
 
 async function loadNotificationSettings() {
   try {
-    const r = await fetch(BASE + '/api/settings/notifications?admin_password=' + encodeURIComponent(settingsPassword));
+    const r = await fetch(BASE + '/api/settings/notifications', { headers: authHeaders() });
     const d = await r.json();
     if (d.error) return;
     const map = {EMAIL_SMTP_HOST: 'email_smtp_host', EMAIL_SMTP_PORT: 'email_smtp_port',
@@ -9358,8 +9350,8 @@ async function saveSettings() {
     // Save assistant.env settings
     const r = await fetch(BASE + '/api/settings', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({admin_password: settingsPassword, settings}),
+      headers: authHeaders({'Content-Type': 'application/json'}),
+      body: JSON.stringify({settings}),
     });
     const d = await r.json();
 
@@ -9373,8 +9365,8 @@ async function saveSettings() {
     };
     const r2 = await fetch(BASE + '/api/settings/notifications', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({admin_password: settingsPassword, settings: notifSettings}),
+      headers: authHeaders({'Content-Type': 'application/json'}),
+      body: JSON.stringify({settings: notifSettings}),
     });
     const d2 = await r2.json();
 
@@ -9403,8 +9395,8 @@ async function saveRetentionSettings() {
   try {
     const r = await fetch(BASE + '/api/settings/retention', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({admin_password: settingsPassword, winlog_days: winlog, alert_days: alerts, custom_days: custom}),
+      headers: authHeaders({'Content-Type': 'application/json'}),
+      body: JSON.stringify({winlog_days: winlog, alert_days: alerts, custom_days: custom}),
     });
     const d = await r.json();
     if (d.ok) {
@@ -9425,8 +9417,8 @@ async function purgeOldLogs() {
   try {
     const r = await fetch(BASE + '/api/settings/purge-logs', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({admin_password: settingsPassword}),
+      headers: authHeaders({'Content-Type': 'application/json'}),
+      body: JSON.stringify({}),
     });
     const d = await r.json();
     if (d.ok) {
@@ -9445,7 +9437,7 @@ async function loadHecTokens() {
   const el = document.getElementById('hecTokensList');
   if (!el) return;
   try {
-    const r = await fetch(BASE + '/api/settings/hec-tokens?admin_password=' + encodeURIComponent(settingsPassword));
+    const r = await fetch(BASE + '/api/settings/hec-tokens', { headers: authHeaders() });
     const d = await r.json();
     if (!d.ok || !d.tokens || d.tokens.length === 0) {
       el.innerHTML = '<span style="color:var(--muted)">No tokens created yet</span>';
@@ -9474,8 +9466,8 @@ async function createHecToken() {
   try {
     const r = await fetch(BASE + '/api/settings/hec-tokens', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({admin_password: settingsPassword, name: name}),
+      headers: authHeaders({'Content-Type': 'application/json'}),
+      body: JSON.stringify({name: name}),
     });
     const d = await r.json();
     if (d.ok && d.token) {
@@ -9498,8 +9490,7 @@ async function revokeHecToken(tokenId) {
   try {
     const r = await fetch(BASE + '/api/settings/hec-tokens/' + tokenId, {
       method: 'DELETE',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({admin_password: settingsPassword}),
+      headers: authHeaders({'Content-Type': 'application/json'}),
     });
     const d = await r.json();
     if (d.ok) {
@@ -9517,8 +9508,8 @@ async function testWebhook() {
   try {
     const r = await fetch(BASE + '/api/settings/test-webhook', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({admin_password: settingsPassword, webhook_url: url}),
+      headers: authHeaders({'Content-Type': 'application/json'}),
+      body: JSON.stringify({webhook_url: url}),
     });
     const d = await r.json();
     if (d.ok) {
@@ -9537,9 +9528,8 @@ async function testEmail() {
   try {
     const r = await fetch(BASE + '/api/settings/test-email', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: authHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify({
-        admin_password: settingsPassword,
         smtp_host: document.getElementById('s_EMAIL_SMTP_HOST')?.value || '',
         smtp_port: document.getElementById('s_EMAIL_SMTP_PORT')?.value || '587',
         email_from: document.getElementById('s_EMAIL_FROM')?.value || '',
@@ -9780,8 +9770,8 @@ async function changePassword() {
   try {
     const r = await fetch(BASE + '/api/auth/change-password', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({token: _authToken, current_password: cur, new_password: newPw}),
+      headers: authHeaders({'Content-Type': 'application/json'}),
+      body: JSON.stringify({current_password: cur, new_password: newPw}),
     });
     const d = await r.json();
     if (d.error) { statusEl.innerHTML = '<span style="color:var(--red)">' + escapeHtml(d.error) + '</span>'; return; }
@@ -9790,61 +9780,7 @@ async function changePassword() {
   } catch(e) { statusEl.innerHTML = '<span style="color:var(--red)">' + escapeHtml(e.message) + '</span>'; }
 }
 
-// Override settings to use session token
-const _origOpenSettings = openSettings;
-openSettings = function() {
-  document.getElementById('settingsOverlay').classList.add('open');
-  // Clear stale status messages and password fields on every open
-  ['changePwStatus','changePasswordStatus','settingsStatus','webhookTestStatus','emailTestStatus'].forEach(id => {
-    const el = document.getElementById(id); if (el) el.innerHTML = '';
-  });
-  ['changePwCurrent','changePwNew','changePwConfirm'].forEach(id => {
-    const el = document.getElementById(id); if (el) el.value = '';
-  });
-  if (_authToken) {
-    // Skip password prompt — use session token
-    (async () => {
-      try {
-        const r = await fetch(BASE + '/api/settings', { headers: {'Authorization': 'Bearer ' + _authToken} });
-        const d = await r.json();
-        if (!d.error) {
-          settingsPassword = _authToken;
-          document.getElementById('settingsLogin').style.display = 'none';
-          document.getElementById('settingsForm').style.display = 'block';
-          populateSettings(d);
-          return;
-        }
-      } catch(e) {}
-      _origOpenSettings();
-    })();
-  } else { _origOpenSettings(); }
-};
-
-// Override saveSettings to pass session token
-const _origSaveSettings = saveSettings;
-saveSettings = async function() {
-  const fields = ['LLM_MODE','OPENAI_API_KEY','OPENAI_MODEL','ANTHROPIC_API_KEY','ANTHROPIC_MODEL',
-    'OFFLINE_LLM_URL','OFFLINE_LLM_MODEL','WEBHOOK_URL','WEBHOOK_ENABLED',
-    'SIEM_URL','SIEM_USER','SIEM_PASS',
-    'SMTP_HOST','SMTP_PORT','SMTP_FROM','SMTP_TO','EMAIL_ENABLED'];
-  const settings = {};
-  for (const f of fields) {
-    const el = document.getElementById('s_' + f);
-    if (el) settings[f] = el.value;
-  }
-  const statusEl = document.getElementById('settingsStatus');
-  statusEl.innerHTML = '<div class="status-msg" style="color:var(--muted)">Saving...</div>';
-  try {
-    const r = await fetch(BASE + '/api/settings', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({token: _authToken, admin_password: settingsPassword, settings}),
-    });
-    const d = await r.json();
-    if (d.error) { statusEl.innerHTML = '<div class="status-msg err">' + escapeHtml(d.error) + '</div>'; }
-    else { statusEl.innerHTML = '<div class="status-msg ok">' + escapeHtml(d.message) + '</div>'; setTimeout(() => closeSettings(), 1200); }
-  } catch(e) { statusEl.innerHTML = '<div class="status-msg err">' + escapeHtml(e.message) + '</div>'; }
-};
+// Settings now use session token natively via authHeaders() — no overrides needed.
 
 // --- Compliance Reports (Phase 14 M4) ---
 async function loadComplianceFrameworks() {

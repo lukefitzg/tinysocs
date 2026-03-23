@@ -306,12 +306,25 @@ pip install pyinstaller --quiet 2>&1 | Out-Null
 
 # Force PyInstaller to use the build dir's source, not any editable install.
 # An editable pip install (pip install -e .) causes collect_submodules() to
-# resolve the original repo rather than the build copy.  Prepending the build
-# dir's src/ to PYTHONPATH ensures the build copy takes priority.
+# resolve the original repo rather than the build copy.  PYTHONPATH alone is
+# not enough — editable installs use .pth files in site-packages that load
+# before PYTHONPATH.  We must uninstall the editable first, then reinstall
+# after the build completes.
 $buildSrcDir = Join-Path $RepoRoot 'src'
 $savedPythonPath = $env:PYTHONPATH
 $env:PYTHONPATH = "$buildSrcDir;$($env:PYTHONPATH)"
 Write-Host "  PYTHONPATH=$($env:PYTHONPATH)"
+
+# Temporarily uninstall any editable tinysocs to prevent .pth override
+$editableInstalled = $false
+$editableRoot = $null
+$pipShow = pip show tinysocs 2>&1 | Out-String
+if ($pipShow -match 'Editable project location:\s*(.+)') {
+    $editableRoot = $Matches[1].Trim()
+    Write-Host "  Removing editable tinysocs install for clean build ($editableRoot)..." -ForegroundColor Yellow
+    pip uninstall tinysocs -y --quiet 2>&1 | Out-Null
+    $editableInstalled = $true
+}
 
 $specNames = @('TinySocsNode.spec','TinySocsMaster.spec','TinySocsAnchors.spec','packaging\tinysocs-quickstart.spec')
 $distDir = Join-Path $RepoRoot 'dist'
@@ -330,6 +343,15 @@ foreach ($spec in $specNames) {
     } else {
         Write-Host "    $spec not found - skipping." -ForegroundColor Yellow
     }
+}
+
+# Restore editable install if we removed it
+if ($editableInstalled -and $editableRoot -and (Test-Path (Join-Path $editableRoot 'pyproject.toml'))) {
+    Write-Host "  Restoring editable tinysocs install from $editableRoot..." -ForegroundColor Yellow
+    pip install -e $editableRoot --quiet 2>&1 | Out-Null
+    Write-Host "    Editable install restored." -ForegroundColor Green
+} elseif ($editableInstalled) {
+    Write-Host "    Could not auto-restore editable install. Run: pip install -e <repo-root>" -ForegroundColor Yellow
 }
 
 $env:PYTHONPATH = $savedPythonPath

@@ -24,7 +24,7 @@ TinySocs has 6 main tabs:
 
 ## SETTINGS (gear icon, top-right)
 
-Requires admin password. Sections:
+Requires admin password to open (session token issued on login). Sections:
 
 - **LLM Configuration**: Choose provider (OpenAI, Anthropic, Ollama/local, or disabled). Enter API key and model name. Privacy note: cloud providers send query data externally; Ollama keeps everything local.
 - **Webhooks**: URL for alert notifications (Slack, Teams, etc.). Enable/disable toggle. Test button.
@@ -158,9 +158,9 @@ External tools send logs to TinySocs via `POST /hec` on the node API (port 8081)
 The storage widget on the Overview tab shows disk usage, index sizes, and cluster health.
 
 **Disk watermarks** (configured in OpenSearch):
-- 80%: Stop allocating new shards (warning)
-- 85%: Start relocating existing shards (critical)
-- 90%: Indices go read-only (flood stage)
+- 80%: Low watermark — stop allocating new shards (warning)
+- 88%: High watermark — start relocating existing shards (critical)
+- 92%: Flood stage — indices go read-only
 
 **Auto-purge**: When disk reaches 88%, TinySocs automatically deletes the oldest event log indices (up to 3 per hour) and clears the read-only block. A TS-DISK-002 alert is fired.
 

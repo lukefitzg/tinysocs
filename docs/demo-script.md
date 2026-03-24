@@ -1,4 +1,4 @@
-# TinySocs Demo Script
+# TinySocs Demo Script (v0.9.0)
 
 ## Prerequisites
 - Python 3.9+
@@ -12,6 +12,8 @@ python -m tinysocs.api.bot --demo
 Opens at http://localhost:8090/dashboard
 Default credentials: admin / demo
 
+---
+
 ## Part 1: Single-Site Walkthrough (5 minutes)
 
 Walk through each tab:
@@ -22,6 +24,7 @@ Walk through each tab:
 - **Alert Timeline**: 24-hour stacked bar chart with visible spike at ~14 hours ago (brute force attack)
 - Show top hosts and top rules
 - Point out the severity color coding
+- **Storage Widget** (full width): Disk usage bar with percentage, per-index breakdown (Event Logs, Alerts, Custom/HEC), cluster health indicator (green), retention periods shown per index
 - **Ask AI button**: click to pre-fill the assistant with context about the current alert distribution
 
 ### Fired Detections (scroll down on Overview)
@@ -32,10 +35,15 @@ Walk through each tab:
   - FIM: Modified C:\ClientFiles\Mergers\draft.docx (medium, FILESERVER-01)
   - Off-hours RDP attempt from 198.51.100.22 (high, FILESERVER-01)
   - Scheduled task created: WindowsUpdate_Check (medium, DC-01)
-  - Defender: real-time protection disabled (high, RECEPTION-PC)
+  - Defender: real-time protection disabled after connection from 192.0.2.15 (high, RECEPTION-PC)
 - Host field shows actual hostnames (not N/A)
 - Filter by status with the dropdown (Active, Acknowledged, All)
-- Show threat intel enrichment on the brute force alert: AbuseIPDB confidence 87%, GreyNoise: malicious
+- **Threat intel enrichment**: Expand the brute force alert to see:
+  - AbuseIPDB: confidence 87%, 342 reports, country RU
+  - GreyNoise: malicious classification, tagged as brute-forcer
+  - OTX: 14 pulses, reputation 72
+- Also show the RDP alert (198.51.100.22): AbuseIPDB 45%, GreyNoise unknown, Tencent Cloud
+- Pagination — no scroll bars, clean navigation
 
 ### Fleet Tab
 - 3 hosts reporting: RECEPTION-PC, FILESERVER-01, DC-01
@@ -48,8 +56,14 @@ Walk through each tab:
 - 20 synthetic events with mix of Event IDs: 4624 (logon), 4625 (failed logon), 1 (Sysmon process create), 4104 (PowerShell), FIM events
 - Show event detail expansion
 - Demonstrate query filtering
+- Pagination fills viewport dynamically — no dead space
 
-### Detections Tab (Guided Response)
+### Detections Tab
+- **Alert Rules**: 39 built-in rules with MITRE ATT&CK annotations, organised by category (Auth, PowerShell, Endpoint, Identity, Persistence, Lateral, etc.)
+  - Pagination controls (no scrollbar)
+  - Filter by category
+  - "+ New Rule" and "Upload Pack" buttons
+- **Fired Detections** below with status management
 - Shows **4 staged actions** with remediation runbooks:
   - **block_ip** (staged): Block 203.0.113.47 — brute force source IP
   - **isolate_host** (staged): Isolate RECEPTION-PC — Defender disabled
@@ -58,15 +72,8 @@ Walk through each tab:
 - Click an action to expand its **remediation runbook** with step-by-step guidance
 - Demonstrate Acknowledge/Dismiss workflow buttons
 
-### AI Assistant
-- Type: "what happened on RECEPTION-PC in the last hour?"
-- The assistant queries the synthetic data and returns a natural language narrative
-- Type: "is the brute force attack still ongoing?"
-- Show how it correlates events across the timeline
-- **Ask AI buttons** on each widget header pre-fill contextual prompts
-
 ### Compliance Tab
-- **MITRE ATT&CK coverage**: 33 techniques across 11 tactics — full heatmap grid
+- **MITRE ATT&CK coverage**: heatmap grid with technique counts per tactic
   - Click a tactic cell to expand and see covered technique IDs
   - Navigator layer export available
 - **Compliance frameworks**: select NIST CSF 2.0, HIPAA, or PCI DSS
@@ -74,7 +81,34 @@ Walk through each tab:
   - **Download Report** button generates a standalone HTML compliance report
 - **Ask AI buttons** on both Compliance and MITRE headers
 
-## Part 2: Multi-Site Walkthrough (2 minutes)
+### AI Assistant
+- **Privacy consent**: On first click, a consent dialog appears explaining what data is sent to the LLM provider. Accept to continue. This builds trust with privacy-conscious prospects.
+- **Privacy badge**: Once active, the assistant header shows which provider is in use
+- Type: "what happened on RECEPTION-PC in the last hour?"
+- The assistant queries the synthetic data and returns a natural language narrative
+- Type: "is the brute force attack still ongoing?"
+- Show how it correlates events across the timeline
+- Type: "how do I configure data retention?" — the assistant has full product knowledge and can answer questions about TinySocs itself
+- **Ask AI buttons** on each widget header pre-fill contextual prompts
+
+---
+
+## Part 2: Settings Walkthrough (2 minutes)
+
+### Settings Panel (gear icon, top-right)
+- Full-width layout covering the entire settings area
+- **Data Retention**: Event Log Retention (30 days), Alert Retention (90 days), Custom/HEC Log Retention (30 days). Configurable 7-365 days. Show "Save Retention" button.
+- **Purge Old Logs Now**: Red button for emergency purge with confirmation. Show result: "Purged: 0 events, 0 alerts"
+- **HEC Tokens**: Show the endpoint URL (https://localhost:8081/hec). Create a token, demonstrate the "shown only once" banner with the generated token. Show Revoke button on existing tokens.
+- Talk through: "This is how you'd connect a firewall, syslog server, or any tool that can send JSON over HTTP."
+- **SIEM Connection**: Show the OpenSearch URL, user, password fields
+- **Change Password**: Unified password for dashboard and SIEM
+- **LLM Configuration**: Show the model fields — operator chooses their own model, no hardcoded defaults
+- **Threat Intelligence**: Show API key fields for AbuseIPDB, OTX, GreyNoise
+
+---
+
+## Part 3: Multi-Site Walkthrough (2 minutes)
 
 ### Sites Tab
 - 3 client sites visible: acme-law, mainst-dental, harbor-ins
@@ -83,13 +117,26 @@ Walk through each tab:
 - harbor-ins: warning (amber), version 0.8.9 (outdated), 512 ledger entries, 5 detections in last run
 - Talk through: "This is the MSSP view. One dashboard, all your clients. Alert aggregation, ledger integrity verification, centralized version tracking."
 - Point out harbor-ins version drift as a talking point about fleet management
-- **Click a site** to drill into its Overview/Data tabs — in single-node mode, data filters by hostname automatically
+- **Certificate pinning**: Each approved site's TLS certificate fingerprint is pinned — green lock icon. If a cert changes unexpectedly, the Hub refuses the connection.
+- **Click a site** to drill into its Overview/Data tabs — data filters to that site automatically
+- Click "All Sites" to return to the aggregated view
 
-## Part 3: Closing (1 minute)
+---
+
+## Part 4: Closing (1 minute)
+
 - Recap: "This is a 15-minute install from a single .exe. No cloud, no subscription per GB, no security analyst required."
-- Key differentiators: on-premises privacy, AI assistant built-in, compliance reporting out of the box, federated architecture for MSSPs
+- Key differentiators:
+  - **Privacy-first**: Data never leaves the box. AI consent flow. Ollama for fully offline AI.
+  - **AI assistant**: Explains alerts in plain English, knows the product, suggests remediation
+  - **Compliance**: NIST CSF, HIPAA, PCI DSS reports out of the box
+  - **Federation**: Multi-site with certificate pinning for MSSPs
+  - **Custom ingestion**: HEC endpoint accepts logs from any source
+  - **Operational controls**: Configurable retention, storage monitoring, auto-purge, token management
 - Download at: https://github.com/lukefitzg/tinysocs/releases/latest
 - Landing page: https://lukefitzg.github.io/tinysocs/
+
+---
 
 ## Demo Tips
 - The demo banner ("Demo Mode — showing synthetic data") is intentional and builds trust with prospects
@@ -99,3 +146,6 @@ Walk through each tab:
 - The scenario is a law firm ("Hartwell & Associates") — relatable for professional services prospects.
 - Every widget header has an **Ask AI** button — use these to show natural-language querying in context.
 - The **guided response actions** on the Detections tab showcase the operator workflow — a great demo closer.
+- Show the **Settings panel** to demonstrate operational maturity — retention, HEC tokens, storage monitoring, and purge controls show this is a production-ready system, not a prototype.
+- The **AI consent dialog** is a selling point for privacy-conscious prospects. Don't skip it.
+- The **threat intel enrichment** on fired detections is visually impressive — expand at least one alert to show the provider breakdown.

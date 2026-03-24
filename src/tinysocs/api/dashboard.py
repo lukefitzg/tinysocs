@@ -9083,6 +9083,19 @@ function authHeaders(extra) {
   return h;
 }
 
+// Wrapper for authenticated fetches — if a 401/403 comes back, clear the
+// stale token and re-open the settings login prompt so the user can re-auth.
+async function authFetch(url, opts) {
+  const r = await fetch(url, opts);
+  if (r.status === 401 || r.status === 403) {
+    _authToken = null;
+    try { sessionStorage.removeItem('tinysocs_auth'); } catch(e) {}
+    openSettings();  // re-prompts login
+    throw new Error('Session expired — please log in again');
+  }
+  return r;
+}
+
 async function openSettings() {
   document.getElementById('settingsOverlay').classList.add('open');
   // Clear stale status messages and password fields on every open
@@ -9115,7 +9128,7 @@ async function openSettings() {
   // If we have a valid session token, skip the password prompt
   if (_authToken) {
     try {
-      const r = await fetch(BASE + '/api/settings', { headers: authHeaders() });
+      const r = await authFetch(BASE + '/api/settings', { headers: authHeaders() });
       const d = await r.json();
       if (!d.error) {
         document.getElementById('settingsLogin').style.display = 'none';
@@ -9176,7 +9189,7 @@ async function submitSetupPassword() {
     document.getElementById('settingsSetup').style.display = 'none';
     errEl.innerHTML = '';
     // Load settings with session token
-    const r2 = await fetch(BASE + '/api/settings', { headers: authHeaders() });
+    const r2 = await authFetch(BASE + '/api/settings', { headers: authHeaders() });
     const d2 = await r2.json();
     if (!d2.error) {
       document.getElementById('settingsForm').style.display = 'block';
@@ -9207,7 +9220,7 @@ async function settingsAuth() {
       try { sessionStorage.setItem('tinysocs_auth', _authToken); } catch(e2) {}
     }
     // Now load settings with the session token
-    const r = await fetch(BASE + '/api/settings', { headers: authHeaders() });
+    const r = await authFetch(BASE + '/api/settings', { headers: authHeaders() });
     const d = await r.json();
     if (d.error) {
       document.getElementById('settingsLoginError').innerHTML = `<div class="status-msg err" style="margin-top:8px">${escapeHtml(d.error)}</div>`;
@@ -9234,7 +9247,7 @@ async function changePassword() {
   if (newPw !== confirm) { statusEl.innerHTML = '<div class="status-msg err">Passwords do not match.</div>'; return; }
 
   try {
-    const r = await fetch(BASE + '/api/settings/change-password', {
+    const r = await authFetch(BASE + '/api/settings/change-password', {
       method: 'POST',
       headers: authHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify({old_password: current, new_password: newPw}),
@@ -9255,7 +9268,7 @@ async function changePassword() {
 
 async function loadSettings() {
   try {
-    const r = await fetch(BASE + '/api/settings', { headers: authHeaders() });
+    const r = await authFetch(BASE + '/api/settings', { headers: authHeaders() });
     const d = await r.json();
     if (d.error) {
       openSettings();
@@ -9308,7 +9321,7 @@ function populateSettings(d) {
 
 async function loadNotificationSettings() {
   try {
-    const r = await fetch(BASE + '/api/settings/notifications', { headers: authHeaders() });
+    const r = await authFetch(BASE + '/api/settings/notifications', { headers: authHeaders() });
     const d = await r.json();
     if (d.error) return;
     const map = {EMAIL_SMTP_HOST: 'email_smtp_host', EMAIL_SMTP_PORT: 'email_smtp_port',
@@ -9348,7 +9361,7 @@ async function saveSettings() {
 
   try {
     // Save assistant.env settings
-    const r = await fetch(BASE + '/api/settings', {
+    const r = await authFetch(BASE + '/api/settings', {
       method: 'POST',
       headers: authHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify({settings}),
@@ -9363,7 +9376,7 @@ async function saveSettings() {
       email_from: document.getElementById('s_EMAIL_FROM')?.value || '',
       email_to: document.getElementById('s_EMAIL_TO')?.value || '',
     };
-    const r2 = await fetch(BASE + '/api/settings/notifications', {
+    const r2 = await authFetch(BASE + '/api/settings/notifications', {
       method: 'POST',
       headers: authHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify({settings: notifSettings}),
@@ -9393,7 +9406,7 @@ async function saveRetentionSettings() {
   }
   statusEl.innerHTML = '<span style="color:var(--muted)">Saving...</span>';
   try {
-    const r = await fetch(BASE + '/api/settings/retention', {
+    const r = await authFetch(BASE + '/api/settings/retention', {
       method: 'POST',
       headers: authHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify({winlog_days: winlog, alert_days: alerts, custom_days: custom}),
@@ -9415,7 +9428,7 @@ async function purgeOldLogs() {
   const statusEl = document.getElementById('retentionStatus');
   statusEl.innerHTML = '<span style="color:var(--muted)">Purging...</span>';
   try {
-    const r = await fetch(BASE + '/api/settings/purge-logs', {
+    const r = await authFetch(BASE + '/api/settings/purge-logs', {
       method: 'POST',
       headers: authHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify({}),
@@ -9437,7 +9450,7 @@ async function loadHecTokens() {
   const el = document.getElementById('hecTokensList');
   if (!el) return;
   try {
-    const r = await fetch(BASE + '/api/settings/hec-tokens', { headers: authHeaders() });
+    const r = await authFetch(BASE + '/api/settings/hec-tokens', { headers: authHeaders() });
     const d = await r.json();
     if (!d.ok || !d.tokens || d.tokens.length === 0) {
       el.innerHTML = '<span style="color:var(--muted)">No tokens created yet</span>';
@@ -9464,7 +9477,7 @@ async function createHecToken() {
   const name = (nameEl?.value || '').trim();
   if (!name) { resultEl.innerHTML = '<span style="color:var(--red)">Enter a token name</span>'; return; }
   try {
-    const r = await fetch(BASE + '/api/settings/hec-tokens', {
+    const r = await authFetch(BASE + '/api/settings/hec-tokens', {
       method: 'POST',
       headers: authHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify({name: name}),
@@ -9488,7 +9501,7 @@ async function createHecToken() {
 async function revokeHecToken(tokenId) {
   if (!confirm('Revoke this token? Any integrations using it will stop working.')) return;
   try {
-    const r = await fetch(BASE + '/api/settings/hec-tokens/' + tokenId, {
+    const r = await authFetch(BASE + '/api/settings/hec-tokens/' + tokenId, {
       method: 'DELETE',
       headers: authHeaders({'Content-Type': 'application/json'}),
     });
@@ -9506,7 +9519,7 @@ async function testWebhook() {
   const url = document.getElementById('s_WEBHOOK_URL')?.value || '';
   statusEl.innerHTML = '<span style="color:var(--muted)">Testing...</span>';
   try {
-    const r = await fetch(BASE + '/api/settings/test-webhook', {
+    const r = await authFetch(BASE + '/api/settings/test-webhook', {
       method: 'POST',
       headers: authHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify({webhook_url: url}),
@@ -9526,7 +9539,7 @@ async function testEmail() {
   const statusEl = document.getElementById('emailTestStatus');
   statusEl.innerHTML = '<span style="color:var(--muted)">Sending test email...</span>';
   try {
-    const r = await fetch(BASE + '/api/settings/test-email', {
+    const r = await authFetch(BASE + '/api/settings/test-email', {
       method: 'POST',
       headers: authHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify({

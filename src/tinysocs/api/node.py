@@ -1230,6 +1230,71 @@ async def storage_stats() -> dict:
         return {"error": str(exc)}
 
 
+@app.post("/storage/purge", dependencies=[Depends(_verify_hmac_if_enabled)])
+async def storage_purge(request: Request) -> dict:
+    """Purge old indices based on retention settings. Deletes entire indices by date."""
+    import datetime as _dt
+
+    siem_url = os.getenv("SIEM_URL", "https://localhost:9201").rstrip("/")
+    siem_pass = os.getenv("SIEM_PASS", "").strip()
+    if not siem_pass:
+        return {"ok": False, "error": "SIEM_PASS not configured"}
+
+    winlog_days = int(os.getenv("WINLOG_RETENTION_DAYS", os.getenv("RETENTION_DAYS", "30")))
+    alert_days = int(os.getenv("ALERT_RETENTION_DAYS", "90"))
+
+    try:
+        session = get_opensearch_session()
+        auth = (os.getenv("SIEM_USER", "admin"), siem_pass)
+
+        idx_resp = session.get(
+            f"{siem_url}/_cat/indices/tinysocs-*?format=json&h=index,docs.count",
+            auth=auth, timeout=15,
+        )
+        if idx_resp.status_code != 200:
+            return {"ok": False, "error": f"Failed to list indices: HTTP {idx_resp.status_code}"}
+
+        now = _dt.datetime.utcnow()
+        deleted_events = 0
+        deleted_alerts = 0
+        deleted_indices = []
+
+        for idx in idx_resp.json():
+            name = idx.get("index", "")
+            docs = int(idx.get("docs.count", 0) or 0)
+            parts = name.rsplit("-", 1)
+            if len(parts) < 2:
+                continue
+            try:
+                idx_date = _dt.datetime.strptime(parts[-1], "%Y.%m.%d")
+            except ValueError:
+                continue
+
+            age_days = (now - idx_date).days
+            should_delete = False
+
+            if name.startswith("tinysocs-winlog-") and age_days > winlog_days:
+                should_delete = True
+                deleted_events += docs
+            elif name.startswith("tinysocs-alerts-") and age_days > alert_days:
+                should_delete = True
+                deleted_alerts += docs
+
+            if should_delete:
+                r = session.delete(f"{siem_url}/{name}", auth=auth, timeout=15)
+                if r.status_code == 200:
+                    deleted_indices.append(name)
+
+        return {
+            "ok": True,
+            "deleted_events": deleted_events,
+            "deleted_alerts": deleted_alerts,
+            "deleted_indices": deleted_indices,
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 # ---------------------------------------------------------------------------
 # Hub auto-registration (Phase 21)
 # ---------------------------------------------------------------------------

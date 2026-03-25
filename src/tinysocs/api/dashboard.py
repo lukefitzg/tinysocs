@@ -3536,7 +3536,7 @@ async def api_nodes_reject(body: Dict[str, Any] = Body(...)):
 # Allowed proxy paths — only forward requests to known node endpoints.
 _PROXY_ALLOWED = {
     "alerts/summary", "alerts/timeline", "fleet/summary", "fleet/health",
-    "detections/fired", "events/recent", "host/timeline", "storage/stats",
+    "detections/fired", "events/recent", "host/timeline", "storage/stats", "storage/purge",
 }
 
 
@@ -7398,16 +7398,75 @@ async function loadStorage() {
     html += `<div style="margin-top:6px;font-size:11px;color:var(--orange)">&#x26A0; Auto-purge is active &mdash; oldest event logs will be removed automatically if disk reaches 88%</div>`;
   }
 
-  // "Free Space Now" button when disk is elevated
-  if (pct >= 80) {
-    const btnColor = pct >= 85 ? 'var(--red)' : 'var(--orange)';
-    html += `<div style="margin-top:8px">`;
-    html += `<button id="btn-emergency-purge" onclick="emergencyPurge()" style="padding:4px 14px;font-size:12px;background:${btnColor};color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600">Free Space Now</button>`;
-    html += `<span id="purge-result" style="margin-left:8px;font-size:11px;color:var(--muted)"></span>`;
-    html += `</div>`;
-  }
+  // Purge button — always visible, scoped to current site
+  const scopeLabel = _focusedSite && _focusedSite !== _localNodeId
+    ? (sessionStorage.getItem('tinysocs_focused_name') || _focusedSite)
+    : 'this host';
+  html += `<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-wrap:wrap">`;
+  html += `<button id="btn-storage-purge" onclick="storagePurge()" style="padding:4px 14px;font-size:12px;background:var(--red);color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600">Purge Old Logs</button>`;
+  html += `<span style="font-size:11px;color:var(--muted)">Delete logs older than retention on ${escapeHtml(scopeLabel)}</span>`;
+  html += `<span id="storage-purge-result" style="font-size:11px"></span>`;
+  html += `</div>`;
 
   el.innerHTML = html;
+}
+
+async function storagePurge() {
+  const btn = document.getElementById('btn-storage-purge');
+  const resultEl = document.getElementById('storage-purge-result');
+  if (!btn) return;
+
+  const scopeLabel = _focusedSite && _focusedSite !== _localNodeId
+    ? ((sessionStorage.getItem('tinysocs_focused_name') || _focusedSite))
+    : 'this host';
+
+  // Password confirmation for destructive operation
+  const pw = prompt(`This will permanently delete logs older than the configured retention on ${scopeLabel}.\\n\\nEnter your admin password to confirm:`);
+  if (!pw) return;
+
+  // Verify password
+  try {
+    const loginResp = await fetch(BASE + '/api/auth/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({password: pw}),
+    });
+    if (!loginResp.ok) {
+      if (resultEl) resultEl.innerHTML = '<span style="color:var(--red)">Incorrect password</span>';
+      return;
+    }
+  } catch(e) {
+    if (resultEl) resultEl.innerHTML = '<span style="color:var(--red)">Auth failed</span>';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Purging...';
+  if (resultEl) resultEl.textContent = '';
+
+  try {
+    const resp = await fetch(apiBase() + '/storage/purge', {
+      method: 'POST',
+      headers: authHeaders({'Content-Type': 'application/json'}),
+      body: JSON.stringify({}),
+    });
+    const d = await resp.json();
+    if (d.error) {
+      resultEl.innerHTML = `<span style="color:var(--red)">${escapeHtml(d.error)}</span>`;
+    } else {
+      const idxCount = (d.deleted_indices || []).length;
+      if (idxCount > 0) {
+        resultEl.innerHTML = `<span style="color:var(--green)">Purged ${d.deleted_events || 0} events, ${d.deleted_alerts || 0} alerts (${idxCount} indices) on ${escapeHtml(scopeLabel)} &#x2714;</span>`;
+      } else {
+        resultEl.innerHTML = `<span style="color:var(--green)">No indices older than retention found &#x2714;</span>`;
+      }
+    }
+    setTimeout(() => loadStorage(), 2000);
+  } catch(e) {
+    resultEl.innerHTML = `<span style="color:var(--red)">${escapeHtml(e.message)}</span>`;
+  }
+  btn.disabled = false;
+  btn.textContent = 'Purge Old Logs';
 }
 
 async function emergencyPurge() {

@@ -6205,6 +6205,17 @@ select { cursor: pointer; }
       <h2>&#9881; Settings</h2>
       <div id="settingsStatus"></div>
 
+      <!-- Settings sub-tabs -->
+      <div style="display:flex;gap:0;margin-bottom:16px;border-bottom:2px solid var(--border)">
+        <button class="settings-tab active" data-stab="general" onclick="switchSettingsTab('general')" style="padding:6px 16px;font-size:13px;font-weight:600;background:none;border:none;border-bottom:2px solid var(--accent);margin-bottom:-2px;color:var(--accent);cursor:pointer">General</button>
+        <button class="settings-tab" data-stab="storage" onclick="switchSettingsTab('storage')" style="padding:6px 16px;font-size:13px;font-weight:600;background:none;border:none;border-bottom:2px solid transparent;margin-bottom:-2px;color:var(--muted);cursor:pointer">Storage</button>
+        <button class="settings-tab" data-stab="security" onclick="switchSettingsTab('security')" style="padding:6px 16px;font-size:13px;font-weight:600;background:none;border:none;border-bottom:2px solid transparent;margin-bottom:-2px;color:var(--muted);cursor:pointer">Security</button>
+        <button class="settings-tab" data-stab="diagnostics" onclick="switchSettingsTab('diagnostics')" style="padding:6px 16px;font-size:13px;font-weight:600;background:none;border:none;border-bottom:2px solid transparent;margin-bottom:-2px;color:var(--muted);cursor:pointer">Diagnostics</button>
+      </div>
+
+      <!-- GENERAL TAB -->
+      <div id="stab-general" class="settings-tab-content">
+
       <div class="section-title">LLM Configuration</div>
       <p style="color:var(--muted);font-size:11px;margin-bottom:8px">&#x2139;&#xFE0F; OpenAI and Anthropic modes send query results to external APIs. For maximum privacy, use Ollama (runs entirely on this machine).</p>
       <div class="field">
@@ -6293,6 +6304,11 @@ select { cursor: pointer; }
         <span id="threatIntelTestStatus" style="font-size:12px;margin-left:8px"></span>
       </div>
 
+      </div><!-- end GENERAL TAB -->
+
+      <!-- STORAGE TAB -->
+      <div id="stab-storage" class="settings-tab-content" style="display:none">
+
       <div class="section-title">Data Retention</div>
       <p style="color:var(--muted);font-size:12px;margin-bottom:8px">How long to keep data before automatic deletion (7\u2013365 days).</p>
       <div class="field" style="display:flex;gap:12px;align-items:center">
@@ -6331,6 +6347,11 @@ select { cursor: pointer; }
       </div>
       <div id="hecTokenResult" style="margin-top:6px;font-size:12px"></div>
 
+      </div><!-- end STORAGE TAB -->
+
+      <!-- SECURITY TAB -->
+      <div id="stab-security" class="settings-tab-content" style="display:none">
+
       <div class="section-title">SIEM Connection</div>
       <div class="field">
         <label>SIEM URL</label>
@@ -6365,13 +6386,20 @@ select { cursor: pointer; }
         <button class="btn-save" onclick="changePassword()" style="background:#e67e22">Change Password</button>
       </div>
 
-      <div class="section-title" style="margin-top:24px">System Diagnostics</div>
+      </div><!-- end SECURITY TAB -->
+
+      <!-- DIAGNOSTICS TAB -->
+      <div id="stab-diagnostics" class="settings-tab-content" style="display:none">
+
+      <div class="section-title">System Diagnostics</div>
       <p style="color:var(--muted);font-size:12px;margin-bottom:8px">Read-only health check of system components.</p>
       <div class="btn-row" style="margin-top:0;justify-content:flex-start;gap:8px">
         <button class="btn-save" onclick="runDiagnostics()" id="btn-run-diag" style="background:var(--accent)">Run Health Check</button>
         <button class="btn-save" onclick="copyDiagnostics()" id="btn-copy-diag" style="background:var(--muted);display:none">Copy to Clipboard</button>
       </div>
       <div id="diagnostics-results" style="margin-top:12px;font-family:monospace;font-size:12px;white-space:pre-wrap;max-height:400px;overflow-y:auto;background:rgba(0,0,0,0.3);border-radius:6px;padding:0;display:none"></div>
+
+      </div><!-- end DIAGNOSTICS TAB -->
 
       <div class="btn-row" style="margin-top:24px;border-top:1px solid var(--border);padding-top:16px">
         <button class="btn-cancel" onclick="closeSettings()">Cancel</button>
@@ -7538,14 +7566,21 @@ async function loadStorage() {
     ? (sessionStorage.getItem('tinysocs_focused_name') || _focusedSite)
     : 'this host';
   html += `<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-wrap:wrap">`;
-  html += `<select id="purge-scope" style="padding:4px 8px;font-size:12px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:4px">`;
-  html += `<option value="retention">Older than retention</option>`;
-  html += `<option value="7">Older than 7 days</option>`;
-  html += `<option value="1">Older than 1 day</option>`;
-  html += `<option value="0">Everything</option>`;
+  const selStyle = 'padding:4px 8px;font-size:12px;background:#1e2a3a;color:#c8d6e5;border:1px solid var(--border);border-radius:4px;-webkit-appearance:none;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' fill=\'%23c8d6e5\' viewBox=\'0 0 16 16\'%3E%3Cpath d=\'M8 11L3 6h10z\'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 6px center;padding-right:22px';
+  html += `<select id="purge-scope" style="${selStyle}">`;
+  html += `<option value="retention" style="background:#1e2a3a;color:#c8d6e5">Older than retention</option>`;
+  html += `<option value="7" style="background:#1e2a3a;color:#c8d6e5">Older than 7 days</option>`;
+  html += `<option value="1" style="background:#1e2a3a;color:#c8d6e5">Older than 1 day</option>`;
+  html += `<option value="0" style="background:#1e2a3a;color:#e74c3c">Everything</option>`;
   html += `</select>`;
   html += `<button id="btn-storage-purge" onclick="storagePurge()" style="padding:4px 14px;font-size:12px;background:var(--red);color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600">Purge</button>`;
-  html += `<span style="font-size:11px;color:var(--muted)">on ${escapeHtml(scopeLabel)}</span>`;
+  if (_focusedSite && _focusedSite !== _localNodeId) {
+    html += `<span style="font-size:11px;color:var(--accent);font-weight:600">on ${escapeHtml(scopeLabel)}</span>`;
+  } else {
+    html += `<span style="font-size:11px;color:var(--muted)">on this host</span>`;
+    // Hint about site-scoped purge if there are remote sites
+    html += `<span style="font-size:10px;color:var(--muted);margin-left:4px">(select a site in the Sites tab to purge a remote host)</span>`;
+  }
   html += `<span id="storage-purge-result" style="font-size:11px"></span>`;
   html += `</div>`;
 
@@ -9360,6 +9395,30 @@ async function authFetch(url, opts) {
     throw new Error('Session expired — please log in again');
   }
   return r;
+}
+
+function switchSettingsTab(tabId) {
+  // Hide all settings tab content
+  document.querySelectorAll('.settings-tab-content').forEach(el => el.style.display = 'none');
+  // Deactivate all tab buttons
+  document.querySelectorAll('.settings-tab').forEach(btn => {
+    btn.style.borderBottomColor = 'transparent';
+    btn.style.color = 'var(--muted)';
+    btn.classList.remove('active');
+  });
+  // Show selected tab content
+  const target = document.getElementById('stab-' + tabId);
+  if (target) target.style.display = 'block';
+  // Activate selected tab button
+  const activeBtn = document.querySelector('.settings-tab[data-stab="' + tabId + '"]');
+  if (activeBtn) {
+    activeBtn.style.borderBottomColor = 'var(--accent)';
+    activeBtn.style.color = 'var(--accent)';
+    activeBtn.classList.add('active');
+  }
+  // Auto-load tab-specific data
+  if (tabId === 'storage') { loadHecTokens(); }
+  if (tabId === 'diagnostics') { /* diagnostics loaded on button click */ }
 }
 
 async function openSettings() {

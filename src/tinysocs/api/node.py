@@ -1232,13 +1232,20 @@ async def storage_stats() -> dict:
 
 @app.post("/storage/purge", dependencies=[Depends(_verify_hmac_if_enabled)])
 async def storage_purge(request: Request) -> dict:
-    """Purge old indices based on retention settings. Deletes entire indices by date."""
+    """Purge indices. Accepts optional older_than_days (0=everything)."""
     import datetime as _dt
 
     siem_url = os.getenv("SIEM_URL", "https://localhost:9201").rstrip("/")
     siem_pass = os.getenv("SIEM_PASS", "").strip()
     if not siem_pass:
         return {"ok": False, "error": "SIEM_PASS not configured"}
+
+    # Parse optional older_than_days from request body
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    override_days = body.get("older_than_days")  # None = use retention, 0 = everything
 
     winlog_days = int(os.getenv("WINLOG_RETENTION_DAYS", os.getenv("RETENTION_DAYS", "30")))
     alert_days = int(os.getenv("ALERT_RETENTION_DAYS", "90"))
@@ -1257,11 +1264,30 @@ async def storage_purge(request: Request) -> dict:
         now = _dt.datetime.utcnow()
         deleted_events = 0
         deleted_alerts = 0
+        deleted_custom = 0
         deleted_indices = []
 
         for idx in idx_resp.json():
             name = idx.get("index", "")
+            # Skip system indices
+            if name.startswith("."):
+                continue
             docs = int(idx.get("docs.count", 0) or 0)
+
+            # "Everything" mode — delete all tinysocs-* indices
+            if override_days is not None and override_days == 0:
+                r = session.delete(f"{siem_url}/{name}", auth=auth, timeout=15)
+                if r.status_code == 200:
+                    deleted_indices.append(name)
+                    if "winlog" in name:
+                        deleted_events += docs
+                    elif "alert" in name:
+                        deleted_alerts += docs
+                    else:
+                        deleted_custom += docs
+                continue
+
+            # Date-based deletion
             parts = name.rsplit("-", 1)
             if len(parts) < 2:
                 continue
@@ -1273,26 +1299,83 @@ async def storage_purge(request: Request) -> dict:
             age_days = (now - idx_date).days
             should_delete = False
 
-            if name.startswith("tinysocs-winlog-") and age_days > winlog_days:
-                should_delete = True
-                deleted_events += docs
-            elif name.startswith("tinysocs-alerts-") and age_days > alert_days:
-                should_delete = True
-                deleted_alerts += docs
+            if override_days is not None:
+                # Fixed day override — applies to all index types
+                if age_days > override_days:
+                    should_delete = True
+            else:
+                # Use configured retention per type
+                if name.startswith("tinysocs-winlog-") and age_days > winlog_days:
+                    should_delete = True
+                elif name.startswith("tinysocs-alerts-") and age_days > alert_days:
+                    should_delete = True
 
             if should_delete:
                 r = session.delete(f"{siem_url}/{name}", auth=auth, timeout=15)
                 if r.status_code == 200:
                     deleted_indices.append(name)
+                    if "winlog" in name:
+                        deleted_events += docs
+                    elif "alert" in name:
+                        deleted_alerts += docs
+                    else:
+                        deleted_custom += docs
 
         return {
             "ok": True,
             "deleted_events": deleted_events,
             "deleted_alerts": deleted_alerts,
+            "deleted_custom": deleted_custom,
             "deleted_indices": deleted_indices,
         }
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
+# Diagnostics (Phase 21)
+# ---------------------------------------------------------------------------
+
+@app.get("/diagnostics/health")
+async def diagnostics_health() -> dict:
+    """Local node health: OpenSearch cluster health + disk usage."""
+    import time as _time
+    import shutil
+
+    result = {"ok": True, "opensearch": {"status": "unknown"}, "disk": {}}
+
+    siem_url = os.getenv("SIEM_URL", "https://localhost:9201").rstrip("/")
+    siem_pass = os.getenv("SIEM_PASS", "").strip()
+    auth = (os.getenv("SIEM_USER", "admin"), siem_pass) if siem_pass else None
+
+    try:
+        session = get_opensearch_session()
+        t0 = _time.monotonic()
+        r = session.get(f"{siem_url}/_cluster/health", auth=auth, timeout=10)
+        ms = round((_time.monotonic() - t0) * 1000)
+        if r.status_code == 200:
+            h = r.json()
+            result["opensearch"] = {
+                "status": h.get("status", "unknown"),
+                "node_count": h.get("number_of_nodes", 0),
+                "active_shards": h.get("active_primary_shards", 0),
+                "response_ms": ms,
+            }
+    except Exception as exc:
+        result["opensearch"]["error"] = str(exc)
+
+    try:
+        usage = shutil.disk_usage("/")
+        result["disk"] = {
+            "total": usage.total,
+            "used": usage.used,
+            "free": usage.free,
+            "used_pct": round(usage.used / usage.total * 100, 1) if usage.total > 0 else 0,
+        }
+    except Exception:
+        pass
+
+    return result
 
 
 # ---------------------------------------------------------------------------

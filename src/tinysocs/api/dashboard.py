@@ -1778,15 +1778,17 @@ async def api_set_retention(request: Request):
 
 @dashboard_app.post("/api/settings/purge-logs")
 async def api_purge_logs(request: Request):
-    """Manually purge logs older than configured retention periods."""
+    """Manually purge logs. Accepts optional older_than_days (0=everything)."""
     _verify_dashboard_session(request)
     body = await request.json()
+    override_days = body.get("older_than_days")  # None = use retention, 0 = everything
 
     winlog_days = int(os.getenv("WINLOG_RETENTION_DAYS", "30"))
     alert_days = int(os.getenv("ALERT_RETENTION_DAYS", "90"))
 
     deleted_events = 0
     deleted_alerts = 0
+    deleted_custom = 0
     deleted_indices = []
     try:
         from tinysocs.tls import get_opensearch_session
@@ -1799,7 +1801,6 @@ async def api_purge_logs(request: Request):
             return {"ok": False, "error": "SIEM_PASS not configured -- check Settings > SIEM Connection"}
         auth = (os.getenv("SIEM_USER", "admin"), siem_pass)
 
-        # Get all indices and their dates
         idx_resp = session.get(
             f"{siem_url}/_cat/indices/tinysocs-*?format=json&h=index,docs.count",
             auth=auth, timeout=15,
@@ -1810,31 +1811,54 @@ async def api_purge_logs(request: Request):
         now = _dt.datetime.utcnow()
         for idx in idx_resp.json():
             name = idx.get("index", "")
+            if name.startswith("."):
+                continue
             docs = int(idx.get("docs.count", 0) or 0)
-            # Extract date from index name (tinysocs-winlog-2026.03.22)
+
+            # "Everything" mode
+            if override_days is not None and override_days == 0:
+                r = session.delete(f"{siem_url}/{name}", auth=auth, timeout=15)
+                if r.status_code == 200:
+                    deleted_indices.append(name)
+                    if "winlog" in name:
+                        deleted_events += docs
+                    elif "alert" in name:
+                        deleted_alerts += docs
+                    else:
+                        deleted_custom += docs
+                continue
+
+            # Date-based deletion
             parts = name.rsplit("-", 1)
             if len(parts) < 2:
                 continue
-            date_str = parts[-1]
             try:
-                idx_date = _dt.datetime.strptime(date_str, "%Y.%m.%d")
+                idx_date = _dt.datetime.strptime(parts[-1], "%Y.%m.%d")
             except ValueError:
                 continue
 
             age_days = (now - idx_date).days
             should_delete = False
 
-            if name.startswith("tinysocs-winlog-") and age_days > winlog_days:
-                should_delete = True
-                deleted_events += docs
-            elif name.startswith("tinysocs-alerts-") and age_days > alert_days:
-                should_delete = True
-                deleted_alerts += docs
+            if override_days is not None:
+                if age_days > override_days:
+                    should_delete = True
+            else:
+                if name.startswith("tinysocs-winlog-") and age_days > winlog_days:
+                    should_delete = True
+                elif name.startswith("tinysocs-alerts-") and age_days > alert_days:
+                    should_delete = True
 
             if should_delete:
                 r = session.delete(f"{siem_url}/{name}", auth=auth, timeout=15)
                 if r.status_code == 200:
                     deleted_indices.append(name)
+                    if "winlog" in name:
+                        deleted_events += docs
+                    elif "alert" in name:
+                        deleted_alerts += docs
+                    else:
+                        deleted_custom += docs
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -1842,6 +1866,7 @@ async def api_purge_logs(request: Request):
         "ok": True,
         "deleted_events": deleted_events,
         "deleted_alerts": deleted_alerts,
+        "deleted_custom": deleted_custom,
         "deleted_indices": deleted_indices,
     }
 
@@ -1853,6 +1878,108 @@ def _human_bytes(b: int) -> str:
             return f"{b:.1f} {unit}" if unit != "B" else f"{b} {unit}"
         b /= 1024
     return f"{b:.1f} PB"
+
+
+# ---------------------------------------------------------------------------
+# System Diagnostics (Phase 21)
+# ---------------------------------------------------------------------------
+
+@dashboard_app.get("/api/diagnostics/health")
+async def api_diagnostics_health(request: Request):
+    """Comprehensive system health check: OpenSearch, nodes, disk."""
+    _verify_dashboard_session(request)
+    import time as _time
+
+    result = {
+        "opensearch": {"status": "unknown", "error": None},
+        "nodes": [],
+        "disk": {"error": None},
+    }
+
+    # -- OpenSearch cluster health + stats --
+    try:
+        from tinysocs.tls import get_opensearch_session
+        session = get_opensearch_session()
+        siem_url = os.getenv("SIEM_URL", "https://localhost:9201").rstrip("/")
+        siem_pass = os.getenv("SIEM_PASS", "").strip()
+        auth = (os.getenv("SIEM_USER", "admin"), siem_pass) if siem_pass else None
+
+        t0 = _time.monotonic()
+        health_resp = session.get(f"{siem_url}/_cluster/health", auth=auth, timeout=10)
+        health_ms = round((_time.monotonic() - t0) * 1000)
+
+        if health_resp.status_code == 200:
+            h = health_resp.json()
+            result["opensearch"] = {
+                "status": h.get("status", "unknown"),
+                "node_count": h.get("number_of_nodes", 0),
+                "active_shards": h.get("active_primary_shards", 0),
+                "response_ms": health_ms,
+                "error": None,
+            }
+            # Try cluster stats for heap info
+            try:
+                stats_resp = session.get(f"{siem_url}/_cluster/stats", auth=auth, timeout=10)
+                if stats_resp.status_code == 200:
+                    s = stats_resp.json()
+                    nodes_stats = s.get("nodes", {})
+                    jvm = nodes_stats.get("jvm", {}).get("mem", {})
+                    heap_used = jvm.get("heap_used_in_bytes", 0)
+                    heap_max = jvm.get("heap_max_in_bytes", 1)
+                    result["opensearch"]["heap_used_pct"] = round(heap_used / heap_max * 100, 1) if heap_max > 0 else 0
+                    result["opensearch"]["heap_used"] = _human_bytes(heap_used)
+                    result["opensearch"]["heap_max"] = _human_bytes(heap_max)
+                    result["opensearch"]["index_count"] = s.get("indices", {}).get("count", 0)
+                    result["opensearch"]["total_docs"] = s.get("indices", {}).get("docs", {}).get("count", 0)
+                    result["opensearch"]["store_size"] = _human_bytes(s.get("indices", {}).get("store", {}).get("size_in_bytes", 0))
+            except Exception:
+                pass  # stats are optional
+        else:
+            result["opensearch"]["error"] = f"HTTP {health_resp.status_code}"
+    except Exception as exc:
+        result["opensearch"]["error"] = str(exc)
+
+    # -- Node reachability --
+    nodes_env = os.getenv("TINYSOCS_NODES", "").strip()
+    node_urls = [u.strip().rstrip("/") for u in nodes_env.split(",") if u.strip()] if nodes_env else []
+    import httpx
+    for url in node_urls:
+        node_info = {"url": url, "reachable": False, "error": None}
+        try:
+            t0 = _time.monotonic()
+            async with httpx.AsyncClient(verify=False, timeout=8.0) as client:
+                resp = await client.get(f"{url}/meta")
+            node_info["response_ms"] = round((_time.monotonic() - t0) * 1000)
+            if resp.status_code == 200:
+                meta = resp.json()
+                node_info["reachable"] = True
+                node_info["node_id"] = meta.get("node_id", "unknown")
+                node_info["version"] = meta.get("version", "unknown")
+            else:
+                node_info["error"] = f"HTTP {resp.status_code}"
+        except Exception as exc:
+            node_info["error"] = str(exc)
+            node_info["response_ms"] = round((_time.monotonic() - t0) * 1000)
+        result["nodes"].append(node_info)
+
+    # -- Disk --
+    try:
+        import shutil
+        usage = shutil.disk_usage("/")
+        result["disk"] = {
+            "total": usage.total,
+            "used": usage.used,
+            "free": usage.free,
+            "total_human": _human_bytes(usage.total),
+            "used_human": _human_bytes(usage.used),
+            "free_human": _human_bytes(usage.free),
+            "used_pct": round(usage.used / usage.total * 100, 1) if usage.total > 0 else 0,
+            "error": None,
+        }
+    except Exception as exc:
+        result["disk"]["error"] = str(exc)
+
+    return {"ok": True, **result}
 
 
 # ---------------------------------------------------------------------------
@@ -3536,7 +3663,7 @@ async def api_nodes_reject(body: Dict[str, Any] = Body(...)):
 # Allowed proxy paths — only forward requests to known node endpoints.
 _PROXY_ALLOWED = {
     "alerts/summary", "alerts/timeline", "fleet/summary", "fleet/health",
-    "detections/fired", "events/recent", "host/timeline", "storage/stats", "storage/purge",
+    "detections/fired", "events/recent", "host/timeline", "storage/stats", "storage/purge", "diagnostics/health",
 }
 
 
@@ -6238,6 +6365,14 @@ select { cursor: pointer; }
         <button class="btn-save" onclick="changePassword()" style="background:#e67e22">Change Password</button>
       </div>
 
+      <div class="section-title" style="margin-top:24px">System Diagnostics</div>
+      <p style="color:var(--muted);font-size:12px;margin-bottom:8px">Read-only health check of system components.</p>
+      <div class="btn-row" style="margin-top:0;justify-content:flex-start;gap:8px">
+        <button class="btn-save" onclick="runDiagnostics()" id="btn-run-diag" style="background:var(--accent)">Run Health Check</button>
+        <button class="btn-save" onclick="copyDiagnostics()" id="btn-copy-diag" style="background:var(--muted);display:none">Copy to Clipboard</button>
+      </div>
+      <div id="diagnostics-results" style="margin-top:12px;font-family:monospace;font-size:12px;white-space:pre-wrap;max-height:400px;overflow-y:auto;background:rgba(0,0,0,0.3);border-radius:6px;padding:0;display:none"></div>
+
       <div class="btn-row" style="margin-top:24px;border-top:1px solid var(--border);padding-top:16px">
         <button class="btn-cancel" onclick="closeSettings()">Cancel</button>
         <button class="btn-save" onclick="saveSettings()">Save &amp; Apply</button>
@@ -7398,13 +7533,19 @@ async function loadStorage() {
     html += `<div style="margin-top:6px;font-size:11px;color:var(--orange)">&#x26A0; Auto-purge is active &mdash; oldest event logs will be removed automatically if disk reaches 88%</div>`;
   }
 
-  // Purge button — always visible, scoped to current site
+  // Purge controls — dropdown + button, scoped to current site
   const scopeLabel = _focusedSite && _focusedSite !== _localNodeId
     ? (sessionStorage.getItem('tinysocs_focused_name') || _focusedSite)
     : 'this host';
   html += `<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-wrap:wrap">`;
-  html += `<button id="btn-storage-purge" onclick="storagePurge()" style="padding:4px 14px;font-size:12px;background:var(--red);color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600">Purge Old Logs</button>`;
-  html += `<span style="font-size:11px;color:var(--muted)">Delete logs older than retention on ${escapeHtml(scopeLabel)}</span>`;
+  html += `<select id="purge-scope" style="padding:4px 8px;font-size:12px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:4px">`;
+  html += `<option value="retention">Older than retention</option>`;
+  html += `<option value="7">Older than 7 days</option>`;
+  html += `<option value="1">Older than 1 day</option>`;
+  html += `<option value="0">Everything</option>`;
+  html += `</select>`;
+  html += `<button id="btn-storage-purge" onclick="storagePurge()" style="padding:4px 14px;font-size:12px;background:var(--red);color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600">Purge</button>`;
+  html += `<span style="font-size:11px;color:var(--muted)">on ${escapeHtml(scopeLabel)}</span>`;
   html += `<span id="storage-purge-result" style="font-size:11px"></span>`;
   html += `</div>`;
 
@@ -7414,14 +7555,26 @@ async function loadStorage() {
 async function storagePurge() {
   const btn = document.getElementById('btn-storage-purge');
   const resultEl = document.getElementById('storage-purge-result');
-  if (!btn) return;
+  const scopeSelect = document.getElementById('purge-scope');
+  if (!btn || !scopeSelect) return;
 
   const scopeLabel = _focusedSite && _focusedSite !== _localNodeId
     ? ((sessionStorage.getItem('tinysocs_focused_name') || _focusedSite))
     : 'this host';
+  const scopeVal = scopeSelect.value;  // "retention", "7", "1", "0"
+  const isEverything = scopeVal === '0';
 
-  // Password confirmation for destructive operation
-  const pw = prompt(`This will permanently delete logs older than the configured retention on ${scopeLabel}.\\n\\nEnter your admin password to confirm:`);
+  // Build confirmation message
+  let confirmMsg;
+  if (isEverything) {
+    confirmMsg = `WARNING: This will PERMANENTLY DELETE ALL TinySocs logs and alerts on ${scopeLabel}. This cannot be undone.\\n\\nEnter your admin password to confirm:`;
+  } else if (scopeVal === 'retention') {
+    confirmMsg = `This will delete logs older than the configured retention on ${scopeLabel}.\\n\\nEnter your admin password to confirm:`;
+  } else {
+    confirmMsg = `This will delete logs older than ${scopeVal} day(s) on ${scopeLabel}.\\n\\nEnter your admin password to confirm:`;
+  }
+
+  const pw = prompt(confirmMsg);
   if (!pw) return;
 
   // Verify password
@@ -7444,21 +7597,28 @@ async function storagePurge() {
   btn.textContent = 'Purging...';
   if (resultEl) resultEl.textContent = '';
 
+  // Build request body
+  const body = {};
+  if (scopeVal !== 'retention') {
+    body.older_than_days = parseInt(scopeVal, 10);
+  }
+
   try {
     const resp = await fetch(apiBase() + '/storage/purge', {
       method: 'POST',
       headers: authHeaders({'Content-Type': 'application/json'}),
-      body: JSON.stringify({}),
+      body: JSON.stringify(body),
     });
     const d = await resp.json();
     if (d.error) {
       resultEl.innerHTML = `<span style="color:var(--red)">${escapeHtml(d.error)}</span>`;
     } else {
       const idxCount = (d.deleted_indices || []).length;
+      const total = (d.deleted_events || 0) + (d.deleted_alerts || 0) + (d.deleted_custom || 0);
       if (idxCount > 0) {
-        resultEl.innerHTML = `<span style="color:var(--green)">Purged ${d.deleted_events || 0} events, ${d.deleted_alerts || 0} alerts (${idxCount} indices) on ${escapeHtml(scopeLabel)} &#x2714;</span>`;
+        resultEl.innerHTML = `<span style="color:var(--green)">Purged ${total} documents across ${idxCount} indices on ${escapeHtml(scopeLabel)} &#x2714;</span>`;
       } else {
-        resultEl.innerHTML = `<span style="color:var(--green)">No indices older than retention found &#x2714;</span>`;
+        resultEl.innerHTML = `<span style="color:var(--green)">No matching indices found &#x2714;</span>`;
       }
     }
     setTimeout(() => loadStorage(), 2000);
@@ -7466,7 +7626,7 @@ async function storagePurge() {
     resultEl.innerHTML = `<span style="color:var(--red)">${escapeHtml(e.message)}</span>`;
   }
   btn.disabled = false;
-  btn.textContent = 'Purge Old Logs';
+  btn.textContent = 'Purge';
 }
 
 async function emergencyPurge() {
@@ -9554,6 +9714,117 @@ async function purgeOldLogs() {
     }
   } catch(e) {
     statusEl.innerHTML = `<span style="color:var(--red)">${escapeHtml(e.message)}</span>`;
+  }
+}
+
+// ---- System Diagnostics ----
+let _lastDiagText = '';
+
+async function runDiagnostics() {
+  const btn = document.getElementById('btn-run-diag');
+  const copyBtn = document.getElementById('btn-copy-diag');
+  const resultsEl = document.getElementById('diagnostics-results');
+  if (!btn || !resultsEl) return;
+
+  btn.disabled = true;
+  btn.textContent = 'Running...';
+  resultsEl.style.display = 'block';
+  resultsEl.style.padding = '12px';
+  resultsEl.innerHTML = '<span style="color:var(--muted)">Running health check...</span>';
+
+  try {
+    const r = await authFetch(BASE + '/api/diagnostics/health', { headers: authHeaders() });
+    const d = await r.json();
+    if (!d.ok) {
+      resultsEl.innerHTML = `<span style="color:var(--red)">Error: ${escapeHtml(d.error || 'Unknown')}</span>`;
+      btn.disabled = false;
+      btn.textContent = 'Run Health Check';
+      return;
+    }
+
+    let txt = '';
+    // OpenSearch
+    const os = d.opensearch || {};
+    const osColor = os.status === 'green' ? 'var(--green)' : os.status === 'yellow' ? 'var(--orange)' : 'var(--red)';
+    txt += `<div style="margin-bottom:12px">`;
+    txt += `<div style="font-weight:700;font-size:13px;margin-bottom:4px;color:var(--accent)">OPENSEARCH</div>`;
+    if (os.error) {
+      txt += `<div>Status: <span style="color:var(--red)">ERROR</span> - ${escapeHtml(os.error)}</div>`;
+    } else {
+      txt += `<div>Status: <span style="color:${osColor};font-weight:700">${os.status || 'unknown'}</span>  (${os.response_ms || 0}ms)</div>`;
+      txt += `<div>Nodes: ${os.node_count || 0}  |  Shards: ${os.active_shards || 0}  |  Indices: ${os.index_count || 0}  |  Docs: ${(os.total_docs || 0).toLocaleString()}</div>`;
+      if (os.heap_used_pct !== undefined) {
+        const heapColor = os.heap_used_pct > 85 ? 'var(--red)' : os.heap_used_pct > 70 ? 'var(--orange)' : 'var(--green)';
+        txt += `<div>Heap: <span style="color:${heapColor}">${os.heap_used_pct}%</span> (${os.heap_used} / ${os.heap_max})  |  Store: ${os.store_size}</div>`;
+      }
+    }
+    txt += `</div>`;
+
+    // Disk
+    const disk = d.disk || {};
+    if (!disk.error) {
+      const diskColor = disk.used_pct > 85 ? 'var(--red)' : disk.used_pct > 70 ? 'var(--orange)' : 'var(--green)';
+      txt += `<div style="margin-bottom:12px">`;
+      txt += `<div style="font-weight:700;font-size:13px;margin-bottom:4px;color:var(--accent)">DISK</div>`;
+      txt += `<div>Usage: <span style="color:${diskColor}">${disk.used_pct}%</span> (${disk.used_human} / ${disk.total_human})  |  Free: ${disk.free_human}</div>`;
+      txt += `</div>`;
+    }
+
+    // Nodes
+    const nodes = d.nodes || [];
+    if (nodes.length > 0) {
+      txt += `<div style="margin-bottom:12px">`;
+      txt += `<div style="font-weight:700;font-size:13px;margin-bottom:4px;color:var(--accent)">FEDERATION NODES (${nodes.length})</div>`;
+      for (const n of nodes) {
+        const icon = n.reachable ? '<span style="color:var(--green)">&#x2714;</span>' : '<span style="color:var(--red)">&#x2718;</span>';
+        const info = n.reachable
+          ? `${n.node_id || 'unknown'} v${n.version || '?'}  (${n.response_ms}ms)`
+          : `ERROR: ${escapeHtml(n.error || 'unreachable')}  (${n.response_ms || 0}ms)`;
+        txt += `<div>${icon} ${escapeHtml(n.url)} - ${info}</div>`;
+      }
+      txt += `</div>`;
+    }
+
+    txt += `<div style="font-size:10px;color:var(--muted)">Checked at ${new Date().toLocaleString()}</div>`;
+    resultsEl.innerHTML = txt;
+
+    // Build plain text for clipboard
+    _lastDiagText = `TinySocs Diagnostics - ${new Date().toISOString()}\\n`;
+    _lastDiagText += `\\nOPENSEARCH\\n`;
+    if (os.error) {
+      _lastDiagText += `  Status: ERROR - ${os.error}\\n`;
+    } else {
+      _lastDiagText += `  Status: ${os.status} (${os.response_ms}ms)\\n`;
+      _lastDiagText += `  Nodes: ${os.node_count}  Shards: ${os.active_shards}  Indices: ${os.index_count}  Docs: ${os.total_docs}\\n`;
+      if (os.heap_used_pct !== undefined) _lastDiagText += `  Heap: ${os.heap_used_pct}% (${os.heap_used} / ${os.heap_max})  Store: ${os.store_size}\\n`;
+    }
+    if (!disk.error) {
+      _lastDiagText += `\\nDISK\\n  Usage: ${disk.used_pct}% (${disk.used_human} / ${disk.total_human})  Free: ${disk.free_human}\\n`;
+    }
+    if (nodes.length > 0) {
+      _lastDiagText += `\\nFEDERATION NODES (${nodes.length})\\n`;
+      for (const n of nodes) {
+        const status = n.reachable ? `OK ${n.node_id} v${n.version} (${n.response_ms}ms)` : `FAIL: ${n.error} (${n.response_ms || 0}ms)`;
+        _lastDiagText += `  ${n.url} - ${status}\\n`;
+      }
+    }
+
+    if (copyBtn) copyBtn.style.display = 'inline-block';
+  } catch(e) {
+    resultsEl.innerHTML = `<span style="color:var(--red)">Failed: ${escapeHtml(e.message)}</span>`;
+  }
+  btn.disabled = false;
+  btn.textContent = 'Run Health Check';
+}
+
+async function copyDiagnostics() {
+  if (!_lastDiagText) return;
+  try {
+    await navigator.clipboard.writeText(_lastDiagText);
+    const btn = document.getElementById('btn-copy-diag');
+    if (btn) { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy to Clipboard'; }, 2000); }
+  } catch(e) {
+    alert('Failed to copy: ' + e.message);
   }
 }
 

@@ -1794,7 +1794,10 @@ async def api_purge_logs(request: Request):
 
         session = get_opensearch_session()
         siem_url = os.getenv("SIEM_URL", "https://localhost:9201").rstrip("/")
-        auth = (os.getenv("SIEM_USER", "admin"), os.getenv("SIEM_PASS", ""))
+        siem_pass = os.getenv("SIEM_PASS", "").strip()
+        if not siem_pass:
+            return {"ok": False, "error": "SIEM_PASS not configured -- check Settings > SIEM Connection"}
+        auth = (os.getenv("SIEM_USER", "admin"), siem_pass)
 
         # Get all indices and their dates
         idx_resp = session.get(

@@ -1787,31 +1787,60 @@ async def api_purge_logs(request: Request):
 
     deleted_events = 0
     deleted_alerts = 0
+    deleted_indices = []
     try:
         from tinysocs.tls import get_opensearch_session
+        import datetime as _dt
+
         session = get_opensearch_session()
         siem_url = os.getenv("SIEM_URL", "https://localhost:9201").rstrip("/")
         auth = (os.getenv("SIEM_USER", "admin"), os.getenv("SIEM_PASS", ""))
-        # Delete old event logs
-        r = session.post(
-            f"{siem_url}/tinysocs-winlog-*/_delete_by_query",
-            json={"query": {"range": {"@timestamp": {"lt": f"now-{winlog_days}d"}}}},
-            auth=auth, timeout=30,
+
+        # Get all indices and their dates
+        idx_resp = session.get(
+            f"{siem_url}/_cat/indices/tinysocs-*?format=json&h=index,docs.count",
+            auth=auth, timeout=15,
         )
-        if r.status_code == 200:
-            deleted_events = r.json().get("deleted", 0)
-        # Delete old alerts
-        r = session.post(
-            f"{siem_url}/tinysocs-alerts-*/_delete_by_query",
-            json={"query": {"range": {"@timestamp": {"lt": f"now-{alert_days}d"}}}},
-            auth=auth, timeout=30,
-        )
-        if r.status_code == 200:
-            deleted_alerts = r.json().get("deleted", 0)
+        if idx_resp.status_code != 200:
+            return {"ok": False, "error": f"Failed to list indices: HTTP {idx_resp.status_code}"}
+
+        now = _dt.datetime.utcnow()
+        for idx in idx_resp.json():
+            name = idx.get("index", "")
+            docs = int(idx.get("docs.count", 0) or 0)
+            # Extract date from index name (tinysocs-winlog-2026.03.22)
+            parts = name.rsplit("-", 1)
+            if len(parts) < 2:
+                continue
+            date_str = parts[-1]
+            try:
+                idx_date = _dt.datetime.strptime(date_str, "%Y.%m.%d")
+            except ValueError:
+                continue
+
+            age_days = (now - idx_date).days
+            should_delete = False
+
+            if name.startswith("tinysocs-winlog-") and age_days > winlog_days:
+                should_delete = True
+                deleted_events += docs
+            elif name.startswith("tinysocs-alerts-") and age_days > alert_days:
+                should_delete = True
+                deleted_alerts += docs
+
+            if should_delete:
+                r = session.delete(f"{siem_url}/{name}", auth=auth, timeout=15)
+                if r.status_code == 200:
+                    deleted_indices.append(name)
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
 
-    return {"ok": True, "deleted_events": deleted_events, "deleted_alerts": deleted_alerts}
+    return {
+        "ok": True,
+        "deleted_events": deleted_events,
+        "deleted_alerts": deleted_alerts,
+        "deleted_indices": deleted_indices,
+    }
 
 
 def _human_bytes(b: int) -> str:
@@ -6298,17 +6327,6 @@ select { cursor: pointer; }
         </div>
       </div>
 
-      <!-- Storage -->
-      <div class="card full">
-        <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
-          <h2 style="margin:0;flex:1">Storage</h2>
-          <button onclick="askAIAboutWidget('storage')" style="margin-left:auto;font-size:11px;padding:3px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;white-space:nowrap" title="Ask the AI assistant about this widget">Ask AI</button>
-        </div>
-        <div class="card-body" id="body-storage">
-          <div id="storage-content"><div class="loading">Loading...</div></div>
-        </div>
-      </div>
-
       <!-- Fired Detections (full width) -->
       <div class="card full detections-card">
         <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
@@ -6324,6 +6342,17 @@ select { cursor: pointer; }
         </div>
         <div class="card-body" id="body-detections">
           <div id="detections-content"><div class="loading">Loading...</div></div>
+        </div>
+      </div>
+
+      <!-- Storage (full width, below detections) -->
+      <div class="card full">
+        <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
+          <h2 style="margin:0;flex:1">Storage</h2>
+          <button onclick="askAIAboutWidget('storage')" style="margin-left:auto;font-size:11px;padding:3px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;white-space:nowrap" title="Ask the AI assistant about this widget">Ask AI</button>
+        </div>
+        <div class="card-body" id="body-storage">
+          <div id="storage-content"><div class="loading">Loading...</div></div>
         </div>
       </div>
     </div>
@@ -7303,9 +7332,15 @@ async function loadStorage() {
   html += `<div style="background:var(--bg);border-radius:4px;height:18px;overflow:hidden;border:1px solid var(--border)">`;
   html += `<div style="height:100%;width:${Math.min(pct, 100)}%;background:${barColor};border-radius:3px;transition:width 0.3s"></div>`;
   html += '</div>';
+  const totalIdxBytes = (idx.total && idx.total.size_bytes) || 0;
+  const totalDiskBytes = disk.total_bytes || 1;
+  const tsPct = (totalIdxBytes / totalDiskBytes * 100).toFixed(1);
   html += `<div style="font-size:12px;margin-top:4px"><strong>${pct}%</strong> used`;
   if (disk.total_human) html += ` &mdash; ${disk.available_human} free of ${disk.total_human}`;
   html += '</div>';
+  if (idx.total && idx.total.size_human) {
+    html += `<div style="font-size:11px;color:var(--muted);margin-top:2px">TinySocs indices: ${idx.total.size_human} (${tsPct}% of disk)</div>`;
+  }
   if (pct >= 85) html += '<div style="font-size:11px;color:var(--red);margin-top:2px">&#x26A0; Disk critically full &mdash; reduce retention or expand storage</div>';
   else if (pct >= 70) html += '<div style="font-size:11px;color:var(--orange);margin-top:2px">&#x26A0; Disk usage elevated</div>';
   html += '</div>';
@@ -9435,8 +9470,14 @@ async function purgeOldLogs() {
     });
     const d = await r.json();
     if (d.ok) {
-      statusEl.innerHTML = `<span style="color:var(--green)">Purged: ${d.deleted_events || 0} events, ${d.deleted_alerts || 0} alerts \\u2714</span>`;
-      setTimeout(() => { statusEl.innerHTML = ''; }, 5000);
+      const idxCount = (d.deleted_indices || []).length;
+      const msg = idxCount > 0
+        ? `Purged: ${d.deleted_events || 0} events, ${d.deleted_alerts || 0} alerts (${idxCount} indices deleted) \\u2714`
+        : `No indices older than retention period found \\u2714`;
+      statusEl.innerHTML = `<span style="color:var(--green)">${msg}</span>`;
+      // Refresh storage widget to reflect changes
+      setTimeout(() => { loadStorage(); }, 2000);
+      setTimeout(() => { statusEl.innerHTML = ''; }, 8000);
     } else {
       statusEl.innerHTML = `<span style="color:var(--red)">${escapeHtml(d.error || 'Failed')}</span>`;
     }

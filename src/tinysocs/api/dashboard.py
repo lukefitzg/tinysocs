@@ -3673,9 +3673,9 @@ _PROXY_ALLOWED = {
 }
 
 
-@dashboard_app.get("/api/site/{node_id}/{path:path}")
+@dashboard_app.api_route("/api/site/{node_id}/{path:path}", methods=["GET", "POST"])
 async def api_site_proxy(node_id: str, path: str, request: Request):
-    """Proxy a request to a specific node's API.
+    """Proxy a GET or POST request to a specific node's API.
 
     Only proxies to URLs listed in TINYSOCS_NODES.  Not an open proxy.
     In demo mode, dispatches to per-site demo data generators (M4).
@@ -3724,13 +3724,17 @@ async def api_site_proxy(node_id: str, path: str, request: Request):
             "error": "SECURITY: certificate mismatch for this Site -- connection refused (possible MITM)"
         })
 
-    # Forward the request
+    # Forward the request (GET or POST)
     qs = str(request.query_params)
     target = f"{url.rstrip('/')}/{path}" + (f"?{qs}" if qs else "")
     try:
         import httpx as _hx
         async with _hx.AsyncClient(verify=False, timeout=10.0) as client:
-            resp = await client.get(target)
+            if request.method == "POST":
+                body = await request.body()
+                resp = await client.post(target, content=body, headers={"Content-Type": "application/json"})
+            else:
+                resp = await client.get(target)
             return JSONResponse(status_code=resp.status_code, content=resp.json())
     except Exception as exc:
         return JSONResponse(status_code=502, content={"error": f"Site unreachable: {exc}"})

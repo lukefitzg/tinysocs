@@ -1871,6 +1871,12 @@ async def api_purge_logs(request: Request):
     }
 
 
+@dashboard_app.post("/api/storage/purge")
+async def api_storage_purge_alias(request: Request):
+    """Alias for /api/settings/purge-logs — used by the Storage widget."""
+    return await api_purge_logs(request)
+
+
 def _human_bytes(b: int) -> str:
     """Format byte count as human-readable string."""
     for unit in ("B", "KB", "MB", "GB", "TB"):

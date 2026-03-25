@@ -1125,6 +1125,112 @@ async def host_timeline(
 
 
 # ---------------------------------------------------------------------------
+# Storage stats (Phase 21)
+# ---------------------------------------------------------------------------
+
+
+def _parse_os_size(s: str) -> int:
+    """Parse OpenSearch human size string (e.g. '1.2mb', '500kb') to bytes."""
+    if not s:
+        return 0
+    s = s.strip().lower()
+    multipliers = {"b": 1, "kb": 1024, "mb": 1024**2, "gb": 1024**3, "tb": 1024**4}
+    for suffix, mult in multipliers.items():
+        if s.endswith(suffix):
+            try:
+                return int(float(s[: -len(suffix)]) * mult)
+            except ValueError:
+                return 0
+    try:
+        return int(s)
+    except ValueError:
+        return 0
+
+
+def _human_size(b: int) -> str:
+    """Convert bytes to human-readable string."""
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if abs(b) < 1024:
+            return f"{b:.1f} {unit}" if unit != "B" else f"{b} {unit}"
+        b /= 1024
+    return f"{b:.1f} PB"
+
+
+@app.get("/storage/stats", dependencies=[Depends(_verify_hmac_if_enabled), Depends(_check_read_rate)])
+async def storage_stats() -> dict:
+    """Return storage usage stats: index sizes, disk usage, cluster health."""
+    siem_url = os.getenv("SIEM_URL", "https://localhost:9201").rstrip("/")
+    try:
+        session = get_opensearch_session()
+        auth = (os.getenv("SIEM_USER", "admin"), os.getenv("SIEM_PASS", ""))
+        timeout = 10
+
+        # Index sizes
+        idx_resp = session.get(
+            f"{siem_url}/_cat/indices/tinysocs-*?format=json&h=index,docs.count,store.size",
+            auth=auth, timeout=timeout,
+        )
+        indices_raw = idx_resp.json() if idx_resp.status_code == 200 else []
+
+        winlog_docs = winlog_bytes = winlog_count = 0
+        alert_docs = alert_bytes = alert_count = 0
+        custom_docs = custom_bytes = custom_count = 0
+        other_docs = other_bytes = other_count = 0
+
+        for idx in indices_raw:
+            name = idx.get("index", "")
+            docs = int(idx.get("docs.count", 0) or 0)
+            size = _parse_os_size(idx.get("store.size", "0"))
+            if name.startswith("tinysocs-winlog-"):
+                winlog_docs += docs; winlog_bytes += size; winlog_count += 1
+            elif name.startswith("tinysocs-alerts-"):
+                alert_docs += docs; alert_bytes += size; alert_count += 1
+            elif name.startswith("tinysocs-custom-"):
+                custom_docs += docs; custom_bytes += size; custom_count += 1
+            else:
+                other_docs += docs; other_bytes += size; other_count += 1
+
+        total_docs = winlog_docs + alert_docs + custom_docs + other_docs
+        total_bytes = winlog_bytes + alert_bytes + custom_bytes + other_bytes
+
+        # Disk usage
+        disk_resp = session.get(f"{siem_url}/_nodes/stats/fs", auth=auth, timeout=timeout)
+        disk_total = disk_avail = 0
+        if disk_resp.status_code == 200:
+            for node in disk_resp.json().get("nodes", {}).values():
+                fs = node.get("fs", {}).get("total", {})
+                disk_total += fs.get("total_in_bytes", 0)
+                disk_avail += fs.get("available_in_bytes", 0)
+
+        disk_used_pct = round((1 - disk_avail / disk_total) * 100, 1) if disk_total > 0 else 0
+
+        # Cluster health
+        health_resp = session.get(f"{siem_url}/_cluster/health", auth=auth, timeout=timeout)
+        cluster_status = health_resp.json().get("status", "unknown") if health_resp.status_code == 200 else "unknown"
+
+        return {
+            "indices": {
+                "winlog": {"doc_count": winlog_docs, "size_bytes": winlog_bytes, "size_human": _human_size(winlog_bytes),
+                           "retention_days": int(os.getenv("WINLOG_RETENTION_DAYS", os.getenv("RETENTION_DAYS", "30")))},
+                "alerts": {"doc_count": alert_docs, "size_bytes": alert_bytes, "size_human": _human_size(alert_bytes),
+                           "retention_days": int(os.getenv("ALERT_RETENTION_DAYS", "90"))},
+                "custom": {"doc_count": custom_docs, "size_bytes": custom_bytes, "size_human": _human_size(custom_bytes),
+                           "retention_days": int(os.getenv("CUSTOM_RETENTION_DAYS", os.getenv("RETENTION_DAYS", "30")))},
+                "other": {"doc_count": other_docs, "size_bytes": other_bytes, "size_human": _human_size(other_bytes)},
+                "total": {"doc_count": total_docs, "size_bytes": total_bytes, "size_human": _human_size(total_bytes)},
+            },
+            "disk": {
+                "total_bytes": disk_total, "available_bytes": disk_avail,
+                "used_percent": disk_used_pct,
+                "total_human": _human_size(disk_total), "available_human": _human_size(disk_avail),
+            },
+            "cluster_status": cluster_status,
+        }
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
 # Hub auto-registration (Phase 21)
 # ---------------------------------------------------------------------------
 

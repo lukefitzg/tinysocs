@@ -40,7 +40,7 @@ _DEMO_MODE = os.getenv("TINYSOCS_DEMO_MODE", "").strip().lower() in ("1", "true"
 # ---------------------------------------------------------------------------
 _AUTH_TOKEN_SECRET = secrets.token_hex(32)  # rotates each process restart
 _active_sessions: Dict[str, float] = {}    # token -> expiry timestamp
-_SESSION_TTL = 86400  # 24 hours
+_SESSION_TTL = 3600  # 1 hour
 
 
 def _get_admin_password() -> str:
@@ -3504,7 +3504,7 @@ async def api_nodes_reject(body: Dict[str, Any] = Body(...)):
 # Allowed proxy paths — only forward requests to known node endpoints.
 _PROXY_ALLOWED = {
     "alerts/summary", "alerts/timeline", "fleet/summary", "fleet/health",
-    "detections/fired", "events/recent", "host/timeline",
+    "detections/fired", "events/recent", "host/timeline", "storage/stats",
 }
 
 

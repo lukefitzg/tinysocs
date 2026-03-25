@@ -7576,7 +7576,7 @@ async function loadStorage() {
     ? (sessionStorage.getItem('tinysocs_focused_name') || _focusedSite)
     : 'this host';
   html += `<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-wrap:wrap">`;
-  const selStyle = 'padding:4px 8px;font-size:12px;background:#1e2a3a;color:#c8d6e5;border:1px solid var(--border);border-radius:4px;-webkit-appearance:none;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' fill=\'%23c8d6e5\' viewBox=\'0 0 16 16\'%3E%3Cpath d=\'M8 11L3 6h10z\'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 6px center;padding-right:22px';
+  const selStyle = 'padding:4px 8px;font-size:12px;background:#1e2a3a;color:#c8d6e5;border:1px solid var(--border);border-radius:4px;-webkit-appearance:none;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2712%27 height=%2712%27 fill=%27%23c8d6e5%27 viewBox=%270 0 16 16%27%3E%3Cpath d=%27M8 11L3 6h10z%27/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 6px center;padding-right:22px';
   html += `<select id="purge-scope" style="${selStyle}">`;
   html += `<option value="retention" style="background:#1e2a3a;color:#c8d6e5">Older than retention</option>`;
   html += `<option value="7" style="background:#1e2a3a;color:#c8d6e5">Older than 7 days</option>`;

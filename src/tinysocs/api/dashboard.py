@@ -7326,20 +7326,29 @@ async function loadStorage() {
 
   let html = '<div style="display:flex;gap:16px;align-items:flex-start">';
 
-  // Left: disk bar
+  // Left: disk bar (two-tone: TinySocs portion in accent blue, rest in standard color)
   html += '<div style="flex:1;min-width:120px">';
   html += '<div style="font-size:11px;color:var(--muted);margin-bottom:4px">Disk Usage</div>';
-  html += `<div style="background:var(--bg);border-radius:4px;height:18px;overflow:hidden;border:1px solid var(--border)">`;
-  html += `<div style="height:100%;width:${Math.min(pct, 100)}%;background:${barColor};border-radius:3px;transition:width 0.3s"></div>`;
-  html += '</div>';
   const totalIdxBytes = (idx.total && idx.total.size_bytes) || 0;
   const totalDiskBytes = disk.total_bytes || 1;
-  const tsPct = (totalIdxBytes / totalDiskBytes * 100).toFixed(1);
-  html += `<div style="font-size:12px;margin-top:4px"><strong>${pct}%</strong> used`;
+  const tsPct = parseFloat((totalIdxBytes / totalDiskBytes * 100).toFixed(1));
+  const otherPct = Math.max(0, pct - tsPct);
+  html += `<div style="background:var(--bg);border-radius:4px;height:22px;overflow:hidden;border:1px solid var(--border);display:flex">`;
+  html += `<div style="height:100%;width:${Math.min(tsPct, 100)}%;background:var(--accent);transition:width 0.3s" title="TinySocs: ${tsPct}%"></div>`;
+  html += `<div style="height:100%;width:${Math.min(otherPct, 100)}%;background:${barColor};transition:width 0.3s" title="Other: ${otherPct.toFixed(1)}%"></div>`;
+  html += '</div>';
+  html += `<div style="font-size:12px;margin-top:6px"><strong>${pct}%</strong> used`;
   if (disk.total_human) html += ` &mdash; ${disk.available_human} free of ${disk.total_human}`;
   html += '</div>';
   if (idx.total && idx.total.size_human) {
-    html += `<div style="font-size:11px;color:var(--muted);margin-top:2px">TinySocs indices: ${idx.total.size_human} (${tsPct}% of disk)</div>`;
+    html += `<div style="display:flex;align-items:center;gap:8px;margin-top:4px">`;
+    html += `<span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:var(--accent)"></span>`;
+    html += `<span style="font-size:13px;font-weight:600;color:var(--accent)">TinySocs: ${idx.total.size_human} (${tsPct}% of disk)</span>`;
+    html += `</div>`;
+    html += `<div style="display:flex;align-items:center;gap:8px;margin-top:2px">`;
+    html += `<span style="display:inline-block;width:12px;height:12px;border-radius:2px;background:${barColor}"></span>`;
+    html += `<span style="font-size:12px;color:var(--muted)">Other: ${otherPct.toFixed(1)}% of disk</span>`;
+    html += `</div>`;
   }
   if (pct >= 85) html += '<div style="font-size:11px;color:var(--red);margin-top:2px">&#x26A0; Disk critically full &mdash; reduce retention or expand storage</div>';
   else if (pct >= 70) html += '<div style="font-size:11px;color:var(--orange);margin-top:2px">&#x26A0; Disk usage elevated</div>';

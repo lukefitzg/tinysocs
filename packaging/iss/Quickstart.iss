@@ -2956,6 +2956,9 @@ begin
         '# Reconcile SIEM_PASS with CredMan (Phase 10 credential probe may have' + CRLF +
         '# discovered a different working password than the wizard provided).' + CRLF +
         '# CredMan is the source of truth after OpenSearch first-boot.' + CRLF +
+        '# SAFETY: Only overwrite if CredMan actually returned a non-empty password.' + CRLF +
+        '# The DPAPI assembly may fail to load (System.Security.Cryptography.ProtectedData),' + CRLF +
+        '# causing Get-TSSiemCredsCanonical to return empty Pass which would wipe SIEM_PASS.' + CRLF +
         'try {' + CRLF +
         '  $cmCreds = Get-TSSiemCredsCanonical' + CRLF +
         '  if ($cmCreds -and -not [string]::IsNullOrWhiteSpace($cmCreds.Pass)) {' + CRLF +
@@ -2970,6 +2973,8 @@ begin
         '      Set-Content -Path $envFile -Value $c2 -Force' + CRLF +
         '      Write-Host (''[TinySocs][Inno] assistant.env reconciled with CredMan (user='' + $cmUser + '')'')' + CRLF +
         '    }' + CRLF +
+        '  } else {' + CRLF +
+        '    Write-Host ''[TinySocs][Inno] CredMan reconciliation skipped: CredMan password was empty (DPAPI may have failed). Keeping wizard password.''' + CRLF +
         '  }' + CRLF +
         '} catch {' + CRLF +
         '  Write-Host (''[TinySocs][Inno] CredMan reconciliation skipped: '' + $_.Exception.Message)' + CRLF +

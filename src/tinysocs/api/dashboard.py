@@ -6338,10 +6338,16 @@ select { cursor: pointer; }
           <input type="number" id="s_CUSTOM_RETENTION_DAYS" min="7" max="365" value="30" style="width:80px">
         </div>
       </div>
-      <div style="margin-top:4px;display:flex;gap:12px;align-items:center">
+      <div style="margin-top:4px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
         <button class="btn-save" onclick="saveRetentionSettings()" style="font-size:12px;padding:4px 12px">Save Retention</button>
-        <button onclick="purgeOldLogs()" style="font-size:12px;padding:4px 12px;background:var(--red);color:#fff;border:none;border-radius:4px;cursor:pointer" title="Delete logs older than the configured retention periods">Purge Old Logs Now</button>
-        <span id="retentionStatus" style="font-size:12px;margin-left:8px"></span>
+        <select id="settings-purge-scope" style="padding:4px 8px;font-size:12px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:4px">
+          <option value="retention">Older than retention</option>
+          <option value="7">Older than 7 days</option>
+          <option value="1">Older than 1 day</option>
+          <option value="0">Everything</option>
+        </select>
+        <button onclick="purgeOldLogs()" style="font-size:12px;padding:4px 12px;background:var(--red);color:#fff;border:none;border-radius:4px;cursor:pointer">Purge</button>
+        <span id="retentionStatus" style="font-size:12px"></span>
       </div>
 
       <div class="section-title">HEC Tokens</div>
@@ -9763,30 +9769,50 @@ async function saveRetentionSettings() {
 }
 
 async function purgeOldLogs() {
-  if (!confirm('This will permanently delete event logs and alerts older than the configured retention periods. Continue?')) return;
+  const scopeSelect = document.getElementById('settings-purge-scope');
+  const scopeVal = scopeSelect ? scopeSelect.value : 'retention';
+  const isEverything = scopeVal === '0';
+
+  let msg;
+  if (isEverything) {
+    msg = 'WARNING: This will PERMANENTLY DELETE ALL TinySocs logs and alerts on this host. This cannot be undone. Continue?';
+  } else if (scopeVal === 'retention') {
+    msg = 'Delete logs older than the configured retention periods. Continue?';
+  } else {
+    msg = 'Delete logs older than ' + scopeVal + ' day(s). Continue?';
+  }
+  if (!confirm(msg)) return;
+
   const statusEl = document.getElementById('retentionStatus');
   statusEl.innerHTML = '<span style="color:var(--muted)">Purging...</span>';
+
+  const body = {};
+  if (scopeVal !== 'retention') {
+    body.older_than_days = parseInt(scopeVal, 10);
+  }
+
   try {
     const r = await authFetch(BASE + '/api/settings/purge-logs', {
       method: 'POST',
       headers: authHeaders({'Content-Type': 'application/json'}),
-      body: JSON.stringify({}),
+      body: JSON.stringify(body),
     });
     const d = await r.json();
     if (d.ok) {
       const idxCount = (d.deleted_indices || []).length;
+      const total = (d.deleted_events || 0) + (d.deleted_alerts || 0) + (d.deleted_custom || 0);
       const msg = idxCount > 0
-        ? `Purged: ${d.deleted_events || 0} events, ${d.deleted_alerts || 0} alerts (${idxCount} indices deleted) \\u2714`
-        : `No indices older than retention period found \\u2714`;
-      statusEl.innerHTML = `<span style="color:var(--green)">${msg}</span>`;
-      // Refresh storage widget to reflect changes
-      setTimeout(() => { loadStorage(); }, 2000);
+        ? 'Purged ' + total + ' documents across ' + idxCount + ' indices \\u2714'
+        : 'No matching indices found \\u2714';
+      statusEl.innerHTML = '<span style="color:var(--green)">' + msg + '</span>';
+      // Refresh all overview widgets after purge
+      setTimeout(() => { loadSummary(); loadTimeline(); loadDetections(); loadStorage(); }, 2000);
       setTimeout(() => { statusEl.innerHTML = ''; }, 8000);
     } else {
-      statusEl.innerHTML = `<span style="color:var(--red)">${escapeHtml(d.error || 'Failed')}</span>`;
+      statusEl.innerHTML = '<span style="color:var(--red)">' + escapeHtml(d.error || 'Failed') + '</span>';
     }
   } catch(e) {
-    statusEl.innerHTML = `<span style="color:var(--red)">${escapeHtml(e.message)}</span>`;
+    statusEl.innerHTML = '<span style="color:var(--red)">' + escapeHtml(e.message) + '</span>';
   }
 }
 

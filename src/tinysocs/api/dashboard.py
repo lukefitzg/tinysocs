@@ -5383,6 +5383,9 @@ def api_settings_post(request: Request, body: Dict[str, Any] = Body(...)):
         # Skip if it's a masked value (all asterisks with last 4 chars)
         if k in _SECRET_KEYS and v and "*" in v:
             continue
+        # Skip empty strings for secret keys — empty means "keep current"
+        if k in _SECRET_KEYS and not v:
+            continue
         filtered[k] = v
 
     if not filtered:
@@ -7666,7 +7669,8 @@ async function storagePurge() {
         resultEl.innerHTML = `<span style="color:var(--green)">No matching indices found &#x2714;</span>`;
       }
     }
-    setTimeout(() => loadStorage(), 2000);
+    // Refresh all overview widgets after purge (not just storage)
+    setTimeout(() => { loadSummary(); loadTimeline(); loadDetections(); loadStorage(); }, 2000);
   } catch(e) {
     resultEl.innerHTML = `<span style="color:var(--red)">${escapeHtml(e.message)}</span>`;
   }

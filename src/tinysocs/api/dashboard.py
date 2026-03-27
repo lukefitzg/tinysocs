@@ -9692,11 +9692,15 @@ async function purgeOldLogs() {
   }
 
   try {
-    const r = await authFetch(BASE + '/api/settings/purge-logs', {
+    const r = await fetch(BASE + '/api/settings/purge-logs', {
       method: 'POST',
       headers: authHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify(body),
     });
+    if (r.status === 401) {
+      statusEl.innerHTML = '<span style="color:var(--orange)">Session expired. Please close Settings, re-open, and try again.</span>';
+      return;
+    }
     const d = await r.json();
     if (d.ok) {
       const idxCount = (d.deleted_indices || []).length;

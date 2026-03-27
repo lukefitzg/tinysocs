@@ -9705,8 +9705,11 @@ async function purgeOldLogs() {
         ? 'Purged ' + total + ' documents across ' + idxCount + ' indices \\u2714'
         : 'No matching indices found \\u2714';
       statusEl.innerHTML = '<span style="color:var(--green)">' + msg + '</span>';
-      // Refresh all overview widgets after purge
-      setTimeout(() => { loadSummary(); loadTimeline(); loadDetections(); loadStorage(); }, 2000);
+      // Close settings and refresh all overview widgets after purge
+      setTimeout(() => {
+        closeSettings();
+        loadSummary(); loadTimeline(); loadDetections(); loadStorage();
+      }, 2000);
       setTimeout(() => { statusEl.innerHTML = ''; }, 8000);
     } else {
       statusEl.innerHTML = '<span style="color:var(--red)">' + escapeHtml(d.error || 'Failed') + '</span>';

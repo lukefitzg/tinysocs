@@ -2288,7 +2288,9 @@ begin
 
         '# TB-10e-disk: Ensure disk watermark settings in opensearch.yml' + CRLF +
         'if (Test-Path -LiteralPath $pdYml -PathType Leaf) {' + CRLF +
-        '  $ymlRaw = Get-Content -LiteralPath $pdYml -Raw' + CRLF +
+        '  $ymlRaw = Get-Content -LiteralPath $pdYml -Raw -Encoding UTF8' + CRLF +
+        '  # Strip UTF-8 BOM if present (PS 5.x adds BOM; YAML parsers reject it)' + CRLF +
+        '  if ($ymlRaw.Length -gt 0 -and $ymlRaw[0] -eq [char]0xFEFF) { $ymlRaw = $ymlRaw.Substring(1) }' + CRLF +
         '  if ($ymlRaw -notmatch ''(?m)^\s*cluster\.routing\.allocation\.disk\.watermark\.low\s*:'') {' + CRLF +
         '    $watermarks = @(' + CRLF +
         '      '''',' + CRLF +
@@ -2394,6 +2396,18 @@ begin
         '    & $cmdAcl3 @ap3 | Out-Null' + #13#10 +
         '  }' + #13#10 +
         '} catch { Write-Warning (''[TinySocs][Inno] TB-11b keystore ACL repair failed (continuing): '' + $_.Exception.Message) }' + #13#10 +
+        '' + #13#10 +
+
+        '# TB-11c: Strip UTF-8 BOM from opensearch.yml (PS 5.x Set-Content adds BOM; OpenSearch YAML parser rejects it)' + #13#10 +
+        'foreach ($yf in @($pdYml, (Join-Path $openSearchRoot "config\opensearch.yml"))) {' + #13#10 +
+        '  if (Test-Path -LiteralPath $yf -PathType Leaf) {' + #13#10 +
+        '    $raw = [System.IO.File]::ReadAllBytes($yf)' + #13#10 +
+        '    if ($raw.Length -ge 3 -and $raw[0] -eq 0xEF -and $raw[1] -eq 0xBB -and $raw[2] -eq 0xBF) {' + #13#10 +
+        '      [System.IO.File]::WriteAllBytes($yf, $raw[3..($raw.Length-1)])' + #13#10 +
+        '      Write-Host "[TinySocs][Inno] TB-11c: Stripped UTF-8 BOM from $yf"' + #13#10 +
+        '    }' + #13#10 +
+        '  }' + #13#10 +
+        '}' + #13#10 +
         '' + #13#10 +
 
         'Write-Host ''[TinySocs][Inno] TB-12: Readiness gate + best-effort security init (do NOT fail install)''' + #13#10 +

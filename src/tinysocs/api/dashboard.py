@@ -6338,15 +6338,16 @@ select { cursor: pointer; }
           <input type="number" id="s_CUSTOM_RETENTION_DAYS" min="7" max="365" value="30" style="width:80px">
         </div>
       </div>
-      <div style="margin-top:4px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-        <button class="btn-save" onclick="saveRetentionSettings()" style="font-size:12px;padding:4px 12px">Save Retention</button>
-        <select id="settings-purge-scope" style="padding:4px 8px;font-size:12px;background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:4px">
+      <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="btn-save" onclick="saveRetentionSettings()" style="font-size:12px;padding:5px 14px">Save Retention</button>
+        <span style="color:var(--border);margin:0 2px">|</span>
+        <select id="settings-purge-scope" style="padding:5px 28px 5px 10px;font-size:12px;background:#1a2332;color:#c8d6e5;border:1px solid var(--border);border-radius:4px;-webkit-appearance:none;appearance:none;background-image:url('data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2710%27 height=%276%27 fill=%27%23c8d6e5%27%3E%3Cpath d=%27M0 0l5 6 5-6z%27/%3E%3C/svg%3E');background-repeat:no-repeat;background-position:right 8px center;cursor:pointer">
           <option value="retention">Older than retention</option>
           <option value="7">Older than 7 days</option>
           <option value="1">Older than 1 day</option>
           <option value="0">Everything</option>
         </select>
-        <button onclick="purgeOldLogs()" style="font-size:12px;padding:4px 12px;background:var(--red);color:#fff;border:none;border-radius:4px;cursor:pointer">Purge</button>
+        <button onclick="purgeOldLogs()" style="font-size:12px;padding:5px 14px;background:var(--red);color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600">Purge</button>
         <span id="retentionStatus" style="font-size:12px"></span>
       </div>
 
@@ -7580,108 +7581,7 @@ async function loadStorage() {
     html += `<div style="margin-top:6px;font-size:11px;color:var(--orange)">&#x26A0; Auto-purge is active &mdash; oldest event logs will be removed automatically if disk reaches 88%</div>`;
   }
 
-  // Purge controls — dropdown + button, scoped to current site
-  const scopeLabel = _focusedSite && _focusedSite !== _localNodeId
-    ? (sessionStorage.getItem('tinysocs_focused_name') || _focusedSite)
-    : 'this host';
-  html += `<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-wrap:wrap">`;
-  const selStyle = 'padding:4px 8px;font-size:12px;background:#1e2a3a;color:#c8d6e5;border:1px solid var(--border);border-radius:4px;-webkit-appearance:none;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2712%27 height=%2712%27 fill=%27%23c8d6e5%27 viewBox=%270 0 16 16%27%3E%3Cpath d=%27M8 11L3 6h10z%27/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 6px center;padding-right:22px';
-  html += `<select id="purge-scope" style="${selStyle}">`;
-  html += `<option value="retention" style="background:#1e2a3a;color:#c8d6e5">Older than retention</option>`;
-  html += `<option value="7" style="background:#1e2a3a;color:#c8d6e5">Older than 7 days</option>`;
-  html += `<option value="1" style="background:#1e2a3a;color:#c8d6e5">Older than 1 day</option>`;
-  html += `<option value="0" style="background:#1e2a3a;color:#e74c3c">Everything</option>`;
-  html += `</select>`;
-  html += `<button id="btn-storage-purge" onclick="storagePurge()" style="padding:4px 14px;font-size:12px;background:var(--red);color:#fff;border:none;border-radius:4px;cursor:pointer;font-weight:600">Purge</button>`;
-  if (_focusedSite && _focusedSite !== _localNodeId) {
-    html += `<span style="font-size:11px;color:var(--accent);font-weight:600">on ${escapeHtml(scopeLabel)}</span>`;
-  } else {
-    html += `<span style="font-size:11px;color:var(--muted)">on this host</span>`;
-    // Hint about site-scoped purge if there are remote sites
-    html += `<span style="font-size:10px;color:var(--muted);margin-left:4px">(select a site in the Sites tab to purge a remote host)</span>`;
-  }
-  html += `<span id="storage-purge-result" style="font-size:11px"></span>`;
-  html += `</div>`;
-
   el.innerHTML = html;
-}
-
-async function storagePurge() {
-  const btn = document.getElementById('btn-storage-purge');
-  const resultEl = document.getElementById('storage-purge-result');
-  const scopeSelect = document.getElementById('purge-scope');
-  if (!btn || !scopeSelect) return;
-
-  const scopeLabel = _focusedSite && _focusedSite !== _localNodeId
-    ? ((sessionStorage.getItem('tinysocs_focused_name') || _focusedSite))
-    : 'this host';
-  const scopeVal = scopeSelect.value;  // "retention", "7", "1", "0"
-  const isEverything = scopeVal === '0';
-
-  // Build confirmation message
-  let confirmMsg;
-  if (isEverything) {
-    confirmMsg = `WARNING: This will PERMANENTLY DELETE ALL TinySocs logs and alerts on ${scopeLabel}. This cannot be undone.\\n\\nEnter your admin password to confirm:`;
-  } else if (scopeVal === 'retention') {
-    confirmMsg = `This will delete logs older than the configured retention on ${scopeLabel}.\\n\\nEnter your admin password to confirm:`;
-  } else {
-    confirmMsg = `This will delete logs older than ${scopeVal} day(s) on ${scopeLabel}.\\n\\nEnter your admin password to confirm:`;
-  }
-
-  const pw = prompt(confirmMsg);
-  if (!pw) return;
-
-  // Verify password
-  try {
-    const loginResp = await fetch(BASE + '/api/auth/login', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({password: pw}),
-    });
-    if (!loginResp.ok) {
-      if (resultEl) resultEl.innerHTML = '<span style="color:var(--red)">Incorrect password</span>';
-      return;
-    }
-  } catch(e) {
-    if (resultEl) resultEl.innerHTML = '<span style="color:var(--red)">Auth failed</span>';
-    return;
-  }
-
-  btn.disabled = true;
-  btn.textContent = 'Purging...';
-  if (resultEl) resultEl.textContent = '';
-
-  // Build request body
-  const body = {};
-  if (scopeVal !== 'retention') {
-    body.older_than_days = parseInt(scopeVal, 10);
-  }
-
-  try {
-    const resp = await fetch(apiBase() + '/storage/purge', {
-      method: 'POST',
-      headers: authHeaders({'Content-Type': 'application/json'}),
-      body: JSON.stringify(body),
-    });
-    const d = await resp.json();
-    if (d.error) {
-      resultEl.innerHTML = `<span style="color:var(--red)">${escapeHtml(d.error)}</span>`;
-    } else {
-      const idxCount = (d.deleted_indices || []).length;
-      const total = (d.deleted_events || 0) + (d.deleted_alerts || 0) + (d.deleted_custom || 0);
-      if (idxCount > 0) {
-        resultEl.innerHTML = `<span style="color:var(--green)">Purged ${total} documents across ${idxCount} indices on ${escapeHtml(scopeLabel)} &#x2714;</span>`;
-      } else {
-        resultEl.innerHTML = `<span style="color:var(--green)">No matching indices found &#x2714;</span>`;
-      }
-    }
-    // Refresh all overview widgets after purge (not just storage)
-    setTimeout(() => { loadSummary(); loadTimeline(); loadDetections(); loadStorage(); }, 2000);
-  } catch(e) {
-    resultEl.innerHTML = `<span style="color:var(--red)">${escapeHtml(e.message)}</span>`;
-  }
-  btn.disabled = false;
-  btn.textContent = 'Purge';
 }
 
 async function emergencyPurge() {

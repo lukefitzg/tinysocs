@@ -96,15 +96,23 @@ Walk through each tab:
 ## Part 2: Settings Walkthrough (2 minutes)
 
 ### Settings Panel (gear icon, top-right)
-- Full-width layout covering the entire settings area
-- **Data Retention**: Event Log Retention (30 days), Alert Retention (90 days), Custom/HEC Log Retention (30 days). Configurable 7-365 days. Show "Save Retention" button.
-- **Purge Old Logs Now**: Red button for emergency purge with confirmation. Show result: "Purged: 0 events, 0 alerts"
-- **HEC Tokens**: Show the endpoint URL (https://localhost:8081/hec). Create a token, demonstrate the "shown only once" banner with the generated token. Show Revoke button on existing tokens.
-- Talk through: "This is how you'd connect a firewall, syslog server, or any tool that can send JSON over HTTP."
-- **SIEM Connection**: Show the OpenSearch URL, user, password fields
-- **Change Password**: Unified password for dashboard and SIEM
-- **LLM Configuration**: Show the model fields — operator chooses their own model, no hardcoded defaults
-- **Threat Intelligence**: Show API key fields for AbuseIPDB, OTX, GreyNoise
+- **Tabbed layout** with 4 tabs: General, Storage, Security, Diagnostics
+- **General tab**:
+  - LLM Configuration: provider dropdown, model fields — operator chooses their own model, no hardcoded defaults
+  - Notifications: webhook URL and email SMTP config
+  - Threat Intelligence: API key fields for AbuseIPDB, OTX, GreyNoise
+- **Storage tab**:
+  - Data Retention: Event Log (30d), Alert (90d), Custom/HEC (30d). Configurable 7-365 days.
+  - Purge controls: dropdown with "Older than retention", "Older than 7 days", "Older than 1 day", "Everything". Red Purge button with confirmation.
+  - HEC Tokens: endpoint URL (https://localhost:8081/hec), create/revoke tokens, "shown only once" banner
+  - Talk through: "This is how you'd connect a firewall, syslog server, or any tool that can send JSON over HTTP."
+- **Security tab**:
+  - SIEM Connection: OpenSearch URL, user, password fields
+  - Change Password: unified password for dashboard and SIEM
+- **Diagnostics tab**:
+  - "Run Health Check" button — shows OpenSearch cluster health (status, nodes, shards, heap %, indices, docs, store size), disk usage, federation node reachability with response times
+  - "Copy to Clipboard" exports diagnostics as text for support/troubleshooting
+  - Talk through: "Operators can run diagnostics without SSH access or command-line knowledge."
 
 ---
 

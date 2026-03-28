@@ -164,9 +164,13 @@ The storage widget on the Overview tab shows disk usage, index sizes, and cluste
 
 **Auto-purge**: When disk reaches 88%, TinySocs automatically deletes the oldest event log indices (up to 3 per hour) and clears the read-only block. A TS-DISK-002 alert is fired.
 
-**Manual purge**: "Free Space Now" button appears in the storage widget when disk exceeds 80%. Requires admin password.
+**Manual purge**: In Settings > Storage tab, use the purge dropdown with options: "Older than retention", "Older than 7 days", "Older than 1 day", or "Everything". Click the red Purge button. Requires admin password confirmation. The "Everything" option permanently deletes all TinySocs indices.
 
-**Retention** is configurable per index type (7-365 days) in Settings or during install.
+**Retention** is configurable per index type (7-365 days) in Settings > Storage tab or during install.
+
+**System Diagnostics**: In Settings > Diagnostics tab, click "Run Health Check" to see OpenSearch cluster health (status, nodes, shards, heap usage, index count, store size), disk usage, and federation node reachability with response times. Use "Copy to Clipboard" to export diagnostics for support.
+
+**Settings layout**: The Settings panel has 4 tabs: General (LLM, notifications, threat intel), Storage (retention, purge, HEC tokens), Security (SIEM connection, change password), and Diagnostics (health check).
 
 ---
 
@@ -221,8 +225,14 @@ A: On the remote site, set TINYSOCS_HUB_URL to point to the Hub. The site will a
 **Q: How do I change retention?**
 A: Settings > Data Retention. Adjust days (7-365) for event logs, alerts, and custom logs. Click "Save Retention" to apply. Changes take effect on the next ISM policy evaluation cycle.
 
+**Q: How do I create a HEC token?**
+A: Settings > Storage tab > HEC Tokens section. Enter a name (e.g. "pfsense") and click "Create Token". The token is shown only once — copy it immediately. Use it with `Authorization: Bearer <token>` when sending events to the HEC endpoint.
+
 **Q: What happens when disk is full?**
-A: TinySocs has three protections: (1) OpenSearch watermarks prevent writes at 90%, (2) auto-purge at 88% deletes oldest event indices, (3) "Free Space Now" button for manual emergency cleanup. A TS-DISK-001 alert fires at 80%.
+A: TinySocs has three protections: (1) OpenSearch watermarks prevent writes at 92%, (2) auto-purge at 88% deletes oldest event indices, (3) manual purge in Settings > Storage with flexible options (retention/7d/1d/everything). A TS-DISK-001 alert fires at 80%.
+
+**Q: How do I run diagnostics?**
+A: Settings > Diagnostics tab > "Run Health Check". Shows OpenSearch cluster health, heap usage, disk space, and federation node reachability. Use "Copy to Clipboard" to share diagnostics with support.
 
 **Q: How do I set up email notifications?**
 A: Settings > Email Notifications. Enter SMTP host, port, from address, and recipient address. Click "Test" to verify. Notifications are sent automatically when alerts fire.

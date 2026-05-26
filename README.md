@@ -106,4 +106,4 @@ See `.env.example` for the full list.
 
 ## License
 
-MIT
+Business Source License 1.1 (BSL-1.1). Commercial rights reserved by Luke FitzGerald; converts to Apache 2.0 four years after each version's public release date. See [LICENSE](LICENSE) for the full text, including the Additional Use Grant which permits production use except for competing hosted/embedded offerings.

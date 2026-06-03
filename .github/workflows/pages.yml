@@ -3,7 +3,14 @@ name: Deploy Landing Page
 on:
   push:
     branches: [main]
-    paths: ['site/**']
+    paths:
+      - 'site/**'
+      - 'results/**'                              # new validation results landed
+      - 'packaging/detection/rules.yml'           # pack change shifts coverage
+      - 'scripts/build_validation_summary.py'     # summary build logic
+      - 'scripts/validation_lib.py'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch: {}                           # allow manual ad-hoc rebuilds
 
 permissions:
   contents: read
@@ -22,6 +29,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install build deps
+        run: pip install pyyaml
+
+      - name: Build validation summary
+        run: |
+          python3 scripts/build_validation_summary.py \
+            --results-dir results \
+            --rules packaging/detection/rules.yml \
+            --output site/validation/data/summary.json
 
       - name: Setup Pages
         uses: actions/configure-pages@v5

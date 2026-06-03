@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TinySocs — Detection Validation</title>
+<meta name="description" content="TinySocs detection rules, validated every week against Atomic Red Team. Public results: what fired, what was skipped, what was missed — no cherry-picking.">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="container topbar-inner">
+    <a class="brand" href="../">TinySocs</a>
+    <nav class="topnav">
+      <a href="methodology/">Methodology</a>
+      <a href="https://github.com/lukefitzg/tinysocs" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main class="container">
+
+  <!-- Loading / error states swapped out by JS -->
+  <div id="status" class="status">Loading latest validation run…</div>
+
+  <section id="headline" class="headline" hidden>
+    <h1>Detection validation <span id="hl-week" class="muted"></span></h1>
+    <p id="hl-counts" class="counts"></p>
+    <p id="hl-meta" class="runmeta muted"></p>
+    <div id="hl-banner" class="banner" hidden></div>
+    <div class="actions">
+      <a href="methodology/" class="btn">See methodology</a>
+      <a id="hl-download" class="btn" href="#" download>Download results JSON</a>
+      <a href="https://github.com/lukefitzg/tinysocs/tree/main/results" class="btn" target="_blank" rel="noopener">View results on GitHub</a>
+    </div>
+  </section>
+
+  <section id="legend" class="legend" hidden>
+    <span class="key"><span class="dot dot-PASS"></span> Detected (rule fired)</span>
+    <span class="key"><span class="dot dot-SKIP_PLATFORM"></span> Skipped — platform</span>
+    <span class="key"><span class="dot dot-SKIP_PREREQ"></span> Skipped — prerequisite</span>
+    <span class="key"><span class="dot dot-ERROR"></span> Harness error</span>
+    <span class="key"><span class="dot dot-MISS"></span> Missed (rule should have fired)</span>
+    <span class="key"><span class="dot dot-none"></span> No test that week</span>
+  </section>
+
+  <section id="table-section" hidden>
+    <div class="table-controls">
+      <input id="filter" type="search" placeholder="Filter by rule ID, name, or MITRE…" autocomplete="off">
+      <label class="checkbox"><input id="only-covered" type="checkbox"> Only rules with a test</label>
+    </div>
+    <div class="table-wrap">
+      <table id="rules-table">
+        <thead>
+          <tr>
+            <th data-sort="id" class="sortable">Rule ID</th>
+            <th data-sort="name" class="sortable">Name</th>
+            <th data-sort="mitre" class="sortable">MITRE</th>
+            <th>Last 12 weeks</th>
+            <th data-sort="latest_category" class="sortable">This week</th>
+            <th>Reason (if not detected)</th>
+          </tr>
+        </thead>
+        <tbody id="rules-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="coverage" class="coverage" hidden>
+    <h2>Coverage gap — named, not hidden</h2>
+    <p id="coverage-text" class="muted"></p>
+    <p id="coverage-list" class="coverage-list muted"></p>
+  </section>
+
+</main>
+
+<footer>
+  <div class="container">
+    <p>
+      &copy; 2026 TinySocs &middot;
+      <a href="methodology/">How this is measured</a> &middot;
+      <a href="https://github.com/lukefitzg/tinysocs" target="_blank" rel="noopener">Source</a>
+    </p>
+  </div>
+</footer>
+
+<script src="validation.js"></script>
+</body>
+</html>

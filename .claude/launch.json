@@ -15,6 +15,12 @@
         "BOT_SHARED_SECRET": "demo-preview-secret",
         "MASTER_SHARED_SECRET": "demo-preview-secret"
       }
+    },
+    {
+      "name": "validation-dashboard",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "8780", "--directory", "site/validation"],
+      "port": 8780
     }
   ]
 }

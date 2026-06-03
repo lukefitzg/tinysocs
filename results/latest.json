@@ -1,0 +1,327 @@
+{
+  "schema_version": 2,
+  "run_id": "2026-W09-migrated",
+  "generated_at": "2026-03-01T19:30:00.0000000+00:00",
+  "iso_week": "2026-W09",
+  "git_commit": null,
+  "migrated": true,
+  "platform": {
+    "os": null,
+    "tinysocs_version": "0.9.0",
+    "sysmon_version": null,
+    "opensearch_version": null
+  },
+  "summary": {
+    "rules_in_pack": 39,
+    "rules_with_atomic_test": 25,
+    "atomic_tests_total": 19,
+    "atomic_tests_detected": 15,
+    "atomic_tests_skipped": 3,
+    "atomic_tests_missed": 0,
+    "atomic_tests_error": 1,
+    "technique_pass_rate": 1.0,
+    "rule_pass_rate": 0.64
+  },
+  "results": [
+    {
+      "technique_id": "T1110.001",
+      "technique_name": "Brute Force - Password Guessing",
+      "expected_rules": [
+        "TS-001",
+        "TS-001-lab",
+        "TS-002"
+      ],
+      "detected_rules": [
+        "TS-001-lab",
+        "TS-001"
+      ],
+      "status": "DETECTED",
+      "category": "PASS",
+      "reason": "",
+      "started_at": null,
+      "duration_seconds": null
+    },
+    {
+      "technique_id": "T1003.001",
+      "technique_name": "OS Credential Dumping - LSASS Memory",
+      "expected_rules": [
+        "TS-060",
+        "TS-061"
+      ],
+      "detected_rules": [
+        "TS-061"
+      ],
+      "status": "DETECTED",
+      "category": "PASS",
+      "reason": "",
+      "started_at": null,
+      "duration_seconds": null
+    },
+    {
+      "technique_id": "T1059.001",
+      "technique_name": "Command and Scripting Interpreter - PowerShell",
+      "expected_rules": [
+        "TS-030",
+        "TS-030-lab",
+        "TS-082"
+      ],
+      "detected_rules": [
+        "TS-082",
+        "TS-030-lab",
+        "TS-030"
+      ],
+      "status": "DETECTED",
+      "category": "PASS",
+      "reason": "",
+      "started_at": null,
+      "duration_seconds": null
+    },
+    {
+      "technique_id": "T1053.005",
+      "technique_name": "Scheduled Task/Job - Scheduled Task",
+      "expected_rules": [
+        "TS-020",
+        "TS-061",
+        "TS-132"
+      ],
+      "detected_rules": [
+        "TS-061",
+        "TS-132"
+      ],
+      "status": "DETECTED",
+      "category": "PASS",
+      "reason": "",
+      "started_at": null,
+      "duration_seconds": null
+    },
+    {
+      "technique_id": "T1547.001",
+      "technique_name": "Boot or Logon Autostart Execution - Registry Run Keys",
+      "expected_rules": [
+        "TS-091"
+      ],
+      "detected_rules": [
+        "TS-091"
+      ],
+      "status": "DETECTED",
+      "category": "PASS",
+      "reason": "",
+      "started_at": null,
+      "duration_seconds": null
+    },
+    {
+      "technique_id": "T1543.003",
+      "technique_name": "Create or Modify System Process - Windows Service",
+      "expected_rules": [
+        "TS-090",
+        "TS-072"
+      ],
+      "detected_rules": [
+        "TS-072",
+        "TS-090"
+      ],
+      "status": "DETECTED",
+      "category": "PASS",
+      "reason": "",
+      "started_at": null,
+      "duration_seconds": null
+    },
+    {
+      "technique_id": "T1070.001",
+      "technique_name": "Indicator Removal - Clear Windows Event Logs",
+      "expected_rules": [
+        "TS-080"
+      ],
+      "detected_rules": [
+        "TS-080"
+      ],
+      "status": "DETECTED",
+      "category": "PASS",
+      "reason": "Detected via direct-alert fast-path in EventLogInput (bypasses queue/shipper pipeline)",
+      "started_at": null,
+      "duration_seconds": null
+    },
+    {
+      "technique_id": "T1562.001",
+      "technique_name": "Impair Defenses - Disable or Modify Tools",
+      "expected_rules": [
+        "TS-081"
+      ],
+      "detected_rules": [],
+      "status": "SKIP",
+      "category": "SKIP_PREREQ",
+      "reason": "Requires Tamper Protection disabled (currently enabled, blocks Defender config changes)",
+      "started_at": null,
+      "duration_seconds": null
+    },
+    {
+      "technique_id": "T1021.002",
+      "technique_name": "Remote Services - SMB/Windows Admin Shares",
+      "expected_rules": [
+        "TS-070",
+        "TS-072"
+      ],
+      "detected_rules": [
+        "TS-070",
+        "TS-072"
+      ],
+      "status": "DETECTED",
+      "category": "PASS",
+      "reason": "",
+      "started_at": null,
+      "duration_seconds": null
+    },
+    {
+      "technique_id": "T1136.001",
+      "technique_name": "Create Account - Local Account",
+      "expected_rules": [
+        "TS-010"
+      ],
+      "detected_rules": [
+        "TS-010"
+      ],
+      "status": "DETECTED",
+      "category": "PASS",
+      "reason": "",
+      "started_at": null,
+      "duration_seconds": null
+    },
+    {
+      "technique_id": "T1218.011",
+      "technique_name": "System Binary Proxy Execution - Rundll32",
+      "expected_rules": [
+        "TS-135",
+        "TS-061",
+        "TS-132"
+      ],
+      "detected_rules": [
+        "TS-061",
+        "TS-132"
+      ],
+      "status": "DETECTED",
+      "category": "PASS",
+      "reason": "",
+      "started_at": null,
+      "duration_seconds": null
+    },
+    {
+      "technique_id": "T1003.003",
+      "technique_name": "OS Credential Dumping - NTDS",
+      "expected_rules": [
+        "TS-062"
+      ],
+      "detected_rules": [],
+      "status": "SKIP",
+      "category": "SKIP_PLATFORM",
+      "reason": "Requires Domain Controller (this machine is not a DC)",
+      "started_at": null,
+      "duration_seconds": null
+    },
+    {
+      "technique_id": "T1087.001",
+      "technique_name": "Account Discovery - Local Account",
+      "expected_rules": [
+        "TS-130"
+      ],
+      "detected_rules": [],
+      "status": "ERROR",
+      "category": "ERROR",
+      "reason": "ART fallback command fails from UNC path; detection rule TS-130 is functional",
+      "started_at": null,
+      "duration_seconds": null
+    },
+    {
+      "technique_id": "T1018",
+      "technique_name": "Remote System Discovery",
+      "expected_rules": [
+        "TS-131"
+      ],
+      "detected_rules": [
+        "TS-131"
+      ],
+      "status": "DETECTED",
+      "category": "PASS",
+      "reason": "",
+      "started_at": null,
+      "duration_seconds": null
+    },
+    {
+      "technique_id": "T1105",
+      "technique_name": "Ingress Tool Transfer",
+      "expected_rules": [
+        "TS-132"
+      ],
+      "detected_rules": [
+        "TS-132"
+      ],
+      "status": "DETECTED",
+      "category": "PASS",
+      "reason": "",
+      "started_at": null,
+      "duration_seconds": null
+    },
+    {
+      "technique_id": "T1055",
+      "technique_name": "Process Injection",
+      "expected_rules": [
+        "TS-133"
+      ],
+      "detected_rules": [
+        "TS-133"
+      ],
+      "status": "DETECTED",
+      "category": "PASS",
+      "reason": "",
+      "started_at": null,
+      "duration_seconds": null
+    },
+    {
+      "technique_id": "T1027",
+      "technique_name": "Obfuscated Files or Information",
+      "expected_rules": [
+        "TS-134"
+      ],
+      "detected_rules": [
+        "TS-134"
+      ],
+      "status": "DETECTED",
+      "category": "PASS",
+      "reason": "",
+      "started_at": null,
+      "duration_seconds": null
+    },
+    {
+      "technique_id": "T1565.001",
+      "technique_name": "Data Manipulation - Stored Data Manipulation",
+      "expected_rules": [
+        "TS-110"
+      ],
+      "detected_rules": [],
+      "status": "SKIP",
+      "category": "SKIP_PLATFORM",
+      "reason": "Requires TinySocs FIM module (TinySocs-FIM event channel not found)",
+      "started_at": null,
+      "duration_seconds": null
+    },
+    {
+      "technique_id": "T1047",
+      "technique_name": "Windows Management Instrumentation",
+      "expected_rules": [
+        "TS-136",
+        "TS-061",
+        "TS-132",
+        "TS-134"
+      ],
+      "detected_rules": [
+        "TS-061",
+        "TS-132",
+        "TS-134"
+      ],
+      "status": "DETECTED",
+      "category": "PASS",
+      "reason": "",
+      "started_at": null,
+      "duration_seconds": null
+    }
+  ]
+}

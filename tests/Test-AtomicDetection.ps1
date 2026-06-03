@@ -535,6 +535,36 @@ if (-not $DryRun) {
     }
 }
 
+# ---------------------------------------------------------------------------
+# Result builder
+# ---------------------------------------------------------------------------
+# Single place that stamps each per-test result with timing. Category and the
+# v2 summary are NOT computed here — the Python normaliser
+# (scripts/normalize_validation_run.py) derives those from status+reason so the
+# categorisation rules live in one language (see validation_lib.py).
+function New-TestResult {
+    param(
+        [Parameter(Mandatory)][string]$Technique,
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$Status,
+        [string]$Reason = "",
+        $Rules = "",
+        $Detected = @(),
+        [datetime]$StartedAt
+    )
+    $started = if ($StartedAt) { $StartedAt } else { Get-Date }
+    [PSCustomObject]@{
+        Technique       = $Technique
+        Name            = $Name
+        Status          = $Status
+        Reason          = $Reason
+        Rules           = $Rules
+        Detected        = @($Detected)
+        StartedAt       = $started.ToUniversalTime().ToString("o")
+        DurationSeconds = [math]::Round(((Get-Date) - $started).TotalSeconds, 1)
+    }
+}
+
 # Run tests
 $results = @()
 foreach ($test in $tests) {
@@ -544,6 +574,7 @@ foreach ($test in $tests) {
     $needsSysmon = $test.sysmon_required
     $timeout   = if ($test.timeout_seconds) { $test.timeout_seconds } else { 120 }
     $name      = $test.technique_name
+    $testStart = Get-Date
 
     Write-Host ""
     Write-Host "--- [$technique] $name ---"
@@ -551,14 +582,8 @@ foreach ($test in $tests) {
     # Skip if Sysmon required but not available
     if ($needsSysmon -and -not $hasSysmon) {
         Write-Host "  SKIP: Requires Sysmon (not installed)" -ForegroundColor Yellow
-        $results += [PSCustomObject]@{
-            Technique = $technique
-            Name      = $name
-            Status    = "SKIP"
-            Reason    = "Sysmon not installed"
-            Rules     = ($rules -join ", ")
-            Detected  = @()
-        }
+        $results += New-TestResult -Technique $technique -Name $name -Status "SKIP" `
+            -Reason "Sysmon not installed" -Rules ($rules -join ", ") -Detected @() -StartedAt $testStart
         continue
     }
 
@@ -593,14 +618,8 @@ foreach ($test in $tests) {
         }
         if ($skipReq) {
             Write-Host "  SKIP: $skipMsg" -ForegroundColor Yellow
-            $results += [PSCustomObject]@{
-                Technique = $technique
-                Name      = $name
-                Status    = "SKIP"
-                Reason    = $skipMsg
-                Rules     = ($rules -join ", ")
-                Detected  = @()
-            }
+            $results += New-TestResult -Technique $technique -Name $name -Status "SKIP" `
+                -Reason $skipMsg -Rules ($rules -join ", ") -Detected @() -StartedAt $testStart
             continue
         }
     }
@@ -608,14 +627,8 @@ foreach ($test in $tests) {
     if ($DryRun) {
         Write-Host "  DRY RUN: Would execute Atomic test #$testNum"
         Write-Host "  Expected rules: $($rules -join ', ')"
-        $results += [PSCustomObject]@{
-            Technique = $technique
-            Name      = $name
-            Status    = "DRY_RUN"
-            Reason    = ""
-            Rules     = ($rules -join ", ")
-            Detected  = @()
-        }
+        $results += New-TestResult -Technique $technique -Name $name -Status "DRY_RUN" `
+            -Reason "" -Rules ($rules -join ", ") -Detected @() -StartedAt $testStart
         continue
     }
 
@@ -639,14 +652,8 @@ foreach ($test in $tests) {
             Write-Host "  Fallback command executed. Waiting for detection pipeline..."
         } catch {
             Write-Host "  ERROR executing fallback: $($_.Exception.Message)" -ForegroundColor Red
-            $results += [PSCustomObject]@{
-                Technique = $technique
-                Name      = $name
-                Status    = "ERROR"
-                Reason    = "Fallback: $($_.Exception.Message)"
-                Rules     = ($rules -join ", ")
-                Detected  = @()
-            }
+            $results += New-TestResult -Technique $technique -Name $name -Status "ERROR" `
+                -Reason "Fallback: $($_.Exception.Message)" -Rules ($rules -join ", ") -Detected @() -StartedAt $testStart
             continue
         }
     }
@@ -701,26 +708,14 @@ foreach ($test in $tests) {
                 Write-Host "  Fallback command executed. Waiting for detection pipeline..."
             } catch {
                 Write-Host "  ERROR executing fallback: $($_.Exception.Message)" -ForegroundColor Red
-                $results += [PSCustomObject]@{
-                    Technique = $technique
-                    Name      = $name
-                    Status    = "ERROR"
-                    Reason    = "ART: $artError; Fallback: $($_.Exception.Message)"
-                    Rules     = ($rules -join ", ")
-                    Detected  = @()
-                }
+                $results += New-TestResult -Technique $technique -Name $name -Status "ERROR" `
+                    -Reason "ART: $artError; Fallback: $($_.Exception.Message)" -Rules ($rules -join ", ") -Detected @() -StartedAt $testStart
                 continue
             }
         } else {
             Write-Host "  ERROR: $artError" -ForegroundColor Red
-            $results += [PSCustomObject]@{
-                Technique = $technique
-                Name      = $name
-                Status    = "ERROR"
-                Reason    = $artError
-                Rules     = ($rules -join ", ")
-                Detected  = @()
-            }
+            $results += New-TestResult -Technique $technique -Name $name -Status "ERROR" `
+                -Reason $artError -Rules ($rules -join ", ") -Detected @() -StartedAt $testStart
             # Cleanup
             try { Invoke-AtomicTest $technique -TestNumbers $testNum -Cleanup -ErrorAction SilentlyContinue } catch { }
             continue
@@ -743,24 +738,12 @@ foreach ($test in $tests) {
 
     if ($detected.Count -gt 0) {
         Write-Host "  DETECTED: $($detected -join ', ')" -ForegroundColor Green
-        $results += [PSCustomObject]@{
-            Technique = $technique
-            Name      = $name
-            Status    = "DETECTED"
-            Reason    = ""
-            Rules     = ($rules -join ", ")
-            Detected  = $detected
-        }
+        $results += New-TestResult -Technique $technique -Name $name -Status "DETECTED" `
+            -Reason "" -Rules ($rules -join ", ") -Detected $detected -StartedAt $testStart
     } else {
         Write-Host "  MISSED: No alerts found for expected rules" -ForegroundColor Red
-        $results += [PSCustomObject]@{
-            Technique = $technique
-            Name      = $name
-            Status    = "MISSED"
-            Reason    = "No alerts within timeout"
-            Rules     = ($rules -join ", ")
-            Detected  = @()
-        }
+        $results += New-TestResult -Technique $technique -Name $name -Status "MISSED" `
+            -Reason "No alerts within timeout" -Rules ($rules -join ", ") -Detected @() -StartedAt $testStart
     }
 
     # Cleanup (skip ART cleanup if we used the fallback command)
@@ -878,27 +861,102 @@ try {
     Write-Warning "Failed to write report: $($_.Exception.Message)"
 }
 
-# Generate atomic-results.json for Navigator layer colouring
+# ---------------------------------------------------------------------------
+# Raw run JSON for the continuous validation pipeline
+# ---------------------------------------------------------------------------
+# This is the *raw* harness output. It carries run metadata + per-test
+# status/reason/timing but deliberately does NOT compute `category` or the v2
+# `summary` block — scripts/normalize_validation_run.py derives those (so the
+# categorisation rules live only in validation_lib.py) and writes the final
+# results/<iso-week>.json. See docs/design/continuous-validation.md.
+
+# Best-effort run metadata. Anything we can't determine is left null rather
+# than guessed, so the public claim stays defensible.
+function Get-CommandOutput {
+    param([string]$Exe, [string[]]$ArgList)
+    try {
+        $out = & $Exe @ArgList 2>$null
+        if ($LASTEXITCODE -eq 0 -and $out) { return ($out | Select-Object -First 1).ToString().Trim() }
+    } catch { }
+    return $null
+}
+
+$gitCommit = Get-CommandOutput -Exe "git" -ArgList @("-C", $repoRoot, "rev-parse", "--short", "HEAD")
+
+# OS caption + version
+$osName = $null
+try {
+    $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
+    $osName = ("{0} {1}" -f $os.Caption, $os.Version).Trim()
+} catch { }
+
+# Sysmon driver/service version (only meaningful if Sysmon is present)
+$sysmonVersion = $null
+if ($hasSysmon) {
+    try {
+        $svc = Get-CimInstance -ClassName Win32_Service -Filter "Name='Sysmon' OR Name='Sysmon64'" -ErrorAction Stop | Select-Object -First 1
+        if ($svc -and $svc.PathName) {
+            $exePath = ($svc.PathName -replace '^"([^"]+)".*$', '$1')
+            if (Test-Path $exePath) {
+                $sysmonVersion = (Get-Item $exePath).VersionInfo.ProductVersion
+            }
+        }
+    } catch { }
+}
+
+# TinySocs agent version (best-effort: VERSION file, else null)
+$tinysocsVersion = $null
+$versionFile = Join-Path $repoRoot "VERSION"
+if (Test-Path $versionFile) {
+    $tinysocsVersion = (Get-Content $versionFile -ErrorAction SilentlyContinue | Select-Object -First 1).Trim()
+}
+
+# OpenSearch version via the cluster root (uses the same creds as the queries)
+$opensearchVersion = $null
+try {
+    Initialize-SiemConnection
+    $rootSplat = @{
+        Uri     = "$($script:_siemUrl)/"
+        Method  = "GET"
+        Headers = $script:_siemHeaders
+    }
+    $rootResp = Invoke-RestMethod @rootSplat -ErrorAction Stop
+    if ($rootResp.version -and $rootResp.version.number) { $opensearchVersion = $rootResp.version.number }
+} catch { }
+
 $jsonResults = @{
-    generated_at = (Get-Date -Format "o")
+    generated_at = (Get-Date).ToUniversalTime().ToString("o")
+    git_commit   = $gitCommit
+    platform     = @{
+        os                 = $osName
+        tinysocs_version   = $tinysocsVersion
+        sysmon_version     = $sysmonVersion
+        opensearch_version = $opensearchVersion
+    }
+    # Headline counts the normaliser will recompute; kept for the legacy
+    # detection-efficacy.md path and quick eyeballing of the raw file.
     total_tests  = $results.Count
     efficacy_pct = $efficacy
     results      = @($results | ForEach-Object {
         @{
-            technique_id = $_.Technique
-            technique_name = $_.Name
-            status = $_.Status
-            reason = $_.Reason
-            expected_rules = ($_.Rules -split ", ")
-            detected_rules = @($_.Detected)
+            technique_id     = $_.Technique
+            technique_name   = $_.Name
+            status           = $_.Status
+            reason           = $_.Reason
+            expected_rules   = ($_.Rules -split ", ")
+            detected_rules   = @($_.Detected)
+            started_at       = $_.StartedAt
+            duration_seconds = $_.DurationSeconds
         }
     })
 }
 
 try {
-    $jsonStr = $jsonResults | ConvertTo-Json -Depth 4
+    $jsonStr = $jsonResults | ConvertTo-Json -Depth 5
     Set-Content -Path $OutputJson -Value $jsonStr -Encoding UTF8
-    Write-Host "[*] JSON results written to: $OutputJson"
+    Write-Host "[*] Raw run JSON written to: $OutputJson"
+    Write-Host "[*] Normalise to a v2 per-week result with:"
+    Write-Host "      python3 scripts/normalize_validation_run.py `"$OutputJson`""
 } catch {
     Write-Warning "Failed to write JSON results: $($_.Exception.Message)"
 }

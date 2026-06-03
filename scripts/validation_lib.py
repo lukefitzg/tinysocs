@@ -95,6 +95,32 @@ def categorize(status: str, reason: str | None) -> str:
 
 
 # --------------------------------------------------------------------------
+# Per-test normalisation (raw harness result -> v2 per-test shape)
+# --------------------------------------------------------------------------
+def normalize_result(raw: dict) -> dict:
+    """Convert a raw harness per-test result into the v2 per-test shape.
+
+    Adds the derived `category` and carries through timing if the harness
+    captured it (legacy v1 files have none, so those come through as null).
+    Used by both the one-shot migration and the per-run normaliser so the
+    shape is defined in exactly one place.
+    """
+    status = raw.get("status", "")
+    reason = raw.get("reason", "") or ""
+    return {
+        "technique_id": raw.get("technique_id", ""),
+        "technique_name": raw.get("technique_name", ""),
+        "expected_rules": [r for r in (raw.get("expected_rules") or []) if r],
+        "detected_rules": [r for r in (raw.get("detected_rules") or []) if r],
+        "status": status,
+        "category": categorize(status, reason),
+        "reason": reason,
+        "started_at": raw.get("started_at"),
+        "duration_seconds": raw.get("duration_seconds"),
+    }
+
+
+# --------------------------------------------------------------------------
 # Rule-pack loading (for coverage stats)
 # --------------------------------------------------------------------------
 def load_rule_ids(rules_yml: Path) -> list[str]:

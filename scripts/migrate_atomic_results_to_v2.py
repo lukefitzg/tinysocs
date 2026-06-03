@@ -37,25 +37,6 @@ import validation_lib as vl  # noqa: E402
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
-def _normalise_result(raw: dict) -> dict:
-    """Convert a legacy per-test result into the v2 per-test shape."""
-    status = raw.get("status", "")
-    reason = raw.get("reason", "") or ""
-    return {
-        "technique_id": raw.get("technique_id", ""),
-        "technique_name": raw.get("technique_name", ""),
-        "expected_rules": [r for r in (raw.get("expected_rules") or []) if r],
-        "detected_rules": [r for r in (raw.get("detected_rules") or []) if r],
-        "status": status,
-        "category": vl.categorize(status, reason),
-        "reason": reason,
-        # Legacy file has no per-test timing; leave nulls so it's clear these
-        # were not captured rather than fabricating them.
-        "started_at": None,
-        "duration_seconds": None,
-    }
-
-
 def migrate(input_path: Path, rules_path: Path) -> dict:
     legacy = json.loads(input_path.read_text(encoding="utf-8"))
 
@@ -65,7 +46,9 @@ def migrate(input_path: Path, rules_path: Path) -> dict:
     dt = vl.parse_timestamp(generated_at)
     iso_week = vl.iso_week_label(dt)
 
-    results = [_normalise_result(r) for r in legacy.get("results", [])]
+    # Legacy file has no per-test timing; normalize_result carries the absent
+    # started_at/duration_seconds through as null rather than fabricating them.
+    results = [vl.normalize_result(r) for r in legacy.get("results", [])]
     rule_ids = vl.load_rule_ids(rules_path)
     summary = vl.build_summary(results, rule_ids)
 

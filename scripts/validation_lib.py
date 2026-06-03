@@ -123,18 +123,43 @@ def normalize_result(raw: dict) -> dict:
 # --------------------------------------------------------------------------
 # Rule-pack loading (for coverage stats)
 # --------------------------------------------------------------------------
-def load_rule_ids(rules_yml: Path) -> list[str]:
-    """Return the list of rule IDs defined in a detection pack YAML.
+def load_rules(rules_yml: Path) -> list[dict]:
+    """Return rule metadata from a detection pack YAML.
 
-    Works against the v1 C# pack (packaging/detection/rules.yml). Schema-
-    invariant against v2: v2 keeps the top-level `rules:` list and per-rule
-    `id`, so this keeps working after migration. This is the one function
-    that reads the pack format and therefore the one place v2 might touch.
+    Each entry: {id, name, severity, enabled, mitre:{technique_id,
+    technique_name, tactic}}. Works against the v1 C# pack
+    (packaging/detection/rules.yml). Schema-invariant against v2: v2 keeps the
+    top-level `rules:` list and per-rule `id`/`name`/`mitre`, so this keeps
+    working after migration. This is the one place that reads the pack format,
+    so it's the one place v2 might touch.
     """
     with rules_yml.open(encoding="utf-8") as fh:
         data = yaml.safe_load(fh)
     rules = data.get("rules", []) if isinstance(data, dict) else (data or [])
-    return [r["id"] for r in rules if isinstance(r, dict) and r.get("id")]
+    out: list[dict] = []
+    for r in rules:
+        if not isinstance(r, dict) or not r.get("id"):
+            continue
+        mitre = r.get("mitre") or {}
+        out.append(
+            {
+                "id": r["id"],
+                "name": r.get("name", ""),
+                "severity": r.get("severity"),
+                "enabled": r.get("enabled", True),
+                "mitre": {
+                    "technique_id": mitre.get("technique_id"),
+                    "technique_name": mitre.get("technique_name"),
+                    "tactic": mitre.get("tactic"),
+                },
+            }
+        )
+    return out
+
+
+def load_rule_ids(rules_yml: Path) -> list[str]:
+    """Return just the list of rule IDs defined in a detection pack YAML."""
+    return [r["id"] for r in load_rules(rules_yml)]
 
 
 def covered_rule_ids(results: Iterable[dict]) -> set[str]:
@@ -196,6 +221,43 @@ def build_summary(results: list[dict], rule_ids: list[str]) -> dict:
         "technique_pass_rate": technique_pass_rate,
         "rule_pass_rate": rule_pass_rate,
     }
+
+
+# Precedence for collapsing several covering tests into one per-rule verdict.
+# A rule shows its *best available evidence*: if any covering technique test
+# passed, the rule is demonstrably working (PASS) even if other tests skipped.
+# This is technique-granularity (see the rule_pass_rate note above) — a rule is
+# PASS for the week if any test that covers it passed, not "every expected rule
+# fired in every test". Keeps the per-rule table consistent with the headline.
+_RULE_WEEK_PRECEDENCE = [
+    CATEGORY_PASS,
+    CATEGORY_MISS,
+    CATEGORY_ERROR,
+    CATEGORY_SKIP_PREREQ,
+    CATEGORY_SKIP_PLATFORM,
+]
+
+
+def rule_category_for_week(rule_id: str, results: list[dict]) -> dict | None:
+    """Collapse a rule's covering tests in one week to a single verdict.
+
+    Returns {category, reason} or None if no test in this run covers the rule.
+    A test "covers" a rule if the rule is in its expected_rules.
+    """
+    covering = [r for r in results if rule_id in (r.get("expected_rules") or [])]
+    if not covering:
+        return None
+    by_cat: dict[str, dict] = {}
+    for r in covering:
+        cat = r.get("category") or categorize(r.get("status"), r.get("reason"))
+        by_cat.setdefault(cat, r)
+    for cat in _RULE_WEEK_PRECEDENCE:
+        if cat in by_cat:
+            return {"category": cat, "reason": by_cat[cat].get("reason", "") or ""}
+    # Unknown category fell outside the precedence list; surface the first.
+    first = covering[0]
+    cat = first.get("category") or categorize(first.get("status"), first.get("reason"))
+    return {"category": cat, "reason": first.get("reason", "") or ""}
 
 
 def _passing_rule_ids(results: list[dict]) -> set[str]:

@@ -198,6 +198,33 @@ tbody tr:hover { background: var(--surface); }
 .coverage h2 { font-size: 1.3rem; margin-bottom: 10px; }
 .coverage-list { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 0.85rem; margin-top: 8px; }
 
+/* Prose (methodology page) */
+.prose { max-width: 760px; margin: 0 auto; }
+.prose h1 { font-size: 2rem; margin-bottom: 8px; }
+.prose .lede { color: var(--muted); font-size: 1.1rem; margin-bottom: 32px; }
+.prose h2 { font-size: 1.3rem; margin: 32px 0 12px; }
+.prose h3 { font-size: 1.05rem; margin: 24px 0 8px; }
+.prose p { margin-bottom: 14px; }
+.prose ul, .prose ol { margin: 0 0 14px 22px; }
+.prose li { margin-bottom: 6px; }
+.prose code {
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  background: var(--surface-2);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+.prose table { margin: 8px 0 20px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.prose .callout {
+  border-left: 3px solid var(--accent);
+  background: var(--surface);
+  padding: 12px 16px;
+  border-radius: 0 8px 8px 0;
+  margin: 16px 0;
+  color: var(--text);
+}
+.cat-cell { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+
 /* Footer */
 footer {
   border-top: 1px solid var(--border);

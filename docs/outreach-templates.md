@@ -32,9 +32,11 @@ We're looking for 3-5 small businesses to try TinySocs for 30 days at no cost. A
 
 In return, we'd ask for honest feedback to help us improve the product.
 
+You don't have to take my word on detection quality: every rule is tested weekly against real attack techniques (Atomic Red Team) and the results are public — passes, skips, and misses.
+
 Would you be open to a 15-minute demo call this week? I can walk you through a live instance and answer any questions.
 
-[Landing page](https://lukefitzg.github.io/tinysocs/) | [GitHub](https://github.com/lukefitzg/tinysocs)
+[Landing page](https://lukefitzg.github.io/tinysocs/) | [Validation results](https://lukefitzg.github.io/tinysocs/validation/) | [GitHub](https://github.com/lukefitzg/tinysocs)
 
 Best,
 [Your Name]
@@ -51,18 +53,18 @@ Hi [First Name],
 
 Per-client SIEM licensing is one of the biggest margin killers for managed security providers. Every new SMB client means another seat fee, another negotiation, another line item eating into your revenue.
 
-TinySocs is a free, open-source SIEM (MIT licensed) built for exactly this problem. It uses a federated architecture so you can manage all your clients from a single dashboard while each client's data stays on their own premises.
+TinySocs is a free, source-available SIEM (BSL-1.1) built for exactly this problem. It uses a federated architecture so you can manage all your clients from a single dashboard while each client's data stays on their own premises.
 
 What makes it different for MSSPs:
 
 - **On-premises deployment** -- clients keep full data sovereignty
 - **Evidence ledger** -- tamper-proof audit trail for compliance and incident response
 - **Fleet version tracking** -- see which clients need updates at a glance
-- **Zero licensing cost** -- your margins stay intact as you scale
+- **Publicly validated detections** -- rules tested weekly against Atomic Red Team, results [published](https://lukefitzg.github.io/tinysocs/validation/)
 
 I'd love to show you the multi-site dashboard in a 15-minute demo. Are you free [day/time]?
 
-[Landing page](https://lukefitzg.github.io/tinysocs/) | [GitHub](https://github.com/lukefitzg/tinysocs)
+[Landing page](https://lukefitzg.github.io/tinysocs/) | [Validation results](https://lukefitzg.github.io/tinysocs/validation/) | [GitHub](https://github.com/lukefitzg/tinysocs)
 
 Best,
 [Your Name]
@@ -120,7 +122,7 @@ Key features:
 - Compliance report generation (SOC 2, HIPAA, PCI)
 - No cloud dependency -- everything stays on your network
 
-It's MIT licensed and completely free. No "open core" upsell, no telemetry, no hosted tier.
+The platform is free and source-available (BSL-1.1), no telemetry. Detection quality isn't a claim you have to trust: every rule is exercised weekly against real attack techniques (Atomic Red Team) and the results are public — including the misses.
 
 I'm specifically looking for feedback on:
 
@@ -130,6 +132,7 @@ I'm specifically looking for feedback on:
 
 GitHub: https://github.com/lukefitzg/tinysocs
 Landing page: https://lukefitzg.github.io/tinysocs/
+Validation results: https://lukefitzg.github.io/tinysocs/validation/
 You can try demo mode without connecting any endpoints -- instructions are in the README.
 
 Happy to answer questions. Roast away.
@@ -143,7 +146,7 @@ Happy to answer questions. Roast away.
   - **Healthcare, finance, legal:** Lead with compliance (HIPAA, SOC 2, PCI). Emphasise the evidence ledger and on-premises data sovereignty.
   - **MSPs/MSSPs:** Lead with per-client economics and the multi-site dashboard. Show how margins improve at scale.
   - **Retail, hospitality:** Lead with PCI readiness and simplicity. Emphasise the 15-minute install.
-  - **Tech startups:** Lead with the AI assistant and GitHub-native workflow. Mention MIT licensing.
+  - **Tech startups:** Lead with the AI assistant and GitHub-native workflow. Mention the source-available licence (BSL-1.1) and the public validation results.
 - **Keep emails under 200 words.** Decision-makers skim. If they want detail, they'll click your links or book the call.
 - **Send Tuesday through Thursday, morning.** Avoid Monday inboxes and Friday wind-downs.
 - **Follow up once, after 5-7 days.** If no response after the follow-up, move on.
@@ -154,5 +157,6 @@ Happy to answer questions. Roast away.
 
 - GitHub repo: https://github.com/lukefitzg/tinysocs
 - Landing page: https://lukefitzg.github.io/tinysocs/
+- Validation results: https://lukefitzg.github.io/tinysocs/validation/
 - Download: https://github.com/lukefitzg/tinysocs/releases/latest
 - Getting started: https://github.com/lukefitzg/tinysocs/blob/main/docs/getting-started.md

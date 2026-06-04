@@ -43,7 +43,9 @@ _NON_RESULT_CATEGORIES = {vl.CATEGORY_DRY}
 
 
 def normalize(raw_path: Path, rules_path: Path, run_seq: str) -> dict:
-    raw = json.loads(raw_path.read_text(encoding="utf-8"))
+    # utf-8-sig: the harness runs under PowerShell, which prepends a UTF-8 BOM
+    # by default. utf-8-sig strips it if present and reads plain UTF-8 otherwise.
+    raw = json.loads(raw_path.read_text(encoding="utf-8-sig"))
 
     generated_at = raw.get("generated_at")
     if not generated_at:

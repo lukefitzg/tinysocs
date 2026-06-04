@@ -18,9 +18,10 @@ tests:
     atomic_test_number: 1
     expected_rules: ["TS-001", "TS-001-lab", "TS-002"]
     sysmon_required: false
-    timeout_seconds: 120
-    fallback_command: "1..6 | ForEach-Object { net use \\\\127.0.0.1\\IPC$ /user:fakeuser \"WrongPass$_\" 2>$null; Start-Sleep -Milliseconds 500 }"
-    notes: "Generates failed logon events (4625). Threshold: 5 in 5min. Fallback runs 6 net use attempts."
+    prefer_fallback: true
+    timeout_seconds: 300
+    fallback_command: "net use * /delete /y 2>$null; 1..6 | ForEach-Object { net use \\\\127.0.0.1\\IPC$ /user:\"fakeuser$_\" \"WrongPass$_\" 2>$null; net use \\\\127.0.0.1\\IPC$ /delete /y 2>$null; Start-Sleep -Milliseconds 500 }"
+    notes: "Generates failed logon events (4625). Threshold: 5 in 5min. prefer_fallback: the ART atomic targets AD/SMB domain accounts and produces nothing on a non-domain workstation; the local-IPC$ fallback is the faithful standalone-host simulation."
 
   - atomic_technique: "T1003.001"
     technique_name: "OS Credential Dumping - LSASS Memory"
@@ -73,7 +74,7 @@ tests:
     expected_rules: ["TS-080", "TS-080-sys"]
     sysmon_required: false
     prefer_fallback: true
-    timeout_seconds: 120
+    timeout_seconds: 300
     fallback_command: "wevtutil cl Security; Start-Sleep -Seconds 3; $evt1102 = Get-WinEvent -LogName Security -MaxEvents 20 -ErrorAction SilentlyContinue | Where-Object { $_.Id -eq 1102 }; if ($evt1102) { Write-Host \"DIAG: Event 1102 found after log clear\" } else { Write-Host \"DIAG: Event 1102 NOT in Security log after clear\" }; $evt104 = Get-WinEvent -LogName System -MaxEvents 20 -ErrorAction SilentlyContinue | Where-Object { $_.Id -eq 104 }; if ($evt104) { Write-Host \"DIAG: Event 104 found in System log\" } else { Write-Host \"DIAG: Event 104 NOT in System log\" }"
     notes: "Clears the Security event log. Detects via event 1102 (Security) or event 104 (System). System-channel detection (TS-080-sys) is more reliable as it is unaffected by the Security log clear."
 
@@ -101,7 +102,7 @@ tests:
     atomic_test_number: 1
     expected_rules: ["TS-010"]
     sysmon_required: false
-    timeout_seconds: 120
+    timeout_seconds: 300
     fallback_command: "net user TinySocsART P@ssw0rd123! /add 2>$null; Start-Sleep -Seconds 5; net user TinySocsART /delete 2>$null"
     notes: "Creates a new local user account, generating event 4720. Fallback uses net user directly."
 
@@ -166,7 +167,7 @@ tests:
     atomic_test_number: 1
     expected_rules: ["TS-134"]
     sysmon_required: false
-    timeout_seconds: 120
+    timeout_seconds: 300
     fallback_command: "Start-Process powershell.exe -ArgumentList '-enc','dwBoAG8AYQBtAGkA' -Wait -ErrorAction SilentlyContinue; Start-Process cmd.exe -ArgumentList '/c','powershell -e dwBoAG8AYQBtAGkA' -Wait -ErrorAction SilentlyContinue"
     notes: "Encoded/obfuscated PowerShell commands. Generates 4688 and 4104. Fallback runs base64-encoded 'whoami' via Start-Process to avoid flag conflicts."
 

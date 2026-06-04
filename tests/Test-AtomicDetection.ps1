@@ -191,11 +191,15 @@ function Invoke-SiemQuery {
 
     Initialize-SiemConnection
     $splat = @{
-        Uri     = "$($script:_siemUrl)$Path"
-        Method  = "POST"
-        Headers = $script:_siemHeaders
-        Body    = $Body
+        Uri        = "$($script:_siemUrl)$Path"
+        Method     = "POST"
+        Headers    = $script:_siemHeaders
+        Body       = $Body
+        TimeoutSec = 30
     }
+    # -TimeoutSec caps a stalled call: without it, a single hung request to a
+    # loaded OpenSearch blocks the poll loop indefinitely, blowing the per-test
+    # deadline by tens of minutes (observed: 80+ min "waits").
     $resp = Invoke-RestMethod @splat -ErrorAction Stop
     return $resp
 }
@@ -251,9 +255,10 @@ function Test-AlertConnectivity {
         # Get field mapping for alerts index
         try {
             $mappingSplat = @{
-                Uri     = "$($script:_siemUrl)/tinysocs-alerts-*/_mapping"
-                Method  = "GET"
-                Headers = $script:_siemHeaders
+                Uri        = "$($script:_siemUrl)/tinysocs-alerts-*/_mapping"
+                Method     = "GET"
+                Headers    = $script:_siemHeaders
+                TimeoutSec = 30
             }
             $mappingResp = Invoke-RestMethod @mappingSplat -ErrorAction Stop
             # Extract first index mapping
@@ -298,65 +303,115 @@ function Get-HitRuleId {
     return $null
 }
 
+function Get-HitTimestamp {
+    # Returns the alert's event timestamp as a UTC [datetime], or
+    # [datetime]::MinValue if absent/unparseable. MinValue ensures a hit with no
+    # usable timestamp never passes a ">= test start" floor (fails closed).
+    param($Hit)
+    $src = $Hit._source
+    if (-not $src) { return [datetime]::MinValue }
+    $raw = $src.timestamp
+    if (-not $raw) { $raw = $src.'@timestamp' }
+    if (-not $raw) { return [datetime]::MinValue }
+    try {
+        return ([datetimeoffset]::Parse(
+            $raw, [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal
+        )).UtcDateTime
+    } catch {
+        return [datetime]::MinValue
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Query alerts with multi-strategy fallback
 # ---------------------------------------------------------------------------
 function Query-TinySocsAlerts {
     param(
         [string[]]$RuleIds,
-        [int]$LookbackMinutes = 30
+        [int]$LookbackMinutes = 30,
+        [datetime]$Since
     )
 
     Initialize-SiemConnection
 
-    # ── Strategy 1: Server-side term filter on alert.rule_id ──
-    # The field is mapped as keyword type directly (no .keyword sub-field needed).
+    # Detection floor: only alerts at/after the test's start instant count as a
+    # detection for THIS run. The index accumulates alerts across every prior run
+    # (15k+ docs spanning months), so a rule that fired yesterday must NOT register
+    # as detected today. Strategies 2 and 3 query without a server-side time range
+    # (for resilience to field-mapping quirks), which is exactly where stale alerts
+    # would leak in — so we enforce the floor client-side there. Strategy 1 enforces
+    # it server-side. Without -Since we fall back to a lookback window.
+    $sinceUtc = if ($Since) {
+        $Since.ToUniversalTime()
+    } else {
+        (Get-Date).ToUniversalTime().AddMinutes(-$LookbackMinutes)
+    }
+    $sinceIso = $sinceUtc.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+    $ruleFilter = ($RuleIds | ForEach-Object { "{`"term`":{`"alert.rule_id`":`"$_`"}}" }) -join ","
+
+    # Scope the search to the UTC day-index(es) covering [test start, now] instead
+    # of the tinysocs-alerts-* wildcard. The wildcard matches every daily index
+    # (~40 indices / 80 shards) and, on a 1GB-heap single node under concurrent
+    # ingest, query latency climbs past the client timeout — so polls return
+    # nothing and the harness reports false-negative MISSES even though the alert
+    # is in the index. Today's index is 1-2 shards; querying it is sub-second.
+    # We include yesterday's index too so a run that crosses UTC midnight is safe,
+    # and use ignore_unavailable so a not-yet-created day index doesn't 404.
+    $days = @($sinceUtc.Date, (Get-Date).ToUniversalTime().Date) | Select-Object -Unique
+    $indexList = ($days | ForEach-Object { "tinysocs-alerts-$($_.ToString('yyyy.MM.dd'))" }) -join ","
+    $searchPath = "/$indexList/_search?ignore_unavailable=true"
+
+    # ── Strategy 1: server-side term filter + timestamp >= test start ──
+    # alert.rule_id is mapped as keyword (no .keyword sub-field needed).
     try {
-        $ruleFilter = ($RuleIds | ForEach-Object { "{`"term`":{`"alert.rule_id`":`"$_`"}}" }) -join ","
         $body = @"
 {
   "size": 50,
   "query": {
     "bool": {
       "must": [
-        {"range": {"timestamp": {"gte": "now-${LookbackMinutes}m", "lte": "now"}}},
+        {"range": {"timestamp": {"gte": "$sinceIso"}}},
         {"bool": {"should": [$ruleFilter], "minimum_should_match": 1}}
       ]
     }
   }
 }
 "@
-        $resp = Invoke-SiemQuery -Path "/tinysocs-alerts-*/_search" -Body $body
+        $resp = Invoke-SiemQuery -Path $searchPath -Body $body
         $hits = @($resp.hits.hits)
         if ($hits.Count -gt 0) { return $hits }
     } catch {
         Write-Host "    Strategy 1 (term+range) failed: $($_.Exception.Message)" -ForegroundColor DarkGray
     }
 
-    # ── Strategy 2: Same rule filter but WITHOUT timestamp range ──
-    # Handles case where timestamp field is mapped as text (not date).
+    # ── Strategy 2: rule filter, no server-side range, time floor in client ──
+    # Defensive fallback if 'timestamp' is ever mapped as text (a range query
+    # would fail). We still enforce the test-start floor client-side so stale
+    # alerts from previous runs cannot register as a detection.
     try {
-        $ruleFilter2 = ($RuleIds | ForEach-Object { "{`"term`":{`"alert.rule_id`":`"$_`"}}" }) -join ","
         $body2 = @"
 {
   "size": 50,
+  "sort": [{"_doc": "desc"}],
   "query": {
     "bool": {
-      "should": [$ruleFilter2],
+      "should": [$ruleFilter],
       "minimum_should_match": 1
     }
   }
 }
 "@
-        $resp2 = Invoke-SiemQuery -Path "/tinysocs-alerts-*/_search" -Body $body2
-        $hits2 = @($resp2.hits.hits)
+        $resp2 = Invoke-SiemQuery -Path $searchPath -Body $body2
+        $hits2 = @($resp2.hits.hits | Where-Object { (Get-HitTimestamp $_) -ge $sinceUtc })
         if ($hits2.Count -gt 0) { return $hits2 }
     } catch {
-        Write-Host "    Strategy 2 (term, no range) failed: $($_.Exception.Message)" -ForegroundColor DarkGray
+        Write-Host "    Strategy 2 (term, client time filter) failed: $($_.Exception.Message)" -ForegroundColor DarkGray
     }
 
-    # ── Strategy 3: Fetch all alerts, match rule_id client-side ──
-    # Handles field name mismatches (camelCase vs snake_case, missing .keyword).
+    # ── Strategy 3: fetch recent alerts, match rule_id AND time client-side ──
+    # Handles field-name mismatches (camelCase vs snake_case). Time floor enforced
+    # client-side here too, for the same stale-alert reason as Strategy 2.
     try {
         $body3 = @"
 {
@@ -365,14 +420,14 @@ function Query-TinySocsAlerts {
   "query": {"match_all": {}}
 }
 "@
-        $resp3 = Invoke-SiemQuery -Path "/tinysocs-alerts-*/_search" -Body $body3
+        $resp3 = Invoke-SiemQuery -Path $searchPath -Body $body3
         $allHits = @($resp3.hits.hits)
 
         if ($allHits.Count -gt 0) {
             $matched = @()
             foreach ($hit in $allHits) {
                 $ruleId = Get-HitRuleId $hit
-                if ($ruleId -and ($RuleIds -contains $ruleId)) {
+                if ($ruleId -and ($RuleIds -contains $ruleId) -and ((Get-HitTimestamp $hit) -ge $sinceUtc)) {
                     $matched += $hit
                 }
             }
@@ -572,7 +627,11 @@ foreach ($test in $tests) {
     $testNum   = $test.atomic_test_number
     $rules     = $test.expected_rules
     $needsSysmon = $test.sysmon_required
-    $timeout   = if ($test.timeout_seconds) { $test.timeout_seconds } else { 120 }
+    # Default 300s: the detection engine stamps alerts with the triggering
+    # event time but writes them on its own evaluation cadence, so low-volume
+    # single-event detections can land 1-3 min after the attack. 120s was too
+    # tight and produced false-negative MISSES for alerts that did fire.
+    $timeout   = if ($test.timeout_seconds) { $test.timeout_seconds } else { 300 }
     $name      = $test.technique_name
     $testStart = Get-Date
 
@@ -728,7 +787,7 @@ foreach ($test in $tests) {
     $deadline = (Get-Date).AddSeconds($timeout)
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Seconds 15
-        $hits = Query-TinySocsAlerts -RuleIds $rules -LookbackMinutes 30
+        $hits = Query-TinySocsAlerts -RuleIds $rules -Since $testStart
         if ($hits.Count -gt 0) {
             $detected = @($hits | ForEach-Object { Get-HitRuleId $_ } | Where-Object { $_ } | Select-Object -Unique)
             break
@@ -916,9 +975,10 @@ $opensearchVersion = $null
 try {
     Initialize-SiemConnection
     $rootSplat = @{
-        Uri     = "$($script:_siemUrl)/"
-        Method  = "GET"
-        Headers = $script:_siemHeaders
+        Uri        = "$($script:_siemUrl)/"
+        Method     = "GET"
+        Headers    = $script:_siemHeaders
+        TimeoutSec = 30
     }
     $rootResp = Invoke-RestMethod @rootSplat -ErrorAction Stop
     if ($rootResp.version -and $rootResp.version.number) { $opensearchVersion = $rootResp.version.number }

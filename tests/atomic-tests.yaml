@@ -26,11 +26,11 @@ tests:
   - atomic_technique: "T1003.001"
     technique_name: "OS Credential Dumping - LSASS Memory"
     atomic_test_number: 1
-    expected_rules: ["TS-060", "TS-061"]
+    expected_rules: ["TS-060"]
     sysmon_required: true
     timeout_seconds: 120
     fallback_command: "Start-Process cmd.exe -ArgumentList '/c','tasklist /fi \"imagename eq lsass.exe\"' -Wait -ErrorAction SilentlyContinue; Start-Process cmd.exe -ArgumentList '/c','rundll32.exe comsvcs.dll MiniDump' -Wait -ErrorAction SilentlyContinue"
-    notes: "Triggers Sysmon Event 10 targeting lsass.exe. Requires admin. Fallback runs tasklist/rundll32 to generate 4688 events."
+    notes: "Triggers Sysmon Event 10 targeting lsass.exe (TS-060 is the technique-specific rule). Requires admin. TS-061 removed: it now matches only named dumping tools (mimikatz/procdump/etc.), which this fallback does not run; the rundll32/comsvcs LSASS-dump path is additionally covered by TS-135 if Sysmon 10 is unavailable. If TS-060 does not fire, treat as an honest gap, not a fallback pass."
 
   - atomic_technique: "T1059.001"
     technique_name: "Command and Scripting Interpreter - PowerShell"
@@ -44,12 +44,12 @@ tests:
   - atomic_technique: "T1053.005"
     technique_name: "Scheduled Task/Job - Scheduled Task"
     atomic_test_number: 1
-    expected_rules: ["TS-020", "TS-061", "TS-132"]
+    expected_rules: ["TS-020"]
     sysmon_required: false
     prefer_fallback: true
     timeout_seconds: 120
     fallback_command: "schtasks /create /tn \"TinySocs-ART-Test\" /tr \"cmd /c whoami\" /sc once /st 23:59 /f; Start-Sleep -Seconds 3; $evt4698 = Get-WinEvent -LogName Security -MaxEvents 100 -ErrorAction SilentlyContinue | Where-Object { $_.Id -eq 4698 }; if ($evt4698) { Write-Host \"DIAG: Event 4698 found ($($evt4698.Count) events)\" } else { Write-Host \"DIAG: Event 4698 NOT in Security log - audit policy may not be effective\" }; Start-Sleep -Seconds 2; schtasks /delete /tn \"TinySocs-ART-Test\" /f"
-    notes: "Creates a scheduled task, generating event 4698. TS-020 targets 4698 directly; TS-061/TS-132 detect schtasks.exe process creation (4688) as fallback. Agent may have XML parsing issue with 4698 TaskContent field."
+    notes: "Creates a scheduled task, generating event 4698. TS-020 targets 4698 directly. TS-061/TS-132 removed: they only matched schtasks.exe as generic process noise (TS-061 now filters to dump tools; TS-132 to certutil/bitsadmin). If TS-020 does not fire (suspected XML parsing issue with 4698 TaskContent), this is a genuine gap to postmortem, not a fallback pass."
 
   - atomic_technique: "T1547.001"
     technique_name: "Boot or Logon Autostart Execution - Registry Run Keys"
@@ -109,11 +109,11 @@ tests:
   - atomic_technique: "T1218.011"
     technique_name: "System Binary Proxy Execution - Rundll32"
     atomic_test_number: 1
-    expected_rules: ["TS-135", "TS-061", "TS-132"]
+    expected_rules: ["TS-135"]
     sysmon_required: false
     timeout_seconds: 120
-    fallback_command: "Start-Process rundll32.exe -ArgumentList 'url.dll,OpenURL','https://127.0.0.1:9999/not-real' -Wait -ErrorAction SilentlyContinue; Start-Process rundll32.exe -ArgumentList 'advpack.dll,LaunchINFSection' -Wait -ErrorAction SilentlyContinue"
-    notes: "Executes rundll32 with suspicious arguments. Detected via 4688 process creation (TS-135 preferred, TS-061/TS-132 fallback). Uses Start-Process to ensure 4688 events are generated."
+    fallback_command: "Start-Process rundll32.exe -ArgumentList 'url.dll,OpenURL','https://127.0.0.1:9999/not-real' -Wait -ErrorAction SilentlyContinue; Start-Process rundll32.exe -ArgumentList 'advpack.dll,LaunchINFSection' -Wait -ErrorAction SilentlyContinue; Start-Process rundll32.exe -ArgumentList 'shell32.dll,Control_RunDLL' -Wait -ErrorAction SilentlyContinue"
+    notes: "Executes rundll32 with suspicious arguments. TS-135 (LOLBin proxy execution) is the technique-specific rule and fires at threshold 3 on rundll32.exe; three Start-Process invocations clear it. TS-061/TS-132 removed: they previously credited a pass on generic process noise while TS-135 may not have fired (noise-blind attribution)."
 
   - atomic_technique: "T1003.003"
     technique_name: "OS Credential Dumping - NTDS"
@@ -133,8 +133,8 @@ tests:
     expected_rules: ["TS-130"]
     sysmon_required: false
     timeout_seconds: 120
-    fallback_command: "cmd /c 'net user' 2>$null; cmd /c 'net localgroup administrators' 2>$null; cmd /c 'whoami /all' 2>$null; cmd /c 'net localgroup' 2>$null"
-    notes: "Runs net user/localgroup/whoami. Generates 4688 events (threshold 3). Each cmd /c spawns a process. Removed 'net group' (DC-only)."
+    fallback_command: "cmd /c 'net user' 2>$null; cmd /c 'net localgroup administrators' 2>$null; cmd /c 'whoami /all' 2>$null; cmd /c 'net localgroup' 2>$null; cmd /c 'net accounts' 2>$null; cmd /c 'quser' 2>$null; cmd /c 'whoami /groups' 2>$null"
+    notes: "Runs a burst of account-enumeration binaries (net.exe x4, whoami.exe x2, quser.exe x1 = 7 matching 4688 process-creation events). TS-130 field_match restricts to these binaries; threshold 5 in 5min, grouped by SubjectUserName. Margin of 2 over threshold. Removed 'net group' (DC-only)."
 
   - atomic_technique: "T1018"
     technique_name: "Remote System Discovery"
@@ -184,8 +184,8 @@ tests:
   - atomic_technique: "T1047"
     technique_name: "Windows Management Instrumentation"
     atomic_test_number: 1
-    expected_rules: ["TS-136", "TS-061", "TS-132", "TS-134"]
+    expected_rules: ["TS-136"]
     sysmon_required: false
     timeout_seconds: 120
     fallback_command: "Invoke-WmiMethod -Class Win32_Process -Name Create -ArgumentList 'cmd /c whoami > %TEMP%\\art-wmi-test.txt' -ErrorAction SilentlyContinue; Start-Sleep -Seconds 5; Remove-Item $env:TEMP\\art-wmi-test.txt -ErrorAction SilentlyContinue"
-    notes: "WMI-spawned process. Parent is wmiprvse.exe. Generates 4688 events (TS-136 preferred, TS-061/TS-132/TS-134 fallback). Fallback uses PowerShell WMI cmdlet (wmic deprecated)."
+    notes: "WMI-spawned process (parent wmiprvse.exe), generates 4688. TS-136 (wmi_process_creation) is the technique-specific rule. TS-061/TS-132/TS-134 removed: they only credited a pass on generic process noise (TS-061 now filters to dump tools; TS-132 to certutil/bitsadmin; TS-134 to encoded-command patterns the benign whoami does not match). If TS-136 does not fire, treat as an honest gap."

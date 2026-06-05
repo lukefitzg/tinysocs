@@ -155,6 +155,8 @@ function Test-SysmonInstalled {
 # Shared credential + TLS setup (called once, cached in script scope)
 $script:_siemUrl  = $null
 $script:_siemHeaders = $null
+$script:_siemUser = $null
+$script:_siemPass = $null
 
 function Initialize-SiemConnection {
     if ($script:_siemUrl) { return }  # Already initialized
@@ -182,26 +184,103 @@ function Initialize-SiemConnection {
     $pair = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${siemUser}:${siemPass}"))
     $script:_siemUrl = $siemUrl
     $script:_siemHeaders = @{ "Authorization" = "Basic $pair"; "Content-Type" = "application/json" }
+    $script:_siemUser = $siemUser
+    $script:_siemPass = $siemPass
 
     Write-Host "[*] SIEM connection: url=$siemUrl, user=$siemUser, pass_len=$($siemPass.Length)"
 }
 
+# Transport for ALL OpenSearch calls. Uses curl.exe, not Invoke-RestMethod:
+# on PS 5.1 the .NET/Schannel TLS stack fails the handshake against this
+# OpenSearch endpoint ("The underlying connection was closed: An unexpected
+# error occurred on a send") even with TLS 1.2 forced and cert validation
+# bypassed. Query-TinySocsAlerts swallows that exception into an empty result,
+# silently turning real detections into false-negative MISSES (a prime suspect
+# for the bogus low efficacy). curl.exe -sk negotiates the same endpoint
+# reliably and is already the project's ground-truth tool, so the harness now
+# reads its results the same way an operator verifies them by hand.
+#
+# --max-time 30 caps a stalled call: without it a single hung request to a
+# loaded OpenSearch blocks the poll loop indefinitely (observed: 80+ min waits).
+function Invoke-SiemRequest {
+    param(
+        [ValidateSet('GET','POST')][string]$Method = 'POST',
+        [string]$Path,
+        [string]$Body
+    )
+    Initialize-SiemConnection
+
+    $url      = "$($script:_siemUrl)$Path"
+    $curlArgs = @('-sk', '--max-time', '30',
+                  '-u', "$($script:_siemUser):$($script:_siemPass)",
+                  '-X', $Method, $url)
+    $tmp = $null
+    if ($Body) {
+        $tmp = New-TemporaryFile
+        Set-Content -Path $tmp -Value $Body -Encoding ascii
+        $curlArgs += @('-H', 'Content-Type: application/json', '--data-binary', "@$tmp")
+    }
+    try {
+        $raw = (& curl.exe @curlArgs 2>$null) -join "`n"
+        if ($LASTEXITCODE -ne 0) { throw "curl.exe exited $LASTEXITCODE for $Method $Path" }
+        if ([string]::IsNullOrWhiteSpace($raw)) { throw "Empty response for $Method $Path" }
+        return ($raw | ConvertFrom-Json)
+    } finally {
+        if ($tmp) { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 function Invoke-SiemQuery {
     param([string]$Path, [string]$Body)
+    return Invoke-SiemRequest -Method POST -Path $Path -Body $Body
+}
 
+# ---------------------------------------------------------------------------
+# Readiness gate: block until OpenSearch is warm enough to query reliably.
+# ---------------------------------------------------------------------------
+# A cold node (just started, still recovering shards) answers /_search with
+# 503s or, worse, returns 200 with empty hits before shards are allocated --
+# which silently understates detection efficacy. This gate polls cluster
+# health and fails closed: callers should ABORT rather than publish a number
+# produced against a half-ready cluster.
+#
+# NOTE on status colour: a single-node cluster with the default 1 replica sits
+# at YELLOW permanently (replica shards have nowhere to go) and never reaches
+# GREEN. Waiting for green would hang forever, so we accept green OR yellow
+# once nothing is still initializing/relocating. RED = a primary is missing =>
+# not ready.
+function Wait-OpenSearchReady {
+    param(
+        [int]$TimeoutSec      = 300,
+        [int]$PollIntervalSec = 5
+    )
     Initialize-SiemConnection
-    $splat = @{
-        Uri        = "$($script:_siemUrl)$Path"
-        Method     = "POST"
-        Headers    = $script:_siemHeaders
-        Body       = $Body
-        TimeoutSec = 30
+    Write-Host ""
+    Write-Host "[*] Readiness gate: waiting for OpenSearch cluster to be queryable (timeout ${TimeoutSec}s)..."
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    $attempt  = 0
+    while ((Get-Date) -lt $deadline) {
+        $attempt++
+        try {
+            $health   = Invoke-SiemRequest -Method GET -Path "/_cluster/health"
+            $status   = "$($health.status)".ToLower()
+            $init     = [int]$health.initializing_shards
+            $reloc    = [int]$health.relocating_shards
+            $primary  = [int]$health.active_primary_shards
+
+            if (($status -eq 'green' -or $status -eq 'yellow') -and $init -eq 0 -and $reloc -eq 0) {
+                Write-Host "    Cluster READY: status=$status active_primary_shards=$primary initializing=0 relocating=0" -ForegroundColor Green
+                return $true
+            }
+            Write-Host "    [attempt $attempt] status=$status initializing=$init relocating=$reloc -- not ready, retry in ${PollIntervalSec}s..."
+        } catch {
+            Write-Host "    [attempt $attempt] cluster health unreachable ($($_.Exception.Message)) -- retry in ${PollIntervalSec}s..."
+        }
+        Start-Sleep -Seconds $PollIntervalSec
     }
-    # -TimeoutSec caps a stalled call: without it, a single hung request to a
-    # loaded OpenSearch blocks the poll loop indefinitely, blowing the per-test
-    # deadline by tens of minutes (observed: 80+ min "waits").
-    $resp = Invoke-RestMethod @splat -ErrorAction Stop
-    return $resp
+    Write-Warning "    Readiness gate TIMED OUT after ${TimeoutSec}s -- OpenSearch never became queryable."
+    return $false
 }
 
 # ---------------------------------------------------------------------------
@@ -254,13 +333,7 @@ function Test-AlertConnectivity {
 
         # Get field mapping for alerts index
         try {
-            $mappingSplat = @{
-                Uri        = "$($script:_siemUrl)/tinysocs-alerts-*/_mapping"
-                Method     = "GET"
-                Headers    = $script:_siemHeaders
-                TimeoutSec = 30
-            }
-            $mappingResp = Invoke-RestMethod @mappingSplat -ErrorAction Stop
+            $mappingResp = Invoke-SiemRequest -Method GET -Path "/tinysocs-alerts-*/_mapping"
             # Extract first index mapping
             $firstIdx = ($mappingResp | Get-Member -MemberType NoteProperty | Select-Object -First 1).Name
             if ($firstIdx) {
@@ -533,6 +606,16 @@ if (-not $DryRun) {
     if (-not (Get-Command Invoke-AtomicTest -ErrorAction SilentlyContinue)) {
         $artPsd1 = Join-Path $env:USERPROFILE "Documents\WindowsPowerShell\Modules\Invoke-AtomicRedTeam\Invoke-AtomicRedTeam.psd1"
         if (Test-Path $artPsd1) { Import-Module $artPsd1 -Force }
+    }
+}
+
+# Readiness gate: block until OpenSearch is warm before any queries run.
+# Fail CLOSED -- a half-ready cluster yields false-low efficacy, and an
+# invalid number published to the public dashboard is worse than no run.
+if (-not $DryRun) {
+    if (-not (Wait-OpenSearchReady -TimeoutSec 300)) {
+        Write-Error "OpenSearch did not reach a queryable state within the readiness timeout. Aborting before any tests run to avoid publishing an invalid efficacy number."
+        exit 2
     }
 }
 
@@ -973,14 +1056,7 @@ if (Test-Path $versionFile) {
 # OpenSearch version via the cluster root (uses the same creds as the queries)
 $opensearchVersion = $null
 try {
-    Initialize-SiemConnection
-    $rootSplat = @{
-        Uri        = "$($script:_siemUrl)/"
-        Method     = "GET"
-        Headers    = $script:_siemHeaders
-        TimeoutSec = 30
-    }
-    $rootResp = Invoke-RestMethod @rootSplat -ErrorAction Stop
+    $rootResp = Invoke-SiemRequest -Method GET -Path "/"
     if ($rootResp.version -and $rootResp.version.number) { $opensearchVersion = $rootResp.version.number }
 } catch { }
 

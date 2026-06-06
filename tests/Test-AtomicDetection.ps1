@@ -35,7 +35,18 @@ param(
     [switch]$SkipInstall,
     [Nullable[bool]]$SysmonAvailable,
     [switch]$DryRun,
-    [string]$OutputJson
+    [string]$OutputJson,
+    # Diagnostic: skip the whole attack suite and just exercise the alert read
+    # path for one rule against alerts already in the index. Reproduces the exact
+    # Query-TinySocsAlerts code path the poll loop uses, with -Since set the same
+    # way ($testStart = local Get-Date). Use to isolate read-path bugs without a
+    # 50-minute suite run. Example: -SelfTestRule TS-130
+    [string]$SelfTestRule,
+    [int]$SelfTestLookbackHours = 3,
+    # Diagnostic: run only the test(s) for this ATT&CK technique id (e.g.
+    # -OnlyTechnique T1087.001). Lets a single attack run live in ~3 min instead
+    # of the full ~50 min suite, for debugging the live poll loop.
+    [string]$OnlyTechnique
 )
 
 $ErrorActionPreference = "Stop"
@@ -435,12 +446,30 @@ function Query-TinySocsAlerts {
     $indexList = ($days | ForEach-Object { "tinysocs-alerts-$($_.ToString('yyyy.MM.dd'))" }) -join ","
     $searchPath = "/$indexList/_search?ignore_unavailable=true"
 
+    if ($env:TSDEBUG) {
+        Write-Host "    [DBG] sinceIso=$sinceIso" -ForegroundColor Cyan
+        Write-Host "    [DBG] searchPath=$searchPath" -ForegroundColor Cyan
+        Write-Host "    [DBG] ruleFilter=$ruleFilter" -ForegroundColor Cyan
+    }
+
+    # CRITICAL: every alert doc carries a large `matched_events` array (the raw
+    # events that tripped the threshold). Fetching it makes each doc multi-KB-to-MB,
+    # and PS 5.1's ConvertFrom-Json on that payload is pathologically slow (the
+    # 30-45 min "hang" seen in prior runs). It also pushes the search past curl's
+    # --max-time, so the request silently times out and the harness reports a
+    # false-negative MISS even though the alert is in the index. We never need the
+    # raw events here — only rule_id + timestamp — so we strip _source to those two
+    # fields. This is the single most important correctness fix in the read path.
+    $sourceFilter = '"_source": ["alert.rule_id", "timestamp"],'
+
     # ── Strategy 1: server-side term filter + timestamp >= test start ──
-    # alert.rule_id is mapped as keyword (no .keyword sub-field needed).
+    # alert.rule_id is mapped as keyword (no .keyword sub-field needed). With
+    # _source stripped this returns in well under a second even on the bloated docs.
     try {
         $body = @"
 {
   "size": 50,
+  $sourceFilter
   "query": {
     "bool": {
       "must": [
@@ -453,19 +482,26 @@ function Query-TinySocsAlerts {
 "@
         $resp = Invoke-SiemQuery -Path $searchPath -Body $body
         $hits = @($resp.hits.hits)
+        if ($env:TSDEBUG) {
+            Write-Host "    [DBG] Strategy 1 total=$($resp.hits.total.value) returned=$($hits.Count)" -ForegroundColor Cyan
+        }
         if ($hits.Count -gt 0) { return $hits }
     } catch {
-        Write-Host "    Strategy 1 (term+range) failed: $($_.Exception.Message)" -ForegroundColor DarkGray
+        $msg = $_.Exception.Message
+        if ($env:TSDEBUG) { Write-Host "    [DBG] Strategy 1 THREW: $msg" -ForegroundColor Red }
+        else { Write-Host "    Strategy 1 (term+range) failed: $msg" -ForegroundColor DarkGray }
     }
 
     # ── Strategy 2: rule filter, no server-side range, time floor in client ──
     # Defensive fallback if 'timestamp' is ever mapped as text (a range query
     # would fail). We still enforce the test-start floor client-side so stale
-    # alerts from previous runs cannot register as a detection.
+    # alerts from previous runs cannot register as a detection. _source is stripped
+    # here too, so this stays fast.
     try {
         $body2 = @"
 {
   "size": 50,
+  $sourceFilter
   "sort": [{"_doc": "desc"}],
   "query": {
     "bool": {
@@ -482,37 +518,11 @@ function Query-TinySocsAlerts {
         Write-Host "    Strategy 2 (term, client time filter) failed: $($_.Exception.Message)" -ForegroundColor DarkGray
     }
 
-    # ── Strategy 3: fetch recent alerts, match rule_id AND time client-side ──
-    # Handles field-name mismatches (camelCase vs snake_case). Time floor enforced
-    # client-side here too, for the same stale-alert reason as Strategy 2.
-    try {
-        $body3 = @"
-{
-  "size": 500,
-  "sort": [{"_doc": "desc"}],
-  "query": {"match_all": {}}
-}
-"@
-        $resp3 = Invoke-SiemQuery -Path $searchPath -Body $body3
-        $allHits = @($resp3.hits.hits)
-
-        if ($allHits.Count -gt 0) {
-            $matched = @()
-            foreach ($hit in $allHits) {
-                $ruleId = Get-HitRuleId $hit
-                if ($ruleId -and ($RuleIds -contains $ruleId) -and ((Get-HitTimestamp $hit) -ge $sinceUtc)) {
-                    $matched += $hit
-                }
-            }
-            if ($matched.Count -gt 0) {
-                Write-Host "    (Matched via client-side filter on $($allHits.Count) alerts)" -ForegroundColor DarkGray
-                return $matched
-            }
-        }
-    } catch {
-        Write-Host "    Strategy 3 (match_all + client filter) failed: $($_.Exception.Message)" -ForegroundColor DarkGray
-    }
-
+    # NOTE: a former Strategy 3 fetched match_all size:500 and filtered client-side.
+    # It was the source of the 30-45 min ConvertFrom-Json hangs and is removed.
+    # Strategies 1 and 2 both target alert.rule_id directly, so a match_all sweep
+    # adds nothing but payload. If both miss, the alert genuinely is not in the
+    # day-index(es) for this rule at/after test start -> a true negative.
     return @()
 }
 
@@ -521,6 +531,26 @@ function Query-TinySocsAlerts {
 # ---------------------------------------------------------------------------
 # Ensure TLS 1.2 for all outbound HTTPS (PS 5.1 defaults to old TLS)
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+# ---------------------------------------------------------------------------
+# Self-test: exercise the alert read path for one rule, then exit. No attacks.
+# Reproduces the poll-loop call exactly: -Since = local Get-Date (as $testStart),
+# routed through the real Query-TinySocsAlerts so any read-path bug surfaces here.
+# ---------------------------------------------------------------------------
+if ($SelfTestRule) {
+    $env:TSDEBUG = "1"
+    Write-Host ""
+    Write-Host "[SELFTEST] read-path check for $SelfTestRule (lookback ${SelfTestLookbackHours}h)" -ForegroundColor Cyan
+    $stSince = (Get-Date).AddHours(-$SelfTestLookbackHours)   # local, like $testStart
+    Write-Host "[SELFTEST] -Since (local) = $($stSince.ToString('o'))  Kind=$($stSince.Kind)" -ForegroundColor Cyan
+    $stHits = @(Query-TinySocsAlerts -RuleIds @($SelfTestRule) -Since $stSince)
+    Write-Host "[SELFTEST] Query-TinySocsAlerts returned $($stHits.Count) hit(s)" -ForegroundColor Cyan
+    foreach ($h in $stHits) {
+        Write-Host "    $(Get-HitRuleId $h)  $((Get-HitTimestamp $h).ToString('o'))"
+    }
+    Remove-Item Env:\TSDEBUG -ErrorAction SilentlyContinue
+    exit 0
+}
 
 Write-Host ""
 Write-Host "=============================================="
@@ -707,6 +737,7 @@ function New-TestResult {
 $results = @()
 foreach ($test in $tests) {
     $technique = $test.atomic_technique
+    if ($OnlyTechnique -and ($technique -ne $OnlyTechnique)) { continue }
     $testNum   = $test.atomic_test_number
     $rules     = $test.expected_rules
     $needsSysmon = $test.sysmon_required
@@ -754,6 +785,18 @@ foreach ($test in $tests) {
                     $skipReq = $true; $skipMsg = "Cannot determine Tamper Protection status (assuming enabled)"
                 }
             }
+            "defender_rtp_disabled" {
+                # Defender RTP scans AMSI bypass scripts at command-line load and blocks them
+                # before 4104 ScriptBlock logging captures them. Faithfully exercising a real
+                # AMSI bypass requires Defender RTP disabled (or AMSI development off).
+                try {
+                    $rtpOn = -not [bool](Get-MpPreference -ErrorAction Stop).DisableRealtimeMonitoring
+                    if ($rtpOn) { $skipReq = $true; $skipMsg = "Defender real-time protection blocks Atomic AMSI bypass scripts at AMSI scan; faithful test requires Defender RTP disabled" }
+                } catch {
+                    # If we can't check, assume RTP is on (safer to skip)
+                    $skipReq = $true; $skipMsg = "Cannot determine Defender RTP status (assuming enabled)"
+                }
+            }
             default {
                 $skipReq = $true; $skipMsg = "Unknown requirement: $requires"
             }
@@ -788,7 +831,18 @@ foreach ($test in $tests) {
     if ($preferFallback -and $fallbackCmd) {
         Write-Host "  Skipping ART test (prefer_fallback=true), using fallback command..."
         try {
-            Invoke-Expression $fallbackCmd
+            # Fallbacks are fire-and-forget attack simulations: their job is to
+            # GENERATE events (often failed logons, denied access, missing-service
+            # errors), not to succeed cleanly. Native tools like net.exe write
+            # "System error 1326" to stderr on the very failed logons the brute-force
+            # test is designed to produce. Under the script-global
+            # ErrorActionPreference='Stop', PS 5.1 promotes that native stderr to a
+            # TERMINATING error, so a working simulation gets miscounted as a harness
+            # ERROR. Drop to 'Continue' for the duration of the fallback so expected
+            # attack noise never aborts the run.
+            $savedEAP = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            try { Invoke-Expression $fallbackCmd } finally { $ErrorActionPreference = $savedEAP }
             $usedFallback = $true
             $artSucceeded = $true  # Treat fallback success as test success
             Write-Host "  Fallback command executed. Waiting for detection pipeline..."
@@ -845,7 +899,11 @@ foreach ($test in $tests) {
         if ($fallbackCmd -and $needsFallback) {
             Write-Host "  ART test failed ($artError). Using fallback command..." -ForegroundColor Yellow
             try {
-                Invoke-Expression $fallbackCmd
+                # See prefer_fallback branch above: expected native attack noise
+                # (failed logons, denied access) must not abort under EAP='Stop'.
+                $savedEAP = $ErrorActionPreference
+                $ErrorActionPreference = 'Continue'
+                try { Invoke-Expression $fallbackCmd } finally { $ErrorActionPreference = $savedEAP }
                 $usedFallback = $true
                 Write-Host "  Fallback command executed. Waiting for detection pipeline..."
             } catch {
@@ -870,7 +928,12 @@ foreach ($test in $tests) {
     $deadline = (Get-Date).AddSeconds($timeout)
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Seconds 15
-        $hits = Query-TinySocsAlerts -RuleIds $rules -Since $testStart
+        # @() is load-bearing: when Query-TinySocsAlerts returns a SINGLE hit,
+        # PowerShell unwraps the one-element array into a bare PSCustomObject on
+        # return, and $hits.Count on that scalar does not satisfy '-gt 0'. That
+        # silently turned every single-rule detection (the common case) into a
+        # false MISS while multi-hit tests detected fine. Wrapping forces an array.
+        $hits = @(Query-TinySocsAlerts -RuleIds $rules -Since $testStart)
         if ($hits.Count -gt 0) {
             $detected = @($hits | ForEach-Object { Get-HitRuleId $_ } | Where-Object { $_ } | Select-Object -Unique)
             break

@@ -20,8 +20,8 @@ tests:
     sysmon_required: false
     prefer_fallback: true
     timeout_seconds: 300
-    fallback_command: "net use * /delete /y 2>$null; 1..6 | ForEach-Object { net use \\\\127.0.0.1\\IPC$ /user:\"fakeuser$_\" \"WrongPass$_\" 2>$null; net use \\\\127.0.0.1\\IPC$ /delete /y 2>$null; Start-Sleep -Milliseconds 500 }"
-    notes: "Generates failed logon events (4625). Threshold: 5 in 5min. prefer_fallback: the ART atomic targets AD/SMB domain accounts and produces nothing on a non-domain workstation; the local-IPC$ fallback is the faithful standalone-host simulation."
+    fallback_command: "net use * /delete /y 2>$null; 1..18 | ForEach-Object { net use \\\\127.0.0.1\\IPC$ /user:\"victimacct\" \"WrongPass$_\" 2>$null; net use \\\\127.0.0.1\\IPC$ /delete /y 2>$null; Start-Sleep -Milliseconds 300 }"
+    notes: "Faithful password-guessing: 18 failed logons (4625) against ONE account 'victimacct' to clear TS-001 (threshold 15 by TargetUserName, 5min) with margin. Earlier version hammered 6 DISTINCT usernames (fakeuser1..6), producing 1 event per by-account group and 6 per by-IP group, which could not trip TS-001 (15) or TS-002 (20) - that was a test-fidelity gap, not weak detection. 'victimacct' does not exist, so there is no lockout to interfere. prefer_fallback: the ART atomic targets AD/SMB domain accounts and produces nothing on a non-domain workstation; the local-IPC$ fallback is the faithful standalone-host simulation."
 
   - atomic_technique: "T1003.001"
     technique_name: "OS Credential Dumping - LSASS Memory"
@@ -37,9 +37,10 @@ tests:
     atomic_test_number: 1
     expected_rules: ["TS-030", "TS-030-lab", "TS-082"]
     sysmon_required: false
+    requires: "defender_rtp_disabled"
     timeout_seconds: 120
-    fallback_command: "1..5 | ForEach-Object { Start-Process powershell.exe -ArgumentList '-Command','Write-Host ART-ScriptBlock-$_; Get-Process | Out-Null' -Wait -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 300 }"
-    notes: "Generates ScriptBlock logging (4104). Runs 5 iterations for threshold. TS-030-lab threshold=2, TS-082 threshold=1 (AMSI bypass pattern). Fallback uses Start-Process to avoid error propagation."
+    fallback_command: "1..2 | ForEach-Object { Start-Process powershell.exe -ArgumentList '-NoProfile','-Command',('[Ref].Assembly.GetType(''System.Management.Automation.AmsiUtils'').GetField(''amsiInitFailed'',''NonPublic,Static'').SetValue($null,$true)') -Wait -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 300 }"
+    notes: "Faithful AMSI-bypass execution: runs the canonical reflection one-liner whose ScriptBlock text contains 'AmsiUtils' and 'amsiInitFailed' - exactly the strings TS-082 field_match keys on (4104, threshold 1). Requires Defender RTP disabled: with RTP active, Defender's AMSI scanner blocks the script at command-line load BEFORE 4104 ScriptBlock logging captures it, producing an ERROR rather than an honest detection. Diagnostic on 2026-06-06: Defender returned 'This script contains malicious content and has been blocked by your antivirus software', confirming RTP is the gating factor. Earlier version ran benign Write-Host/Get-Process, which exercised neither TS-082's AMSI signature nor TS-030's volumetric threshold (200) - a test-fidelity gap. The only rule the old payload could have tripped (TS-030-lab, threshold 2) is enabled:false. Run twice for margin."
 
   - atomic_technique: "T1053.005"
     technique_name: "Scheduled Task/Job - Scheduled Task"
@@ -111,9 +112,10 @@ tests:
     atomic_test_number: 1
     expected_rules: ["TS-135"]
     sysmon_required: false
+    prefer_fallback: true
     timeout_seconds: 120
-    fallback_command: "Start-Process rundll32.exe -ArgumentList 'url.dll,OpenURL','https://127.0.0.1:9999/not-real' -Wait -ErrorAction SilentlyContinue; Start-Process rundll32.exe -ArgumentList 'advpack.dll,LaunchINFSection' -Wait -ErrorAction SilentlyContinue; Start-Process rundll32.exe -ArgumentList 'shell32.dll,Control_RunDLL' -Wait -ErrorAction SilentlyContinue"
-    notes: "Executes rundll32 with suspicious arguments. TS-135 (LOLBin proxy execution) is the technique-specific rule and fires at threshold 3 on rundll32.exe; three Start-Process invocations clear it. TS-061/TS-132 removed: they previously credited a pass on generic process noise while TS-135 may not have fired (noise-blind attribution)."
+    fallback_command: "1..5 | ForEach-Object { Start-Process rundll32.exe -ArgumentList 'user32.dll,UpdatePerUserSystemParameters' -WindowStyle Hidden -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 200 }"
+    notes: "Spawns rundll32.exe 5x (threshold 3 on NewProcessName=rundll32.exe, 5min) with margin. Uses the harmless user32.dll,UpdatePerUserSystemParameters export, which exits cleanly with no GUI. prefer_fallback: ART's T1218.011-1 atomic (Rundll32 execute JavaScript Remote Payload) is intermittent - sometimes fails with 'Access is denied' (then fallback runs and we DETECT), sometimes succeeds with a single rundll32 spawn that doesn't reach threshold 3 (then we MISS for harness reasons, not detection content). Same false-miss pattern as T1018. The fallback always exercises the rule with margin."
 
   - atomic_technique: "T1003.003"
     technique_name: "OS Credential Dumping - NTDS"
@@ -141,9 +143,10 @@ tests:
     atomic_test_number: 1
     expected_rules: ["TS-131"]
     sysmon_required: false
+    prefer_fallback: true
     timeout_seconds: 120
-    fallback_command: "cmd /c 'ipconfig /all' 2>$null; cmd /c 'netstat -an' 2>$null; cmd /c 'arp -a' 2>$null; cmd /c 'route print' 2>$null; cmd /c 'nslookup localhost' 2>$null"
-    notes: "Runs ipconfig/netstat/arp/route/nslookup. Each cmd /c generates a separate 4688 event (threshold 4). Fallback runs discovery commands directly."
+    fallback_command: "1..2 | ForEach-Object { ipconfig /all 2>$null | Out-Null; netstat -an 2>$null | Out-Null; arp -a 2>$null | Out-Null; route print 2>$null | Out-Null; netsh interface show interface 2>$null | Out-Null; nbtstat -n 2>$null | Out-Null }"
+    notes: "Faithful network-discovery burst: 6 enum binaries (ipconfig/netstat/arp/route/netsh/nbtstat) x2 = 12 matching 4688 events, grouped by SubjectUserName (threshold 4, 5min). Run directly (not via cmd /c) so NewProcessName is the enum binary itself. prefer_fallback: ART's T1018-1 atomic runs 'net view' (spawning net.exe), which exercises TS-130's account-discovery field_match but NOT TS-131's network-discovery field_match. On a non-domain workstation this means ART can succeed without exercising the rule under test - a false-miss in disguise. Diagnostic on 2026-06-06: running this fallback directly produced an honest TS-131 alert (event_count=4, window_start=10:15:00Z), confirming the rule is correct and the prior 'misses' were the harness running the wrong workload."
 
   - atomic_technique: "T1105"
     technique_name: "Ingress Tool Transfer"

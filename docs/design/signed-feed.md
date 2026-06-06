@@ -47,11 +47,16 @@ Rationale for JSON-not-YAML canonicalisation: YAML has too many ways to represen
 - `metadata.signature.algorithm: ed25519` (already in the v2 envelope).
 - 64-byte signature, base64-encoded into `metadata.signature.value`.
 - `metadata.signature.key_id` names the keypair (e.g. `tinysocs-2026`), enabling rotation (Part 5).
-- Library: `cryptography` (Python, vendor side); the C# agent verifies with .NET's `System.Security.Cryptography` ed25519 (or BouncyCastle if the target framework lacks it — implementation detail for the C# gap).
+- Library: `cryptography` (Python, vendor side); the C# agent verifies with **BouncyCastle.Cryptography** (MIT) — .NET 8's BCL has no Ed25519. *Implemented:* `src/TinySocs.Agent/Detection/{Ed25519Verifier,PackLoader,LicenceReader}.cs`.
 
-### Detached signature
+### Detached signature and the canonical sidecar
 
-Alongside the in-band `metadata.signature.value`, the signer also emits a detached `pack.yml.sig` (raw 64-byte signature, base64). The in-band signature is canonical and is what the agent verifies; the detached `.sig` exists for out-of-band tooling and CDN/object-store integrity checks. They are the same bytes.
+Alongside the in-band `metadata.signature.value`, the signer (`scripts/pack_sign.py`) emits two sidecars:
+
+- `pack.yml.sig` — the raw 64-byte signature (base64), for out-of-band tooling and CDN/object-store integrity checks.
+- `pack.yml.canonical` — **the exact canonical bytes that were signed.**
+
+The agent verifies and loads rules from `pack.yml.canonical`, *not* by reconstructing the canonical JSON from `pack.yml`. This was a deliberate refinement (2026-06-06): asking the C# verifier to reproduce Python's `json.dumps` byte-for-byte from YAML is fragile (PyYAML vs YamlDotNet scalar-type inference, future floats/unicode/big-ints would silently break verification). Signing and verifying the *same persisted byte string* removes all cross-language canonicalisation risk. The YAML stays the human-readable in-repo source; the `.canonical` JSON is the machine trust path. Proven end-to-end: Python `cryptography` signs, C# `BouncyCastle` verifies, byte-identical.
 
 ### What is NOT signed
 
@@ -292,9 +297,11 @@ Subscription lifecycle → key lifecycle:
 | Licence token mint/verify + `entitlement()` (`scripts/licence.py`) | **build** | pure local logic; demo-able; no secrets/network |
 | Feed HTTP server + entitlement enforcement | design-only | static delivery is trivial; the *auth layer* is the licensing boundary — design-first |
 | Stripe webhook → key issuance | design-only | external service, webhook-signature secrets — design-first, don't part-time-slam |
-| C# agent pack-load/verify integration | design-only | depends on the v2 C# loader work (separate gap) |
+| C# agent pack-load/verify integration | **build** (2026-06-06) | the agent now verifies a signed pack and refuses tampered/untrusted content; reads tier from the licence offline |
 
 The built pieces let a founder watch, on the CLI: **migrate the 39 live rules into a signed `base` pack → verify it → tamper one byte and watch verification reject it → check that a `pro` key unlocks `m365-pack` while a `free` key gets only the lagged `base` snapshot.** That is the revenue mechanic, demonstrated end-to-end, without a server or a Stripe account.
+
+As of 2026-06-06 the **C# agent itself** is on the trust path: with `detection.pack.enabled`, `OpenSearchBulkShipper` loads rules via `PackLoader`, which ed25519-verifies the signed `.canonical` bytes, pins the signing `key_id`, gates by licence entitlement, and **refuses to load (leaves rules unchanged) on any verification failure**. So the story is no longer "scripts prove the protocol" — the running agent enforces it. Still design-only: the feed HTTP server and the Stripe webhook (both vendor-side, not needed for the founder demo).
 
 ---
 

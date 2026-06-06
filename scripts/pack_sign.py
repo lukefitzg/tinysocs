@@ -4,7 +4,9 @@
 Implements the signing protocol in docs/design/signed-feed.md -> "What gets
 signed": the signature covers a canonical JSON serialisation of the pack with
 metadata.signature.value cleared. The signature is stored in-band
-(metadata.signature) and as a detached pack.yml.sig.
+(metadata.signature) and as a detached pack.yml.sig. The exact signed bytes are
+also written to pack.yml.canonical so the agent can verify + load that one byte
+string instead of reconstructing it from YAML (no cross-language drift).
 
 This is the trust primitive of the content feed: a customer's agent ships the
 public key and refuses any pack whose signature does not verify.
@@ -131,7 +133,8 @@ def cmd_sign(args) -> int:
         "value": "",
     }
     priv = load_private(Path(args.key_dir), args.key_id)
-    sig = priv.sign(canonical_bytes(pack))
+    signed_bytes = canonical_bytes(pack)
+    sig = priv.sign(signed_bytes)
     sig_b64 = base64.b64encode(sig).decode()
     pack["metadata"]["signature"]["value"] = sig_b64
 
@@ -140,9 +143,14 @@ def cmd_sign(args) -> int:
         encoding="utf-8",
     )
     (pack_path.parent / (pack_path.name + ".sig")).write_text(sig_b64, encoding="utf-8")
+    # Persist the exact bytes that were signed. The agent verifies + loads from
+    # THIS file (not the YAML), so cross-language canonicalisation can never
+    # drift -- you sign and verify the same byte string. See signed-feed.md.
+    (pack_path.parent / (pack_path.name + ".canonical")).write_bytes(signed_bytes)
 
     print(f"signed {_rel(pack_path)} with {args.key_id!r}")
-    print(f"  detached: {pack_path.name}.sig")
+    print(f"  detached:  {pack_path.name}.sig")
+    print(f"  canonical: {pack_path.name}.canonical  (agent loads this)")
     return 0
 
 

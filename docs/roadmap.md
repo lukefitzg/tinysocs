@@ -24,16 +24,18 @@ This budget is why sequencing is ruthless: ship increments a customer can *see*,
 
 ## The gaps, sequenced
 
-Sequencing is locked. State as of 2026-06-05.
+Sequencing is locked. State as of **2026-06-06**.
 
 | # | Gap | State | Detail / design | Dependency |
 |---|-----|-------|-----------------|------------|
-| 1 | **Rule format v2** — unified, `runs_on`-aware schema | design-approved, not implemented | `docs/design/rule-format-v2.md` | Keystone — feed (#3) depends on the schema being stable |
+| 1 | **Rule format v2** — unified, `runs_on`-aware schema | **schema locked; migration + C# loader built** | `docs/design/rule-format-v2.md`; `scripts/migrate_rules_to_v2.py`; C# `PackLoader` | Keystone — feed (#3) depends on the schema being stable |
 | 2 | **Continuous validation pipeline** — public weekly Atomic Red Team results | largely built; **blocked on a clean run + honest number** | `docs/design/continuous-validation.md`; harness `tests/Test-AtomicDetection.ps1`; dashboard `site/validation/`; CI `.github/workflows/pages.yml` | Runs in parallel with #1; schema-invariant by design |
-| 3 | **Signed rules feed** — signed, version-pinned, auto-delivered content | not started | *(no design doc yet)* | Needs #1 schema stable |
-| 4 | **Stripe + licence-key gate** — paywall the feed | not started | *(no design doc yet)* | Pairs with #3 |
-| 5 | **TinyDocs** — per-rule knowledge base, top ~20 most-visible rules | not started | *(no design doc yet)* | Independent; can start anytime |
+| 3 | **Signed rules feed** — signed, version-pinned, auto-delivered content | **trust core built + agent enforces it; feed HTTP server design-only** | `docs/design/signed-feed.md`; `scripts/pack_sign.py`; C# `Ed25519Verifier`/`PackLoader` | Needs #1 schema stable |
+| 4 | **Stripe + licence-key gate** — paywall the feed | **licence mint/verify + entitlement + Stripe price→tier resolver built; agent reads tier offline; webhook design-only** | `docs/design/signed-feed.md` Parts 4–6; `scripts/licence.py`; `scripts/stripe_pricing.py`; C# `LicenceReader` | Pairs with #3 |
+| 5 | **TinyDocs** — per-rule knowledge base, top ~20 most-visible rules | **top-20 published; scaffolder built** | `tinydocs/`; `scripts/scaffold_tinydocs.py` | Independent; can start anytime |
 | 6 | **Documented content cadence** — 1 new rule + 1 tuning patch / week | not started (process doc, not code) | *(no doc yet)* | Independent; needs the feed (#3) to deliver against |
+
+**Progress since 2026-06-05 (this branch).** The keystone schema is locked and the *mechanical* feed/licensing layer is built and proven end-to-end on the CLI **and inside the C# agent**: the agent now ed25519-verifies a signed pack, pins the signing `key_id`, gates by licence entitlement, and refuses tampered/untrusted content (`src/TinySocs.Agent/Detection/{Ed25519Verifier,PackLoader,LicenceReader}.cs`, wired through `OpenSearchBulkShipper`). What remains for #3/#4 is **vendor-side and not needed for the founder demo**: the feed HTTP server (mint endpoint + signed URLs, designed in `signed-feed.md` Part 4.5) and the Stripe webhook that mints keys on `subscription.created` (`signed-feed.md` Part 6). Deferred still-deferred: content cadence (#6), premium-pack tiering enforcement, backend KQL engine (v2.1).
 
 **Count note:** `CLAUDE.md` calls these "the 8 strategic gaps" but enumerates 6 active + 3 deferred. The referenced "strategic brief" is not checked into the repo, so the canonical list of 8 can't be reconciled here. Treat this table as authoritative until the brief surfaces; reconcile then.
 
@@ -92,7 +94,7 @@ The pre-pivot planning notes (Oct–Dec 2025) carried a feature-expansion roadma
 ## Open questions
 
 - **Where does the canonical "strategic brief" live, and does it define 8 gaps or 6?** Until it's in the repo, this doc is the de facto plan and the count is unreconciled.
-- **Do gaps #3-#6 need their own design docs before work starts?** #1 and #2 each got one; the feed and licensing layer are at least as load-bearing and currently have none. Strong case for a `docs/design/signed-feed.md` before any C#/protocol code.
+- ~~**Do gaps #3-#6 need their own design docs before work starts?**~~ **Resolved (2026-06-06):** `docs/design/signed-feed.md` now covers #3 + #4 (what's signed, distribution/versioning, client verify, licence + entitlement, feed-server auth, Stripe→issuance, key rotation). #6 is a process doc, still to write.
 - **What's the minimum publishable validation result?** Is a single warm-run honest number enough to go public, or do we want N consecutive stable weeks first?
 - **TinyDocs (#5) is independent — does it jump the queue?** It's customer-visible, low-risk, and unblocks nothing else, which makes it a good "spare-evening" task while #1/#3 designs settle.
 - **How do the historical phase notes (Google Drive) map onto these 6 gaps?** Pending import — may surface gaps or decisions not captured here.

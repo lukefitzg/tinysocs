@@ -63,6 +63,10 @@ namespace TinySocs.Agent.Detection
     {
         public string Field { get; set; } = string.Empty;
         public List<string> Values { get; set; } = new();
+
+        // How a value matches the field: "contains" (case-insensitive substring,
+        // the default and what all v1 rules used) or "exact" (full equality).
+        public string Match { get; set; } = "contains";
     }
 
     public sealed class RulesFile

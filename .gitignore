@@ -93,6 +93,13 @@ data/queue-rot/*
 !data/queue-rot/.gitkeep
 data/actions_queue.json
 data/actions_queue.jsonl
+data/feed/
+
+# Pack signing artifacts are regenerated from the signing key at build/demo time.
+# Until a real (non-demo) signing key exists, do not commit signatures tied to a
+# throwaway key. signed-feed.md: the real release commits .sig signed by the real key.
+packs/**/*.sig
+packs/**/*.canonical
 
 # -----------------------
 # Bundled vendor bins you DO want tracked
@@ -184,3 +191,8 @@ logs/*.raw.txt
 *.swp
 *.swo
 *.orig
+
+# Continuous validation dashboard data (built in CI by
+# scripts/build_validation_summary.py from results/*.json; never committed)
+# -----------------------
+site/validation/data/summary.json

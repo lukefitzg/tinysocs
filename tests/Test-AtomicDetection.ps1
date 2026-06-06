@@ -35,7 +35,18 @@ param(
     [switch]$SkipInstall,
     [Nullable[bool]]$SysmonAvailable,
     [switch]$DryRun,
-    [string]$OutputJson
+    [string]$OutputJson,
+    # Diagnostic: skip the whole attack suite and just exercise the alert read
+    # path for one rule against alerts already in the index. Reproduces the exact
+    # Query-TinySocsAlerts code path the poll loop uses, with -Since set the same
+    # way ($testStart = local Get-Date). Use to isolate read-path bugs without a
+    # 50-minute suite run. Example: -SelfTestRule TS-130
+    [string]$SelfTestRule,
+    [int]$SelfTestLookbackHours = 3,
+    # Diagnostic: run only the test(s) for this ATT&CK technique id (e.g.
+    # -OnlyTechnique T1087.001). Lets a single attack run live in ~3 min instead
+    # of the full ~50 min suite, for debugging the live poll loop.
+    [string]$OnlyTechnique
 )
 
 $ErrorActionPreference = "Stop"
@@ -155,6 +166,8 @@ function Test-SysmonInstalled {
 # Shared credential + TLS setup (called once, cached in script scope)
 $script:_siemUrl  = $null
 $script:_siemHeaders = $null
+$script:_siemUser = $null
+$script:_siemPass = $null
 
 function Initialize-SiemConnection {
     if ($script:_siemUrl) { return }  # Already initialized
@@ -182,22 +195,103 @@ function Initialize-SiemConnection {
     $pair = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${siemUser}:${siemPass}"))
     $script:_siemUrl = $siemUrl
     $script:_siemHeaders = @{ "Authorization" = "Basic $pair"; "Content-Type" = "application/json" }
+    $script:_siemUser = $siemUser
+    $script:_siemPass = $siemPass
 
     Write-Host "[*] SIEM connection: url=$siemUrl, user=$siemUser, pass_len=$($siemPass.Length)"
 }
 
+# Transport for ALL OpenSearch calls. Uses curl.exe, not Invoke-RestMethod:
+# on PS 5.1 the .NET/Schannel TLS stack fails the handshake against this
+# OpenSearch endpoint ("The underlying connection was closed: An unexpected
+# error occurred on a send") even with TLS 1.2 forced and cert validation
+# bypassed. Query-TinySocsAlerts swallows that exception into an empty result,
+# silently turning real detections into false-negative MISSES (a prime suspect
+# for the bogus low efficacy). curl.exe -sk negotiates the same endpoint
+# reliably and is already the project's ground-truth tool, so the harness now
+# reads its results the same way an operator verifies them by hand.
+#
+# --max-time 30 caps a stalled call: without it a single hung request to a
+# loaded OpenSearch blocks the poll loop indefinitely (observed: 80+ min waits).
+function Invoke-SiemRequest {
+    param(
+        [ValidateSet('GET','POST')][string]$Method = 'POST',
+        [string]$Path,
+        [string]$Body
+    )
+    Initialize-SiemConnection
+
+    $url      = "$($script:_siemUrl)$Path"
+    $curlArgs = @('-sk', '--max-time', '30',
+                  '-u', "$($script:_siemUser):$($script:_siemPass)",
+                  '-X', $Method, $url)
+    $tmp = $null
+    if ($Body) {
+        $tmp = New-TemporaryFile
+        Set-Content -Path $tmp -Value $Body -Encoding ascii
+        $curlArgs += @('-H', 'Content-Type: application/json', '--data-binary', "@$tmp")
+    }
+    try {
+        $raw = (& curl.exe @curlArgs 2>$null) -join "`n"
+        if ($LASTEXITCODE -ne 0) { throw "curl.exe exited $LASTEXITCODE for $Method $Path" }
+        if ([string]::IsNullOrWhiteSpace($raw)) { throw "Empty response for $Method $Path" }
+        return ($raw | ConvertFrom-Json)
+    } finally {
+        if ($tmp) { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 function Invoke-SiemQuery {
     param([string]$Path, [string]$Body)
+    return Invoke-SiemRequest -Method POST -Path $Path -Body $Body
+}
 
+# ---------------------------------------------------------------------------
+# Readiness gate: block until OpenSearch is warm enough to query reliably.
+# ---------------------------------------------------------------------------
+# A cold node (just started, still recovering shards) answers /_search with
+# 503s or, worse, returns 200 with empty hits before shards are allocated --
+# which silently understates detection efficacy. This gate polls cluster
+# health and fails closed: callers should ABORT rather than publish a number
+# produced against a half-ready cluster.
+#
+# NOTE on status colour: a single-node cluster with the default 1 replica sits
+# at YELLOW permanently (replica shards have nowhere to go) and never reaches
+# GREEN. Waiting for green would hang forever, so we accept green OR yellow
+# once nothing is still initializing/relocating. RED = a primary is missing =>
+# not ready.
+function Wait-OpenSearchReady {
+    param(
+        [int]$TimeoutSec      = 300,
+        [int]$PollIntervalSec = 5
+    )
     Initialize-SiemConnection
-    $splat = @{
-        Uri     = "$($script:_siemUrl)$Path"
-        Method  = "POST"
-        Headers = $script:_siemHeaders
-        Body    = $Body
+    Write-Host ""
+    Write-Host "[*] Readiness gate: waiting for OpenSearch cluster to be queryable (timeout ${TimeoutSec}s)..."
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    $attempt  = 0
+    while ((Get-Date) -lt $deadline) {
+        $attempt++
+        try {
+            $health   = Invoke-SiemRequest -Method GET -Path "/_cluster/health"
+            $status   = "$($health.status)".ToLower()
+            $init     = [int]$health.initializing_shards
+            $reloc    = [int]$health.relocating_shards
+            $primary  = [int]$health.active_primary_shards
+
+            if (($status -eq 'green' -or $status -eq 'yellow') -and $init -eq 0 -and $reloc -eq 0) {
+                Write-Host "    Cluster READY: status=$status active_primary_shards=$primary initializing=0 relocating=0" -ForegroundColor Green
+                return $true
+            }
+            Write-Host "    [attempt $attempt] status=$status initializing=$init relocating=$reloc -- not ready, retry in ${PollIntervalSec}s..."
+        } catch {
+            Write-Host "    [attempt $attempt] cluster health unreachable ($($_.Exception.Message)) -- retry in ${PollIntervalSec}s..."
+        }
+        Start-Sleep -Seconds $PollIntervalSec
     }
-    $resp = Invoke-RestMethod @splat -ErrorAction Stop
-    return $resp
+    Write-Warning "    Readiness gate TIMED OUT after ${TimeoutSec}s -- OpenSearch never became queryable."
+    return $false
 }
 
 # ---------------------------------------------------------------------------
@@ -250,12 +344,7 @@ function Test-AlertConnectivity {
 
         # Get field mapping for alerts index
         try {
-            $mappingSplat = @{
-                Uri     = "$($script:_siemUrl)/tinysocs-alerts-*/_mapping"
-                Method  = "GET"
-                Headers = $script:_siemHeaders
-            }
-            $mappingResp = Invoke-RestMethod @mappingSplat -ErrorAction Stop
+            $mappingResp = Invoke-SiemRequest -Method GET -Path "/tinysocs-alerts-*/_mapping"
             # Extract first index mapping
             $firstIdx = ($mappingResp | Get-Member -MemberType NoteProperty | Select-Object -First 1).Name
             if ($firstIdx) {
@@ -298,93 +387,142 @@ function Get-HitRuleId {
     return $null
 }
 
+function Get-HitTimestamp {
+    # Returns the alert's event timestamp as a UTC [datetime], or
+    # [datetime]::MinValue if absent/unparseable. MinValue ensures a hit with no
+    # usable timestamp never passes a ">= test start" floor (fails closed).
+    param($Hit)
+    $src = $Hit._source
+    if (-not $src) { return [datetime]::MinValue }
+    $raw = $src.timestamp
+    if (-not $raw) { $raw = $src.'@timestamp' }
+    if (-not $raw) { return [datetime]::MinValue }
+    try {
+        return ([datetimeoffset]::Parse(
+            $raw, [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal
+        )).UtcDateTime
+    } catch {
+        return [datetime]::MinValue
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Query alerts with multi-strategy fallback
 # ---------------------------------------------------------------------------
 function Query-TinySocsAlerts {
     param(
         [string[]]$RuleIds,
-        [int]$LookbackMinutes = 30
+        [int]$LookbackMinutes = 30,
+        [datetime]$Since
     )
 
     Initialize-SiemConnection
 
-    # ── Strategy 1: Server-side term filter on alert.rule_id ──
-    # The field is mapped as keyword type directly (no .keyword sub-field needed).
+    # Detection floor: only alerts at/after the test's start instant count as a
+    # detection for THIS run. The index accumulates alerts across every prior run
+    # (15k+ docs spanning months), so a rule that fired yesterday must NOT register
+    # as detected today. Strategies 2 and 3 query without a server-side time range
+    # (for resilience to field-mapping quirks), which is exactly where stale alerts
+    # would leak in — so we enforce the floor client-side there. Strategy 1 enforces
+    # it server-side. Without -Since we fall back to a lookback window.
+    $sinceUtc = if ($Since) {
+        $Since.ToUniversalTime()
+    } else {
+        (Get-Date).ToUniversalTime().AddMinutes(-$LookbackMinutes)
+    }
+    $sinceIso = $sinceUtc.ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+    $ruleFilter = ($RuleIds | ForEach-Object { "{`"term`":{`"alert.rule_id`":`"$_`"}}" }) -join ","
+
+    # Scope the search to the UTC day-index(es) covering [test start, now] instead
+    # of the tinysocs-alerts-* wildcard. The wildcard matches every daily index
+    # (~40 indices / 80 shards) and, on a 1GB-heap single node under concurrent
+    # ingest, query latency climbs past the client timeout — so polls return
+    # nothing and the harness reports false-negative MISSES even though the alert
+    # is in the index. Today's index is 1-2 shards; querying it is sub-second.
+    # We include yesterday's index too so a run that crosses UTC midnight is safe,
+    # and use ignore_unavailable so a not-yet-created day index doesn't 404.
+    $days = @($sinceUtc.Date, (Get-Date).ToUniversalTime().Date) | Select-Object -Unique
+    $indexList = ($days | ForEach-Object { "tinysocs-alerts-$($_.ToString('yyyy.MM.dd'))" }) -join ","
+    $searchPath = "/$indexList/_search?ignore_unavailable=true"
+
+    if ($env:TSDEBUG) {
+        Write-Host "    [DBG] sinceIso=$sinceIso" -ForegroundColor Cyan
+        Write-Host "    [DBG] searchPath=$searchPath" -ForegroundColor Cyan
+        Write-Host "    [DBG] ruleFilter=$ruleFilter" -ForegroundColor Cyan
+    }
+
+    # CRITICAL: every alert doc carries a large `matched_events` array (the raw
+    # events that tripped the threshold). Fetching it makes each doc multi-KB-to-MB,
+    # and PS 5.1's ConvertFrom-Json on that payload is pathologically slow (the
+    # 30-45 min "hang" seen in prior runs). It also pushes the search past curl's
+    # --max-time, so the request silently times out and the harness reports a
+    # false-negative MISS even though the alert is in the index. We never need the
+    # raw events here — only rule_id + timestamp — so we strip _source to those two
+    # fields. This is the single most important correctness fix in the read path.
+    $sourceFilter = '"_source": ["alert.rule_id", "timestamp"],'
+
+    # ── Strategy 1: server-side term filter + timestamp >= test start ──
+    # alert.rule_id is mapped as keyword (no .keyword sub-field needed). With
+    # _source stripped this returns in well under a second even on the bloated docs.
     try {
-        $ruleFilter = ($RuleIds | ForEach-Object { "{`"term`":{`"alert.rule_id`":`"$_`"}}" }) -join ","
         $body = @"
 {
   "size": 50,
+  $sourceFilter
   "query": {
     "bool": {
       "must": [
-        {"range": {"timestamp": {"gte": "now-${LookbackMinutes}m", "lte": "now"}}},
+        {"range": {"timestamp": {"gte": "$sinceIso"}}},
         {"bool": {"should": [$ruleFilter], "minimum_should_match": 1}}
       ]
     }
   }
 }
 "@
-        $resp = Invoke-SiemQuery -Path "/tinysocs-alerts-*/_search" -Body $body
+        $resp = Invoke-SiemQuery -Path $searchPath -Body $body
         $hits = @($resp.hits.hits)
+        if ($env:TSDEBUG) {
+            Write-Host "    [DBG] Strategy 1 total=$($resp.hits.total.value) returned=$($hits.Count)" -ForegroundColor Cyan
+        }
         if ($hits.Count -gt 0) { return $hits }
     } catch {
-        Write-Host "    Strategy 1 (term+range) failed: $($_.Exception.Message)" -ForegroundColor DarkGray
+        $msg = $_.Exception.Message
+        if ($env:TSDEBUG) { Write-Host "    [DBG] Strategy 1 THREW: $msg" -ForegroundColor Red }
+        else { Write-Host "    Strategy 1 (term+range) failed: $msg" -ForegroundColor DarkGray }
     }
 
-    # ── Strategy 2: Same rule filter but WITHOUT timestamp range ──
-    # Handles case where timestamp field is mapped as text (not date).
+    # ── Strategy 2: rule filter, no server-side range, time floor in client ──
+    # Defensive fallback if 'timestamp' is ever mapped as text (a range query
+    # would fail). We still enforce the test-start floor client-side so stale
+    # alerts from previous runs cannot register as a detection. _source is stripped
+    # here too, so this stays fast.
     try {
-        $ruleFilter2 = ($RuleIds | ForEach-Object { "{`"term`":{`"alert.rule_id`":`"$_`"}}" }) -join ","
         $body2 = @"
 {
   "size": 50,
+  $sourceFilter
+  "sort": [{"_doc": "desc"}],
   "query": {
     "bool": {
-      "should": [$ruleFilter2],
+      "should": [$ruleFilter],
       "minimum_should_match": 1
     }
   }
 }
 "@
-        $resp2 = Invoke-SiemQuery -Path "/tinysocs-alerts-*/_search" -Body $body2
-        $hits2 = @($resp2.hits.hits)
+        $resp2 = Invoke-SiemQuery -Path $searchPath -Body $body2
+        $hits2 = @($resp2.hits.hits | Where-Object { (Get-HitTimestamp $_) -ge $sinceUtc })
         if ($hits2.Count -gt 0) { return $hits2 }
     } catch {
-        Write-Host "    Strategy 2 (term, no range) failed: $($_.Exception.Message)" -ForegroundColor DarkGray
+        Write-Host "    Strategy 2 (term, client time filter) failed: $($_.Exception.Message)" -ForegroundColor DarkGray
     }
 
-    # ── Strategy 3: Fetch all alerts, match rule_id client-side ──
-    # Handles field name mismatches (camelCase vs snake_case, missing .keyword).
-    try {
-        $body3 = @"
-{
-  "size": 500,
-  "sort": [{"_doc": "desc"}],
-  "query": {"match_all": {}}
-}
-"@
-        $resp3 = Invoke-SiemQuery -Path "/tinysocs-alerts-*/_search" -Body $body3
-        $allHits = @($resp3.hits.hits)
-
-        if ($allHits.Count -gt 0) {
-            $matched = @()
-            foreach ($hit in $allHits) {
-                $ruleId = Get-HitRuleId $hit
-                if ($ruleId -and ($RuleIds -contains $ruleId)) {
-                    $matched += $hit
-                }
-            }
-            if ($matched.Count -gt 0) {
-                Write-Host "    (Matched via client-side filter on $($allHits.Count) alerts)" -ForegroundColor DarkGray
-                return $matched
-            }
-        }
-    } catch {
-        Write-Host "    Strategy 3 (match_all + client filter) failed: $($_.Exception.Message)" -ForegroundColor DarkGray
-    }
-
+    # NOTE: a former Strategy 3 fetched match_all size:500 and filtered client-side.
+    # It was the source of the 30-45 min ConvertFrom-Json hangs and is removed.
+    # Strategies 1 and 2 both target alert.rule_id directly, so a match_all sweep
+    # adds nothing but payload. If both miss, the alert genuinely is not in the
+    # day-index(es) for this rule at/after test start -> a true negative.
     return @()
 }
 
@@ -393,6 +531,26 @@ function Query-TinySocsAlerts {
 # ---------------------------------------------------------------------------
 # Ensure TLS 1.2 for all outbound HTTPS (PS 5.1 defaults to old TLS)
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+# ---------------------------------------------------------------------------
+# Self-test: exercise the alert read path for one rule, then exit. No attacks.
+# Reproduces the poll-loop call exactly: -Since = local Get-Date (as $testStart),
+# routed through the real Query-TinySocsAlerts so any read-path bug surfaces here.
+# ---------------------------------------------------------------------------
+if ($SelfTestRule) {
+    $env:TSDEBUG = "1"
+    Write-Host ""
+    Write-Host "[SELFTEST] read-path check for $SelfTestRule (lookback ${SelfTestLookbackHours}h)" -ForegroundColor Cyan
+    $stSince = (Get-Date).AddHours(-$SelfTestLookbackHours)   # local, like $testStart
+    Write-Host "[SELFTEST] -Since (local) = $($stSince.ToString('o'))  Kind=$($stSince.Kind)" -ForegroundColor Cyan
+    $stHits = @(Query-TinySocsAlerts -RuleIds @($SelfTestRule) -Since $stSince)
+    Write-Host "[SELFTEST] Query-TinySocsAlerts returned $($stHits.Count) hit(s)" -ForegroundColor Cyan
+    foreach ($h in $stHits) {
+        Write-Host "    $(Get-HitRuleId $h)  $((Get-HitTimestamp $h).ToString('o'))"
+    }
+    Remove-Item Env:\TSDEBUG -ErrorAction SilentlyContinue
+    exit 0
+}
 
 Write-Host ""
 Write-Host "=============================================="
@@ -481,6 +639,16 @@ if (-not $DryRun) {
     }
 }
 
+# Readiness gate: block until OpenSearch is warm before any queries run.
+# Fail CLOSED -- a half-ready cluster yields false-low efficacy, and an
+# invalid number published to the public dashboard is worse than no run.
+if (-not $DryRun) {
+    if (-not (Wait-OpenSearchReady -TimeoutSec 300)) {
+        Write-Error "OpenSearch did not reach a queryable state within the readiness timeout. Aborting before any tests run to avoid publishing an invalid efficacy number."
+        exit 2
+    }
+}
+
 # Pre-flight: check OpenSearch connectivity and alert schema
 if (-not $DryRun) {
     $preflight = Test-AlertConnectivity
@@ -535,15 +703,51 @@ if (-not $DryRun) {
     }
 }
 
+# ---------------------------------------------------------------------------
+# Result builder
+# ---------------------------------------------------------------------------
+# Single place that stamps each per-test result with timing. Category and the
+# v2 summary are NOT computed here — the Python normaliser
+# (scripts/normalize_validation_run.py) derives those from status+reason so the
+# categorisation rules live in one language (see validation_lib.py).
+function New-TestResult {
+    param(
+        [Parameter(Mandatory)][string]$Technique,
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$Status,
+        [string]$Reason = "",
+        $Rules = "",
+        $Detected = @(),
+        [datetime]$StartedAt
+    )
+    $started = if ($StartedAt) { $StartedAt } else { Get-Date }
+    [PSCustomObject]@{
+        Technique       = $Technique
+        Name            = $Name
+        Status          = $Status
+        Reason          = $Reason
+        Rules           = $Rules
+        Detected        = @($Detected)
+        StartedAt       = $started.ToUniversalTime().ToString("o")
+        DurationSeconds = [math]::Round(((Get-Date) - $started).TotalSeconds, 1)
+    }
+}
+
 # Run tests
 $results = @()
 foreach ($test in $tests) {
     $technique = $test.atomic_technique
+    if ($OnlyTechnique -and ($technique -ne $OnlyTechnique)) { continue }
     $testNum   = $test.atomic_test_number
     $rules     = $test.expected_rules
     $needsSysmon = $test.sysmon_required
-    $timeout   = if ($test.timeout_seconds) { $test.timeout_seconds } else { 120 }
+    # Default 300s: the detection engine stamps alerts with the triggering
+    # event time but writes them on its own evaluation cadence, so low-volume
+    # single-event detections can land 1-3 min after the attack. 120s was too
+    # tight and produced false-negative MISSES for alerts that did fire.
+    $timeout   = if ($test.timeout_seconds) { $test.timeout_seconds } else { 300 }
     $name      = $test.technique_name
+    $testStart = Get-Date
 
     Write-Host ""
     Write-Host "--- [$technique] $name ---"
@@ -551,14 +755,8 @@ foreach ($test in $tests) {
     # Skip if Sysmon required but not available
     if ($needsSysmon -and -not $hasSysmon) {
         Write-Host "  SKIP: Requires Sysmon (not installed)" -ForegroundColor Yellow
-        $results += [PSCustomObject]@{
-            Technique = $technique
-            Name      = $name
-            Status    = "SKIP"
-            Reason    = "Sysmon not installed"
-            Rules     = ($rules -join ", ")
-            Detected  = @()
-        }
+        $results += New-TestResult -Technique $technique -Name $name -Status "SKIP" `
+            -Reason "Sysmon not installed" -Rules ($rules -join ", ") -Detected @() -StartedAt $testStart
         continue
     }
 
@@ -587,20 +785,26 @@ foreach ($test in $tests) {
                     $skipReq = $true; $skipMsg = "Cannot determine Tamper Protection status (assuming enabled)"
                 }
             }
+            "defender_rtp_disabled" {
+                # Defender RTP scans AMSI bypass scripts at command-line load and blocks them
+                # before 4104 ScriptBlock logging captures them. Faithfully exercising a real
+                # AMSI bypass requires Defender RTP disabled (or AMSI development off).
+                try {
+                    $rtpOn = -not [bool](Get-MpPreference -ErrorAction Stop).DisableRealtimeMonitoring
+                    if ($rtpOn) { $skipReq = $true; $skipMsg = "Defender real-time protection blocks Atomic AMSI bypass scripts at AMSI scan; faithful test requires Defender RTP disabled" }
+                } catch {
+                    # If we can't check, assume RTP is on (safer to skip)
+                    $skipReq = $true; $skipMsg = "Cannot determine Defender RTP status (assuming enabled)"
+                }
+            }
             default {
                 $skipReq = $true; $skipMsg = "Unknown requirement: $requires"
             }
         }
         if ($skipReq) {
             Write-Host "  SKIP: $skipMsg" -ForegroundColor Yellow
-            $results += [PSCustomObject]@{
-                Technique = $technique
-                Name      = $name
-                Status    = "SKIP"
-                Reason    = $skipMsg
-                Rules     = ($rules -join ", ")
-                Detected  = @()
-            }
+            $results += New-TestResult -Technique $technique -Name $name -Status "SKIP" `
+                -Reason $skipMsg -Rules ($rules -join ", ") -Detected @() -StartedAt $testStart
             continue
         }
     }
@@ -608,14 +812,8 @@ foreach ($test in $tests) {
     if ($DryRun) {
         Write-Host "  DRY RUN: Would execute Atomic test #$testNum"
         Write-Host "  Expected rules: $($rules -join ', ')"
-        $results += [PSCustomObject]@{
-            Technique = $technique
-            Name      = $name
-            Status    = "DRY_RUN"
-            Reason    = ""
-            Rules     = ($rules -join ", ")
-            Detected  = @()
-        }
+        $results += New-TestResult -Technique $technique -Name $name -Status "DRY_RUN" `
+            -Reason "" -Rules ($rules -join ", ") -Detected @() -StartedAt $testStart
         continue
     }
 
@@ -633,20 +831,25 @@ foreach ($test in $tests) {
     if ($preferFallback -and $fallbackCmd) {
         Write-Host "  Skipping ART test (prefer_fallback=true), using fallback command..."
         try {
-            Invoke-Expression $fallbackCmd
+            # Fallbacks are fire-and-forget attack simulations: their job is to
+            # GENERATE events (often failed logons, denied access, missing-service
+            # errors), not to succeed cleanly. Native tools like net.exe write
+            # "System error 1326" to stderr on the very failed logons the brute-force
+            # test is designed to produce. Under the script-global
+            # ErrorActionPreference='Stop', PS 5.1 promotes that native stderr to a
+            # TERMINATING error, so a working simulation gets miscounted as a harness
+            # ERROR. Drop to 'Continue' for the duration of the fallback so expected
+            # attack noise never aborts the run.
+            $savedEAP = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            try { Invoke-Expression $fallbackCmd } finally { $ErrorActionPreference = $savedEAP }
             $usedFallback = $true
             $artSucceeded = $true  # Treat fallback success as test success
             Write-Host "  Fallback command executed. Waiting for detection pipeline..."
         } catch {
             Write-Host "  ERROR executing fallback: $($_.Exception.Message)" -ForegroundColor Red
-            $results += [PSCustomObject]@{
-                Technique = $technique
-                Name      = $name
-                Status    = "ERROR"
-                Reason    = "Fallback: $($_.Exception.Message)"
-                Rules     = ($rules -join ", ")
-                Detected  = @()
-            }
+            $results += New-TestResult -Technique $technique -Name $name -Status "ERROR" `
+                -Reason "Fallback: $($_.Exception.Message)" -Rules ($rules -join ", ") -Detected @() -StartedAt $testStart
             continue
         }
     }
@@ -696,31 +899,23 @@ foreach ($test in $tests) {
         if ($fallbackCmd -and $needsFallback) {
             Write-Host "  ART test failed ($artError). Using fallback command..." -ForegroundColor Yellow
             try {
-                Invoke-Expression $fallbackCmd
+                # See prefer_fallback branch above: expected native attack noise
+                # (failed logons, denied access) must not abort under EAP='Stop'.
+                $savedEAP = $ErrorActionPreference
+                $ErrorActionPreference = 'Continue'
+                try { Invoke-Expression $fallbackCmd } finally { $ErrorActionPreference = $savedEAP }
                 $usedFallback = $true
                 Write-Host "  Fallback command executed. Waiting for detection pipeline..."
             } catch {
                 Write-Host "  ERROR executing fallback: $($_.Exception.Message)" -ForegroundColor Red
-                $results += [PSCustomObject]@{
-                    Technique = $technique
-                    Name      = $name
-                    Status    = "ERROR"
-                    Reason    = "ART: $artError; Fallback: $($_.Exception.Message)"
-                    Rules     = ($rules -join ", ")
-                    Detected  = @()
-                }
+                $results += New-TestResult -Technique $technique -Name $name -Status "ERROR" `
+                    -Reason "ART: $artError; Fallback: $($_.Exception.Message)" -Rules ($rules -join ", ") -Detected @() -StartedAt $testStart
                 continue
             }
         } else {
             Write-Host "  ERROR: $artError" -ForegroundColor Red
-            $results += [PSCustomObject]@{
-                Technique = $technique
-                Name      = $name
-                Status    = "ERROR"
-                Reason    = $artError
-                Rules     = ($rules -join ", ")
-                Detected  = @()
-            }
+            $results += New-TestResult -Technique $technique -Name $name -Status "ERROR" `
+                -Reason $artError -Rules ($rules -join ", ") -Detected @() -StartedAt $testStart
             # Cleanup
             try { Invoke-AtomicTest $technique -TestNumbers $testNum -Cleanup -ErrorAction SilentlyContinue } catch { }
             continue
@@ -733,7 +928,12 @@ foreach ($test in $tests) {
     $deadline = (Get-Date).AddSeconds($timeout)
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Seconds 15
-        $hits = Query-TinySocsAlerts -RuleIds $rules -LookbackMinutes 30
+        # @() is load-bearing: when Query-TinySocsAlerts returns a SINGLE hit,
+        # PowerShell unwraps the one-element array into a bare PSCustomObject on
+        # return, and $hits.Count on that scalar does not satisfy '-gt 0'. That
+        # silently turned every single-rule detection (the common case) into a
+        # false MISS while multi-hit tests detected fine. Wrapping forces an array.
+        $hits = @(Query-TinySocsAlerts -RuleIds $rules -Since $testStart)
         if ($hits.Count -gt 0) {
             $detected = @($hits | ForEach-Object { Get-HitRuleId $_ } | Where-Object { $_ } | Select-Object -Unique)
             break
@@ -743,24 +943,12 @@ foreach ($test in $tests) {
 
     if ($detected.Count -gt 0) {
         Write-Host "  DETECTED: $($detected -join ', ')" -ForegroundColor Green
-        $results += [PSCustomObject]@{
-            Technique = $technique
-            Name      = $name
-            Status    = "DETECTED"
-            Reason    = ""
-            Rules     = ($rules -join ", ")
-            Detected  = $detected
-        }
+        $results += New-TestResult -Technique $technique -Name $name -Status "DETECTED" `
+            -Reason "" -Rules ($rules -join ", ") -Detected $detected -StartedAt $testStart
     } else {
         Write-Host "  MISSED: No alerts found for expected rules" -ForegroundColor Red
-        $results += [PSCustomObject]@{
-            Technique = $technique
-            Name      = $name
-            Status    = "MISSED"
-            Reason    = "No alerts within timeout"
-            Rules     = ($rules -join ", ")
-            Detected  = @()
-        }
+        $results += New-TestResult -Technique $technique -Name $name -Status "MISSED" `
+            -Reason "No alerts within timeout" -Rules ($rules -join ", ") -Detected @() -StartedAt $testStart
     }
 
     # Cleanup (skip ART cleanup if we used the fallback command)
@@ -878,27 +1066,96 @@ try {
     Write-Warning "Failed to write report: $($_.Exception.Message)"
 }
 
-# Generate atomic-results.json for Navigator layer colouring
+# ---------------------------------------------------------------------------
+# Raw run JSON for the continuous validation pipeline
+# ---------------------------------------------------------------------------
+# This is the *raw* harness output. It carries run metadata + per-test
+# status/reason/timing but deliberately does NOT compute `category` or the v2
+# `summary` block — scripts/normalize_validation_run.py derives those (so the
+# categorisation rules live only in validation_lib.py) and writes the final
+# results/<iso-week>.json. See docs/design/continuous-validation.md.
+
+# Best-effort run metadata. Anything we can't determine is left null rather
+# than guessed, so the public claim stays defensible.
+function Get-CommandOutput {
+    param([string]$Exe, [string[]]$ArgList)
+    try {
+        $out = & $Exe @ArgList 2>$null
+        if ($LASTEXITCODE -eq 0 -and $out) { return ($out | Select-Object -First 1).ToString().Trim() }
+    } catch { }
+    return $null
+}
+
+$gitCommit = Get-CommandOutput -Exe "git" -ArgList @("-C", $repoRoot, "rev-parse", "--short", "HEAD")
+
+# OS caption + version
+$osName = $null
+try {
+    $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
+    $osName = ("{0} {1}" -f $os.Caption, $os.Version).Trim()
+} catch { }
+
+# Sysmon driver/service version (only meaningful if Sysmon is present)
+$sysmonVersion = $null
+if ($hasSysmon) {
+    try {
+        $svc = Get-CimInstance -ClassName Win32_Service -Filter "Name='Sysmon' OR Name='Sysmon64'" -ErrorAction Stop | Select-Object -First 1
+        if ($svc -and $svc.PathName) {
+            $exePath = ($svc.PathName -replace '^"([^"]+)".*$', '$1')
+            if (Test-Path $exePath) {
+                $sysmonVersion = (Get-Item $exePath).VersionInfo.ProductVersion
+            }
+        }
+    } catch { }
+}
+
+# TinySocs agent version (best-effort: VERSION file, else null)
+$tinysocsVersion = $null
+$versionFile = Join-Path $repoRoot "VERSION"
+if (Test-Path $versionFile) {
+    $tinysocsVersion = (Get-Content $versionFile -ErrorAction SilentlyContinue | Select-Object -First 1).Trim()
+}
+
+# OpenSearch version via the cluster root (uses the same creds as the queries)
+$opensearchVersion = $null
+try {
+    $rootResp = Invoke-SiemRequest -Method GET -Path "/"
+    if ($rootResp.version -and $rootResp.version.number) { $opensearchVersion = $rootResp.version.number }
+} catch { }
+
 $jsonResults = @{
-    generated_at = (Get-Date -Format "o")
+    generated_at = (Get-Date).ToUniversalTime().ToString("o")
+    git_commit   = $gitCommit
+    platform     = @{
+        os                 = $osName
+        tinysocs_version   = $tinysocsVersion
+        sysmon_version     = $sysmonVersion
+        opensearch_version = $opensearchVersion
+    }
+    # Headline counts the normaliser will recompute; kept for the legacy
+    # detection-efficacy.md path and quick eyeballing of the raw file.
     total_tests  = $results.Count
     efficacy_pct = $efficacy
     results      = @($results | ForEach-Object {
         @{
-            technique_id = $_.Technique
-            technique_name = $_.Name
-            status = $_.Status
-            reason = $_.Reason
-            expected_rules = ($_.Rules -split ", ")
-            detected_rules = @($_.Detected)
+            technique_id     = $_.Technique
+            technique_name   = $_.Name
+            status           = $_.Status
+            reason           = $_.Reason
+            expected_rules   = ($_.Rules -split ", ")
+            detected_rules   = @($_.Detected)
+            started_at       = $_.StartedAt
+            duration_seconds = $_.DurationSeconds
         }
     })
 }
 
 try {
-    $jsonStr = $jsonResults | ConvertTo-Json -Depth 4
+    $jsonStr = $jsonResults | ConvertTo-Json -Depth 5
     Set-Content -Path $OutputJson -Value $jsonStr -Encoding UTF8
-    Write-Host "[*] JSON results written to: $OutputJson"
+    Write-Host "[*] Raw run JSON written to: $OutputJson"
+    Write-Host "[*] Normalise to a v2 per-week result with:"
+    Write-Host "      python3 scripts/normalize_validation_run.py `"$OutputJson`""
 } catch {
     Write-Warning "Failed to write JSON results: $($_.Exception.Message)"
 }

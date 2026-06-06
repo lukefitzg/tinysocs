@@ -213,6 +213,20 @@ rules:
       threshold: 1
       window_minutes: 5
       cooldown_minutes: 60
+      # Restrict to named credential-dumping tools by process name.
+      # LSASS dumping via rundll32/comsvcs is covered by TS-135 (LOLBin proxy).
+      field_match:
+        field: "winlog.event_data.NewProcessName"
+        values:
+          - "mimikatz"
+          - "procdump"
+          - "nanodump"
+          - "pwdump"
+          - "gsecdump"
+          - "wce.exe"
+          - "sqldumper.exe"
+          - "dumpert"
+          - "lsassy"
     actions:
       - write_alert_doc
       - append_alert_log
@@ -707,6 +721,18 @@ rules:
       group_by: "winlog.event_data.SubjectUserName"
       threshold: 5
       window_minutes: 5
+      # Burst of account-enumeration binaries by the same user.
+      # Matches on process name (CommandLine auditing is not guaranteed enabled).
+      field_match:
+        field: "winlog.event_data.NewProcessName"
+        values:
+          - "net.exe"
+          - "net1.exe"
+          - "whoami.exe"
+          - "nltest.exe"
+          - "dsquery.exe"
+          - "quser.exe"
+          - "query.exe"
     actions:
       - write_alert_doc
       - append_alert_log
@@ -727,6 +753,18 @@ rules:
       group_by: "winlog.event_data.SubjectUserName"
       threshold: 4
       window_minutes: 5
+      # Burst of network-enumeration binaries by the same user.
+      field_match:
+        field: "winlog.event_data.NewProcessName"
+        values:
+          - "ipconfig.exe"
+          - "netstat.exe"
+          - "arp.exe"
+          - "route.exe"
+          - "nbtstat.exe"
+          - "netsh.exe"
+          - "tracert.exe"
+          - "nslookup.exe"
     actions:
       - write_alert_doc
       - append_alert_log

@@ -1,10 +1,10 @@
 {
-  "current_version": "0.8.0",
+  "current_version": "0.10.0",
   "minimum_compatible": "0.7.0",
   "installed_at": "",
   "components": {
-    "agent": "0.8.0",
-    "assistant": "0.8.0",
+    "agent": "0.10.0",
+    "assistant": "0.10.0",
     "opensearch": "2.13.0",
     "sysmon": "15.15"
   },

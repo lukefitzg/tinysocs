@@ -54,6 +54,7 @@ namespace TinySocs.Agent.Shipper
         private readonly DetectionEngine? _detectionEngine;
         private readonly AlertWriter? _alertWriter;
         private readonly RuleLoader? _ruleLoader;
+        private readonly PackLoader? _packLoader;
 
         // Phase 13 (M4): Notification retry queue
         private readonly RetryQueue? _retryQueue;
@@ -120,6 +121,14 @@ namespace TinySocs.Agent.Shipper
                 _detectionEngine = new DetectionEngine(detectionLogger);
                 _ruleLoader = new RuleLoader(ruleLoaderLogger);
 
+                // Signed v2 content pack takes precedence over the legacy rules.yml
+                // when enabled. The agent refuses any pack that fails verification.
+                if (_config.Detection.Pack.Enabled)
+                {
+                    var packLoaderLogger = loggerFactory.CreateLogger<PackLoader>();
+                    _packLoader = new PackLoader(packLoaderLogger, _config.Detection.Pack);
+                }
+
                 var alertLogPath = Path.Combine(
                     Path.GetDirectoryName(_config.Agent.LogFile) ?? @"C:\ProgramData\TinySocs\Collector\logs",
                     "alerts.log");
@@ -156,6 +165,7 @@ namespace TinySocs.Agent.Shipper
                 _detectionEngine = null;
                 _alertWriter = null;
                 _ruleLoader = null;
+                _packLoader = null;
                 _lastRuleReloadTime = DateTime.MinValue;
                 _logger.LogInformation("Detection engine disabled.");
             }
@@ -1309,15 +1319,40 @@ namespace TinySocs.Agent.Shipper
 
         private void LoadRules()
         {
-            if (_ruleLoader == null || _detectionEngine == null)
+            if (_detectionEngine == null)
             {
                 return;
             }
 
             try
             {
-                var rules = _ruleLoader.LoadRules(_config.Detection.RulesFile);
-                _detectionEngine.UpdateRules(rules);
+                // Signed pack wins when configured. On verification failure we
+                // REFUSE the pack and leave the engine's current rules untouched
+                // rather than falling back to the unsigned rules.yml — a pack that
+                // does not verify must never be loaded.
+                if (_packLoader != null)
+                {
+                    var result = _packLoader.Load();
+                    if (result.Ok)
+                    {
+                        _detectionEngine.UpdateRules(result.Rules);
+                        _logger.LogInformation(
+                            "Loaded signed pack '{PackId}' v{Version}: {Count} rule(s). Licence tier: {Tier} ({Note}).",
+                            result.PackId, result.PackVersion, result.Rules.Count, result.Tier, result.TierNote);
+                    }
+                    else
+                    {
+                        _logger.LogError(
+                            "Refusing detection pack: {Reason}. Detection rules left unchanged.", result.Reason);
+                    }
+                    return;
+                }
+
+                if (_ruleLoader != null)
+                {
+                    var rules = _ruleLoader.LoadRules(_config.Detection.RulesFile);
+                    _detectionEngine.UpdateRules(rules);
+                }
             }
             catch (Exception ex)
             {
@@ -1327,7 +1362,7 @@ namespace TinySocs.Agent.Shipper
 
         private void TryReloadRules()
         {
-            if (_ruleLoader == null || _detectionEngine == null)
+            if ((_ruleLoader == null && _packLoader == null) || _detectionEngine == null)
             {
                 return;
             }

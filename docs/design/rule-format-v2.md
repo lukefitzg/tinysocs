@@ -1,7 +1,7 @@
 # Rule Format v2 — Design
 
-**Status**: Approved design, not yet implemented.
-**Author**: Luke FitzGerald + Claude session, 2026-05-26.
+**Status**: Approved, schema locked. Migration script implemented (`scripts/migrate_rules_to_v2.py`); C# engine changes not yet made.
+**Author**: Luke FitzGerald + Claude session, 2026-05-26 (schema); 2026-06-06 (`field_match` carried into schema, signing/feed dependency).
 **Supersedes**: implicit v1 across `packaging/detection/rules.yml` (C# agent) and `src/tinysocs/agent/detections/rules.yaml` (Python catalogue).
 
 ---
@@ -156,6 +156,30 @@ detection:
   cooldown_minutes: 5
 ```
 
+#### `field_match` (optional pre-filter)
+
+Some agent rules only count events whose value in a named field matches one of a fixed list (e.g. credential-dumping tool names, network-enumeration binaries, AMSI-bypass substrings). The C# v1 engine already supports this via a `field_match` clause; v2 carries it forward unchanged so migration is lossless. Semantics: an event is counted toward the threshold only if `field` contains (case-insensitive substring) one of `values`. Omitted ⇒ all events matching `event_id`+`channel` count.
+
+```yaml
+detection:
+  type: threshold_by_key
+  event_id: 4688
+  channel: Security
+  group_by: winlog.event_data.NewProcessName
+  threshold: 1
+  window_minutes: 5
+  cooldown_minutes: 60
+  field_match:
+    field: winlog.event_data.NewProcessName
+    match: contains            # contains (default, case-insensitive) | exact
+    values:
+      - mimikatz
+      - procdump
+      - nanodump
+```
+
+8 of the 39 live agent rules use `field_match` today (TS-061, TS-082, TS-130, TS-131, TS-132, TS-134, TS-135, TS-136). It is an agent-engine concern; `kql_threshold` rules express the same logic inline in the KQL string.
+
 ### `kql_threshold` (backend engine, v2.1 runtime — schema valid today)
 
 ```yaml
@@ -295,6 +319,7 @@ Each declared knob is loaded from its envvar (or operator dashboard input) at en
 | `id`, `name`, `description`, `severity`, `enabled`, `mitre`, `actions` | unchanged | |
 | `type: threshold_by_key` | `detection.type: threshold_by_key` + `runs_on: agent` | |
 | `condition.event_id`, `channel`, `group_by`, `threshold`, `window_minutes`, `cooldown_minutes` | `detection.*` | |
+| `condition.field_match` | `detection.field_match` | carried through verbatim; `match: contains` is the implicit default (preserves v1 case-insensitive substring semantics) |
 | (none) | `pack: base` for 37 rules; `pack: demo` for `TS-001-lab`, `TS-030-lab` | |
 | (none) | `allowlist_scopes` | derived per rule family (auth → user/source_ip; process → process_path/user; FIM → process_path) |
 | (none) | `baseline.enabled: false` | always false in v2.0 |

@@ -2,7 +2,7 @@
 
 ## What this repo is
 
-TinySOCs — a self-hosted SIEM for SMBs and small MSPs. Windows agent (C# .NET 8) ships events to a bundled OpenSearch backend, FastAPI services for dashboard/AI assistant/federation, Inno Setup installer for one-shot Windows deployment. ~28k LOC, ~330 commits, v0.9.0 "First Light", BSL-1.1 licence (converts to Apache 2029).
+TinySOCs — a self-hosted SIEM for SMBs and small MSPs. Windows agent (C# .NET 8) ships events to a bundled OpenSearch backend, FastAPI services for dashboard/AI assistant/federation, Inno Setup installer for one-shot Windows deployment. ~28k LOC, ~330 commits, v0.10.0, BSL-1.1 licence (converts to Apache 2029).
 
 ## Strategic phase (mid-2026)
 

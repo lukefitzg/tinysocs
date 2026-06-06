@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TinySocs — Validation Methodology</title>
+<meta name="description" content="How TinySocs detection validation works: Atomic Red Team techniques run weekly against a live install, what counts as a pass, and why a skipped test is not a failed rule.">
+<link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="container topbar-inner">
+    <a class="brand" href="../../">TinySocs</a>
+    <nav class="topnav">
+      <a href="../">Dashboard</a>
+      <a href="https://github.com/lukefitzg/tinysocs" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main class="container">
+<article class="prose">
+
+  <h1>How this is measured</h1>
+  <p class="lede">
+    Every rule we ship is exercised by a real attack technique against a live
+    TinySocs install, on a schedule, in public. This page explains exactly what
+    the numbers on the <a href="../">dashboard</a> mean — including the parts
+    that are unflattering.
+  </p>
+
+  <h2>What runs</h2>
+  <p>
+    We use <a href="https://github.com/redcanaryco/atomic-red-team" target="_blank" rel="noopener">Atomic
+    Red Team</a> — an open library of small, self-contained tests, each mapped
+    to a <a href="https://attack.mitre.org/" target="_blank" rel="noopener">MITRE
+    ATT&amp;CK</a> technique. For each rule in the detection pack that has a
+    mapped technique, the harness:
+  </p>
+  <ol>
+    <li>executes the Atomic Red Team test for that technique on the machine
+      (e.g. simulates failed logons for brute-force, dumps LSASS for credential
+      access);</li>
+    <li>waits for the TinySocs detection pipeline to process the resulting
+      Windows events;</li>
+    <li>queries OpenSearch for an alert carrying the expected rule ID;</li>
+    <li>records the outcome with a timestamp and the commit that produced it.</li>
+  </ol>
+  <p>
+    The harness source is open:
+    <a href="https://github.com/lukefitzg/tinysocs/blob/main/tests/Test-AtomicDetection.ps1" target="_blank" rel="noopener"><code>tests/Test-AtomicDetection.ps1</code></a>,
+    and the technique→rule mapping is
+    <a href="https://github.com/lukefitzg/tinysocs/blob/main/tests/atomic-tests.yaml" target="_blank" rel="noopener"><code>tests/atomic-tests.yaml</code></a>.
+  </p>
+
+  <h2>What counts as a pass</h2>
+  <p>
+    A test <strong>passes</strong> when at least one of its expected rules fires
+    an alert within the timeout. That is detection at the technique level: the
+    attack happened, and the pack caught it. If nothing fires, it's a miss.
+  </p>
+
+  <h2>The categories</h2>
+  <p>Each result lands in exactly one bucket. The dashboard colours by these:</p>
+  <table>
+    <thead>
+      <tr><th>Category</th><th>Meaning</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="cat-cell"><span class="dot dot-PASS"></span> Detected</span></td>
+        <td>An expected rule fired. The pack caught the attack.</td>
+      </tr>
+      <tr>
+        <td><span class="cat-cell"><span class="dot dot-MISS"></span> Missed</span></td>
+        <td>A rule should have fired and didn't. <strong>The only alarming
+          category.</strong> Every miss gets a written postmortem.</td>
+      </tr>
+      <tr>
+        <td><span class="cat-cell"><span class="dot dot-SKIP_PLATFORM"></span> Skip — platform</span></td>
+        <td>The test environment can't run this test (e.g. it needs a Domain
+          Controller, Sysmon, or the FIM module). Not a rule defect.</td>
+      </tr>
+      <tr>
+        <td><span class="cat-cell"><span class="dot dot-SKIP_PREREQ"></span> Skip — prerequisite</span></td>
+        <td>An environmental precondition isn't met (e.g. Tamper Protection is
+          on, blocking a Defender change). Expected behaviour, not a defect.</td>
+      </tr>
+      <tr>
+        <td><span class="cat-cell"><span class="dot dot-ERROR"></span> Error</span></td>
+        <td>The harness itself hit a problem (network, Atomic Red Team install,
+          a query failure). Investigated, but not a rule failure.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout">
+    <strong>A skipped test is not a failed rule.</strong> Tests are skipped
+    <em>because of the test environment</em>, not because the detection is
+    broken. We run on a single workstation, so anything that needs a Domain
+    Controller or a feature we don't have installed is skipped — the rule
+    itself is unchanged and ships exactly the same. The dashboard keeps skips
+    visually distinct from misses for precisely this reason.
+  </div>
+
+  <h2>The venue</h2>
+  <p>
+    Validation currently runs on a single Windows 11 workstation with TinySocs,
+    OpenSearch, and Sysmon installed. That's an honest limit: rules that need a
+    Domain Controller (e.g. NTDS extraction) or the optional FIM module show as
+    platform-skips here, not passes. Multi-platform validation (Windows Server,
+    additional OS versions) is planned, not yet live.
+  </p>
+
+  <h2>Coverage, named</h2>
+  <p>
+    Not every rule in the pack has an Atomic Red Team test yet. The dashboard
+    counts and lists the untested rules rather than hiding them, and we add
+    coverage on a weekly cadence. A rule without a test is marked untested — it
+    is not counted as a pass.
+  </p>
+
+  <h2>When we miss</h2>
+  <p>
+    A first-time miss is the failure mode that matters, so we treat it openly:
+    same-week investigation, a written postmortem committed alongside the
+    results, and a link from the affected rule. "Yes, we missed; here's why;
+    here's the fix" is the whole point of publishing this.
+  </p>
+
+  <h2>The raw data</h2>
+  <p>
+    Every weekly run is committed as a JSON file you can read or diff:
+    <a href="https://github.com/lukefitzg/tinysocs/tree/main/results" target="_blank" rel="noopener"><code>results/</code></a>.
+    The dashboard is built from those files and nothing else — there's no
+    separate, prettier source of truth.
+  </p>
+
+  <p style="margin-top:32px"><a href="../">&larr; Back to the dashboard</a></p>
+
+</article>
+</main>
+
+<footer>
+  <div class="container">
+    <p>
+      &copy; 2026 TinySocs &middot;
+      <a href="../">Dashboard</a> &middot;
+      <a href="https://github.com/lukefitzg/tinysocs" target="_blank" rel="noopener">Source</a>
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>

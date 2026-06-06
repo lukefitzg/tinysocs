@@ -5,6 +5,41 @@ All notable changes to TinySocs are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] — 2026-06-06
+
+Detection-content-as-a-service foundations: the signed-feed trust core, agent-side
+enforcement, the licence gate, the vendor feed server, and the Stripe billing webhook.
+The full revenue loop (subscription → signed licence key → live channel + premium pack
+→ cancel revokes → agent verifies offline) now runs end-to-end on a laptop with no
+cloud account. See `docs/design/signed-feed.md` and `docs/roadmap.md`.
+
+### Added
+
+- **Signed rules feed (trust core)** — `scripts/pack_sign.py` signs and verifies v2 rule
+  packs with ed25519 over canonical JSON, persisting a `pack.yml.canonical` sidecar of
+  the exact signed bytes so the agent verifies and loads those bytes rather than
+  reconstructing them from YAML (removes cross-language drift).
+- **Agent trust path (C#)** — `Ed25519Verifier`, `PackLoader`, and `LicenceReader` under
+  `src/TinySocs.Agent/Detection/`: the agent ed25519-verifies a signed pack, pins the
+  signing `key_id`, gates content by licence entitlement, reads its tier offline, and
+  refuses tampered or untrusted packs. Wired through `OpenSearchBulkShipper`. Uses
+  BouncyCastle.Cryptography (.NET 8 BCL has no Ed25519). Covered by a committed xUnit
+  trust suite (22 tests).
+- **Licence keys + entitlement** — `scripts/licence.py` mints and verifies offline-
+  readable licence tokens (base64url payload + ed25519 signature) with a 14-day grace
+  window; `scripts/stripe_pricing.py` maps opaque Stripe price ids to the locked
+  free/pro/msp tiers. No prices in the repo.
+- **Vendor feed server** — `src/tinysocs/api/feed.py`, a small FastAPI app: an
+  entitlement-gated mint endpoint that 302s to short-TTL signed blob URLs, plus a Stripe
+  webhook that mints and revokes licence keys with no Stripe SDK (HMAC-verified
+  signatures). Reuses the same `licence.py` decision the agent enforces. Revocation state
+  in `feed_store.py`. Covered by `tests/test_feed_server.py` (11 tests).
+- **Lagged free snapshot + feed index** — `packs/base/2026.22` (one version behind live)
+  and `packs/base/index.json` so the free tier resolves to a stale snapshot while pro/msp
+  get the live channel.
+- **One-command demo** — `scripts/demo_feed.sh` runs the whole revenue loop locally
+  (signs into a throwaway temp root so the tracked `packs/` tree is never mutated).
+
 ## [0.9.0] — 2026-03-02
 
 Phase 17: "First Light" — Demo-ready federation and pilot launch infrastructure.

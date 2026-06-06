@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tinysocs"
-version = "0.9.0"
+version = "0.10.0"
 description = "TinySocs — a lightweight, privacy-first, federated SIEM/analyst assistant."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -35,6 +35,7 @@ dev = [
 
 [project.scripts]
 tinysocs-node = "tinysocs.api.node:cli"
+tinysocs-feed = "tinysocs.api.feed:cli"
 tinysocs-master = "tinysocs.orchestrator.master:cli"
 tinysocs-quickstart = "tinysocs.launcher.quickstart:cli"
 tinysocs-daily-summary = "tinysocs.reporting.daily_summary:main"

@@ -352,10 +352,14 @@ namespace TinySocs.Agent.Detection
                     return false;
                 }
 
+                var exact = string.Equals(condition.FieldMatch.Match, "exact", StringComparison.OrdinalIgnoreCase);
                 bool anyMatch = false;
                 foreach (var pattern in condition.FieldMatch.Values)
                 {
-                    if (fieldValue.IndexOf(pattern, StringComparison.OrdinalIgnoreCase) >= 0)
+                    var hit = exact
+                        ? string.Equals(fieldValue, pattern, StringComparison.OrdinalIgnoreCase)
+                        : fieldValue.IndexOf(pattern, StringComparison.OrdinalIgnoreCase) >= 0;
+                    if (hit)
                     {
                         anyMatch = true;
                         break;

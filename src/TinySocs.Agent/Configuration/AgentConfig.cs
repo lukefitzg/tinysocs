@@ -129,6 +129,42 @@ public sealed class DetectionConfig
     public string RulesFile { get; set; } = @"C:\ProgramData\TinySocs\Collector\rules\rules.yml";
     public int ReloadIntervalSeconds { get; set; } = 60;
     public NotificationConfig Notification { get; set; } = new();
+
+    // Signed v2 content pack. When enabled, the agent loads + verifies a signed
+    // pack instead of the legacy rules.yml. Opt-in so existing installs are
+    // unaffected until the feed is rolled out.
+    public ContentPackConfig Pack { get; set; } = new();
+}
+
+/// <summary>
+/// Signed detection-content pack (gap #3/#4). The agent verifies an ed25519
+/// signature over the canonical pack bytes before loading any rule, and refuses
+/// a pack whose signature does not verify. See docs/design/signed-feed.md.
+/// </summary>
+public sealed class ContentPackConfig
+{
+    public bool Enabled { get; set; } = false;
+
+    // The exact signed bytes (pack.yml.canonical). The agent verifies + loads
+    // THIS file; the human-readable pack.yml is not on the trust path.
+    public string PackFile { get; set; } =
+        @"C:\ProgramData\TinySocs\Collector\packs\pack.yml.canonical";
+
+    // Detached signature. Empty => derived from PackFile (.canonical -> .sig).
+    public string SignatureFile { get; set; } = "";
+
+    // base64 of the 32-byte raw ed25519 PUBLIC key — the embedded trust anchor.
+    public string PublicKey { get; set; } = "";
+
+    // Only accept packs signed by this key_id (defence against key confusion).
+    public string SigningKeyId { get; set; } = "tinysocs-2026";
+
+    // The customer's licence token. Empty => free tier.
+    public string LicenceKey { get; set; } = "";
+
+    // base64 raw ed25519 public key for the licensing keypair (separate blast
+    // radius from pack signing). Empty => read tier without verifying.
+    public string LicencePublicKey { get; set; } = "";
 }
 
 public sealed class NotificationConfig

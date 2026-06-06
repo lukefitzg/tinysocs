@@ -1,0 +1,297 @@
+{
+  "schema_version": 2,
+  "run_id": "2026-W23-001",
+  "generated_at": "2026-06-05T22:03:42.4201143Z",
+  "iso_week": "2026-W23",
+  "git_commit": "cb85260",
+  "platform": {
+    "os": "Microsoft Windows 11 Pro 10.0.26200",
+    "tinysocs_version": null,
+    "sysmon_version": null,
+    "opensearch_version": "3.3.2"
+  },
+  "summary": {
+    "rules_in_pack": 39,
+    "rules_with_atomic_test": 25,
+    "atomic_tests_total": 19,
+    "atomic_tests_detected": 8,
+    "atomic_tests_skipped": 6,
+    "atomic_tests_missed": 5,
+    "atomic_tests_error": 0,
+    "technique_pass_rate": 0.6154,
+    "rule_pass_rate": 0.32
+  },
+  "results": [
+    {
+      "technique_id": "T1110.001",
+      "technique_name": "Brute Force - Password Guessing",
+      "expected_rules": [
+        "TS-001",
+        "TS-001-lab",
+        "TS-002"
+      ],
+      "detected_rules": [],
+      "status": "MISSED",
+      "category": "MISS",
+      "reason": "No alerts within timeout",
+      "started_at": "2026-06-05T21:27:49.0932235Z",
+      "duration_seconds": 343.9
+    },
+    {
+      "technique_id": "T1003.001",
+      "technique_name": "OS Credential Dumping - LSASS Memory",
+      "expected_rules": [
+        "TS-060"
+      ],
+      "detected_rules": [],
+      "status": "SKIP",
+      "category": "SKIP_PLATFORM",
+      "reason": "Sysmon not installed",
+      "started_at": "2026-06-05T21:33:33.0225983Z",
+      "duration_seconds": 0
+    },
+    {
+      "technique_id": "T1059.001",
+      "technique_name": "Command and Scripting Interpreter - PowerShell",
+      "expected_rules": [
+        "TS-030",
+        "TS-030-lab",
+        "TS-082"
+      ],
+      "detected_rules": [],
+      "status": "MISSED",
+      "category": "MISS",
+      "reason": "No alerts within timeout",
+      "started_at": "2026-06-05T21:33:33.0256024Z",
+      "duration_seconds": 136.9
+    },
+    {
+      "technique_id": "T1053.005",
+      "technique_name": "Scheduled Task/Job - Scheduled Task",
+      "expected_rules": [
+        "TS-020"
+      ],
+      "detected_rules": [
+        "TS-020"
+      ],
+      "status": "DETECTED",
+      "category": "PASS",
+      "reason": "",
+      "started_at": "2026-06-05T21:35:49.9179720Z",
+      "duration_seconds": 21.6
+    },
+    {
+      "technique_id": "T1547.001",
+      "technique_name": "Boot or Logon Autostart Execution - Registry Run Keys",
+      "expected_rules": [
+        "TS-091"
+      ],
+      "detected_rules": [],
+      "status": "SKIP",
+      "category": "SKIP_PLATFORM",
+      "reason": "Sysmon not installed",
+      "started_at": "2026-06-05T21:36:11.5127447Z",
+      "duration_seconds": 0
+    },
+    {
+      "technique_id": "T1543.003",
+      "technique_name": "Create or Modify System Process - Windows Service",
+      "expected_rules": [
+        "TS-090",
+        "TS-072"
+      ],
+      "detected_rules": [
+        "TS-072",
+        "TS-090"
+      ],
+      "status": "DETECTED",
+      "category": "PASS",
+      "reason": "",
+      "started_at": "2026-06-05T21:36:11.5199747Z",
+      "duration_seconds": 21.6
+    },
+    {
+      "technique_id": "T1070.001",
+      "technique_name": "Indicator Removal - Clear Windows Event Logs",
+      "expected_rules": [
+        "TS-080",
+        "TS-080-sys"
+      ],
+      "detected_rules": [
+        "TS-080"
+      ],
+      "status": "DETECTED",
+      "category": "PASS",
+      "reason": "",
+      "started_at": "2026-06-05T21:36:33.1158486Z",
+      "duration_seconds": 18.8
+    },
+    {
+      "technique_id": "T1562.001",
+      "technique_name": "Impair Defenses - Disable or Modify Tools",
+      "expected_rules": [
+        "TS-081"
+      ],
+      "detected_rules": [],
+      "status": "SKIP",
+      "category": "SKIP_PREREQ",
+      "reason": "Requires Tamper Protection disabled (currently enabled, blocks Defender config changes)",
+      "started_at": "2026-06-05T21:36:51.8896915Z",
+      "duration_seconds": 0.3
+    },
+    {
+      "technique_id": "T1021.002",
+      "technique_name": "Remote Services - SMB/Windows Admin Shares",
+      "expected_rules": [
+        "TS-070",
+        "TS-072"
+      ],
+      "detected_rules": [
+        "TS-072"
+      ],
+      "status": "DETECTED",
+      "category": "PASS",
+      "reason": "",
+      "started_at": "2026-06-05T21:36:52.1774996Z",
+      "duration_seconds": 25.6
+    },
+    {
+      "technique_id": "T1136.001",
+      "technique_name": "Create Account - Local Account",
+      "expected_rules": [
+        "TS-010"
+      ],
+      "detected_rules": [
+        "TS-010"
+      ],
+      "status": "DETECTED",
+      "category": "PASS",
+      "reason": "",
+      "started_at": "2026-06-05T21:37:17.7479082Z",
+      "duration_seconds": 21.2
+    },
+    {
+      "technique_id": "T1218.011",
+      "technique_name": "System Binary Proxy Execution - Rundll32",
+      "expected_rules": [
+        "TS-135"
+      ],
+      "detected_rules": [],
+      "status": "MISSED",
+      "category": "MISS",
+      "reason": "No alerts within timeout",
+      "started_at": "2026-06-05T21:37:38.9439429Z",
+      "duration_seconds": 1042.2
+    },
+    {
+      "technique_id": "T1003.003",
+      "technique_name": "OS Credential Dumping - NTDS",
+      "expected_rules": [
+        "TS-062"
+      ],
+      "detected_rules": [],
+      "status": "SKIP",
+      "category": "SKIP_PLATFORM",
+      "reason": "Requires Domain Controller (this machine is not a DC)",
+      "started_at": "2026-06-05T21:55:01.1417011Z",
+      "duration_seconds": 0.2
+    },
+    {
+      "technique_id": "T1087.001",
+      "technique_name": "Account Discovery - Local Account",
+      "expected_rules": [
+        "TS-130"
+      ],
+      "detected_rules": [
+        "TS-130"
+      ],
+      "status": "DETECTED",
+      "category": "PASS",
+      "reason": "",
+      "started_at": "2026-06-05T21:55:01.2932676Z",
+      "duration_seconds": 16.4
+    },
+    {
+      "technique_id": "T1018",
+      "technique_name": "Remote System Discovery",
+      "expected_rules": [
+        "TS-131"
+      ],
+      "detected_rules": [],
+      "status": "MISSED",
+      "category": "MISS",
+      "reason": "No alerts within timeout",
+      "started_at": "2026-06-05T21:55:17.7258055Z",
+      "duration_seconds": 146.5
+    },
+    {
+      "technique_id": "T1105",
+      "technique_name": "Ingress Tool Transfer",
+      "expected_rules": [
+        "TS-132"
+      ],
+      "detected_rules": [],
+      "status": "MISSED",
+      "category": "MISS",
+      "reason": "No alerts within timeout",
+      "started_at": "2026-06-05T21:57:44.6484566Z",
+      "duration_seconds": 317.2
+    },
+    {
+      "technique_id": "T1055",
+      "technique_name": "Process Injection",
+      "expected_rules": [
+        "TS-133"
+      ],
+      "detected_rules": [],
+      "status": "SKIP",
+      "category": "SKIP_PLATFORM",
+      "reason": "Sysmon not installed",
+      "started_at": "2026-06-05T22:03:01.9010434Z",
+      "duration_seconds": 0
+    },
+    {
+      "technique_id": "T1027",
+      "technique_name": "Obfuscated Files or Information",
+      "expected_rules": [
+        "TS-134"
+      ],
+      "detected_rules": [
+        "TS-134"
+      ],
+      "status": "DETECTED",
+      "category": "PASS",
+      "reason": "",
+      "started_at": "2026-06-05T22:03:01.9093310Z",
+      "duration_seconds": 18.3
+    },
+    {
+      "technique_id": "T1565.001",
+      "technique_name": "Data Manipulation - Stored Data Manipulation",
+      "expected_rules": [
+        "TS-110"
+      ],
+      "detected_rules": [],
+      "status": "SKIP",
+      "category": "SKIP_PLATFORM",
+      "reason": "Requires TinySocs FIM module (TinySocs-FIM event channel not found)",
+      "started_at": "2026-06-05T22:03:20.1625300Z",
+      "duration_seconds": 0.1
+    },
+    {
+      "technique_id": "T1047",
+      "technique_name": "Windows Management Instrumentation",
+      "expected_rules": [
+        "TS-136"
+      ],
+      "detected_rules": [
+        "TS-136"
+      ],
+      "status": "DETECTED",
+      "category": "PASS",
+      "reason": "",
+      "started_at": "2026-06-05T22:03:20.3015083Z",
+      "duration_seconds": 21.4
+    }
+  ]
+}

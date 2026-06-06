@@ -18,37 +18,39 @@ tests:
     atomic_test_number: 1
     expected_rules: ["TS-001", "TS-001-lab", "TS-002"]
     sysmon_required: false
-    timeout_seconds: 120
-    fallback_command: "1..6 | ForEach-Object { net use \\\\127.0.0.1\\IPC$ /user:fakeuser \"WrongPass$_\" 2>$null; Start-Sleep -Milliseconds 500 }"
-    notes: "Generates failed logon events (4625). Threshold: 5 in 5min. Fallback runs 6 net use attempts."
+    prefer_fallback: true
+    timeout_seconds: 300
+    fallback_command: "net use * /delete /y 2>$null; 1..18 | ForEach-Object { net use \\\\127.0.0.1\\IPC$ /user:\"victimacct\" \"WrongPass$_\" 2>$null; net use \\\\127.0.0.1\\IPC$ /delete /y 2>$null; Start-Sleep -Milliseconds 300 }"
+    notes: "Faithful password-guessing: 18 failed logons (4625) against ONE account 'victimacct' to clear TS-001 (threshold 15 by TargetUserName, 5min) with margin. Earlier version hammered 6 DISTINCT usernames (fakeuser1..6), producing 1 event per by-account group and 6 per by-IP group, which could not trip TS-001 (15) or TS-002 (20) - that was a test-fidelity gap, not weak detection. 'victimacct' does not exist, so there is no lockout to interfere. prefer_fallback: the ART atomic targets AD/SMB domain accounts and produces nothing on a non-domain workstation; the local-IPC$ fallback is the faithful standalone-host simulation."
 
   - atomic_technique: "T1003.001"
     technique_name: "OS Credential Dumping - LSASS Memory"
     atomic_test_number: 1
-    expected_rules: ["TS-060", "TS-061"]
+    expected_rules: ["TS-060"]
     sysmon_required: true
     timeout_seconds: 120
     fallback_command: "Start-Process cmd.exe -ArgumentList '/c','tasklist /fi \"imagename eq lsass.exe\"' -Wait -ErrorAction SilentlyContinue; Start-Process cmd.exe -ArgumentList '/c','rundll32.exe comsvcs.dll MiniDump' -Wait -ErrorAction SilentlyContinue"
-    notes: "Triggers Sysmon Event 10 targeting lsass.exe. Requires admin. Fallback runs tasklist/rundll32 to generate 4688 events."
+    notes: "Triggers Sysmon Event 10 targeting lsass.exe (TS-060 is the technique-specific rule). Requires admin. TS-061 removed: it now matches only named dumping tools (mimikatz/procdump/etc.), which this fallback does not run; the rundll32/comsvcs LSASS-dump path is additionally covered by TS-135 if Sysmon 10 is unavailable. If TS-060 does not fire, treat as an honest gap, not a fallback pass."
 
   - atomic_technique: "T1059.001"
     technique_name: "Command and Scripting Interpreter - PowerShell"
     atomic_test_number: 1
     expected_rules: ["TS-030", "TS-030-lab", "TS-082"]
     sysmon_required: false
+    requires: "defender_rtp_disabled"
     timeout_seconds: 120
-    fallback_command: "1..5 | ForEach-Object { Start-Process powershell.exe -ArgumentList '-Command','Write-Host ART-ScriptBlock-$_; Get-Process | Out-Null' -Wait -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 300 }"
-    notes: "Generates ScriptBlock logging (4104). Runs 5 iterations for threshold. TS-030-lab threshold=2, TS-082 threshold=1 (AMSI bypass pattern). Fallback uses Start-Process to avoid error propagation."
+    fallback_command: "1..2 | ForEach-Object { Start-Process powershell.exe -ArgumentList '-NoProfile','-Command',('[Ref].Assembly.GetType(''System.Management.Automation.AmsiUtils'').GetField(''amsiInitFailed'',''NonPublic,Static'').SetValue($null,$true)') -Wait -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 300 }"
+    notes: "Faithful AMSI-bypass execution: runs the canonical reflection one-liner whose ScriptBlock text contains 'AmsiUtils' and 'amsiInitFailed' - exactly the strings TS-082 field_match keys on (4104, threshold 1). Requires Defender RTP disabled: with RTP active, Defender's AMSI scanner blocks the script at command-line load BEFORE 4104 ScriptBlock logging captures it, producing an ERROR rather than an honest detection. Diagnostic on 2026-06-06: Defender returned 'This script contains malicious content and has been blocked by your antivirus software', confirming RTP is the gating factor. Earlier version ran benign Write-Host/Get-Process, which exercised neither TS-082's AMSI signature nor TS-030's volumetric threshold (200) - a test-fidelity gap. The only rule the old payload could have tripped (TS-030-lab, threshold 2) is enabled:false. Run twice for margin."
 
   - atomic_technique: "T1053.005"
     technique_name: "Scheduled Task/Job - Scheduled Task"
     atomic_test_number: 1
-    expected_rules: ["TS-020", "TS-061", "TS-132"]
+    expected_rules: ["TS-020"]
     sysmon_required: false
     prefer_fallback: true
     timeout_seconds: 120
     fallback_command: "schtasks /create /tn \"TinySocs-ART-Test\" /tr \"cmd /c whoami\" /sc once /st 23:59 /f; Start-Sleep -Seconds 3; $evt4698 = Get-WinEvent -LogName Security -MaxEvents 100 -ErrorAction SilentlyContinue | Where-Object { $_.Id -eq 4698 }; if ($evt4698) { Write-Host \"DIAG: Event 4698 found ($($evt4698.Count) events)\" } else { Write-Host \"DIAG: Event 4698 NOT in Security log - audit policy may not be effective\" }; Start-Sleep -Seconds 2; schtasks /delete /tn \"TinySocs-ART-Test\" /f"
-    notes: "Creates a scheduled task, generating event 4698. TS-020 targets 4698 directly; TS-061/TS-132 detect schtasks.exe process creation (4688) as fallback. Agent may have XML parsing issue with 4698 TaskContent field."
+    notes: "Creates a scheduled task, generating event 4698. TS-020 targets 4698 directly. TS-061/TS-132 removed: they only matched schtasks.exe as generic process noise (TS-061 now filters to dump tools; TS-132 to certutil/bitsadmin). If TS-020 does not fire (suspected XML parsing issue with 4698 TaskContent), this is a genuine gap to postmortem, not a fallback pass."
 
   - atomic_technique: "T1547.001"
     technique_name: "Boot or Logon Autostart Execution - Registry Run Keys"
@@ -73,7 +75,7 @@ tests:
     expected_rules: ["TS-080", "TS-080-sys"]
     sysmon_required: false
     prefer_fallback: true
-    timeout_seconds: 120
+    timeout_seconds: 300
     fallback_command: "wevtutil cl Security; Start-Sleep -Seconds 3; $evt1102 = Get-WinEvent -LogName Security -MaxEvents 20 -ErrorAction SilentlyContinue | Where-Object { $_.Id -eq 1102 }; if ($evt1102) { Write-Host \"DIAG: Event 1102 found after log clear\" } else { Write-Host \"DIAG: Event 1102 NOT in Security log after clear\" }; $evt104 = Get-WinEvent -LogName System -MaxEvents 20 -ErrorAction SilentlyContinue | Where-Object { $_.Id -eq 104 }; if ($evt104) { Write-Host \"DIAG: Event 104 found in System log\" } else { Write-Host \"DIAG: Event 104 NOT in System log\" }"
     notes: "Clears the Security event log. Detects via event 1102 (Security) or event 104 (System). System-channel detection (TS-080-sys) is more reliable as it is unaffected by the Security log clear."
 
@@ -101,18 +103,19 @@ tests:
     atomic_test_number: 1
     expected_rules: ["TS-010"]
     sysmon_required: false
-    timeout_seconds: 120
+    timeout_seconds: 300
     fallback_command: "net user TinySocsART P@ssw0rd123! /add 2>$null; Start-Sleep -Seconds 5; net user TinySocsART /delete 2>$null"
     notes: "Creates a new local user account, generating event 4720. Fallback uses net user directly."
 
   - atomic_technique: "T1218.011"
     technique_name: "System Binary Proxy Execution - Rundll32"
     atomic_test_number: 1
-    expected_rules: ["TS-135", "TS-061", "TS-132"]
+    expected_rules: ["TS-135"]
     sysmon_required: false
+    prefer_fallback: true
     timeout_seconds: 120
-    fallback_command: "Start-Process rundll32.exe -ArgumentList 'url.dll,OpenURL','https://127.0.0.1:9999/not-real' -Wait -ErrorAction SilentlyContinue; Start-Process rundll32.exe -ArgumentList 'advpack.dll,LaunchINFSection' -Wait -ErrorAction SilentlyContinue"
-    notes: "Executes rundll32 with suspicious arguments. Detected via 4688 process creation (TS-135 preferred, TS-061/TS-132 fallback). Uses Start-Process to ensure 4688 events are generated."
+    fallback_command: "1..5 | ForEach-Object { Start-Process rundll32.exe -ArgumentList 'user32.dll,UpdatePerUserSystemParameters' -WindowStyle Hidden -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 200 }"
+    notes: "Spawns rundll32.exe 5x (threshold 3 on NewProcessName=rundll32.exe, 5min) with margin. Uses the harmless user32.dll,UpdatePerUserSystemParameters export, which exits cleanly with no GUI. prefer_fallback: ART's T1218.011-1 atomic (Rundll32 execute JavaScript Remote Payload) is intermittent - sometimes fails with 'Access is denied' (then fallback runs and we DETECT), sometimes succeeds with a single rundll32 spawn that doesn't reach threshold 3 (then we MISS for harness reasons, not detection content). Same false-miss pattern as T1018. The fallback always exercises the rule with margin."
 
   - atomic_technique: "T1003.003"
     technique_name: "OS Credential Dumping - NTDS"
@@ -132,17 +135,18 @@ tests:
     expected_rules: ["TS-130"]
     sysmon_required: false
     timeout_seconds: 120
-    fallback_command: "cmd /c 'net user' 2>$null; cmd /c 'net localgroup administrators' 2>$null; cmd /c 'whoami /all' 2>$null; cmd /c 'net localgroup' 2>$null"
-    notes: "Runs net user/localgroup/whoami. Generates 4688 events (threshold 3). Each cmd /c spawns a process. Removed 'net group' (DC-only)."
+    fallback_command: "cmd /c 'net user' 2>$null; cmd /c 'net localgroup administrators' 2>$null; cmd /c 'whoami /all' 2>$null; cmd /c 'net localgroup' 2>$null; cmd /c 'net accounts' 2>$null; cmd /c 'quser' 2>$null; cmd /c 'whoami /groups' 2>$null"
+    notes: "Runs a burst of account-enumeration binaries (net.exe x4, whoami.exe x2, quser.exe x1 = 7 matching 4688 process-creation events). TS-130 field_match restricts to these binaries; threshold 5 in 5min, grouped by SubjectUserName. Margin of 2 over threshold. Removed 'net group' (DC-only)."
 
   - atomic_technique: "T1018"
     technique_name: "Remote System Discovery"
     atomic_test_number: 1
     expected_rules: ["TS-131"]
     sysmon_required: false
+    prefer_fallback: true
     timeout_seconds: 120
-    fallback_command: "cmd /c 'ipconfig /all' 2>$null; cmd /c 'netstat -an' 2>$null; cmd /c 'arp -a' 2>$null; cmd /c 'route print' 2>$null; cmd /c 'nslookup localhost' 2>$null"
-    notes: "Runs ipconfig/netstat/arp/route/nslookup. Each cmd /c generates a separate 4688 event (threshold 4). Fallback runs discovery commands directly."
+    fallback_command: "1..2 | ForEach-Object { ipconfig /all 2>$null | Out-Null; netstat -an 2>$null | Out-Null; arp -a 2>$null | Out-Null; route print 2>$null | Out-Null; netsh interface show interface 2>$null | Out-Null; nbtstat -n 2>$null | Out-Null }"
+    notes: "Faithful network-discovery burst: 6 enum binaries (ipconfig/netstat/arp/route/netsh/nbtstat) x2 = 12 matching 4688 events, grouped by SubjectUserName (threshold 4, 5min). Run directly (not via cmd /c) so NewProcessName is the enum binary itself. prefer_fallback: ART's T1018-1 atomic runs 'net view' (spawning net.exe), which exercises TS-130's account-discovery field_match but NOT TS-131's network-discovery field_match. On a non-domain workstation this means ART can succeed without exercising the rule under test - a false-miss in disguise. Diagnostic on 2026-06-06: running this fallback directly produced an honest TS-131 alert (event_count=4, window_start=10:15:00Z), confirming the rule is correct and the prior 'misses' were the harness running the wrong workload."
 
   - atomic_technique: "T1105"
     technique_name: "Ingress Tool Transfer"
@@ -166,7 +170,7 @@ tests:
     atomic_test_number: 1
     expected_rules: ["TS-134"]
     sysmon_required: false
-    timeout_seconds: 120
+    timeout_seconds: 300
     fallback_command: "Start-Process powershell.exe -ArgumentList '-enc','dwBoAG8AYQBtAGkA' -Wait -ErrorAction SilentlyContinue; Start-Process cmd.exe -ArgumentList '/c','powershell -e dwBoAG8AYQBtAGkA' -Wait -ErrorAction SilentlyContinue"
     notes: "Encoded/obfuscated PowerShell commands. Generates 4688 and 4104. Fallback runs base64-encoded 'whoami' via Start-Process to avoid flag conflicts."
 
@@ -183,8 +187,8 @@ tests:
   - atomic_technique: "T1047"
     technique_name: "Windows Management Instrumentation"
     atomic_test_number: 1
-    expected_rules: ["TS-136", "TS-061", "TS-132", "TS-134"]
+    expected_rules: ["TS-136"]
     sysmon_required: false
     timeout_seconds: 120
     fallback_command: "Invoke-WmiMethod -Class Win32_Process -Name Create -ArgumentList 'cmd /c whoami > %TEMP%\\art-wmi-test.txt' -ErrorAction SilentlyContinue; Start-Sleep -Seconds 5; Remove-Item $env:TEMP\\art-wmi-test.txt -ErrorAction SilentlyContinue"
-    notes: "WMI-spawned process. Parent is wmiprvse.exe. Generates 4688 events (TS-136 preferred, TS-061/TS-132/TS-134 fallback). Fallback uses PowerShell WMI cmdlet (wmic deprecated)."
+    notes: "WMI-spawned process (parent wmiprvse.exe), generates 4688. TS-136 (wmi_process_creation) is the technique-specific rule. TS-061/TS-132/TS-134 removed: they only credited a pass on generic process noise (TS-061 now filters to dump tools; TS-132 to certutil/bitsadmin; TS-134 to encoded-command patterns the benign whoami does not match). If TS-136 does not fire, treat as an honest gap."

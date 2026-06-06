@@ -1,0 +1,1368 @@
+schema_version: 2
+metadata:
+  pack_id: base
+  pack_version: '2026.23'
+  tier: free
+  generated_at: '2026-06-06T14:07:27Z'
+  validation:
+    atomic_red_team_run: null
+    passing: null
+    failing: null
+    pending: null
+rules:
+- id: TS-001
+  name: brute_force_logon
+  description: Multiple failed logon attempts (4625) from the same user
+  severity: high
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1110.001
+    technique_name: 'Brute Force: Password Guessing'
+    tactic: credential-access
+  docs: tinydocs/TS-001.md
+  detection:
+    type: threshold_by_key
+    event_id: 4625
+    channel: Security
+    group_by: winlog.event_data.TargetUserName
+    threshold: 15
+    window_minutes: 5
+  allowlist_scopes:
+  - user
+  - user_pattern
+  - host
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+  tuning:
+    threshold:
+      envvar: null
+      min: 3
+      max: 75
+      default: 15
+- id: TS-002
+  name: brute_force_logon_by_ip
+  description: Multiple failed logon attempts (4625) from the same source IP
+  severity: high
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1110.001
+    technique_name: 'Brute Force: Password Guessing'
+    tactic: credential-access
+  docs: tinydocs/TS-002.md
+  detection:
+    type: threshold_by_key
+    event_id: 4625
+    channel: Security
+    group_by: winlog.event_data.IpAddress
+    threshold: 20
+    window_minutes: 5
+  allowlist_scopes:
+  - source_ip
+  - source_ip_cidr
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+  tuning:
+    threshold:
+      envvar: null
+      min: 5
+      max: 100
+      default: 20
+- id: TS-010
+  name: local_account_created
+  description: New local user account created (4720)
+  severity: high
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1136.001
+    technique_name: 'Create Account: Local Account'
+    tactic: persistence
+  docs: tinydocs/TS-010.md
+  detection:
+    type: threshold_by_key
+    event_id: 4720
+    channel: Security
+    group_by: winlog.event_data.TargetUserName
+    threshold: 1
+    window_minutes: 5
+    cooldown_minutes: 60
+  allowlist_scopes:
+  - user
+  - user_pattern
+  - host
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+- id: TS-020
+  name: scheduled_task_created
+  description: Scheduled task created (4698)
+  severity: medium
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1053.005
+    technique_name: 'Scheduled Task/Job: Scheduled Task'
+    tactic: persistence
+  docs: tinydocs/TS-020.md
+  detection:
+    type: threshold_by_key
+    event_id: 4698
+    channel: Security
+    group_by: winlog.event_data.SubjectUserName
+    threshold: 1
+    window_minutes: 5
+    cooldown_minutes: 60
+  allowlist_scopes:
+  - user
+  - user_pattern
+  - host
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+- id: TS-030
+  name: powershell_scriptblock_burst
+  description: High volume of PowerShell ScriptBlock events (4104)
+  severity: medium
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1059.001
+    technique_name: 'Command and Scripting Interpreter: PowerShell'
+    tactic: execution
+  docs: tinydocs/TS-030.md
+  detection:
+    type: threshold_by_key
+    event_id: 4104
+    channel: Microsoft-Windows-PowerShell/Operational
+    group_by: winlog.computer_name
+    threshold: 200
+    window_minutes: 10
+    cooldown_minutes: 30
+  allowlist_scopes:
+  - host
+  - host_pattern
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+  tuning:
+    threshold:
+      envvar: null
+      min: 50
+      max: 1000
+      default: 200
+- id: TS-040
+  name: process_creation_burst
+  description: Burst of process creation events (4688) from same user
+  severity: low
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1106
+    technique_name: Native API
+    tactic: execution
+  docs: tinydocs/TS-040.md
+  detection:
+    type: threshold_by_key
+    event_id: 4688
+    channel: Security
+    group_by: winlog.event_data.SubjectUserName
+    threshold: 200
+    window_minutes: 10
+    cooldown_minutes: 30
+  allowlist_scopes:
+  - user
+  - user_pattern
+  - host
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+  tuning:
+    threshold:
+      envvar: null
+      min: 50
+      max: 1000
+      default: 200
+- id: TS-050
+  name: sysmon_process_creation_burst
+  description: Burst of Sysmon process creation events (ID 1)
+  severity: low
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1106
+    technique_name: Native API
+    tactic: execution
+  docs: tinydocs/TS-050.md
+  detection:
+    type: threshold_by_key
+    event_id: 1
+    channel: Microsoft-Windows-Sysmon/Operational
+    group_by: winlog.computer_name
+    threshold: 200
+    window_minutes: 10
+    cooldown_minutes: 30
+  allowlist_scopes:
+  - host
+  - host_pattern
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+  tuning:
+    threshold:
+      envvar: null
+      min: 50
+      max: 1000
+      default: 200
+- id: TS-060
+  name: lsass_access
+  description: Process accessing LSASS memory (Sysmon Event 10)
+  severity: high
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1003.001
+    technique_name: 'OS Credential Dumping: LSASS Memory'
+    tactic: credential-access
+  docs: tinydocs/TS-060.md
+  detection:
+    type: threshold_by_key
+    event_id: 10
+    channel: Microsoft-Windows-Sysmon/Operational
+    group_by: winlog.event_data.SourceImage
+    threshold: 1
+    window_minutes: 5
+    cooldown_minutes: 60
+  allowlist_scopes:
+  - process_path
+  - process_pattern
+  - user
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+- id: TS-061
+  name: credential_dumping_tools
+  description: Known credential dumping tool detected (process creation)
+  severity: critical
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1003.001
+    technique_name: 'OS Credential Dumping: LSASS Memory'
+    tactic: credential-access
+  docs: tinydocs/TS-061.md
+  detection:
+    type: threshold_by_key
+    event_id: 4688
+    channel: Security
+    group_by: winlog.event_data.NewProcessName
+    threshold: 1
+    window_minutes: 5
+    cooldown_minutes: 60
+    field_match:
+      field: winlog.event_data.NewProcessName
+      match: contains
+      values:
+      - mimikatz
+      - procdump
+      - nanodump
+      - pwdump
+      - gsecdump
+      - wce.exe
+      - sqldumper.exe
+      - dumpert
+      - lsassy
+  allowlist_scopes:
+  - process_path
+  - process_pattern
+  - user
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+- id: TS-062
+  name: ntds_dit_access
+  description: Access to ntds.dit or SYSTEM hive (4663)
+  severity: critical
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1003.003
+    technique_name: 'OS Credential Dumping: NTDS'
+    tactic: credential-access
+  docs: tinydocs/TS-062.md
+  detection:
+    type: threshold_by_key
+    event_id: 4663
+    channel: Security
+    group_by: winlog.computer_name
+    threshold: 1
+    window_minutes: 5
+    cooldown_minutes: 60
+  allowlist_scopes:
+  - host
+  - host_pattern
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+- id: TS-070
+  name: psexec_usage
+  description: PsExec service installation detected (7045)
+  severity: high
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1021.002
+    technique_name: 'Remote Services: SMB/Windows Admin Shares'
+    tactic: lateral-movement
+  docs: tinydocs/TS-070.md
+  detection:
+    type: threshold_by_key
+    event_id: 7045
+    channel: System
+    group_by: winlog.computer_name
+    threshold: 1
+    window_minutes: 5
+    cooldown_minutes: 60
+  allowlist_scopes:
+  - host
+  - host_pattern
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+- id: TS-071
+  name: rdp_brute_force
+  description: Multiple RDP logon failures (4625 LogonType 10)
+  severity: high
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1110.001
+    technique_name: 'Brute Force: Password Guessing'
+    tactic: credential-access
+  docs: tinydocs/TS-071.md
+  detection:
+    type: threshold_by_key
+    event_id: 4625
+    channel: Security
+    group_by: winlog.event_data.IpAddress
+    threshold: 10
+    window_minutes: 10
+  allowlist_scopes:
+  - source_ip
+  - source_ip_cidr
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+  tuning:
+    threshold:
+      envvar: null
+      min: 2
+      max: 50
+      default: 10
+- id: TS-072
+  name: remote_service_install
+  description: Service installed remotely (7045 — non-standard path)
+  severity: high
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1021.002
+    technique_name: 'Remote Services: SMB/Windows Admin Shares'
+    tactic: lateral-movement
+  docs: tinydocs/TS-072.md
+  detection:
+    type: threshold_by_key
+    event_id: 7045
+    channel: System
+    group_by: winlog.event_data.ServiceName
+    threshold: 1
+    window_minutes: 5
+    cooldown_minutes: 60
+  allowlist_scopes:
+  - host
+  - event_data.ServiceName
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+- id: TS-080
+  name: event_log_cleared
+  description: Security event log cleared (1102)
+  severity: high
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1070.001
+    technique_name: 'Indicator Removal: Clear Windows Event Logs'
+    tactic: defense-evasion
+  docs: tinydocs/TS-080.md
+  detection:
+    type: threshold_by_key
+    event_id: 1102
+    channel: Security
+    group_by: winlog.computer_name
+    threshold: 1
+    window_minutes: 5
+    cooldown_minutes: 60
+  allowlist_scopes:
+  - host
+  - host_pattern
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+- id: TS-080-sys
+  name: event_log_cleared_system
+  description: Event log cleared detected via System channel (104)
+  severity: high
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1070.001
+    technique_name: 'Indicator Removal: Clear Windows Event Logs'
+    tactic: defense-evasion
+  docs: tinydocs/TS-080-sys.md
+  detection:
+    type: threshold_by_key
+    event_id: 104
+    channel: System
+    group_by: winlog.computer_name
+    threshold: 1
+    window_minutes: 5
+    cooldown_minutes: 60
+  allowlist_scopes:
+  - host
+  - host_pattern
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+- id: TS-081
+  name: defender_tamper
+  description: Windows Defender real-time protection disabled or exclusion added
+  severity: high
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1562.001
+    technique_name: 'Impair Defenses: Disable or Modify Tools'
+    tactic: defense-evasion
+  docs: tinydocs/TS-081.md
+  detection:
+    type: threshold_by_key
+    event_id: 5001
+    channel: Microsoft-Windows-Windows Defender/Operational
+    group_by: winlog.computer_name
+    threshold: 1
+    window_minutes: 5
+    cooldown_minutes: 60
+  allowlist_scopes:
+  - host
+  - host_pattern
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+- id: TS-082
+  name: amsi_bypass
+  description: AMSI bypass patterns in ScriptBlock (4104)
+  severity: high
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1059.001
+    technique_name: 'Command and Scripting Interpreter: PowerShell'
+    tactic: execution
+  docs: tinydocs/TS-082.md
+  detection:
+    type: threshold_by_key
+    event_id: 4104
+    channel: Microsoft-Windows-PowerShell/Operational
+    group_by: winlog.computer_name
+    threshold: 1
+    window_minutes: 5
+    cooldown_minutes: 30
+    field_match:
+      field: winlog.event_data.ScriptBlockText
+      match: contains
+      values:
+      - AmsiUtils
+      - amsiInitFailed
+      - AmsiScanBuffer
+      - SetValue(null
+  allowlist_scopes:
+  - host
+  - host_pattern
+  - process_path
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+- id: TS-083
+  name: timestomp_detected
+  description: File creation time modified (Sysmon Event 2)
+  severity: low
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1070.006
+    technique_name: 'Indicator Removal: Timestomp'
+    tactic: defense-evasion
+  docs: tinydocs/TS-083.md
+  detection:
+    type: threshold_by_key
+    event_id: 2
+    channel: Microsoft-Windows-Sysmon/Operational
+    group_by: winlog.event_data.Image
+    threshold: 1
+    window_minutes: 5
+    cooldown_minutes: 60
+  allowlist_scopes:
+  - process_path
+  - process_pattern
+  - user
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+- id: TS-090
+  name: service_install_suspicious
+  description: Service installed with suspicious path (temp, appdata, public)
+  severity: high
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1543.003
+    technique_name: 'Create or Modify System Process: Windows Service'
+    tactic: persistence
+  docs: tinydocs/TS-090.md
+  detection:
+    type: threshold_by_key
+    event_id: 7045
+    channel: System
+    group_by: winlog.event_data.ServiceName
+    threshold: 1
+    window_minutes: 5
+    cooldown_minutes: 30
+  allowlist_scopes:
+  - host
+  - event_data.ServiceName
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+- id: TS-091
+  name: registry_run_key
+  description: Run/RunOnce registry modification (Sysmon Event 13)
+  severity: low
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1547.001
+    technique_name: 'Boot or Logon Autostart Execution: Registry Run Keys / Startup
+      Folder'
+    tactic: persistence
+  docs: tinydocs/TS-091.md
+  detection:
+    type: threshold_by_key
+    event_id: 13
+    channel: Microsoft-Windows-Sysmon/Operational
+    group_by: winlog.event_data.Image
+    threshold: 1
+    window_minutes: 5
+    cooldown_minutes: 30
+  allowlist_scopes:
+  - process_path
+  - process_pattern
+  - user
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+- id: TS-092
+  name: startup_folder_write
+  description: File written to Startup folder (Sysmon Event 11)
+  severity: low
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1547.001
+    technique_name: 'Boot or Logon Autostart Execution: Registry Run Keys / Startup
+      Folder'
+    tactic: persistence
+  docs: tinydocs/TS-092.md
+  detection:
+    type: threshold_by_key
+    event_id: 11
+    channel: Microsoft-Windows-Sysmon/Operational
+    group_by: winlog.event_data.Image
+    threshold: 1
+    window_minutes: 5
+    cooldown_minutes: 30
+  allowlist_scopes:
+  - process_path
+  - process_pattern
+  - user
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+- id: TS-100
+  name: dns_tunnel_volume
+  description: High volume of DNS queries to single domain (Sysmon Event 22)
+  severity: high
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1071
+    technique_name: Application Layer Protocol
+    tactic: command-and-control
+  docs: tinydocs/TS-100.md
+  detection:
+    type: threshold_by_key
+    event_id: 22
+    channel: Microsoft-Windows-Sysmon/Operational
+    group_by: winlog.event_data.QueryName
+    threshold: 200
+    window_minutes: 10
+    cooldown_minutes: 30
+  allowlist_scopes:
+  - host
+  - event_data.QueryName
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+  tuning:
+    threshold:
+      envvar: null
+      min: 50
+      max: 1000
+      default: 200
+- id: TS-101
+  name: large_outbound_transfer
+  description: Unusual outbound connection volume (Sysmon Event 3)
+  severity: medium
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1048
+    technique_name: Exfiltration Over Alternative Protocol
+    tactic: exfiltration
+  docs: tinydocs/TS-101.md
+  detection:
+    type: threshold_by_key
+    event_id: 3
+    channel: Microsoft-Windows-Sysmon/Operational
+    group_by: winlog.event_data.Image
+    threshold: 200
+    window_minutes: 10
+    cooldown_minutes: 30
+  allowlist_scopes:
+  - process_path
+  - process_pattern
+  - user
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+  tuning:
+    threshold:
+      envvar: null
+      min: 50
+      max: 1000
+      default: 200
+- id: TS-110
+  name: fim_critical_file_modified
+  description: Critical system file modified (hosts, SAM, boot config)
+  severity: critical
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1565.001
+    technique_name: 'Data Manipulation: Stored Data Manipulation'
+    tactic: impact
+  docs: tinydocs/TS-110.md
+  detection:
+    type: threshold_by_key
+    event_id: 1002
+    channel: TinySocs-FIM
+    group_by: FilePath
+    threshold: 1
+    window_minutes: 60
+  allowlist_scopes:
+  - process_path
+  - process_pattern
+  - host
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+- id: TS-111
+  name: fim_executable_replaced
+  description: Executable or DLL in Program Files modified
+  severity: high
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1565.001
+    technique_name: 'Data Manipulation: Stored Data Manipulation'
+    tactic: impact
+  docs: tinydocs/TS-111.md
+  detection:
+    type: threshold_by_key
+    event_id: 1002
+    channel: TinySocs-FIM
+    group_by: FilePath
+    threshold: 1
+    window_minutes: 60
+  allowlist_scopes:
+  - process_path
+  - process_pattern
+  - host
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+- id: TS-112
+  name: fim_config_tampered
+  description: TinySocs configuration file modified outside of installer
+  severity: high
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1565.001
+    technique_name: 'Data Manipulation: Stored Data Manipulation'
+    tactic: impact
+  docs: tinydocs/TS-112.md
+  detection:
+    type: threshold_by_key
+    event_id: 1002
+    channel: TinySocs-FIM
+    group_by: FilePath
+    threshold: 1
+    window_minutes: 60
+  allowlist_scopes:
+  - process_path
+  - process_pattern
+  - host
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+- id: TS-113
+  name: fim_mass_modification
+  description: Mass file modification detected (>50 files in 60 seconds) — ransomware
+    indicator
+  severity: critical
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1486
+    technique_name: Data Encrypted for Impact
+    tactic: impact
+  docs: tinydocs/TS-113.md
+  detection:
+    type: threshold_by_key
+    event_id: 1002
+    channel: TinySocs-FIM
+    group_by: winlog.computer_name
+    threshold: 50
+    window_minutes: 1
+  allowlist_scopes:
+  - process_path
+  - process_pattern
+  - host
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+  tuning:
+    threshold:
+      envvar: null
+      min: 12
+      max: 250
+      default: 50
+- id: TS-114
+  name: fim_sensitive_file_deleted
+  description: Sensitive system file deletion attempt (SAM, SECURITY, SYSTEM hive)
+  severity: critical
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1485
+    technique_name: Data Destruction
+    tactic: impact
+  docs: tinydocs/TS-114.md
+  detection:
+    type: threshold_by_key
+    event_id: 1003
+    channel: TinySocs-FIM
+    group_by: FilePath
+    threshold: 1
+    window_minutes: 60
+  allowlist_scopes:
+  - process_path
+  - process_pattern
+  - host
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+- id: TS-115
+  name: fim_permission_change
+  description: ACL or permission modification on monitored critical file
+  severity: medium
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1222
+    technique_name: File and Directory Permissions Modification
+    tactic: defense-evasion
+  docs: tinydocs/TS-115.md
+  detection:
+    type: threshold_by_key
+    event_id: 1004
+    channel: TinySocs-FIM
+    group_by: FilePath
+    threshold: 1
+    window_minutes: 60
+  allowlist_scopes:
+  - process_path
+  - process_pattern
+  - host
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+- id: TS-130
+  name: account_discovery
+  description: Account enumeration commands (net user, net localgroup, whoami /all)
+  severity: medium
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1087.001
+    technique_name: 'Account Discovery: Local Account'
+    tactic: discovery
+  docs: tinydocs/TS-130.md
+  detection:
+    type: threshold_by_key
+    event_id: 4688
+    channel: Security
+    group_by: winlog.event_data.SubjectUserName
+    threshold: 5
+    window_minutes: 5
+    field_match:
+      field: winlog.event_data.NewProcessName
+      match: contains
+      values:
+      - net.exe
+      - net1.exe
+      - whoami.exe
+      - nltest.exe
+      - dsquery.exe
+      - quser.exe
+      - query.exe
+  allowlist_scopes:
+  - user
+  - user_pattern
+  - host
+  - process_path
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+  tuning:
+    threshold:
+      envvar: null
+      min: 1
+      max: 25
+      default: 5
+- id: TS-131
+  name: system_network_discovery
+  description: Network enumeration commands (ipconfig, netstat, arp, route)
+  severity: low
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1018
+    technique_name: Remote System Discovery
+    tactic: discovery
+  docs: tinydocs/TS-131.md
+  detection:
+    type: threshold_by_key
+    event_id: 4688
+    channel: Security
+    group_by: winlog.event_data.SubjectUserName
+    threshold: 4
+    window_minutes: 5
+    field_match:
+      field: winlog.event_data.NewProcessName
+      match: contains
+      values:
+      - ipconfig.exe
+      - netstat.exe
+      - arp.exe
+      - route.exe
+      - nbtstat.exe
+      - netsh.exe
+      - tracert.exe
+      - nslookup.exe
+  allowlist_scopes:
+  - user
+  - user_pattern
+  - host
+  - process_path
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+  tuning:
+    threshold:
+      envvar: null
+      min: 1
+      max: 20
+      default: 4
+- id: TS-132
+  name: ingress_tool_transfer
+  description: File download via certutil, bitsadmin, or PowerShell (process creation)
+  severity: medium
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1105
+    technique_name: Ingress Tool Transfer
+    tactic: command-and-control
+  docs: tinydocs/TS-132.md
+  detection:
+    type: threshold_by_key
+    event_id: 4688
+    channel: Security
+    group_by: winlog.event_data.NewProcessName
+    threshold: 2
+    window_minutes: 5
+    cooldown_minutes: 30
+    field_match:
+      field: winlog.event_data.NewProcessName
+      match: contains
+      values:
+      - certutil.exe
+      - bitsadmin.exe
+  allowlist_scopes:
+  - process_path
+  - process_pattern
+  - user
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+  tuning:
+    threshold:
+      envvar: null
+      min: 1
+      max: 10
+      default: 2
+- id: TS-133
+  name: process_injection_sysmon
+  description: Process injection detected via Sysmon CreateRemoteThread (Event 8)
+  severity: high
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1055
+    technique_name: Process Injection
+    tactic: defense-evasion
+  docs: tinydocs/TS-133.md
+  detection:
+    type: threshold_by_key
+    event_id: 8
+    channel: Microsoft-Windows-Sysmon/Operational
+    group_by: winlog.event_data.SourceImage
+    threshold: 1
+    window_minutes: 5
+    cooldown_minutes: 30
+  allowlist_scopes:
+  - process_path
+  - process_pattern
+  - user
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+- id: TS-134
+  name: obfuscated_command
+  description: Obfuscated or encoded command detected in process creation
+  severity: low
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1027
+    technique_name: Obfuscated Files or Information
+    tactic: defense-evasion
+  docs: tinydocs/TS-134.md
+  detection:
+    type: threshold_by_key
+    event_id: 4688
+    channel: Security
+    group_by: winlog.event_data.SubjectUserName
+    threshold: 1
+    window_minutes: 5
+    cooldown_minutes: 30
+    field_match:
+      field: winlog.event_data.CommandLine
+      match: contains
+      values:
+      - '-enc '
+      - -EncodedCommand
+      - FromBase64String
+      - char]0x
+      - iex(
+      - Invoke-Expression
+  allowlist_scopes:
+  - user
+  - user_pattern
+  - host
+  - process_path
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+- id: TS-135
+  name: lolbin_proxy_execution
+  description: LOLBin proxy execution (rundll32, mshta, regsvr32) detected via process
+    creation
+  severity: high
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1218.011
+    technique_name: 'System Binary Proxy Execution: Rundll32'
+    tactic: defense-evasion
+  docs: tinydocs/TS-135.md
+  detection:
+    type: threshold_by_key
+    event_id: 4688
+    channel: Security
+    group_by: winlog.event_data.NewProcessName
+    threshold: 3
+    window_minutes: 5
+    cooldown_minutes: 15
+    field_match:
+      field: winlog.event_data.NewProcessName
+      match: contains
+      values:
+      - rundll32.exe
+      - regsvr32.exe
+      - mshta.exe
+      - wmic.exe
+      - certutil.exe
+  allowlist_scopes:
+  - process_path
+  - process_pattern
+  - user
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+  tuning:
+    threshold:
+      envvar: null
+      min: 1
+      max: 15
+      default: 3
+- id: TS-136
+  name: wmi_process_creation
+  description: Process spawned via WMI (wmiprvse.exe child process)
+  severity: low
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1047
+    technique_name: Windows Management Instrumentation
+    tactic: execution
+  docs: tinydocs/TS-136.md
+  detection:
+    type: threshold_by_key
+    event_id: 4688
+    channel: Security
+    group_by: winlog.event_data.NewProcessName
+    threshold: 1
+    window_minutes: 5
+    cooldown_minutes: 15
+    field_match:
+      field: winlog.event_data.ParentProcessName
+      match: contains
+      values:
+      - wmiprvse.exe
+      - wmic.exe
+      - WmiPrvSE.exe
+  allowlist_scopes:
+  - process_path
+  - process_pattern
+  - user
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+- id: TS-120
+  name: agent_version_drift
+  description: Agent heartbeat reports a version older than minimum compatible
+  severity: medium
+  enabled: true
+  runs_on: agent
+  pack: base
+  mitre:
+    technique_id: T1195.002
+    technique_name: 'Supply Chain Compromise: Compromise Software Supply Chain'
+    tactic: initial-access
+  docs: tinydocs/TS-120.md
+  detection:
+    type: threshold_by_key
+    event_id: 0
+    channel: heartbeat
+    group_by: agent_version
+    threshold: 1
+    window_minutes: 1440
+  allowlist_scopes:
+  - host
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log

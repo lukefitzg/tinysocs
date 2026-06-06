@@ -222,9 +222,32 @@ Write-Host "  Old TinySocs fully purged." -ForegroundColor Green
 Write-Step "STEP 2: Building .NET Collector Agent"
 
 $agentProj = Join-Path $RepoRoot 'src\TinySocs.Agent'
+$agentExe = Join-Path $agentProj 'bin\Release\net8.0\win-x64\publish\TinySocs.Agent.exe'
 if (Test-Path (Join-Path $agentProj 'TinySocs.Agent.csproj')) {
     dotnet publish $agentProj -c Release -r win-x64 --self-contained
-    Write-Host "  Agent built." -ForegroundColor Green
+    $publishExit = $LASTEXITCODE
+    if ($publishExit -ne 0) {
+        # Publish failed (commonly a NuGet restore failure with no network).
+        # The installer bundles $agentExe -- if a prior build (e.g. cross-built
+        # on the host over the shared folder) left a valid exe there, use it and
+        # warn loudly. Otherwise abort: bundling a missing/stale agent silently
+        # is exactly the trap that ships a release without its new code.
+        if (Test-Path $agentExe) {
+            $built = (Get-Item $agentExe).LastWriteTime
+            Write-Host "  WARNING: dotnet publish FAILED (exit $publishExit)." -ForegroundColor Yellow
+            Write-Host "  Falling back to the EXISTING agent exe at:" -ForegroundColor Yellow
+            Write-Host "    $agentExe" -ForegroundColor Yellow
+            Write-Host "    (last built: $built -- CONFIRM this is recent enough to bundle)" -ForegroundColor Yellow
+        } else {
+            Write-Host "  ERROR: dotnet publish FAILED (exit $publishExit) and no existing" -ForegroundColor Red
+            Write-Host "  agent exe to fall back to at:" -ForegroundColor Red
+            Write-Host "    $agentExe" -ForegroundColor Red
+            Write-Host "  Fix the build (often NuGet connectivity) and re-run." -ForegroundColor Red
+            exit 1
+        }
+    } else {
+        Write-Host "  Agent built." -ForegroundColor Green
+    }
 } else {
     Write-Host "  Agent project not found at $agentProj - skipping." -ForegroundColor Yellow
 }

@@ -1049,14 +1049,18 @@ function Restart-And-Wait {
   try { Stop-Service $ServiceName -Force -ErrorAction SilentlyContinue } catch {}
   try { Start-Service $ServiceName } catch {}
 
-  $deadline = (Get-Date).AddSeconds(180)
+  # 300s, not 180: a cold first boot must initialize the .opendistro_security
+  # index before the HTTP port opens, which alone can take ~2 min on a busy VM.
+  # 180s lost that race on fresh installs; OpenSearch came up healthy seconds later.
+  $waitSeconds = 300
+  $deadline = (Get-Date).AddSeconds($waitSeconds)
   do {
     Start-Sleep 2
     $ok = (Test-NetConnection 127.0.0.1 -Port $HttpPort -WarningAction SilentlyContinue).TcpTestSucceeded
   } while (-not $ok -and (Get-Date) -lt $deadline)
 
   if (-not $ok) {
-    Write-Log "OpenSearch not listening on $HttpPort within 180s."
+    Write-Log "OpenSearch not listening on $HttpPort within ${waitSeconds}s."
     throw "OpenSearch not listening on $HttpPort"
   }
   Write-Log "OpenSearch is listening on $HttpPort"

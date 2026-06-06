@@ -92,17 +92,21 @@ def _canonical_payload(payload: dict) -> bytes:
 
 
 def issue(tier: str, key_id: str, key_dir: Path, *, sub: str, sites: int,
-          period_days: int = _DEFAULT_PERIOD_DAYS, now: int | None = None) -> str:
+          period_days: int = _DEFAULT_PERIOD_DAYS, exp: int | None = None,
+          now: int | None = None) -> str:
     if tier not in TIERS:
         raise ValueError(f"tier must be one of {TIERS}, got {tier!r}")
     now = int(now if now is not None else time.time())
+    # Stripe drives `exp` exactly (current_period_end); period_days is the
+    # offline-demo fallback when no billing period is supplied.
+    expiry = int(exp) if exp is not None else now + period_days * 86400
     payload = {
         "k": key_id,
         "tier": tier,
         "sub": sub,
         "sites": sites,
         "iat": now,
-        "exp": now + period_days * 86400,
+        "exp": expiry,
         "nonce": _b64url(_os_random(9)),
     }
     priv = ps.load_private(key_dir, key_id)

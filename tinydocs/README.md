@@ -34,28 +34,28 @@ intrusions. Lead with these; the rest of the 37 base rules get docs over time
 | Rule | Name | Severity | Status |
 |------|------|----------|--------|
 | TS-061 | credential_dumping_tools | critical | published |
-| TS-001 | brute_force_logon | high | published |
+| TS-062 | ntds_dit_access | critical | published |
 | TS-113 | fim_mass_modification (ransomware) | critical | published |
-| TS-062 | ntds_dit_access | critical | draft |
-| TS-060 | lsass_access | high | draft |
-| TS-002 | brute_force_logon_by_ip | high | draft |
-| TS-071 | rdp_brute_force | high | draft |
-| TS-070 | psexec_usage | high | draft |
-| TS-080 | event_log_cleared | high | draft |
-| TS-081 | defender_tamper | high | draft |
-| TS-082 | amsi_bypass | high | draft |
-| TS-090 | service_install_suspicious | high | draft |
-| TS-010 | local_account_created | high | draft |
-| TS-020 | scheduled_task_created | medium | draft |
-| TS-100 | dns_tunnel_volume | high | draft |
-| TS-114 | fim_sensitive_file_deleted | critical | draft |
-| TS-133 | process_injection_sysmon | high | draft |
-| TS-135 | lolbin_proxy_execution | high | draft |
-| TS-132 | ingress_tool_transfer | medium | draft |
-| TS-130 | account_discovery | medium | draft |
+| TS-114 | fim_sensitive_file_deleted | critical | published |
+| TS-001 | brute_force_logon | high | published |
+| TS-002 | brute_force_logon_by_ip | high | published |
+| TS-060 | lsass_access | high | published |
+| TS-071 | rdp_brute_force | high | published |
+| TS-070 | psexec_usage | high | published |
+| TS-080 | event_log_cleared | high | published |
+| TS-081 | defender_tamper | high | published |
+| TS-082 | amsi_bypass | high | published |
+| TS-090 | service_install_suspicious | high | published |
+| TS-010 | local_account_created | high | published |
+| TS-100 | dns_tunnel_volume | high | published |
+| TS-133 | process_injection_sysmon | high | published |
+| TS-135 | lolbin_proxy_execution | high | published |
+| TS-020 | scheduled_task_created | medium | published |
+| TS-132 | ingress_tool_transfer | medium | published |
+| TS-130 | account_discovery | medium | published |
 
-3 written, 17 stubbed. The 3 published docs set the quality bar; the stubs carry
-correct front-matter and detection facts and need the prose sections filled in.
+All 20 priority docs published. The remaining 17 base rules (`--all`) get docs
+over time via the content cadence.
 
 ## Authoring / content cadence
 

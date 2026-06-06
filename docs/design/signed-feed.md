@@ -233,7 +233,7 @@ A purely CDN-native scheme (pre-shared signing secret, agent mints its own URLs)
 
 ### Build note
 
-Still design-only this pass. It's a handful of lines on top of `licence.py` + an object-store signing call, but it's the licensing *enforcement boundary* — it ships after the C# agent can present a key and follow a redirect, and after the object store is chosen. Listed in build sequencing as design-only deliberately.
+**Built (2026-06-06):** `src/tinysocs/api/feed.py` — a FastAPI app with the mint route `GET /feed/{pack_id}/{channel}`. It runs the gate above verbatim (`scripts/licence.py` `verify_key` / `effective_tier` / `can_access`), adds the server-only revocation check (`src/tinysocs/api/feed_store.py`), resolves the `pack_version` from `index.json` (with a filesystem fallback for the demo), and 302-redirects to a short-TTL HMAC-signed URL. A `GET /feed/blob/...` route stands in for the CDN/object store so the feed is demoable end-to-end without cloud infra; in production the redirect points at S3/R2 and that route drops away. URL-signing secret comes from `TINYSOCS_FEED_URL_SECRET` (fail-closed). Covered by `tests/test_feed_server.py`.
 
 ## Part 5 — Key management and rotation
 
@@ -257,7 +257,7 @@ Rotation process (pack-signing, documented operationally — small runbook, not 
 
 ## Part 6 — Stripe → licence issuance
 
-Designed, not built in the first pass (external service + secrets + webhook signature handling — exactly the "don't slam it in part-time" boundary).
+**Built (2026-06-06):** the `POST /stripe/webhook` route in `src/tinysocs/api/feed.py`. It verifies the `Stripe-Signature` HMAC (`t=…,v1=…` scheme, `{t}.{body}` signed with `TINYSOCS_STRIPE_WEBHOOK_SECRET`, constant-time compare, 5-min tolerance) **without the Stripe SDK**; maps `price_id → tier` and `quantity → sites` via `scripts/stripe_pricing.py`; mints + signs a key via `scripts/licence.py issue`; and records the `nonce` in the revocation store. `subscription.updated` revokes the customer's prior key before minting the replacement; `subscription.deleted` revokes; `payment_failed` is acknowledged but not acted on (rely on `exp` + grace). Unknown `price_id` → 422 (never mints a "free" key). Webhook secret + price ids are env-only — no secrets or prices in the repo. Covered by `tests/test_feed_server.py`.
 
 Flow:
 
@@ -295,13 +295,15 @@ Subscription lifecycle → key lifecycle:
 | ed25519 pack sign/verify (`scripts/pack_sign.py`) | **build** | self-contained trust primitive; the demo-able core |
 | v2 migration → real signable `base`/`demo` packs (`scripts/migrate_rules_to_v2.py`) | **build** | mechanical (`rule-format-v2.md`); produces the bytes to sign |
 | Licence token mint/verify + `entitlement()` (`scripts/licence.py`) | **build** | pure local logic; demo-able; no secrets/network |
-| Feed HTTP server + entitlement enforcement | design-only | static delivery is trivial; the *auth layer* is the licensing boundary — design-first |
-| Stripe webhook → key issuance | design-only | external service, webhook-signature secrets — design-first, don't part-time-slam |
+| Feed HTTP server + entitlement enforcement | **build (2026-06-06)** | `src/tinysocs/api/feed.py` mint route runs the licence gate + revocation and 302s to a short-TTL signed URL; blob route stands in for the CDN |
+| Stripe webhook → key issuance | **build (2026-06-06)** | `src/tinysocs/api/feed.py` `/stripe/webhook` verifies the HMAC (no SDK), maps price→tier, mints + records a key, revokes on update/cancel |
 | C# agent pack-load/verify integration | **build** (2026-06-06) | the agent now verifies a signed pack and refuses tampered/untrusted content; reads tier from the licence offline |
 
 The built pieces let a founder watch, on the CLI: **migrate the 39 live rules into a signed `base` pack → verify it → tamper one byte and watch verification reject it → check that a `pro` key unlocks `m365-pack` while a `free` key gets only the lagged `base` snapshot.** That is the revenue mechanic, demonstrated end-to-end, without a server or a Stripe account.
 
-As of 2026-06-06 the **C# agent itself** is on the trust path: with `detection.pack.enabled`, `OpenSearchBulkShipper` loads rules via `PackLoader`, which ed25519-verifies the signed `.canonical` bytes, pins the signing `key_id`, gates by licence entitlement, and **refuses to load (leaves rules unchanged) on any verification failure**. So the story is no longer "scripts prove the protocol" — the running agent enforces it. Still design-only: the feed HTTP server and the Stripe webhook (both vendor-side, not needed for the founder demo).
+As of 2026-06-06 the **C# agent itself** is on the trust path: with `detection.pack.enabled`, `OpenSearchBulkShipper` loads rules via `PackLoader`, which ed25519-verifies the signed `.canonical` bytes, pins the signing `key_id`, gates by licence entitlement, and **refuses to load (leaves rules unchanged) on any verification failure**. So the story is no longer "scripts prove the protocol" — the running agent enforces it.
+
+Also as of 2026-06-06 the **vendor side is built**: `src/tinysocs/api/feed.py` is a small FastAPI app serving the entitlement-gated feed (mint → signed-URL redirect → blob) and the Stripe webhook that issues + revokes licence keys, both reusing the same `licence.py` decision the agent uses. The full revenue mechanic — *Stripe subscription mints a key → key unlocks the live channel and premium packs → cancel revokes it → the agent verifies the signed pack offline* — now runs locally end-to-end, no cloud account required. What remains is operational, not protocol: the real object store (S3/R2 URL-signing call in place of the blob stand-in) and the Stripe dashboard prices.
 
 ---
 

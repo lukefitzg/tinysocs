@@ -35,6 +35,7 @@ dev = [
 
 [project.scripts]
 tinysocs-node = "tinysocs.api.node:cli"
+tinysocs-feed = "tinysocs.api.feed:cli"
 tinysocs-master = "tinysocs.orchestrator.master:cli"
 tinysocs-quickstart = "tinysocs.launcher.quickstart:cli"
 tinysocs-daily-summary = "tinysocs.reporting.daily_summary:main"

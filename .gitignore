@@ -93,6 +93,7 @@ data/queue-rot/*
 !data/queue-rot/.gitkeep
 data/actions_queue.json
 data/actions_queue.jsonl
+data/feed/
 
 # -----------------------
 # Bundled vendor bins you DO want tracked

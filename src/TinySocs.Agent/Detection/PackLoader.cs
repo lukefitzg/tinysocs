@@ -220,6 +220,8 @@ namespace TinySocs.Agent.Detection
                         }
                         cond.FieldMatch = filter;
                     }
+
+                    ApplyThresholdOverride(r, rule.Id, cond);
                     rule.Condition = cond;
                 }
 
@@ -245,6 +247,40 @@ namespace TinySocs.Agent.Detection
                 _logger.LogWarning(ex, "Skipping malformed pack rule.");
                 return null;
             }
+        }
+
+        // v2 tuning: let a customer override a rule's threshold via an environment
+        // variable (tuning.threshold.envvar) without editing the signed pack. The
+        // override is clamped to the rule's declared [min, max] so it can't be set
+        // to a nonsensical value. This is the "tune without editing rules" promise.
+        private void ApplyThresholdOverride(JsonElement rule, string ruleId, RuleCondition cond)
+        {
+            if (!rule.TryGetProperty("tuning", out var tuning) || tuning.ValueKind != JsonValueKind.Object)
+            {
+                return;
+            }
+            if (!tuning.TryGetProperty("threshold", out var t) || t.ValueKind != JsonValueKind.Object)
+            {
+                return;
+            }
+            var envvar = GetStringOrNull(t, "envvar");
+            if (string.IsNullOrWhiteSpace(envvar))
+            {
+                return;
+            }
+            var raw = Environment.GetEnvironmentVariable(envvar);
+            if (string.IsNullOrWhiteSpace(raw) || !int.TryParse(raw, out var requested))
+            {
+                return;
+            }
+
+            var min = t.TryGetProperty("min", out var mn) && mn.ValueKind == JsonValueKind.Number ? mn.GetInt32() : requested;
+            var max = t.TryGetProperty("max", out var mx) && mx.ValueKind == JsonValueKind.Number ? mx.GetInt32() : requested;
+            var clamped = Math.Clamp(requested, min, max);
+            _logger.LogInformation(
+                "Rule {RuleId}: threshold overridden via {EnvVar}={Raw} -> {Value} (clamped to [{Min},{Max}]).",
+                ruleId, envvar, raw, clamped, min, max);
+            cond.Threshold = clamped;
         }
 
         private static string GetString(JsonElement parent, string name, string fallback) =>

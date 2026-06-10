@@ -196,3 +196,17 @@ logs/*.raw.txt
 # scripts/build_validation_summary.py from results/*.json; never committed)
 # -----------------------
 site/validation/data/summary.json
+
+# -----------------------
+# Local call/meeting prep (names real people; never committed)
+# -----------------------
+prep/
+
+# -----------------------
+# Local key material (private signing/licensing keys; never committed).
+# *.key (above) already excludes the private halves; this directory-level
+# ignore is belt-and-suspenders so a stray `git add keys/` is a no-op.
+# Public halves (.pub) are distribution artifacts — bake into the installer,
+# not the repo.
+# -----------------------
+keys/

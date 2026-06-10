@@ -9,7 +9,7 @@ Small and mid-sized businesses face the same threats as enterprises but lack the
 | Feature | TinySocs | Blumira | Todyl | Perch / ConnectWise | Elastic SIEM | MS Sentinel |
 |---|---|---|---|---|---|---|
 | **Deployment model** | On-premises (single .exe) | Cloud-hosted | Cloud-hosted | Cloud-hosted (sensor on-prem) | Self-hosted or Elastic Cloud | Azure cloud-native |
-| **Pricing model** | Free (MIT license) | Per-user/month ($144+/user/yr) | Per-user/month | Per-endpoint/month (MSSP pricing) | Free (OSS) or per-GB (Cloud) | Pay-per-GB ingestion |
+| **Pricing model** | Free core (BSL-1.1 license) | Per-user/month ($144+/user/yr) | Per-user/month | Per-endpoint/month (MSSP pricing) | Free (OSS) or per-GB (Cloud) | Pay-per-GB ingestion |
 | **Setup time** | ~15 minutes | ~1 hour (cloud onboarding) | ~1-2 hours | Hours to days (partner-led) | Days to weeks | Hours to days (Azure ecosystem) |
 | **AI assistance** | Built-in (Claude, GPT, Ollama) | Limited (automated recommendations) | None (rule-based) | None | AI Assistant (Elastic AI) | Copilot for Security (add-on cost) |
 | **Compliance reporting** | NIST CSF 2.0, HIPAA, PCI DSS v4.0 | SOC 2 mapping, limited frameworks | Basic compliance dashboards | Compliance reporting for MSPs | Kibana dashboards (manual) | Regulatory compliance dashboards |
@@ -18,7 +18,7 @@ Small and mid-sized businesses face the same threats as enterprises but lack the
 | **Detection rule count** | 89 (100% validated) | ~200+ (proprietary) | ~150+ (proprietary) | ~300+ (ConnectWise-managed) | 1,000+ (community + Elastic) | 300+ (Microsoft + community) |
 | **Threat intelligence** | AbuseIPDB, OTX, GreyNoise | Proprietary threat intel | Proprietary threat intel | ConnectWise threat feeds | Elastic Threat Intel module | Microsoft Threat Intelligence |
 | **Operator skill level** | IT generalist | IT generalist | IT generalist | MSP technician | Security engineer | Security engineer / Azure admin |
-| **Open source** | Yes (MIT) | No | No | No | Yes (Elastic License 2.0 / AGPL) | No |
+| **Open source** | Source-available (BSL-1.1 → Apache 2.0) | No | No | No | Yes (Elastic License 2.0 / AGPL) | No |
 | **Data residency** | Customer-controlled (on-prem) | Blumira cloud (US regions) | Todyl cloud | ConnectWise cloud | Customer-controlled (self-hosted) or Elastic Cloud | Azure region (Microsoft-managed) |
 
 ## TinySocs Differentiators
@@ -29,7 +29,7 @@ Small and mid-sized businesses face the same threats as enterprises but lack the
 
 - **15-minute install from a single .exe -- no containerization, no cloud accounts, no security expertise.** There are no Docker containers, no Kubernetes clusters, no Terraform scripts. One executable, one Windows machine, 15 minutes. The install wizard handles log source configuration, rule deployment, and dashboard provisioning automatically.
 
-- **Free and open source (MIT) -- no per-GB, per-user, or per-endpoint pricing.** TinySocs carries an MIT license with no commercial restrictions. There is no usage ceiling, no surprise invoices at the end of the month, and no sales call required to get started. An MSP can deploy it to 50 client sites without a single licensing conversation.
+- **Source-available (BSL-1.1) -- no per-GB, per-user, or per-endpoint pricing on the core platform.** TinySocs carries a Business Source License 1.1: commercial rights are reserved, and each released version converts to Apache 2.0 four years after its public release. The Additional Use Grant permits production use except for competing hosted/embedded offerings. There is no usage ceiling on the core platform, no surprise invoices at the end of the month, and no sales call required to get started.
 
 - **Compliance reporting out of the box -- NIST CSF 2.0, HIPAA, PCI DSS v4.0 with one-click reports.** Each compliance framework is mapped to detection rules and evidence artifacts. Reports generate with a single click, producing PDF-ready output suitable for auditors. No manual mapping, no spreadsheet gymnastics, no consulting engagement required.
 
@@ -65,7 +65,7 @@ MSSPs need multi-tenant architecture, evidence integrity, and operational effici
 
 The tamper-proof evidence ledger is a key differentiator for MSSPs operating in regulated verticals. Every alert, every rule match, and every compliance assessment is recorded in an append-only, cryptographically chained ledger. This provides defensible evidence in the event of a breach investigation or regulatory inquiry -- without requiring the MSSP to store raw client logs centrally.
 
-Because TinySocs is MIT-licensed, MSSPs can white-label it, embed it into their service stack, and brand it as their own without licensing friction. There are no per-seat fees eating into margin and no vendor lock-in.
+TinySocs is source-available under BSL-1.1. The Additional Use Grant permits production use except for offering a competing hosted or embedded SIEM product, and each version converts to Apache 2.0 four years after release. There are no per-seat fees eating into margin and no vendor lock-in.
 
 Position TinySocs as: "Your private-label SIEM platform -- deploy it everywhere, brand it as yours, keep all the margin."
 

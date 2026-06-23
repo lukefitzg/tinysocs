@@ -1,6 +1,6 @@
 # Rule Format v2 — Design
 
-**Status**: Approved, schema locked. Migration script implemented (`scripts/migrate_rules_to_v2.py`); C# engine changes not yet made.
+**Status**: Approved, schema locked, **implemented**. Migration script (`scripts/migrate_rules_to_v2.py`) and C# engine changes both done — `PackLoader`/`Ed25519Verifier`/`LicenceReader` are wired through `OpenSearchBulkShipper` and enforce signed-pack loading (2026-06-06; see `signed-feed.md`).
 **Author**: Luke FitzGerald + Claude session, 2026-05-26 (schema); 2026-06-06 (`field_match` carried into schema, signing/feed dependency).
 **Supersedes**: implicit v1 across `packaging/detection/rules.yml` (C# agent) and `src/tinysocs/agent/detections/rules.yaml` (Python catalogue).
 

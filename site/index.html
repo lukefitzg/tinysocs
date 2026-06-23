@@ -3,8 +3,15 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>TinySocs — Know what's happening on your network</title>
-<meta name="description" content="TinySocs gives you clear visibility into what's happening across your computers and network. AI-powered security monitoring that runs on your own hardware — your data never leaves the building.">
+<title>TinySocs — Security monitoring for small businesses without a security team</title>
+<meta name="description" content="Your insurer, your biggest customers, and the regulators all want to know you're watching for cyber attacks. TinySocs does it for you — no security expert needed.">
+
+<!-- Open Graph -->
+<meta property="og:title" content="TinySocs — Security monitoring for small businesses">
+<meta property="og:description" content="Always-on cyber monitoring for companies without a security team. No expert needed.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://tinysocs.com">
+
 <style>
 :root {
   --bg: #0f1117;
@@ -27,132 +34,121 @@ body {
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
-.container { max-width: 1000px; margin: 0 auto; padding: 0 24px; }
-section { padding: 72px 0; }
-section:nth-child(even) { background: var(--surface); }
+.container { max-width: 880px; margin: 0 auto; padding: 0 24px; }
+section { padding: 64px 0; }
 
 /* Hero */
 .hero {
   text-align: center;
-  padding: 120px 0 80px;
+  padding: 110px 0 72px;
   background: linear-gradient(180deg, var(--accent-glow) 0%, transparent 60%);
 }
 .hero h1 {
   font-size: clamp(2rem, 5vw, 3rem);
   font-weight: 800;
   line-height: 1.15;
-  margin-bottom: 20px;
+  margin-bottom: 22px;
   letter-spacing: -0.02em;
 }
 .hero .subtitle {
-  font-size: clamp(1rem, 2.5vw, 1.2rem);
+  font-size: clamp(1.05rem, 2.5vw, 1.25rem);
   color: var(--muted);
-  max-width: 600px;
+  max-width: 620px;
   margin: 0 auto 40px;
 }
-.btn-primary {
-  display: inline-block;
+
+/* Email capture form */
+.signup {
+  display: flex;
+  gap: 10px;
+  max-width: 440px;
+  margin: 0 auto;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.signup input[type="email"] {
+  flex: 1 1 240px;
+  padding: 14px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 16px;
+}
+.signup input[type="email"]:focus { outline: none; border-color: var(--accent); }
+.signup button {
+  padding: 14px 28px;
+  border-radius: 8px;
+  border: none;
   background: var(--accent);
   color: #fff;
-  padding: 14px 32px;
-  border-radius: 8px;
   font-size: 16px;
   font-weight: 600;
+  cursor: pointer;
   transition: transform 0.15s, box-shadow 0.15s;
 }
-.btn-primary:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 8px 24px rgba(99,102,241,0.3);
-  text-decoration: none;
-}
-.btn-outline {
-  display: inline-block;
-  border: 1px solid var(--border);
-  color: var(--muted);
-  padding: 12px 28px;
-  border-radius: 8px;
-  font-size: 14px;
-  margin-left: 16px;
-  transition: border-color 0.15s;
-}
-.btn-outline:hover { border-color: var(--accent); color: var(--text); text-decoration: none; }
+.signup button:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(99,102,241,0.3); }
+.signup button:disabled { opacity: 0.6; cursor: default; transform: none; box-shadow: none; }
+.form-msg { min-height: 22px; margin-top: 14px; font-size: 14px; color: var(--green); }
+.form-note { margin-top: 10px; font-size: 13px; color: var(--muted); }
 
-/* Section headers */
+/* Section titles */
 .section-title {
   font-size: clamp(1.4rem, 3vw, 1.9rem);
   font-weight: 700;
   text-align: center;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
 }
 .section-sub {
   text-align: center;
   color: var(--muted);
-  max-width: 560px;
-  margin: 0 auto 48px;
-  font-size: 15px;
+  max-width: 600px;
+  margin: 0 auto 44px;
+  font-size: 16px;
 }
 
-/* Feature grid */
-.feature-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 24px;
-}
-.feature-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 28px;
-  transition: border-color 0.2s;
-}
-.feature-card:hover { border-color: var(--accent); }
-.feature-card .icon { font-size: 28px; margin-bottom: 12px; }
-.feature-card h3 { font-size: 16px; font-weight: 600; margin-bottom: 8px; }
-.feature-card p { font-size: 14px; color: var(--muted); line-height: 1.5; }
-
-/* Comparison table */
-.table-wrap { overflow-x: auto; }
-table { width: 100%; border-collapse: collapse; font-size: 14px; }
-th, td { padding: 12px 16px; text-align: left; border-bottom: 1px solid var(--border); }
-th { font-weight: 600; color: var(--accent); background: var(--bg); }
-td:first-child { font-weight: 500; }
-tr:hover td { background: rgba(99,102,241,0.04); }
-
-/* How it works */
-.steps {
+/* Three plain points */
+.points {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 32px;
+  gap: 28px;
+}
+.point .icon { font-size: 30px; margin-bottom: 12px; }
+.point h3 { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
+.point p { font-size: 15px; color: var(--muted); }
+
+/* Steps */
+.steps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 28px;
   text-align: center;
 }
 .step-num {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  background: var(--accent);
-  color: #fff;
-  font-size: 18px;
-  font-weight: 700;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 42px; height: 42px; border-radius: 50%;
+  background: var(--accent); color: #fff; font-size: 18px; font-weight: 700;
   margin-bottom: 14px;
 }
 .step h3 { font-size: 17px; margin-bottom: 8px; }
 .step p { font-size: 14px; color: var(--muted); }
 
-/* CTA */
-.cta-section { text-align: center; padding: 72px 0; }
-.cta-section h2 { font-size: clamp(1.4rem, 3vw, 1.9rem); margin-bottom: 12px; }
-.cta-section p { color: var(--muted); margin-bottom: 32px; max-width: 480px; margin-left: auto; margin-right: auto; }
+/* Trust band */
+.trust { background: var(--surface); text-align: center; }
+.trust .container { max-width: 680px; }
+.trust h2 { font-size: clamp(1.3rem, 3vw, 1.7rem); margin-bottom: 16px; }
+.trust p { color: var(--muted); font-size: 16px; margin-bottom: 8px; }
+
+/* Final CTA */
+.cta-section { text-align: center; }
+.cta-section h2 { font-size: clamp(1.4rem, 3vw, 1.9rem); margin-bottom: 14px; }
+.cta-section p { color: var(--muted); margin: 0 auto 32px; max-width: 480px; }
 
 /* Footer */
 footer {
-  text-align: center;
-  padding: 40px 0;
+  text-align: center; padding: 36px 0;
   border-top: 1px solid var(--border);
-  font-size: 13px;
-  color: var(--muted);
+  font-size: 13px; color: var(--muted);
 }
 footer a { color: var(--muted); }
 footer a:hover { color: var(--accent); }
@@ -160,7 +156,6 @@ footer a:hover { color: var(--accent); }
 @media (max-width: 640px) {
   section { padding: 48px 0; }
   .hero { padding: 80px 0 48px; }
-  .btn-outline { display: block; margin: 16px auto 0; }
 }
 </style>
 </head>
@@ -169,115 +164,94 @@ footer a:hover { color: var(--accent); }
 <!-- Hero -->
 <section class="hero">
   <div class="container">
-    <h1>Know what's happening on your network.</h1>
+    <h1>Cyber monitoring for businesses without a security team.</h1>
     <p class="subtitle">
-      TinySocs watches your computers for suspicious activity, explains
-      what it finds in plain English, and helps you prove compliance
-      &mdash; all from a single box that you control.
+      Your insurer, your biggest customers, and the regulators all want proof
+      you're watching for cyber attacks. TinySocs does the watching for you &mdash;
+      no security expert needed.
     </p>
-    <a href="mailto:lukefitzg@gmail.com?subject=TinySocs%20Early%20Access%20Request" class="btn-primary">Request Early Access</a>
-    <a href="#how-it-works" class="btn-outline">See how it works</a>
+
+    <form class="signup" id="signup-form" novalidate>
+      <input type="email" name="email" id="email" placeholder="you@yourcompany.com" autocomplete="email" required>
+      <button type="submit" id="signup-btn">Get early access</button>
+    </form>
+    <p class="form-msg" id="form-msg" role="status" aria-live="polite"></p>
+    <p class="form-note">Early access. No spam, no sales calls &mdash; just a heads-up when it's ready for you.</p>
   </div>
 </section>
 
-<!-- What it does (positive framing) -->
+<!-- Three plain points -->
 <section>
   <div class="container">
-    <h2 class="section-title">Security monitoring that actually makes sense</h2>
-    <p class="section-sub">TinySocs gives you the visibility and protection that used to require a dedicated security team.</p>
-    <div class="feature-grid">
-      <div class="feature-card">
-        <div class="icon">&#x1F50D;</div>
-        <h3>See everything</h3>
-        <p>Know who logged in, what programs ran, and which files changed &mdash; across every computer on your network, in real time.</p>
+    <h2 class="section-title">What it does</h2>
+    <p class="section-sub">The kind of protection that used to need a full security team &mdash; running quietly in the background of your business.</p>
+    <div class="points">
+      <div class="point">
+        <div class="icon">&#x1F441;</div>
+        <h3>Watches everything, day and night</h3>
+        <p>It keeps an eye on every computer in your business and flags anything that looks like an attack &mdash; logins, suspicious programs, files being tampered with.</p>
       </div>
-      <div class="feature-card">
-        <div class="icon">&#x1F916;</div>
-        <h3>AI that explains, not just alerts</h3>
-        <p>Ask questions in plain English. "What happened on the front desk PC?" &mdash; and get a clear answer, not a wall of log data.</p>
+      <div class="point">
+        <div class="icon">&#x1F4AC;</div>
+        <h3>No security knowledge needed</h3>
+        <p>You don't have to understand any of it. TinySocs explains what happened, and what to do about it, in plain English.</p>
       </div>
-      <div class="feature-card">
-        <div class="icon">&#x1F6E1;</div>
-        <h3>Catch threats automatically</h3>
-        <p>Built-in detection rules spot brute-force attacks, suspicious scripts, unauthorized account changes, and more &mdash; without any configuration.</p>
-      </div>
-      <div class="feature-card">
-        <div class="icon">&#x1F4CB;</div>
-        <h3>Compliance at the click of a button</h3>
-        <p>Generate reports for NIST, HIPAA, and PCI DSS that map directly to your detection coverage. Audit-ready, not audit-panic.</p>
-      </div>
-      <div class="feature-card">
-        <div class="icon">&#x1F512;</div>
-        <h3>Your data stays yours</h3>
-        <p>Everything runs on your own hardware. No cloud accounts, no data leaving your building. Complete privacy by design.</p>
-      </div>
-      <div class="feature-card">
-        <div class="icon">&#x1F4C8;</div>
-        <h3>Manage multiple sites</h3>
-        <p>IT providers and managed service companies can monitor all their clients from a single dashboard, with tamper-proof audit trails.</p>
+      <div class="point">
+        <div class="icon">&#x1F504;</div>
+        <h3>Stays up to date by itself</h3>
+        <p>New threats appear every week. TinySocs updates its own detections automatically, so your protection never goes stale. You never touch a thing.</p>
       </div>
     </div>
+  </div>
+</section>
+
+<!-- Trust band: the feed + validation -->
+<section class="trust">
+  <div class="container">
+    <h2>Protection you can actually trust</h2>
+    <p>
+      Every detection is tested against real-world attacks before it reaches you,
+      and signed so you know it's genuine. We publish the results every week.
+    </p>
+    <p><a href="/validation/">See this week's test results &rarr;</a></p>
   </div>
 </section>
 
 <!-- How it works -->
-<section id="how-it-works">
+<section>
   <div class="container">
     <h2 class="section-title">Up and running in an afternoon</h2>
-    <p class="section-sub">One installer, one machine, no cloud accounts required.</p>
+    <p class="section-sub">One install on one Windows machine. No cloud accounts, no consultants.</p>
     <div class="steps">
       <div class="step">
         <div class="step-num">1</div>
         <h3>Install</h3>
-        <p>Run a single setup wizard on any Windows machine. Everything you need is bundled inside.</p>
+        <p>Run one setup wizard. Everything you need is bundled inside.</p>
       </div>
       <div class="step">
         <div class="step-num">2</div>
-        <h3>Connect</h3>
-        <p>Point your computers at the TinySocs box. Events start flowing in automatically.</p>
+        <h3>It starts watching</h3>
+        <p>Your computers connect automatically and TinySocs gets to work.</p>
       </div>
       <div class="step">
         <div class="step-num">3</div>
-        <h3>Monitor</h3>
-        <p>Open the dashboard. See what's happening. Ask the AI assistant if anything looks wrong.</p>
+        <h3>You stay informed</h3>
+        <p>Get clear alerts when something matters. Ignore it the rest of the time.</p>
       </div>
     </div>
   </div>
 </section>
 
-<!-- Comparison (lightweight, no vendor names) -->
-<section>
+<!-- Final CTA -->
+<section class="cta-section">
   <div class="container">
-    <h2 class="section-title">How TinySocs is different</h2>
-    <p class="section-sub">Traditional security tools are built for large enterprises with dedicated teams. TinySocs is built for everyone else.</p>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th></th>
-            <th>TinySocs</th>
-            <th>Traditional tools</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr><td>Setup time</td><td>Under an hour</td><td>Weeks to months</td></tr>
-          <tr><td>Where your data lives</td><td>On your own hardware</td><td>In someone else's cloud</td></tr>
-          <tr><td>Cost</td><td>A fraction of enterprise pricing</td><td>Thousands per month, often per-GB</td></tr>
-          <tr><td>AI assistant</td><td>Built-in, plain English</td><td>Add-on or not available</td></tr>
-          <tr><td>Compliance reports</td><td>One click</td><td>Weeks of custom work</td></tr>
-          <tr><td>Who can run it</td><td>Any IT person</td><td>Dedicated security team</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
-</section>
-
-<!-- CTA -->
-<section class="cta-section" id="early-access">
-  <div class="container">
-    <h2>See it for yourself</h2>
-    <p>TinySocs is currently in early access. Request a demo or a trial install and we'll get you set up.</p>
-    <a href="mailto:lukefitzg@gmail.com?subject=TinySocs%20Early%20Access%20Request" class="btn-primary">Request Early Access</a>
+    <h2>Want to be one of the first?</h2>
+    <p>TinySocs is in early access and I'm onboarding a small group of businesses now. Leave your email and I'll be in touch personally.</p>
+    <form class="signup" id="signup-form-2" novalidate>
+      <input type="email" name="email" id="email-2" placeholder="you@yourcompany.com" autocomplete="email" required>
+      <button type="submit" id="signup-btn-2">Get early access</button>
+    </form>
+    <p class="form-msg" id="form-msg-2" role="status" aria-live="polite"></p>
   </div>
 </section>
 
@@ -286,10 +260,68 @@ footer a:hover { color: var(--accent); }
   <div class="container">
     <p>
       &copy; 2026 TinySocs &middot;
-      <a href="mailto:lukefitzg@gmail.com">Contact</a>
+      <a href="mailto:luke@tinysocs.com">luke@tinysocs.com</a>
     </p>
   </div>
 </footer>
+
+<script>
+// Loops.so newsletter form.
+// 1. Create a form at app.loops.so -> Forms (choose "no-code", embed type).
+// 2. Copy the form ID from its endpoint and paste it below.
+var LOOPS_FORM_ID = "cmqcshcko02180jyiob630lax";
+
+function wireForm(formId, emailId, btnId, msgId) {
+  var form = document.getElementById(formId);
+  if (!form) return;
+  form.addEventListener("submit", function (e) {
+    e.preventDefault();
+    var email = document.getElementById(emailId).value.trim();
+    var btn = document.getElementById(btnId);
+    var msg = document.getElementById(msgId);
+    msg.style.color = "var(--green)";
+
+    if (!email || email.indexOf("@") === -1) {
+      msg.style.color = "#f87171";
+      msg.textContent = "Please enter a valid email address.";
+      return;
+    }
+    if (LOOPS_FORM_ID.indexOf("REPLACE") === 0) {
+      msg.style.color = "#f87171";
+      msg.textContent = "Signup isn't connected yet. Email luke@tinysocs.com for now.";
+      return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = "Sending...";
+    fetch("https://app.loops.so/api/newsletter-form/" + LOOPS_FORM_ID, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ email: email }).toString()
+    })
+      .then(function (res) {
+        if (res.ok) {
+          form.reset();
+          msg.textContent = "Thanks — you're on the list. I'll be in touch.";
+        } else {
+          msg.style.color = "#f87171";
+          msg.textContent = "Something went wrong. Email luke@tinysocs.com instead.";
+        }
+      })
+      .catch(function () {
+        msg.style.color = "#f87171";
+        msg.textContent = "Something went wrong. Email luke@tinysocs.com instead.";
+      })
+      .finally(function () {
+        btn.disabled = false;
+        btn.textContent = "Get early access";
+      });
+  });
+}
+
+wireForm("signup-form", "email", "signup-btn", "form-msg");
+wireForm("signup-form-2", "email-2", "signup-btn-2", "form-msg-2");
+</script>
 
 </body>
 </html>

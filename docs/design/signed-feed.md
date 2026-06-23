@@ -1,6 +1,6 @@
 # Signed Rules Feed + Licence Gate — Design
 
-**Status**: draft
+**Status**: implemented (protocol + trust core + agent enforcement + feed server + Stripe webhook). Remaining work is operational, not protocol — see "Build sequencing".
 **Author**: Luke FitzGerald + Claude session, 2026-06-06.
 **Depends on**: `docs/design/rule-format-v2.md` (pack envelope, `metadata.signature`, `metadata.tier`, `pack_id`+`pack_version`). This doc does **not** restate the pack schema; it specifies how packs are signed, distributed, verified, and paywalled.
 **Covers strategic gaps**: #3 (signed rules feed) and #4 (Stripe + licence-key gate). They are one revenue mechanic and are designed together.

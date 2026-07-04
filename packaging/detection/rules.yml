@@ -110,7 +110,7 @@ rules:
     name: "powershell_scriptblock_burst"
     description: "High volume of PowerShell ScriptBlock events (4104)"
     severity: "medium"
-    enabled: true
+    enabled: false  # pilot: near-silent without ScriptBlockLogging policy; not part of pilot promise
     type: threshold_by_key
     mitre:
       technique_id: "T1059.001"
@@ -133,7 +133,7 @@ rules:
     name: "process_creation_burst"
     description: "Burst of process creation events (4688) from same user"
     severity: "low"
-    enabled: true
+    enabled: false  # pilot: volumetric burst, low signal, alert-fatigue risk
     type: threshold_by_key
     mitre:
       technique_id: "T1106"
@@ -156,7 +156,7 @@ rules:
     name: "sysmon_process_creation_burst"
     description: "Burst of Sysmon process creation events (ID 1)"
     severity: "low"
-    enabled: true
+    enabled: false  # pilot: volumetric burst, low signal, alert-fatigue risk
     type: threshold_by_key
     mitre:
       technique_id: "T1106"
@@ -179,7 +179,7 @@ rules:
     name: "lsass_access"
     description: "Process accessing LSASS memory (Sysmon Event 10)"
     severity: "high"
-    enabled: true
+    enabled: false  # pilot: Sysmon Event 10 (ProcessAccess) not logged by shipped sysmon-config.xml; dead. TS-061 covers named-tool cred dumping
     type: threshold_by_key
     mitre:
       technique_id: "T1003.001"
@@ -248,6 +248,16 @@ rules:
       threshold: 1
       window_minutes: 5
       cooldown_minutes: 60
+      # Without this filter the rule matched EVERY 4663 object-access audit event,
+      # which storms on any host with broad file-system SACLs. Restrict to the
+      # credential stores: the AD database and the SAM/SYSTEM/SECURITY registry hives.
+      field_match:
+        field: "winlog.event_data.ObjectName"
+        values:
+          - "ntds.dit"
+          - "\\config\\SAM"
+          - "\\config\\SYSTEM"
+          - "\\config\\SECURITY"
     actions:
       - write_alert_doc
       - append_alert_log
@@ -271,6 +281,16 @@ rules:
       threshold: 1
       window_minutes: 5
       cooldown_minutes: 60
+      # PsExec (and clones) install a service literally named PSEXESVC by default.
+      # Without this filter the rule matched EVERY 7045 (all service installs).
+      field_match:
+        field: "winlog.event_data.ServiceName"
+        values:
+          - "PSEXESVC"
+          - "PSEXEC"
+          - "PAExec"
+          - "RemCom"
+          - "CSExec"
     actions:
       - write_alert_doc
       - append_alert_log
@@ -291,6 +311,13 @@ rules:
       group_by: "winlog.event_data.IpAddress"
       threshold: 10
       window_minutes: 10
+      # LogonType 10 = RemoteInteractive (RDP). Without this filter the rule was
+      # just TS-002 with a lower threshold and double-alerted on every 4625 burst.
+      field_match:
+        field: "winlog.event_data.LogonType"
+        values:
+          - "10"
+        match: "exact"
     actions:
       - write_alert_doc
       - append_alert_log
@@ -299,7 +326,7 @@ rules:
     name: "remote_service_install"
     description: "Service installed remotely (7045 — non-standard path)"
     severity: "high"
-    enabled: true
+    enabled: false  # pilot: matched every 7045; PsExec/suspicious-path cases now covered by filtered TS-070/TS-090
     type: threshold_by_key
     mitre:
       technique_id: "T1021.002"
@@ -413,7 +440,7 @@ rules:
     name: "timestomp_detected"
     description: "File creation time modified (Sysmon Event 2)"
     severity: "low"
-    enabled: true
+    enabled: false  # pilot: timestomp FPs on browsers/installers; low value
     type: threshold_by_key
     mitre:
       technique_id: "T1070.006"
@@ -449,6 +476,20 @@ rules:
       threshold: 1
       window_minutes: 5
       cooldown_minutes: 30
+      # Legitimate services install under Program Files / System32. A service
+      # binary running from a user-writable or temp directory is the suspicious
+      # case the description promises. Without this filter the rule matched every
+      # 7045 (same as the now-disabled generic TS-072).
+      field_match:
+        field: "winlog.event_data.ImagePath"
+        values:
+          - "\\Temp\\"
+          - "\\Windows\\Temp"
+          - "\\AppData\\"
+          - "\\Users\\Public"
+          - "\\ProgramData\\"
+          - "\\Downloads\\"
+          - "\\Public\\"
     actions:
       - write_alert_doc
       - append_alert_log
@@ -457,7 +498,7 @@ rules:
     name: "registry_run_key"
     description: "Run/RunOnce registry modification (Sysmon Event 13)"
     severity: "low"
-    enabled: true
+    enabled: false  # pilot: matches every Sysmon registry event; needs TargetObject filter (v2)
     type: threshold_by_key
     mitre:
       technique_id: "T1547.001"
@@ -478,7 +519,7 @@ rules:
     name: "startup_folder_write"
     description: "File written to Startup folder (Sysmon Event 11)"
     severity: "low"
-    enabled: true
+    enabled: false  # pilot: matches every Sysmon FileCreate; needs TargetFilename filter (v2)
     type: threshold_by_key
     mitre:
       technique_id: "T1547.001"
@@ -501,7 +542,7 @@ rules:
     name: "dns_tunnel_volume"
     description: "High volume of DNS queries to single domain (Sysmon Event 22)"
     severity: "high"
-    enabled: true
+    enabled: false  # pilot: Sysmon-dependent volumetric; unvalidated in this shape
     type: threshold_by_key
     mitre:
       technique_id: "T1071"
@@ -522,7 +563,7 @@ rules:
     name: "large_outbound_transfer"
     description: "Unusual outbound connection volume (Sysmon Event 3)"
     severity: "medium"
-    enabled: true
+    enabled: false  # pilot: Sysmon-dependent volumetric; unvalidated in this shape
     type: threshold_by_key
     mitre:
       technique_id: "T1048"
@@ -607,7 +648,7 @@ rules:
     name: "fim_executable_replaced"
     description: "Executable or DLL in Program Files modified"
     severity: "high"
-    enabled: true
+    enabled: false  # pilot: condition-duplicate of TS-110; premise FPs on every auto-updater
     type: threshold_by_key
     mitre:
       technique_id: "T1565.001"
@@ -627,7 +668,7 @@ rules:
     name: "fim_config_tampered"
     description: "TinySocs configuration file modified outside of installer"
     severity: "high"
-    enabled: true
+    enabled: false  # pilot: condition-duplicate of TS-110; needs FIM discriminator (v2)
     type: threshold_by_key
     mitre:
       technique_id: "T1565.001"
@@ -687,7 +728,7 @@ rules:
     name: "fim_permission_change"
     description: "ACL or permission modification on monitored critical file"
     severity: "medium"
-    enabled: true
+    enabled: false  # pilot: ACL changes fire on routine updates; medium value
     type: threshold_by_key
     mitre:
       technique_id: "T1222"
@@ -799,7 +840,7 @@ rules:
     name: "process_injection_sysmon"
     description: "Process injection detected via Sysmon CreateRemoteThread (Event 8)"
     severity: "high"
-    enabled: true
+    enabled: false  # pilot: CreateRemoteThread FPs on legit injectors (AV/debuggers) at threshold 1
     type: threshold_by_key
     mitre:
       technique_id: "T1055"
@@ -820,7 +861,7 @@ rules:
     name: "obfuscated_command"
     description: "Obfuscated or encoded command detected in process creation"
     severity: "low"
-    enabled: true
+    enabled: false  # pilot: encoded-command FP storm from RMM/installers; highest credibility risk
     type: threshold_by_key
     mitre:
       technique_id: "T1027"
@@ -850,7 +891,7 @@ rules:
     name: "lolbin_proxy_execution"
     description: "LOLBin proxy execution (rundll32, mshta, regsvr32) detected via process creation"
     severity: "high"
-    enabled: true
+    enabled: false  # pilot: rundll32/regsvr32 3-in-5min is normal desktop; needs parent/cmdline context (v2)
     type: threshold_by_key
     mitre:
       technique_id: "T1218.011"
@@ -879,7 +920,7 @@ rules:
     name: "wmi_process_creation"
     description: "Process spawned via WMI (wmiprvse.exe child process)"
     severity: "low"
-    enabled: true
+    enabled: false  # pilot: RMM/SCCM spawn processes via WMI; needs context (v2)
     type: threshold_by_key
     mitre:
       technique_id: "T1047"

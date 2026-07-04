@@ -31,7 +31,7 @@ Minimum: Windows 10/Server 2019, 8 GB RAM, 20 GB disk, 2 CPU cores. Recommended:
 
 ### How many detection rules are included?
 
-40+ built-in rules across 8 categories: authentication, PowerShell, process execution, credential access, lateral movement, persistence, defence evasion, and exfiltration. All rules are mapped to MITRE ATT&CK techniques.
+The free base pack ships **20 high-fidelity rules** enabled — the highest-signal, lowest-false-positive subset for a business with no security team — spanning authentication, credential access, lateral movement, persistence, defence evasion, discovery, and ransomware/impact. The engine defines 39 rules in total (the rest are held back for per-environment tuning), and a further 50-rule catalogue is roadmapped for the backend engine. Every shipped rule is mapped to MITRE ATT&CK and validated against real (Atomic Red Team) attacks before release.
 
 ### Can I write custom detection rules?
 

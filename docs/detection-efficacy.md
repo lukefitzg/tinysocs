@@ -1,5 +1,16 @@
 # Detection Efficacy Report
 
+> **⚠️ SUPERSEDED (2026-07-04).** This report is from the 2026-03-01 harness run and
+> does **not** describe the current pilot base pack (2026.27). Since it was generated:
+> several rules were restricted with `field_match` (June), and 17 noisy/dead/duplicate
+> rules were disabled for the pilot (see [pilot-ruleset.md](pilot-ruleset.md)). The
+> "100% (15/15)" figure below was earned by rule definitions that no longer ship as-is
+> and **must not be quoted**. Six techniques (T1003.001, T1547.001, T1218.011, T1055,
+> T1027, T1047) now have no firing rule in the pilot pack by design. A fresh run of
+> `tests/Test-AtomicDetection.ps1` against the 2026.27 pack — which requires a Windows
+> host and cannot run in the current build environment — is the release gate that will
+> replace this report.
+
 Generated: 2026-03-01 19:30:00 UTC
 
 ## Summary

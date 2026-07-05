@@ -87,24 +87,37 @@ if ($quickstart) {
 }
 
 # -- Step 2: Stop the agent --
+# The agent runs as an NSSM-wrapped Windows service (TinySocsAgent). NSSM
+# RESPAWNS TinySocs.Agent.exe the instant it exits, so killing the process just
+# re-locks the binary. Stop the SERVICE first — that holds it down — then clear
+# any lingering process before the swap.
 Write-Host ""
-Write-Host "[2/9] Stopping TinySocs.Agent..."
+Write-Host "[2/9] Stopping TinySocs.Agent (service TinySocsAgent)..."
+$svc = Get-Service -Name "TinySocsAgent" -ErrorAction SilentlyContinue
+if ($svc) {
+    if ($svc.Status -ne 'Stopped') {
+        Write-Host "      Stopping service TinySocsAgent..."
+        Stop-Service -Name "TinySocsAgent" -Force -ErrorAction SilentlyContinue
+        try {
+            (Get-Service -Name "TinySocsAgent").WaitForStatus('Stopped', '00:00:30')
+        } catch {
+            Write-Warning "      Service did not report Stopped within 30s; forcing via sc.exe"
+            cmd /c "sc stop TinySocsAgent >nul 2>&1"
+            Start-Sleep -Seconds 3
+        }
+    }
+    Write-Host "      Service stopped." -ForegroundColor Green
+} else {
+    Write-Host "      No TinySocsAgent service found (older/dev install?)."
+}
+# Clear any lingering process (NSSM won't respawn while the service is stopped).
 $agent = Get-Process -Name "TinySocs.Agent" -ErrorAction SilentlyContinue
 if ($agent) {
-    Write-Host "      Agent PID: $($agent.Id)"
-    Stop-Process -Name "TinySocs.Agent" -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 3
-    # Verify
-    $agent2 = Get-Process -Name "TinySocs.Agent" -ErrorAction SilentlyContinue
-    if ($agent2) {
-        Write-Warning "      Agent still running. Trying taskkill..."
-        cmd /c "taskkill /F /IM TinySocs.Agent.exe 2>nul"
-        Start-Sleep -Seconds 2
-    }
-    Write-Host "      Agent stopped." -ForegroundColor Green
-} else {
-    Write-Host "      Agent not running (OK)"
+    Write-Host "      Killing lingering agent PID: $($agent.Id)"
+    cmd /c "taskkill /F /IM TinySocs.Agent.exe 2>nul"
+    Start-Sleep -Seconds 2
 }
+Write-Host "      Agent stopped." -ForegroundColor Green
 
 # -- Step 3: Replace the binary --
 Write-Host ""
@@ -173,33 +186,53 @@ if (-not (Test-Path $regPath)) { New-Item -Path $regPath -Force | Out-Null }
 Set-ItemProperty -Path $regPath -Name 'ProcessCreationIncludeCmdLine_Enabled' -Value 1 -Type DWord -ErrorAction SilentlyContinue
 Write-Host "      Process command-line logging enabled" -ForegroundColor Green
 
-# -- Step 7: Start the quickstart (which starts the agent) --
+# -- Step 7: Start the agent service (NSSM relaunches the new binary) --
 Write-Host ""
-Write-Host "[7/9] Starting TinySocs-Quickstart..."
-$quickstartExe = "C:\Program Files\TinySocs\TinySocs-Quickstart.exe"
-if (Test-Path $quickstartExe) {
-    Start-Process -FilePath $quickstartExe -WindowStyle Hidden
-    Write-Host "      Quickstart launched. Waiting for agent to start..."
-    Start-Sleep -Seconds 10
-
+Write-Host "[7/9] Starting TinySocsAgent service..."
+$svc = Get-Service -Name "TinySocsAgent" -ErrorAction SilentlyContinue
+if ($svc) {
+    Start-Service -Name "TinySocsAgent" -ErrorAction SilentlyContinue
+    try {
+        (Get-Service -Name "TinySocsAgent").WaitForStatus('Running', '00:00:30')
+        Write-Host "      Service running." -ForegroundColor Green
+    } catch {
+        Write-Warning "      Service did not report Running within 30s; trying sc.exe start"
+        cmd /c "sc start TinySocsAgent >nul 2>&1"
+        Start-Sleep -Seconds 5
+    }
+    Start-Sleep -Seconds 5
+    $newAgent = Get-Process -Name "TinySocs.Agent" -ErrorAction SilentlyContinue
+    if ($newAgent) {
+        Write-Host "      Agent process up (PID: $($newAgent.Id))" -ForegroundColor Green
+    } else {
+        Write-Warning "      Agent process not detected. Check logs at $logDir\agent.log"
+    }
+} else {
+    # Fallback for a watchdog-only / dev install with no service registered.
+    Write-Host "      No service; starting via TinySocs-Quickstart watchdog..."
+    $quickstartExe = "C:\Program Files\TinySocs\TinySocs-Quickstart.exe"
+    if (Test-Path $quickstartExe) {
+        Start-Process -FilePath $quickstartExe -WindowStyle Hidden
+        Start-Sleep -Seconds 10
+    } else {
+        $agentExe = Join-Path $agentBin "TinySocs.Agent.exe"
+        Start-Process -FilePath $agentExe -WindowStyle Hidden
+        Start-Sleep -Seconds 5
+    }
     $newAgent = Get-Process -Name "TinySocs.Agent" -ErrorAction SilentlyContinue
     if ($newAgent) {
         Write-Host "      Agent running (PID: $($newAgent.Id))" -ForegroundColor Green
     } else {
-        Write-Warning "      Agent not detected after 10s. Check logs at $logDir\agent.log"
-    }
-} else {
-    # Fallback: start agent directly
-    Write-Host "      Quickstart not found. Starting agent directly..."
-    $agentExe = Join-Path $agentBin "TinySocs.Agent.exe"
-    Start-Process -FilePath $agentExe -WindowStyle Hidden
-    Start-Sleep -Seconds 5
-    $newAgent = Get-Process -Name "TinySocs.Agent" -ErrorAction SilentlyContinue
-    if ($newAgent) {
-        Write-Host "      Agent running directly (PID: $($newAgent.Id))" -ForegroundColor Green
-    } else {
         Write-Warning "      Agent failed to start. Check logs."
     }
+}
+
+# Restore the watchdog we stopped in Step 1 (best-effort; the service is the
+# authoritative runner, so this only re-establishes the original topology).
+$quickstartExe = "C:\Program Files\TinySocs\TinySocs-Quickstart.exe"
+if ((Test-Path $quickstartExe) -and -not (Get-Process -Name "TinySocs-Quickstart" -ErrorAction SilentlyContinue)) {
+    Start-Process -FilePath $quickstartExe -WindowStyle Hidden -ErrorAction SilentlyContinue
+    Write-Host "      Watchdog restarted." -ForegroundColor Green
 }
 
 # -- Step 8: Verify detection engine --
@@ -208,7 +241,10 @@ Write-Host "[8/9] Verifying detection engine..."
 Write-Host "      Waiting 15s for rule reload cycle..."
 Start-Sleep -Seconds 15
 
-$logFile = Join-Path $logDir "agent.log"
+# The agent runs under NSSM, which redirects stdout to TinySocsAgent.out.log.
+# Fall back to the legacy agent.log name for non-service/dev installs.
+$logFile = Join-Path $logDir "TinySocsAgent.out.log"
+if (-not (Test-Path $logFile)) { $logFile = Join-Path $logDir "agent.log" }
 if (Test-Path $logFile) {
     $recentLines = Get-Content $logFile -Tail 50 -ErrorAction SilentlyContinue
     $ruleLine = $recentLines | Where-Object { $_ -match "Detection engine updated with (\d+) rule" } | Select-Object -Last 1

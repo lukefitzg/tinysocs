@@ -33,13 +33,15 @@ $ErrorActionPreference = "Stop"
 if (-not $SourceDir) {
     $SourceDir = Split-Path $PSScriptRoot -Parent
 }
+# Normalise to an absolute path so a relative "-SourceDir ." still resolves
+# (Split-Path "." -Parent returns an empty string, which breaks Join-Path below).
+$SourceDir = (Resolve-Path $SourceDir).Path
 
 $agentBin = "C:\Program Files\TinySocs\bin"
 $agentData = "C:\ProgramData\TinySocs\Collector"
 $rulesDir = Join-Path $agentData "rules"
 $queueDir = Join-Path $agentData "agent\queue"
 $logDir = Join-Path $agentData "logs"
-$testsDir = Join-Path (Split-Path $SourceDir -Parent) "tests"
 
 Write-Host ""
 Write-Host "================================================"

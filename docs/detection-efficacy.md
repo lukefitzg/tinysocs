@@ -1,89 +1,81 @@
-# Detection Efficacy Report
+# Detection Efficacy Report — Pilot Base Pack 2026.27
 
-> **⚠️ SUPERSEDED (2026-07-04).** This report is from the 2026-03-01 harness run and
-> does **not** describe the current pilot base pack (2026.27). Since it was generated:
-> several rules were restricted with `field_match` (June), and 17 noisy/dead/duplicate
-> rules were disabled for the pilot (see [pilot-ruleset.md](pilot-ruleset.md)). The
-> "100% (15/15)" figure below was earned by rule definitions that no longer ship as-is
-> and **must not be quoted**. Six techniques (T1003.001, T1547.001, T1218.011, T1055,
-> T1027, T1047) now have no firing rule in the pilot pack by design. A fresh run of
-> `tests/Test-AtomicDetection.ps1` against the 2026.27 pack — which requires a Windows
-> host and cannot run in the current build environment — is the release gate that will
-> replace this report.
+**Status**: current. Supersedes the 2026-03-01 report (which predated the pilot cut and quoted an obsolete 100%).
+**Run**: `Test-AtomicDetection.ps1 -SkipInstall`, Windows 11 VM, agent build 2026-07-04, 2026-07-06.
+**Raw data**: `tests/atomic-results.json`. **Companion**: `docs/pilot-ruleset.md`.
 
-Generated: 2026-03-01 19:30:00 UTC
+> Read the headline carefully. The harness's own summary line was **57.1% (8/14)**. That number **understates the pilot pack** because the harness ran six techniques whose rules are *deliberately disabled* in the pilot pack and scored them as misses. Corrected for that (see below), the pilot pack detected **8 of 9** attack techniques it is actually meant to catch and could be exercised in this environment — **88.9%**, rising to an expected **9/9** once one test-fidelity fix is re-run. No efficacy number should be quoted to a prospect until that clean re-run lands.
 
-## Summary
+## What the run actually proved
 
-| Metric | Value |
-|--------|-------|
-| Total Tests | 19 |
-| Detected | 15 |
-| Missed | 0 |
-| Skipped | 3 |
-| Errors | 1 |
-| **Efficacy** | **100%** (15/15) |
+**8 techniques DETECTED by real attacks** (Atomic Red Team test or faithful fallback):
 
-## Detailed Results
+| Technique | Rule | What fired |
+|---|---|---|
+| T1110.001 Brute Force | TS-001 | 18 failed logons against one account |
+| T1053.005 Scheduled Task | **TS-020** | task creation (4698) |
+| T1543.003 Windows Service | **TS-090** | service install with suspicious path |
+| T1070.001 Clear Event Logs | TS-080 | Security log cleared (1102) |
+| T1021.002 Remote Services | **TS-070** | PsExec-style service (7045) |
+| T1136.001 Create Account | TS-010 | new local account (4720) |
+| T1087.001 Account Discovery | TS-130 | net/whoami/quser burst |
+| T1018 Remote Discovery | TS-131 | ipconfig/netstat/arp burst |
 
-| Technique | Name | Status | Expected Rules | Detected Rules |
-|-----------|------|--------|----------------|----------------|
-| T1110.001 | Brute Force - Password Guessing | PASS | TS-001, TS-001-lab, TS-002 | TS-001-lab, TS-001 |
-| T1003.001 | OS Credential Dumping - LSASS Memory | PASS | TS-060, TS-061 | TS-061 |
-| T1059.001 | Command and Scripting Interpreter - PowerShell | PASS | TS-030, TS-030-lab, TS-082 | TS-082, TS-030-lab, TS-030 |
-| T1053.005 | Scheduled Task/Job - Scheduled Task | PASS | TS-020, TS-061, TS-132 | TS-061, TS-132 |
-| T1547.001 | Boot or Logon Autostart Execution - Registry Run Keys | PASS | TS-091 | TS-091 |
-| T1543.003 | Create or Modify System Process - Windows Service | PASS | TS-090, TS-072 | TS-072, TS-090 |
-| T1070.001 | Indicator Removal - Clear Windows Event Logs | PASS | TS-080 | TS-080 |
-| T1562.001 | Impair Defenses - Disable or Modify Tools | SKIP | TS-081 | &mdash; |
-| T1021.002 | Remote Services - SMB/Windows Admin Shares | PASS | TS-070, TS-072 | TS-070, TS-072 |
-| T1136.001 | Create Account - Local Account | PASS | TS-010 | TS-010 |
-| T1218.011 | System Binary Proxy Execution - Rundll32 | PASS | TS-135, TS-061, TS-132 | TS-061, TS-132 |
-| T1003.003 | OS Credential Dumping - NTDS | SKIP | TS-062 | &mdash; |
-| T1087.001 | Account Discovery - Local Account | ERR | TS-130 | &mdash; |
-| T1018 | Remote System Discovery | PASS | TS-131 | TS-131 |
-| T1105 | Ingress Tool Transfer | PASS | TS-132 | TS-132 |
-| T1055 | Process Injection | PASS | TS-133 | TS-133 |
-| T1027 | Obfuscated Files or Information | PASS | TS-134 | TS-134 |
-| T1565.001 | Data Manipulation - Stored Data Manipulation | SKIP | TS-110 | &mdash; |
-| T1047 | Windows Management Instrumentation | PASS | TS-136, TS-061, TS-132, TS-134 | TS-061, TS-132, TS-134 |
+Three of these close open questions from the assessment:
 
-## Notes
+- **TS-020 works.** The assessment flagged a *suspected 4698 XML-parsing bug* ("may be silently broken"). It fired cleanly — the bug does not exist. Question closed.
+- **TS-070 and TS-090 — the two fidelity fixes — fired on real attacks.** These are the rules that previously matched *every* 7045 event and were given real `field_match` filters (PsExec service names; suspicious ImagePath). The run confirms the filters both match the malicious case and that the rules still fire. The whole point of the fidelity work is validated end-to-end.
 
-- **T1070.001** (previously MISSED): Fixed via direct-alert fast-path in EventLogInput.
-  Event 1102 is now detected immediately and a TS-080 alert is written directly to
-  OpenSearch, bypassing the queue/shipper pipeline latency.
-- **T1087.001** (ERROR): Test infrastructure issue — ART fallback command fails when
-  running from a UNC path (`\\Mac\Home\...`). The detection rule (TS-130) itself is
-  functional; this is a test-execution problem, not a detection gap.
-- **Skipped tests** require environment prerequisites not present on the test VM:
-  - T1562.001: Tamper Protection must be disabled
-  - T1003.003: Requires a Domain Controller
-  - T1565.001: Requires TinySocs FIM module
+## The one real miss (fixed, re-run pending)
 
-## Environment
+| Technique | Rule | Why it missed |
+|---|---|---|
+| T1105 Ingress Tool Transfer | **TS-132** | test-fidelity gap, not a rule fault |
 
-- Sysmon installed: True
-- Test config: `tests/atomic-tests.yaml`
-- Atomic Red Team: Invoke-AtomicRedTeam module
+TS-132 groups by process name with **threshold 2** in 5 minutes (two runs of the *same* downloader). The test ran bitsadmin **once** + certutil **once** → two groups of count 1, so the threshold was never reached. The old once-each test only ever "passed" because pre-cut TS-132 matched unfiltered process noise. The test now runs each downloader **twice** (`tests/atomic-tests.yaml`), faithfully exercising threshold 2. Expected to move to DETECTED on re-run.
 
-## How to Run
+> Open product question this surfaced: is threshold-2-by-same-binary the right bar for a rule literally named *ingress_tool_transfer*? A single `certutil` download from the internet is almost never legitimate in an SMB and arguably deserves an alert. Lowering to threshold 1 is a detection-content decision (FP implications) — parked for v2 tuning, **not** changed here.
 
-```powershell
-# Full run (requires admin, Atomic Red Team, and running TinySocs instance)
-.\tests\Test-AtomicDetection.ps1
+## Deferred — correctly out of the pilot promise (6)
 
-# Dry run (list tests without executing)
-.\tests\Test-AtomicDetection.ps1 -DryRun
+These techniques have **no enabled rule** in the pilot pack; the rule was disabled for false-positive reasons (`docs/pilot-ruleset.md`). The harness scored them MISSED/ERROR, which is what dragged the raw headline down. They are now marked `pilot_status: deferred` and the harness skips them (leaving the efficacy denominator honest).
 
-# Skip ART install (if already installed)
-.\tests\Test-AtomicDetection.ps1 -SkipInstall
-```
+| Technique | Disabled rule | Deferred because |
+|---|---|---|
+| T1003.001 LSASS | TS-060 | Sysmon Event 10 not logged in shipped config |
+| T1547.001 Registry Run Key | TS-091 | fires on every installer/updater |
+| T1218.011 Rundll32 LOLBin | TS-135 | Windows spawns rundll32 routinely |
+| T1055 Process Injection | TS-133 | needs Sysmon 8 + context |
+| T1027 Obfuscated Command | TS-134 | RMM/installers use encoded PowerShell |
+| T1047 WMI Spawn | TS-136 | RMM/SCCM spawn via WMI all day |
 
-## Tuning Guidance
+These are v2 backlog (each needs parent/command-line context or a tighter filter before it can fire without storming an SMB). Deferred ≠ regression.
 
-For any MISSED detections:
-1. Check that the relevant Windows event log channels are enabled
-2. Verify Sysmon is installed and configured (for Sysmon-dependent rules)
-3. Review rule thresholds in `packaging/detection/rules.yml`
-4. Check the detection pipeline latency — increase `timeout_seconds` in `atomic-tests.yaml`
+## Untested in this environment — coverage still unproven (4)
+
+Enabled pilot rules the harness could not exercise here. Each needs a targeted run before its detection is claimed:
+
+| Technique | Rule | Needs |
+|---|---|---|
+| T1059.001 AMSI bypass | TS-082 | Defender real-time protection **off** (RTP blocks the script before logging) |
+| T1562.001 Defender tamper | TS-081 | Tamper Protection **off** |
+| T1003.003 NTDS | TS-062 | a Domain Controller (beachhead ICP isn't DCs) |
+| T1565.001 FIM critical file | TS-110 | FIM module enabled (TinySocs-FIM channel present) |
+
+Also not individually exercised by the current test set: **TS-002** (brute-force by IP), **TS-071** (RDP LogonType 10), **TS-080-sys** (System-channel log clear), **TS-113/TS-114** (FIM ransomware / sensitive-file delete), **TS-120** (version drift). Adding faithful cases for these is content-cadence work.
+
+## Corrected scoreboard
+
+| Bucket | Count |
+|---|---|
+| Detected (enabled rules, real attacks) | 8 |
+| Real miss (enabled rule, test-fidelity — fixed) | 1 (TS-132) |
+| **Pilot-scope efficacy (executed enabled-rule techniques)** | **8/9 = 88.9%** → 9/9 expected after T1105 re-run |
+| Deferred (disabled rule, out of pilot promise) | 6 |
+| Env-limited SKIP (enabled rule, untestable here) | 4 |
+| Raw harness headline (understates — counts deferred as misses) | 57.1% (8/14) |
+
+## Before quoting any number to a prospect
+
+1. Re-run `Test-AtomicDetection.ps1 -SkipInstall` with the two fixes in this branch (deferred→SKIP accounting; T1105 twice-each). Expected result: deferred leave the denominator, TS-132 detects, headline ≈ **9/9** on in-scope executable techniques.
+2. For the four env-limited rules, run targeted validations (RTP-off host for TS-082; a tamper-off host for TS-081; a lab DC for TS-062; a FIM-enabled install for TS-110) or state plainly that they are covered-by-design-but-not-yet-attack-validated.

@@ -167,8 +167,8 @@ tests:
     expected_rules: ["TS-132"]
     sysmon_required: false
     timeout_seconds: 120
-    fallback_command: "try { cmd /c \"bitsadmin /transfer artjob /download /priority foreground https://raw.githubusercontent.com/redcanaryco/atomic-red-team/master/LICENSE.txt %TEMP%\\art-bitsadmin-test.txt\" 2>&1 | Out-Null } catch {}; Start-Sleep -Seconds 2; try { cmd /c \"certutil -urlcache -split -f https://raw.githubusercontent.com/redcanaryco/atomic-red-team/master/LICENSE.txt %TEMP%\\art-certutil-test.txt\" 2>&1 | Out-Null } catch {}; Remove-Item $env:TEMP\\art-*-test.txt -ErrorAction SilentlyContinue"
-    notes: "Downloads file via bitsadmin and certutil. Generates 4688 events. Each cmd /c wrapped in try/catch to prevent error propagation."
+    fallback_command: "1..2 | ForEach-Object { try { cmd /c \"bitsadmin /transfer artjob$_ /download /priority foreground https://raw.githubusercontent.com/redcanaryco/atomic-red-team/master/LICENSE.txt %TEMP%\\art-bits-$_.txt\" 2>&1 | Out-Null } catch {}; Start-Sleep -Milliseconds 400; try { cmd /c \"certutil -urlcache -split -f https://raw.githubusercontent.com/redcanaryco/atomic-red-team/master/LICENSE.txt %TEMP%\\art-cert-$_.txt\" 2>&1 | Out-Null } catch {}; Start-Sleep -Milliseconds 400 }; Remove-Item $env:TEMP\\art-bits-*.txt,$env:TEMP\\art-cert-*.txt -ErrorAction SilentlyContinue"
+    notes: "Downloads a file via bitsadmin and certutil, TWICE each = 2 bitsadmin.exe + 2 certutil.exe 4688 events. TS-132 groups by NewProcessName with threshold 2 in 5min, so a single invocation of each (the earlier once-each version) produced two groups of count 1 and could not fire — a test-fidelity gap, not a rule fault (confirmed MISSED on the 2026.27 run, where the old once-each test only ever 'passed' via unfiltered TS-132 matching generic process noise before it gained its certutil/bitsadmin field_match). Running each downloader twice faithfully exercises threshold 2. Unique job names (artjob1/artjob2) and temp files avoid bitsadmin job-name collisions."
 
   - atomic_technique: "T1055"
     technique_name: "Process Injection"

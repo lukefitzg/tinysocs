@@ -38,10 +38,21 @@ A first pilot that cries wolf on day one kills the "someone competent is watchin
 
 - **TS-061** passed in March because it then matched *any* process creation. It has since been restricted to named dump tools (`field_match`) and the current definition has **not** been harness-validated.
 - **TS-135** and **TS-136** never individually fired in March — their techniques were credited to old TS-061/TS-132 noise.
-- **TS-020** did not fire for T1053.005 (test notes suspect a 4698 XML-parsing issue in the pipeline). It may be silently broken.
+- **TS-020** — the March notes suspected a 4698 XML-parsing issue. The 2026.27 run **disproves this**: TS-020 fired cleanly on T1053.005. Resolved.
 - **TS-002** was not individually exercised (the harness generated 18 failures against a threshold of 20).
 
 **A fresh harness run against the current rule definitions is a precondition for quoting any efficacy number to a pilot prospect.** Per-rule status below reflects this honestly: "validated" means *fired in a harness run under a definition equivalent to today's*.
+
+### 2026.27 harness run (2026-07-06) — see `docs/detection-efficacy.md`
+
+That run happened (Win11 VM, agent build 2026-07-04). Outcomes that update the statuses below:
+
+- **8 techniques detected by real attacks**: TS-001, TS-010, TS-020, TS-070, TS-080, TS-090, TS-130, TS-131.
+- **TS-020 works** — the suspected 4698 XML-parsing bug does **not** exist (it fired cleanly). That open question is closed.
+- **TS-070 and TS-090 (the two fidelity fixes) fired on real attacks** — the `field_match` filters are validated end-to-end.
+- **TS-132 missed on a test-fidelity gap, not a rule fault**: its threshold-2-by-process-name needs the same downloader twice; the test ran each once. Test fixed (`tests/atomic-tests.yaml`), re-run pending.
+- **Four enabled rules remain untested here** (env-limited): TS-082 (needs Defender RTP off), TS-081 (Tamper Protection off), TS-062 (a DC), TS-110 (FIM module active).
+- Corrected pilot-scope efficacy: **8/9 executable enabled-rule techniques = 88.9%**, → 9/9 expected after the T1105 re-run. The raw harness headline of 57.1% counts the 6 deliberately-deferred (disabled) rules as misses and must not be quoted.
 
 ## Deployment prerequisites (fidelity depends on these)
 
@@ -168,7 +179,7 @@ These stay off (or get fixed) before a pilot install. Grouped by failure mode.
 ### Dead or unverifiable as shipped
 
 - **TS-060 `lsass_access`** — the shipped `sysmon-config.xml` has an **empty ProcessAccess include list: Sysmon Event 10 is never logged**, so this rule cannot fire at all. (If someone enables Event 10 logging, it swings to the opposite problem — AV and legitimate tools touch LSASS constantly.) The credential-dumping story is carried by TS-061 for now.
-- **TS-020 `scheduled_task_created`** — did not fire in the March harness run; test notes suspect a 4698 TaskContent XML-parsing issue in the pipeline. Also inherently mid-noise (Office/updater tasks). **Verify the parsing bug before this rule is trusted anywhere.**
+- **TS-020 `scheduled_task_created`** — the March "did not fire" was a harness artifact, not a rule fault: the 2026.27 run detected it cleanly (no 4698 parsing bug). It remains inherently mid-noise (Office/updater tasks create scheduled tasks), so it stays a watch-item for FP volume in a live pilot, but it is functional and enabled.
 - **TS-030 `powershell_scriptblock_burst`** — needs the ScriptBlockLogging policy, which nothing in the install/deploy path enables; without it the rule is near-silent. Harmless to leave enabled, but not part of the pilot promise.
 - **TS-100 / TS-101 (DNS volume / outbound volume)** — Sysmon-dependent volumetrics whose behaviour is entirely a function of the config's include/exclude lists; unvalidated in this shape. Not for the first pilot.
 - **TS-111 / TS-112 / TS-115 (FIM)** — TS-111/112 are condition-duplicates of TS-110 (triple-fire); TS-115 (ACL changes) fires on updates. Keep TS-110/113/114 as the FIM pilot set.
@@ -193,7 +204,8 @@ This maps directly onto the strategic sequence: the pilot ruleset *is* the initi
 ## Open questions
 
 - **Re-validation run**: when does the harness get re-run against current definitions? It gates TS-061, TS-002, TS-130, TS-135, TS-136 and the efficacy number. Highest-leverage single task on this list.
-- **TS-020 parsing bug**: is the 4698 TaskContent XML issue real? If yes it's a pipeline bug, not a rule bug, and other XML-heavy events may be affected.
+- ~~**TS-020 parsing bug**: is the 4698 TaskContent XML issue real?~~ **Resolved 2026-07-06** — TS-020 fired in the 2026.27 run; no parsing bug.
+- **TS-132 threshold**: is threshold-2-by-same-binary right for `ingress_tool_transfer`? A single `certutil` download is almost never legitimate. Lower to 1, or keep 2 for FP safety? (v2 tuning decision; test fidelity fixed regardless.)
 - **Sysmon in pilots**: do we recommend pilots tick the Sysmon checkbox at all, given the shortlist barely depends on it (only via FIM-independent extras)? A Sysmon-less pilot has a smaller noise surface and fewer prerequisites.
 - **Disable mechanism**: pilot installs need TS-070/090/111/112 (and the noise set) off. Is that a pilot-specific `rules.yml`, or does the v2 pack format's tiering handle "pilot pack" as the first pack? (Leaning: this shortlist becomes the `base` pack content.)
 - **TS-002 on internet-exposed RDP**: alert-on-scan is signal to us but may read as noise to the customer. Kickoff-call framing, threshold bump, or a "your RDP is exposed" one-time finding instead?

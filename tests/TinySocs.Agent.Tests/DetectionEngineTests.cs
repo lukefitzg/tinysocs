@@ -71,6 +71,24 @@ namespace TinySocs.Agent.Tests
             };
         }
 
+        // Build a FIM event as FileIntegrityInput emits it: FilePath at the top
+        // level, host identity under winlog.computer_name (the field TS-113 groups by).
+        private static AgentEvent FimEvent(int eventId, string filePath, string computer = "PC-01")
+        {
+            return new AgentEvent
+            {
+                Ts = DateTimeOffset.UtcNow,
+                Channel = "TinySocs-FIM",
+                EventId = eventId,
+                Body = new Dictionary<string, object?>
+                {
+                    ["FilePath"] = filePath,
+                    ["FileName"] = Path.GetFileName(filePath),
+                    ["winlog"] = new Dictionary<string, object?> { ["computer_name"] = computer },
+                },
+            };
+        }
+
         // Feed the same event n times; return the number of alerts produced.
         private static int FireN(DetectionEngine engine, Func<AgentEvent> make, int n)
         {
@@ -200,6 +218,169 @@ namespace TinySocs.Agent.Tests
             Assert.Equal(0, a2);
         }
 
+        // ---- TS-002 brute_force_by_ip: threshold 20 by IP ----------------
+
+        [Fact]
+        public void Ts002_FiresAtIpThreshold()
+        {
+            var below = EngineWith("TS-002");
+            Assert.Equal(0, FireN(below, () => WinEvent(4625, "Security",
+                new() { ["IpAddress"] = "198.51.100.7" }), 19));
+
+            var at = EngineWith("TS-002");
+            Assert.True(FireN(at, () => WinEvent(4625, "Security",
+                new() { ["IpAddress"] = "198.51.100.7" }), 20) >= 1);
+        }
+
+        // ---- TS-010 local_account_created: 4720 threshold 1 --------------
+
+        [Fact]
+        public void Ts010_FiresOnAccountCreation()
+        {
+            var engine = EngineWith("TS-010");
+            Assert.Equal(1, engine.EvaluateEvent(WinEvent(4720, "Security",
+                new() { ["TargetUserName"] = "newguy" })).Count);
+        }
+
+        // ---- TS-020 scheduled_task_created: 4698 threshold 1 -------------
+
+        [Fact]
+        public void Ts020_FiresOnScheduledTaskCreation()
+        {
+            var engine = EngineWith("TS-020");
+            Assert.Equal(1, engine.EvaluateEvent(WinEvent(4698, "Security",
+                new() { ["SubjectUserName"] = "admin", ["TaskName"] = @"\Evil" })).Count);
+        }
+
+        // ---- TS-061 credential_dumping_tools: named-tool filter ----------
+
+        [Fact]
+        public void Ts061_FiresOnNamedDumpTool()
+        {
+            var engine = EngineWith("TS-061");
+            Assert.Equal(1, engine.EvaluateEvent(WinEvent(4688, "Security",
+                new() { ["NewProcessName"] = @"C:\Tools\procdump.exe" })).Count);
+        }
+
+        [Fact]
+        public void Ts061_DoesNotFireOnOrdinaryProcess()
+        {
+            var engine = EngineWith("TS-061");
+            Assert.Equal(0, FireN(engine, () => WinEvent(4688, "Security",
+                new() { ["NewProcessName"] = @"C:\Windows\notepad.exe" }), 5));
+        }
+
+        // ---- TS-080 / TS-080-sys event_log_cleared -----------------------
+
+        [Fact]
+        public void Ts080_FiresOnSecurityLogClear()
+        {
+            var engine = EngineWith("TS-080");
+            Assert.Equal(1, engine.EvaluateEvent(WinEvent(1102, "Security", new())).Count);
+        }
+
+        [Fact]
+        public void Ts080Sys_FiresOnSystemChannelClear()
+        {
+            var engine = EngineWith("TS-080-sys");
+            Assert.Equal(1, engine.EvaluateEvent(WinEvent(104, "System", new())).Count);
+        }
+
+        // ---- TS-081 defender_tamper: 5001 --------------------------------
+
+        [Fact]
+        public void Ts081_FiresOnDefenderDisable()
+        {
+            var engine = EngineWith("TS-081");
+            Assert.Equal(1, engine.EvaluateEvent(WinEvent(5001,
+                "Microsoft-Windows-Windows Defender/Operational", new())).Count);
+        }
+
+        // ---- TS-110 / TS-113 / TS-114 FIM --------------------------------
+
+        [Fact]
+        public void Ts110_FiresOnCriticalFileModified()
+        {
+            var engine = EngineWith("TS-110");
+            Assert.Equal(1, engine.EvaluateEvent(
+                FimEvent(1002, @"C:\Windows\System32\drivers\etc\hosts")).Count);
+        }
+
+        [Fact]
+        public void Ts113_FiresOnMassModification()
+        {
+            // threshold 50 in 1 min, grouped by winlog.computer_name — the field
+            // the FIM host-identity fix adds. Before that fix no group key formed
+            // and this ransomware canary could never fire.
+            var engine = EngineWith("TS-113");
+            int i = 0;
+            int alerts = FireN(engine,
+                () => FimEvent(1002, $@"C:\Share\doc{i++}.xlsx.locked", "FILESERVER"), 50);
+            Assert.True(alerts >= 1, "50 file modifications in the window should fire TS-113");
+        }
+
+        [Fact]
+        public void Ts113_DoesNotFireBelowMassThreshold()
+        {
+            var engine = EngineWith("TS-113");
+            int i = 0;
+            Assert.Equal(0, FireN(engine,
+                () => FimEvent(1002, $@"C:\Share\doc{i++}.xlsx", "FILESERVER"), 49));
+        }
+
+        [Fact]
+        public void Ts114_FiresOnSensitiveFileDelete()
+        {
+            var engine = EngineWith("TS-114");
+            Assert.Equal(1, engine.EvaluateEvent(
+                FimEvent(1003, @"C:\Windows\System32\config\SAM")).Count);
+        }
+
+        // ---- TS-130 / TS-131 / TS-132 discovery + ingress ----------------
+
+        [Fact]
+        public void Ts130_FiresOnAccountDiscoveryBurst()
+        {
+            var engine = EngineWith("TS-130");
+            // threshold 5 by SubjectUserName, field_match on enum binaries.
+            Assert.True(FireN(engine, () => WinEvent(4688, "Security",
+                new() { ["SubjectUserName"] = "bob", ["NewProcessName"] = @"C:\Windows\System32\net.exe" }), 5) >= 1);
+        }
+
+        [Fact]
+        public void Ts130_DoesNotFireOnOrdinaryProcessBurst()
+        {
+            var engine = EngineWith("TS-130");
+            Assert.Equal(0, FireN(engine, () => WinEvent(4688, "Security",
+                new() { ["SubjectUserName"] = "bob", ["NewProcessName"] = @"C:\Program Files\app\chrome.exe" }), 20));
+        }
+
+        [Fact]
+        public void Ts131_FiresOnNetworkDiscoveryBurst()
+        {
+            var engine = EngineWith("TS-131");
+            // threshold 4 by SubjectUserName.
+            Assert.True(FireN(engine, () => WinEvent(4688, "Security",
+                new() { ["SubjectUserName"] = "bob", ["NewProcessName"] = @"C:\Windows\System32\ipconfig.exe" }), 4) >= 1);
+        }
+
+        [Fact]
+        public void Ts132_FiresOnRepeatedDownloader()
+        {
+            var engine = EngineWith("TS-132");
+            // threshold 2 by NewProcessName — the same downloader twice.
+            Assert.True(FireN(engine, () => WinEvent(4688, "Security",
+                new() { ["NewProcessName"] = @"C:\Windows\System32\certutil.exe" }), 2) >= 1);
+        }
+
+        [Fact]
+        public void Ts132_DoesNotFireOnSingleDownloader()
+        {
+            var engine = EngineWith("TS-132");
+            Assert.Equal(0, engine.EvaluateEvent(WinEvent(4688, "Security",
+                new() { ["NewProcessName"] = @"C:\Windows\System32\certutil.exe" })).Count);
+        }
+
         // ---- pilot base-pack composition --------------------------------
 
         [Fact]
@@ -211,8 +392,9 @@ namespace TinySocs.Agent.Tests
             {
                 "TS-001", "TS-002", "TS-010", "TS-020", "TS-061", "TS-062",
                 "TS-070", "TS-071", "TS-080", "TS-080-sys", "TS-081", "TS-082",
-                "TS-090", "TS-110", "TS-113", "TS-114", "TS-120", "TS-130",
-                "TS-131", "TS-132",
+                "TS-090", "TS-110", "TS-113", "TS-114", "TS-130", "TS-131",
+                "TS-132",
+                // TS-120 deferred 2026-07-08: no event source feeds it (unwired).
             }.OrderBy(x => x).ToArray();
 
             Assert.Equal(expected, enabled);
@@ -228,6 +410,7 @@ namespace TinySocs.Agent.Tests
         [InlineData("TS-136")]  // WMI-spawn noise
         [InlineData("TS-111")]  // duplicate of TS-110
         [InlineData("TS-112")]  // duplicate of TS-110
+        [InlineData("TS-120")]  // unwired: no event source feeds version-drift
         public void PilotSet_ExcludesNoisyRules(string ruleId)
         {
             var enabled = LoadShippedRules().Select(r => r.Id).ToHashSet();
@@ -260,7 +443,7 @@ namespace TinySocs.Agent.Tests
             var result = new PackLoader(NullLogger<PackLoader>.Instance, cfg).Load();
 
             Assert.True(result.Ok, result.Reason);
-            Assert.Equal(20, result.Rules.Count); // enabled rules only
+            Assert.Equal(19, result.Rules.Count); // enabled rules only (TS-120 deferred)
             Assert.DoesNotContain(result.Rules, r => r.Id == "TS-134");
             Assert.Contains(result.Rules, r => r.Id == "TS-071" && r.Condition.FieldMatch != null);
         }

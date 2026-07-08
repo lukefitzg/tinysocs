@@ -3,12 +3,16 @@ metadata:
   pack_id: base
   pack_version: '2026.27'
   tier: free
-  generated_at: '2026-07-04T21:22:35Z'
+  generated_at: '2026-07-08T22:37:06Z'
   validation:
     atomic_red_team_run: null
     passing: null
     failing: null
     pending: null
+  signature:
+    algorithm: ed25519
+    key_id: tinysocs-2026
+    value: GGxIStYUJ/jSfOFM0V79TE0979iXbzPsTkR8Ic3axL1ijXy2Ik/Xoqe/UMWASAhlhrkZnrZXcCFX9Z6zmZBqAg==
 rules:
 - id: TS-001
   name: brute_force_logon
@@ -1377,7 +1381,7 @@ rules:
   name: agent_version_drift
   description: Agent heartbeat reports a version older than minimum compatible
   severity: medium
-  enabled: true
+  enabled: false
   runs_on: agent
   pack: base
   mitre:

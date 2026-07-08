@@ -3,7 +3,7 @@ metadata:
   pack_id: demo
   pack_version: '2026.27'
   tier: demo
-  generated_at: '2026-07-04T21:22:35Z'
+  generated_at: '2026-07-08T22:37:06Z'
   validation:
     atomic_red_team_run: null
     passing: null

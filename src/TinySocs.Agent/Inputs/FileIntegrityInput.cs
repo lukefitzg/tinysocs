@@ -472,6 +472,15 @@ namespace TinySocs.Agent.Inputs
                 ["HashAfter"] = hashAfter,
                 ["FileName"] = Path.GetFileName(filePath),
                 ["Directory"] = Path.GetDirectoryName(filePath),
+                // Host identity, under the same winlog.computer_name path the
+                // engine uses for grouping/alert source on Windows events.
+                // TS-113 (ransomware mass-modification) groups by
+                // winlog.computer_name; without this, FIM events have no host
+                // key and TS-113 can never form a group or fire.
+                ["winlog"] = new Dictionary<string, object?>
+                {
+                    ["computer_name"] = Environment.MachineName,
+                },
             };
 
             if (extra != null)

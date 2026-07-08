@@ -945,11 +945,17 @@ rules:
 
   # ── Version Drift (Phase 15 M5) ──────────────────────────────────────
 
+  # DEFERRED (2026-07-08): unwired — nothing emits an event_id:0 / channel:heartbeat
+  # event into the detection engine. The agent's heartbeat is written straight to an
+  # index, never fed through EvaluateEvent, and there is no version-drift producer.
+  # The rule logic is sound but has no event source, so it can never fire in
+  # production. It is also operational hygiene, not an attack detection. Re-enable
+  # in v2 once a version-drift emitter exists. Kept for that redesign.
   - id: "TS-120"
     name: "agent_version_drift"
     description: "Agent heartbeat reports a version older than minimum compatible"
     severity: "medium"
-    enabled: true
+    enabled: false
     type: threshold_by_key
     mitre:
       technique_id: "T1195.002"

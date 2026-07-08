@@ -13065,6 +13065,52 @@ function Ensure-TinySocsOpenSearchAdminKeyStores {
 }
 
 
+function Enable-TinySocsAuditPolicy {
+  <#
+    .SYNOPSIS
+      Enable the Windows audit subcategories the detection rules depend on.
+    .DESCRIPTION
+      Most TinySocs rules key off Security-log events that Windows does NOT audit
+      by default: process creation (4688 - TS-061/130/131/132), scheduled tasks
+      (4698 - TS-020), failed logons (4625 - TS-001/002/071), object access
+      (4663 - TS-062), account management (4720 - TS-010). Without this step a
+      plain install is silent for roughly half the pack. Mirrors the proven step
+      in scripts/Deploy-AgentUpdate.ps1. Idempotent and safe to re-run.
+  #>
+  [CmdletBinding()]
+  param()
+
+  $auditPolicies = @(
+    @{ Subcategory = 'Logon';                      Setting = '/failure:enable' },
+    @{ Subcategory = 'Logoff';                     Setting = '/success:enable' },
+    @{ Subcategory = 'Process Creation';           Setting = '/success:enable' },
+    @{ Subcategory = 'Other Object Access Events'; Setting = '/success:enable' },
+    @{ Subcategory = 'User Account Management';    Setting = '/success:enable' },
+    @{ Subcategory = 'Audit Policy Change';        Setting = '/success:enable' },
+    @{ Subcategory = 'Security State Change';      Setting = '/success:enable' },
+    @{ Subcategory = 'File System';                Setting = '/success:enable' },
+    @{ Subcategory = 'Special Logon';              Setting = '/success:enable' }
+  )
+  $ok = 0
+  foreach ($p in $auditPolicies) {
+    try {
+      & auditpol /set /subcategory:"$($p.Subcategory)" $($p.Setting) 2>&1 | Out-Null
+      if ($LASTEXITCODE -eq 0) { $ok++ }
+    } catch { }
+  }
+  Write-TinySocsLog "Enabled $ok/$($auditPolicies.Count) Windows audit subcategories for detection."
+
+  # 4688 command-line capture (TS-061/130/131/132/134 read CommandLine).
+  try {
+    $regPath = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit'
+    if (-not (Test-Path $regPath)) { New-Item -Path $regPath -Force | Out-Null }
+    Set-ItemProperty -Path $regPath -Name 'ProcessCreationIncludeCmdLine_Enabled' -Value 1 -Type DWord -ErrorAction Stop
+    Write-TinySocsLog "Process command-line logging (4688) enabled."
+  } catch {
+    Write-TinySocsLog -Level "WARN" -Message "Could not enable 4688 command-line logging: $($_.Exception.Message)"
+  }
+}
+
 function Install-TinySocsAgentService {
   [CmdletBinding()]
   param(
@@ -13113,6 +13159,12 @@ function Install-TinySocsAgentService {
     -ServiceName $serviceName `
     -DisplayName $displayName `
     -Description $description
+
+  # Turn on the Windows audit policy the detection rules require. A default
+  # Windows host does not audit 4688/4698/4663 or failed logons, so without
+  # this ~half the pilot pack never sees events. Non-fatal if it can't run.
+  try { Enable-TinySocsAuditPolicy }
+  catch { Write-TinySocsLog -Level "WARN" -Message "Audit policy enablement failed: $($_.Exception.Message)" }
 
   $agentService = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
 
@@ -15314,14 +15366,23 @@ function Invoke-TinySocsSmokeTest {
     Write-Host "Could not count alerts: $($_.Exception.Message)" -ForegroundColor Yellow
   }
 
-  # Trigger: simulate a failed logon event (this should fire auth_failed_burst_lab if lab rules enabled)
-  Write-Host "Generating test events (PowerShell ScriptBlock)..." -ForegroundColor Gray
+  # Trigger: simulate failed logons for a nonexistent user (fires TS-001 brute_force_logon,
+  # threshold 15 per user in 5 min — the pilot base pack's enabled rule; validated in the
+  # Atomic harness at 18 attempts). Lab rules are disabled on customer installs, so the
+  # trigger must use an enabled pilot rule.
+  Write-Host "Generating 20 failed logon events (Event ID 4625, user 'tinysocs_smoketest')..." -ForegroundColor Gray
   try {
-    # Fire several ScriptBlock events to trigger script_block_volume or ps_script_block_lab rules
-    1..5 | ForEach-Object {
-      $null = Invoke-Expression "Write-Output 'TinySocs smoke test event $_'"
+    $fakePass = ConvertTo-SecureString "definitely-wrong-password" -AsPlainText -Force
+    $fakeCred = New-Object System.Management.Automation.PSCredential("tinysocs_smoketest", $fakePass)
+    1..20 | ForEach-Object {
+      try {
+        Start-Process -FilePath "cmd.exe" -ArgumentList "/c exit" -Credential $fakeCred `
+          -WindowStyle Hidden -ErrorAction Stop
+      } catch {
+        # Expected: logon failure. Each attempt writes a 4625 to the Security log.
+      }
     }
-    $smokeResults += @{ Check = "Test Alert Trigger"; Status = "PASS"; Detail = "Events generated" }
+    $smokeResults += @{ Check = "Test Alert Trigger"; Status = "PASS"; Detail = "20 failed logons generated (TS-001 threshold is 15)" }
   } catch {
     $smokeResults += @{ Check = "Test Alert Trigger"; Status = "WARN"; Detail = $_.Exception.Message }
   }
@@ -15342,7 +15403,7 @@ function Invoke-TinySocsSmokeTest {
       $newAlerts = $alertCountAfter - $alertCountBefore
       $smokeResults += @{ Check = "Alert Ingested"; Status = "PASS"; Detail = "$newAlerts new alert(s) in index" }
     } else {
-      $smokeResults += @{ Check = "Alert Ingested"; Status = "WARN"; Detail = "No new alerts detected (rules may need lower threshold)" }
+      $smokeResults += @{ Check = "Alert Ingested"; Status = "WARN"; Detail = "No new alerts — check agent service is running and Security-log failure auditing is enabled (TS-001 needs 4625 events)" }
     }
   } catch {
     $smokeResults += @{ Check = "Alert Ingested"; Status = "WARN"; Detail = $_.Exception.Message }

@@ -147,9 +147,9 @@ tests:
     atomic_test_number: 1
     expected_rules: ["TS-130"]
     sysmon_required: false
-    timeout_seconds: 120
+    timeout_seconds: 300
     fallback_command: "cmd /c 'net user' 2>$null; cmd /c 'net localgroup administrators' 2>$null; cmd /c 'whoami /all' 2>$null; cmd /c 'net localgroup' 2>$null; cmd /c 'net accounts' 2>$null; cmd /c 'quser' 2>$null; cmd /c 'whoami /groups' 2>$null"
-    notes: "Runs a burst of account-enumeration binaries (net.exe x4, whoami.exe x2, quser.exe x1 = 7 matching 4688 process-creation events). TS-130 field_match restricts to these binaries; threshold 5 in 5min, grouped by SubjectUserName. Margin of 2 over threshold. Removed 'net group' (DC-only)."
+    notes: "Runs a burst of account-enumeration binaries (net.exe x4, whoami.exe x2, quser.exe x1 = 7 matching 4688 process-creation events). TS-130 field_match restricts to these binaries; threshold 5 in 5min, grouped by SubjectUserName. Margin of 2 over threshold. Removed 'net group' (DC-only). timeout_seconds raised 120->300 after the 2026.27 re-run: TS-130 fired in 16.8s on the first run but exceeded 120s on the second under pipeline-index latency (false-negative MISS for an alert that did fire) — 300 matches the harness default and the volumetric T1110 entry."
 
   - atomic_technique: "T1018"
     technique_name: "Remote System Discovery"

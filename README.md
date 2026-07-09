@@ -77,7 +77,7 @@ python -m tinysocs.api.bot   # start bot API (port 8090)
 - **File Integrity Monitoring**: SHA-256 baseline + real-time change detection for critical system files
 - **MITRE ATT&CK Coverage**: 32 techniques across 11 tactics with dashboard heatmap and Navigator layer export
 - **Version Awareness**: Agent version drift detection with fleet health badges and alerting
-- **Curated Detection Ruleset**: 20 high-fidelity rules ship enabled in the free base pack (39 defined in the engine; 50 more roadmapped for the backend engine), MITRE ATT&CK mapped and Atomic Red Team-validated before release
+- **Curated Detection Ruleset**: 19 high-fidelity rules ship enabled in the free base pack (39 defined in the engine; 50 more roadmapped for the backend engine), MITRE ATT&CK mapped and Atomic Red Team-validated before release
 - **CI/CD**: GitHub Actions with Windows + Linux test runners
 
 ## Documentation

@@ -59,7 +59,7 @@ Walk through each tab:
 - Pagination fills viewport dynamically — no dead space
 
 ### Detections Tab
-- **Alert Rules**: 20 high-fidelity rules enabled in the base pack (39 defined in the engine) with MITRE ATT&CK annotations, organised by category (Auth, Identity, Credential Access, Persistence, Lateral, Defence Evasion, Impact, etc.)
+- **Alert Rules**: 19 high-fidelity rules enabled in the base pack (39 defined in the engine) with MITRE ATT&CK annotations, organised by category (Auth, Identity, Credential Access, Persistence, Lateral, Defence Evasion, Impact, etc.)
   - Pagination controls (no scrollbar)
   - Filter by category
   - "+ New Rule" and "Upload Pack" buttons

@@ -9,10 +9,19 @@
 
 This assessment was implemented. What shipped into `packaging/detection/rules.yml` and the `base/2026.27` pack:
 
-- **20 rules enabled** (the high-fidelity pilot set): TS-001, TS-002, TS-010, TS-020, TS-061, TS-062, TS-070, TS-071, TS-080, TS-080-sys, TS-081, TS-082, TS-090, TS-110, TS-113, TS-114, TS-120, TS-130, TS-131, TS-132.
+- **19 rules enabled** (the high-fidelity pilot set): TS-001, TS-002, TS-010, TS-020, TS-061, TS-062, TS-070, TS-071, TS-080, TS-080-sys, TS-081, TS-082, TS-090, TS-110, TS-113, TS-114, TS-130, TS-131, TS-132. (16 techniques, 8 tactics.)
 - **4 fidelity fixes** added a `field_match` so the rule matches its description instead of every event: **TS-071** (LogonType=10), **TS-070** (ServiceName = PSEXESVC/clones), **TS-090** (suspicious ImagePath), **TS-062** (ObjectName = ntds.dit / SAM/SYSTEM/SECURITY hive).
-- **17 rules disabled** (`enabled: false`, retained for v2 redesign): TS-030, TS-040, TS-050, TS-060, TS-072, TS-083, TS-091, TS-092, TS-100, TS-101, TS-111, TS-112, TS-115, TS-133, TS-134, TS-135, TS-136. Each carries an inline reason.
-- **Verified** by `tests/TinySocs.Agent.Tests/DetectionEngineTests.cs` (21 new xUnit tests, all green): the four filters fire on the malicious case and stay silent on the benign one, the enabled set is exactly the 20 above, and the Python-signed `base/2026.27` pack verifies + loads through the C# `PackLoader`.
+- **18 rules disabled** (`enabled: false`, retained for v2 redesign): TS-030, TS-040, TS-050, TS-060, TS-072, TS-083, TS-091, TS-092, TS-100, TS-101, TS-111, TS-112, TS-115, TS-120, TS-133, TS-134, TS-135, TS-136. Each carries an inline reason.
+- **Verified** by `tests/TinySocs.Agent.Tests/DetectionEngineTests.cs` (61 xUnit tests, all green): **every one of the 19 enabled rules fires on its matching synthetic event** (and, where it has a filter or threshold, stays silent otherwise), the enabled set is exactly the 19 above, and the Python-signed `base/2026.27` pack verifies + loads through the C# `PackLoader`.
+
+### Two dead rules found while proving all 19 (2026-07-08)
+
+Pushing for full proof surfaced two rules that could never fire in production:
+
+- **TS-113 (ransomware mass-modification)** grouped by `winlog.computer_name`, a field FIM events never carried — so the engine could not form a group key and the rule was dead. **Fixed**: `FileIntegrityInput` now emits host identity under `winlog.computer_name`; TS-113 fires at threshold in the unit test. This is the headline ransomware canary, so it mattered.
+- **TS-120 (agent version drift)** had no event source at all — nothing feeds an `event_id:0 / channel:heartbeat` event into the detection engine (the heartbeat is written straight to an index). It is also operational hygiene, not an attack detection. **Deferred** (`enabled: false`) until a v2 version-drift emitter exists; that is why the enabled set dropped from 20 to 19.
+
+Also fixed: the **installer** (`Install-TinySocsAgentService`) now enables the Windows audit policy the rules depend on (4688/4698/4625/4663), which previously only `Deploy-AgentUpdate.ps1` did — so a plain `.exe` install no longer leaves half the pack silent.
 
 **One decision changed from the original shortlist.** The draft proposed keeping the generic TS-072 and disabling TS-070/TS-090. The implementation does the opposite: TS-070 and TS-090 were given real filters (PsExec name; suspicious path) and kept, and the generic TS-072 (which matched *every* 7045) was disabled. This is strictly higher fidelity — the two malicious 7045 patterns are now named specifically, and routine software-install noise no longer alerts.
 

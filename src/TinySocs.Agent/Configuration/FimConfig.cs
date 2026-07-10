@@ -17,7 +17,22 @@ public sealed class FimConfig
         @"C:\Windows\System32\GroupPolicy\**",
         @"C:\ProgramData\TinySocs\**\*.yml",
         @"C:\ProgramData\TinySocs\**\*.yaml",
+        // Ransomware canary directory (seeded with decoy files at startup).
+        // Nothing legitimate touches these, so a mass modification is a
+        // high-signal early-warning of ransomware (TS-113).
+        @"C:\ProgramData\TinySocs\Canary\**",
     };
+
+    /// <summary>
+    /// Ransomware-canary directory. Seeded with decoy files (invoice.docx,
+    /// payroll.xlsx, …) on startup; nothing legitimate modifies them, so a burst
+    /// of changes here is a high-signal ransomware indicator (TS-113 fires at
+    /// <see cref="Paths"/>-wide threshold). Empty string disables seeding.
+    /// </summary>
+    public string CanaryPath { get; set; } = @"C:\ProgramData\TinySocs\Canary";
+
+    /// <summary>Number of decoy files to seed in <see cref="CanaryPath"/>.</summary>
+    public int CanaryFileCount { get; set; } = 60;
 
     /// <summary>Glob patterns to exclude from monitoring.</summary>
     public List<string> Exclude { get; set; } = new()

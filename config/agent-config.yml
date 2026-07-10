@@ -31,10 +31,14 @@ inputs:
       path: C:\ProgramData\TinySocs\Collector\agent\bookmarks
       persist_interval_seconds: 10
 
-  # Dev-only synthetic input used to test queue + shipper.
-  # Guarded by agent.debug_fake_input so it does not run in production by default.
-  - type: fake
-    name: fake-test
+  # File Integrity Monitoring. Watches critical system files (hosts, SAM/SYSTEM/
+  # SECURITY hives, GroupPolicy) and a seeded ransomware canary directory. Powers
+  # TS-110 (critical-file tampering), TS-113 (ransomware mass-modification) and
+  # TS-114 (sensitive-file deletion). Uses the built-in default paths + canary;
+  # override `fim:` here to customise. Enabled by default — this is the
+  # ransomware early-warning that a business with no security team can't build.
+  - type: fim
+    name: file-integrity
 
 queue:
   path: C:\ProgramData\TinySocs\Collector\agent\queue

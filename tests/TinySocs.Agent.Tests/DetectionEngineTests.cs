@@ -381,6 +381,19 @@ namespace TinySocs.Agent.Tests
                 new() { ["NewProcessName"] = @"C:\Windows\System32\certutil.exe" })).Count);
         }
 
+        // ---- ransomware canary wiring ------------------------------------
+
+        [Fact]
+        public void FimConfig_SeedsEnoughCanaryFilesToTripMassModification()
+        {
+            var fim = new FimConfig();
+            Assert.Contains(fim.Paths, p => p.Contains(@"\Canary\"));
+            // TS-113's threshold is 50: a full encryption sweep of the decoys must
+            // cross it, so the canary has to seed at least that many files.
+            Assert.True(fim.CanaryFileCount >= 50,
+                $"canary seeds {fim.CanaryFileCount} files but TS-113 needs 50 to fire");
+        }
+
         // ---- pilot base-pack composition --------------------------------
 
         [Fact]

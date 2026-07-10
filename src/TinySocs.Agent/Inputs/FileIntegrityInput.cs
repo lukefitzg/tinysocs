@@ -61,6 +61,10 @@ namespace TinySocs.Agent.Inputs
         {
             _logger.LogInformation("FileIntegrityInput starting. Monitored paths: {Count}", _fimConfig.Paths.Count);
 
+            // Seed the ransomware canary BEFORE baselining so the decoy files are
+            // captured in the baseline (and don't themselves look like changes).
+            SeedCanary();
+
             // Load or create baseline
             await InitializeBaseline();
 
@@ -93,6 +97,54 @@ namespace TinySocs.Agent.Inputs
                 w.Dispose();
             }
             _watchers.Clear();
+        }
+
+        // ------------------------------------------------------------------
+        // Ransomware canary
+        // ------------------------------------------------------------------
+
+        /// <summary>
+        /// Seed the canary directory with decoy files if it is not already
+        /// populated. Idempotent: on restart, an already-seeded canary is left
+        /// untouched (so it never re-writes files and never self-triggers).
+        /// </summary>
+        internal void SeedCanary()
+        {
+            var dir = _fimConfig.CanaryPath;
+            if (string.IsNullOrWhiteSpace(dir) || _fimConfig.CanaryFileCount <= 0)
+                return;
+
+            try
+            {
+                Directory.CreateDirectory(dir);
+                var existing = Directory.GetFiles(dir).Length;
+                if (existing >= _fimConfig.CanaryFileCount)
+                    return; // already seeded
+
+                // Names/extensions ransomware preferentially targets.
+                string[] names =
+                {
+                    "invoice", "payroll", "passwords", "contract", "budget",
+                    "customers", "backup", "tax_return", "bank_statement", "employees",
+                };
+                string[] exts = { ".docx", ".xlsx", ".pdf", ".csv", ".txt" };
+
+                for (int i = existing; i < _fimConfig.CanaryFileCount; i++)
+                {
+                    var file = Path.Combine(dir, $"{names[i % names.Length]}_{i:D3}{exts[i % exts.Length]}");
+                    if (!File.Exists(file))
+                        File.WriteAllText(file,
+                            $"TinySocs ransomware canary — do not modify or delete. id={i}\n");
+                }
+
+                _logger.LogInformation(
+                    "Seeded ransomware canary: {Count} decoy files in {Dir}",
+                    _fimConfig.CanaryFileCount, dir);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not seed ransomware canary in {Dir}", dir);
+            }
         }
 
         // ------------------------------------------------------------------

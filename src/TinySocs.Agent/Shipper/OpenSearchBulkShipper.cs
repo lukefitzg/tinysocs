@@ -152,7 +152,13 @@ namespace TinySocs.Agent.Shipper
                     }
                 }
 
-                _alertWriter = new AlertWriter(alertWriterLogger, _httpClient, _bulkUri, alertLogPath, notificationConfig, _retryQueue);
+                // Plain-English rule docs (TinyDocs) ship alongside rules.yml; missing file is fine.
+                var ruleDocsPath = Path.Combine(
+                    Path.GetDirectoryName(_config.Detection.RulesFile) ?? @"C:\ProgramData\TinySocs\Collector\rules",
+                    "rule_docs.yml");
+                var ruleDocs = new RuleDocsLoader(alertWriterLogger).Load(ruleDocsPath);
+
+                _alertWriter = new AlertWriter(alertWriterLogger, _httpClient, _bulkUri, alertLogPath, notificationConfig, _retryQueue, ruleDocs);
 
                 // Load rules initially
                 LoadRules();

@@ -15,7 +15,7 @@ Small and mid-sized businesses face the same threats as enterprises but lack the
 | **Compliance reporting** | NIST CSF 2.0, HIPAA, PCI DSS v4.0 | SOC 2 mapping, limited frameworks | Basic compliance dashboards | Compliance reporting for MSPs | Kibana dashboards (manual) | Regulatory compliance dashboards |
 | **On-premises option** | Yes (only option) | No | No | Sensor only (data in cloud) | Yes (self-managed) | No |
 | **MSSP / multi-tenant** | Federated multi-site architecture | MSP portal available | Partner program | Built for MSPs/MSSPs | Spaces (manual config) | Lighthouse multi-tenant |
-| **Detection rule count** | 89 (100% validated) | ~200+ (proprietary) | ~150+ (proprietary) | ~300+ (ConnectWise-managed) | 1,000+ (community + Elastic) | 300+ (Microsoft + community) |
+| **Detection rule count** | 20 curated & validated (39 in engine; 50 more roadmapped) | ~200+ (proprietary) | ~150+ (proprietary) | ~300+ (ConnectWise-managed) | 1,000+ (community + Elastic) | 300+ (Microsoft + community) |
 | **Threat intelligence** | AbuseIPDB, OTX, GreyNoise | Proprietary threat intel | Proprietary threat intel | ConnectWise threat feeds | Elastic Threat Intel module | Microsoft Threat Intelligence |
 | **Operator skill level** | IT generalist | IT generalist | IT generalist | MSP technician | Security engineer | Security engineer / Azure admin |
 | **Open source** | Source-available (BSL-1.1 → Apache 2.0) | No | No | No | Yes (Elastic License 2.0 / AGPL) | No |
@@ -41,7 +41,7 @@ Small and mid-sized businesses face the same threats as enterprises but lack the
 
 - **Single-developer project with a smaller community.** TinySocs does not have the contributor base, ecosystem, or vendor support structure of Elastic or Microsoft. Bug fixes, feature requests, and documentation improvements depend on a small team. Enterprise buyers who require SLAs, 24/7 vendor support, or a large community knowledge base will find this limiting.
 
-- **Smaller detection library than enterprise platforms.** TinySocs ships 89 detection rules covering 33 MITRE ATT&CK techniques across 11 tactics. Elastic SIEM ships over 1,000. The difference matters for coverage breadth -- though every TinySocs rule is validated at 100% efficacy against Atomic Red Team, whereas large rule libraries often contain rules that have never been tested against live attack simulations.
+- **Smaller detection library than enterprise platforms.** The TinySocs free base pack ships 19 high-fidelity rules covering 16 MITRE ATT&CK techniques across 8 tactics; the engine defines 39 (the rest held back for per-environment tuning) and a 50-rule catalogue is roadmapped for the backend engine. Elastic SIEM ships over 1,000. The trade is deliberate and is the product's whole thesis: every shipped rule is tuned to stay quiet in a normal SMB office and validated against real (Atomic Red Team) attacks before release, whereas large community libraries carry many rules that have never been tested against live simulations — and that a customer with no security team cannot tune. We compete on signal-to-noise and "someone keeps it current," not on library size.
 
 - **No cloud-native deployment option.** TinySocs runs on-premises only. Organizations that have gone fully cloud-native or prefer SaaS delivery will need to maintain a Windows host to run it. There is no managed cloud offering.
 
@@ -81,8 +81,8 @@ Position TinySocs as: "Security monitoring you can set up before lunch, explain 
 
 ## Key Proof Points
 
-- **89 detection rules** covering **33 MITRE ATT&CK techniques** across **11 tactics** -- providing broad coverage of the most common attack patterns targeting SMB environments.
-- **100% efficacy on Atomic Red Team** -- 15 out of 15 tested techniques detected successfully. Every detection rule has been validated against real attack simulations, not just written against documentation.
+- **19 high-fidelity detection rules** in the free base pack, covering **16 MITRE ATT&CK techniques** across **8 tactics** -- the highest-signal, lowest-false-positive subset for an SMB with no security team. (The engine defines 39; a 50-rule catalogue is roadmapped for the backend engine.)
+- **Validated against real attacks before release.** Every shipped rule is exercised by the Atomic Red Team harness, not just written against documentation. Each weekly pack is re-run and the results published with it — the current 2026.27 pack's run is the release gate (the prior full run, 2026-03-01, predates this ruleset and is superseded).
 - **3 compliance frameworks** (NIST CSF 2.0, HIPAA, PCI DSS v4.0) with automated rule-to-control mapping and one-click report generation.
 - **3 threat intelligence providers** integrated (AbuseIPDB, AlienVault OTX, GreyNoise) -- including one provider (GreyNoise) that requires no API key, enabling threat enrichment out of the box with zero configuration.
 - **Sub-15-minute install time** from download to first alert, verified repeatedly across clean Windows environments.

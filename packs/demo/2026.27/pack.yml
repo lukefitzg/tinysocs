@@ -1,0 +1,87 @@
+schema_version: 2
+metadata:
+  pack_id: demo
+  pack_version: '2026.27'
+  tier: demo
+  generated_at: '2026-07-08T22:37:06Z'
+  validation:
+    atomic_red_team_run: null
+    passing: null
+    failing: null
+    pending: null
+rules:
+- id: TS-001-lab
+  name: brute_force_logon_lab
+  description: Failed logon attempts (4625) - lab threshold (2 events)
+  severity: medium
+  enabled: false
+  runs_on: agent
+  pack: demo
+  mitre:
+    technique_id: T1110.001
+    technique_name: 'Brute Force: Password Guessing'
+    tactic: credential-access
+  docs: tinydocs/TS-001-lab.md
+  detection:
+    type: threshold_by_key
+    event_id: 4625
+    channel: Security
+    group_by: winlog.event_data.TargetUserName
+    threshold: 2
+    window_minutes: 10
+  allowlist_scopes:
+  - user
+  - user_pattern
+  - host
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+  tuning:
+    threshold:
+      envvar: null
+      min: 1
+      max: 10
+      default: 2
+- id: TS-030-lab
+  name: powershell_scriptblock_lab
+  description: PowerShell ScriptBlock events (4104) - lab threshold
+  severity: medium
+  enabled: false
+  runs_on: agent
+  pack: demo
+  mitre:
+    technique_id: T1059.001
+    technique_name: 'Command and Scripting Interpreter: PowerShell'
+    tactic: execution
+  docs: tinydocs/TS-030-lab.md
+  detection:
+    type: threshold_by_key
+    event_id: 4104
+    channel: Microsoft-Windows-PowerShell/Operational
+    group_by: winlog.computer_name
+    threshold: 2
+    window_minutes: 10
+  allowlist_scopes:
+  - host
+  - host_pattern
+  baseline:
+    enabled: false
+    learning_days: 7
+    keyed_by:
+    - host
+    action_below_baseline: suppress
+  actions:
+  - write_alert_doc
+  - append_alert_log
+  tuning:
+    threshold:
+      envvar: null
+      min: 1
+      max: 10
+      default: 2

@@ -1,19 +1,20 @@
-# TinySocs — Lightweight AI-Powered SIEM
+# TinySocs — Always-On Security Monitoring for Companies Without a Security Team
 
 ## The Problem
 
-Small and mid-sized organisations need security monitoring but face:
+A customer sent you a security questionnaire and you can't tick the monitoring box. Your cyber-insurance renewal now requires it. An audit is coming. And you don't have — and can't hire — a security team.
 
-- **Enterprise SIEM complexity**: Splunk, Sentinel, and Elastic require dedicated security teams
-- **Cloud-only solutions**: Data leaves your network; per-GB pricing is unpredictable
-- **Alert fatigue**: Too many alerts, not enough context to act on them
-- **Compliance gaps**: Frameworks require log monitoring, but proving coverage is manual
+- **You need to answer three questions**: Are we being attacked? Are we covered? Can I prove it to a customer, insurer, or auditor?
+- **The enterprise tools aren't for you**: they assume dedicated security engineers and weeks of setup
+- **Doing nothing is no longer an option**: the questionnaire, the renewal, or the audit has a date on it
 
 ## The Solution
 
-TinySocs is a privacy-first, self-hosted SIEM with an AI assistant that deploys in 15 minutes.
+TinySocs watches your Windows machines 24-7, tells you in plain English when something needs attention, and gives you the proof — installed in 15 minutes, running entirely on your own hardware.
 
-**Install** a single executable on a Windows machine. **Collect** Windows security events from endpoints. **Detect** threats with 89 built-in rules mapped to 33 MITRE ATT&CK techniques across 11 tactics — 100% validated against Atomic Red Team. **Investigate** with an AI assistant that speaks plain English. **Report** compliance coverage against NIST CSF 2.0, HIPAA, and PCI DSS v4.0. **Manage** multiple client sites from one federated dashboard.
+**Install** a single executable on a Windows machine. **Detect** real attack behaviour — password guessing, ransomware activity, attacker persistence — with detections that are tested against real attacks before they ship and tuned to stay quiet in a normal office. **Understand** every alert with an AI assistant that speaks plain English, not security jargon. **Prove it** with one-click compliance reports (NIST CSF 2.0, HIPAA, PCI DSS v4.0). The detections stay current automatically — you never touch a rule.
+
+For IT providers and MSPs: **manage** multiple client sites from one federated dashboard.
 
 **Download:** [GitHub Releases](https://github.com/lukefitzg/tinysocs/releases/latest) | **Landing page:** [lukefitzg.github.io/tinysocs](https://lukefitzg.github.io/tinysocs/)
 
@@ -33,7 +34,7 @@ TinySocs is a privacy-first, self-hosted SIEM with an AI assistant that deploys 
 - **Platform**: Windows 10/11, Server 2019+
 - **Data store**: Bundled OpenSearch (single-node)
 - **Agent**: C# .NET 8.0, collects Windows + Sysmon events
-- **Detection**: 89 rules (33 techniques, 11 tactics, 100% Atomic Red Team efficacy), KQL + threshold-based, MITRE ATT&CK mapped
+- **Detection**: 19 high-fidelity rules enabled in the free base pack (16 techniques, 8 tactics), threshold-based, MITRE ATT&CK mapped and Atomic Red Team-validated. The engine defines 39 rules total (18 more held back for per-environment tuning, 2 lab-only); a further 50-rule catalogue is roadmapped for the backend engine.
 - **AI**: Claude (Anthropic), GPT-4o (OpenAI), or local Ollama
 - **Dashboard**: Web UI with alerts, timeline, fleet health, event explorer, rule management
 - **Notifications**: Slack, Teams, email (with retry queue)

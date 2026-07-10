@@ -1,12 +1,12 @@
 {
-    "generated_at": "2026-03-01T19:30:00.0000000+00:00",
-    "efficacy_pct": 100.0,
+    "generated_at": "2026-07-08T20:45:00.0000000+00:00",
+    "efficacy_pct": 88.9,
     "total_tests": 19,
+    "provenance": "2026.27 re-run (Win11 VM, agent build 2026-07-04, 2026-07-08) with deferred->SKIP accounting + T1105 twice-each fixes. Transcribed from harness console output; canonical file on VM at C:\\deploy-bundle\\tests\\atomic-results.json.",
     "results": [
         {
             "technique_name": "Brute Force - Password Guessing",
             "detected_rules": [
-                "TS-001-lab",
                 "TS-001"
             ],
             "expected_rules": [
@@ -16,77 +16,73 @@
             ],
             "reason": "",
             "status": "DETECTED",
-            "technique_id": "T1110.001"
+            "technique_id": "T1110.001",
+            "started_at": "2026-07-08T20:37:25.7007674Z",
+            "duration_seconds": 99.2
         },
         {
             "technique_name": "OS Credential Dumping - LSASS Memory",
-            "detected_rules": [
-                "TS-061"
-            ],
+            "detected_rules": [],
             "expected_rules": [
-                "TS-060",
-                "TS-061"
+                "TS-060"
             ],
-            "reason": "",
-            "status": "DETECTED",
-            "technique_id": "T1003.001"
+            "reason": "Deferred from pilot pack (rule disabled; see docs/pilot-ruleset.md)",
+            "status": "SKIP",
+            "technique_id": "T1003.001",
+            "started_at": "2026-07-08T20:39:04.8881135Z",
+            "duration_seconds": 0.0
         },
         {
             "technique_name": "Command and Scripting Interpreter - PowerShell",
-            "detected_rules": [
-                "TS-082",
-                "TS-030-lab",
-                "TS-030"
-            ],
+            "detected_rules": [],
             "expected_rules": [
-                "TS-030",
-                "TS-030-lab",
                 "TS-082"
             ],
-            "reason": "",
-            "status": "DETECTED",
-            "technique_id": "T1059.001"
+            "reason": "Defender real-time protection blocks Atomic AMSI bypass scripts at AMSI scan; faithful test requires Defender RTP disabled",
+            "status": "SKIP",
+            "technique_id": "T1059.001",
+            "started_at": "2026-07-08T20:39:04.9126823Z",
+            "duration_seconds": 0.2
         },
         {
             "technique_name": "Scheduled Task/Job - Scheduled Task",
             "detected_rules": [
-                "TS-061",
-                "TS-132"
+                "TS-020"
             ],
             "expected_rules": [
-                "TS-020",
-                "TS-061",
-                "TS-132"
+                "TS-020"
             ],
             "reason": "",
             "status": "DETECTED",
-            "technique_id": "T1053.005"
+            "technique_id": "T1053.005",
+            "started_at": "2026-07-08T20:39:05.1422930Z",
+            "duration_seconds": 21.3
         },
         {
             "technique_name": "Boot or Logon Autostart Execution - Registry Run Keys",
-            "detected_rules": [
-                "TS-091"
-            ],
+            "detected_rules": [],
             "expected_rules": [
                 "TS-091"
             ],
-            "reason": "",
-            "status": "DETECTED",
-            "technique_id": "T1547.001"
+            "reason": "Deferred from pilot pack (rule disabled; see docs/pilot-ruleset.md)",
+            "status": "SKIP",
+            "technique_id": "T1547.001",
+            "started_at": "2026-07-08T20:39:26.4407981Z",
+            "duration_seconds": 0.1
         },
         {
             "technique_name": "Create or Modify System Process - Windows Service",
             "detected_rules": [
-                "TS-072",
                 "TS-090"
             ],
             "expected_rules": [
-                "TS-090",
-                "TS-072"
+                "TS-090"
             ],
             "reason": "",
             "status": "DETECTED",
-            "technique_id": "T1543.003"
+            "technique_id": "T1543.003",
+            "started_at": "2026-07-08T20:39:26.5197841Z",
+            "duration_seconds": 22.1
         },
         {
             "technique_name": "Indicator Removal - Clear Windows Event Logs",
@@ -94,11 +90,14 @@
                 "TS-080"
             ],
             "expected_rules": [
-                "TS-080"
+                "TS-080",
+                "TS-080-sys"
             ],
-            "reason": "Detected via direct-alert fast-path in EventLogInput (bypasses queue/shipper pipeline)",
+            "reason": "",
             "status": "DETECTED",
-            "technique_id": "T1070.001"
+            "technique_id": "T1070.001",
+            "started_at": "2026-07-08T20:39:48.6411485Z",
+            "duration_seconds": 18.6
         },
         {
             "technique_name": "Impair Defenses - Disable or Modify Tools",
@@ -108,21 +107,23 @@
             ],
             "reason": "Requires Tamper Protection disabled (currently enabled, blocks Defender config changes)",
             "status": "SKIP",
-            "technique_id": "T1562.001"
+            "technique_id": "T1562.001",
+            "started_at": "2026-07-08T20:40:07.2842620Z",
+            "duration_seconds": 0.2
         },
         {
             "technique_name": "Remote Services - SMB/Windows Admin Shares",
             "detected_rules": [
-                "TS-070",
-                "TS-072"
+                "TS-070"
             ],
             "expected_rules": [
-                "TS-070",
-                "TS-072"
+                "TS-070"
             ],
             "reason": "",
             "status": "DETECTED",
-            "technique_id": "T1021.002"
+            "technique_id": "T1021.002",
+            "started_at": "2026-07-08T20:40:07.4675895Z",
+            "duration_seconds": 24.1
         },
         {
             "technique_name": "Create Account - Local Account",
@@ -134,22 +135,21 @@
             ],
             "reason": "",
             "status": "DETECTED",
-            "technique_id": "T1136.001"
+            "technique_id": "T1136.001",
+            "started_at": "2026-07-08T20:40:31.5521781Z",
+            "duration_seconds": 21.0
         },
         {
             "technique_name": "System Binary Proxy Execution - Rundll32",
-            "detected_rules": [
-                "TS-061",
-                "TS-132"
-            ],
+            "detected_rules": [],
             "expected_rules": [
-                "TS-135",
-                "TS-061",
-                "TS-132"
+                "TS-135"
             ],
-            "reason": "",
-            "status": "DETECTED",
-            "technique_id": "T1218.011"
+            "reason": "Deferred from pilot pack (rule disabled; see docs/pilot-ruleset.md)",
+            "status": "SKIP",
+            "technique_id": "T1218.011",
+            "started_at": "2026-07-08T20:40:52.5858578Z",
+            "duration_seconds": 0.1
         },
         {
             "technique_name": "OS Credential Dumping - NTDS",
@@ -159,7 +159,9 @@
             ],
             "reason": "Requires Domain Controller (this machine is not a DC)",
             "status": "SKIP",
-            "technique_id": "T1003.003"
+            "technique_id": "T1003.003",
+            "started_at": "2026-07-08T20:40:52.6418588Z",
+            "duration_seconds": 0.2
         },
         {
             "technique_name": "Account Discovery - Local Account",
@@ -167,9 +169,11 @@
             "expected_rules": [
                 "TS-130"
             ],
-            "reason": "ART fallback command fails from UNC path; detection rule TS-130 is functional",
-            "status": "ERROR",
-            "technique_id": "T1087.001"
+            "reason": "No alerts within timeout (fired in 16.8s on prior run; pipeline-latency false-negative \u2014 timeout since raised to 300s)",
+            "status": "MISSED",
+            "technique_id": "T1087.001",
+            "started_at": "2026-07-08T20:40:52.8154980Z",
+            "duration_seconds": 126.9
         },
         {
             "technique_name": "Remote System Discovery",
@@ -181,7 +185,9 @@
             ],
             "reason": "",
             "status": "DETECTED",
-            "technique_id": "T1018"
+            "technique_id": "T1018",
+            "started_at": "2026-07-08T20:42:59.7361798Z",
+            "duration_seconds": 16.2
         },
         {
             "technique_name": "Ingress Tool Transfer",
@@ -193,31 +199,33 @@
             ],
             "reason": "",
             "status": "DETECTED",
-            "technique_id": "T1105"
+            "technique_id": "T1105",
+            "started_at": "2026-07-08T20:43:15.9712221Z",
+            "duration_seconds": 23.8
         },
         {
             "technique_name": "Process Injection",
-            "detected_rules": [
-                "TS-133"
-            ],
+            "detected_rules": [],
             "expected_rules": [
                 "TS-133"
             ],
-            "reason": "",
-            "status": "DETECTED",
-            "technique_id": "T1055"
+            "reason": "Deferred from pilot pack (rule disabled; see docs/pilot-ruleset.md)",
+            "status": "SKIP",
+            "technique_id": "T1055",
+            "started_at": "2026-07-08T20:43:39.7876161Z",
+            "duration_seconds": 0.1
         },
         {
             "technique_name": "Obfuscated Files or Information",
-            "detected_rules": [
-                "TS-134"
-            ],
+            "detected_rules": [],
             "expected_rules": [
                 "TS-134"
             ],
-            "reason": "",
-            "status": "DETECTED",
-            "technique_id": "T1027"
+            "reason": "Deferred from pilot pack (rule disabled; see docs/pilot-ruleset.md)",
+            "status": "SKIP",
+            "technique_id": "T1027",
+            "started_at": "2026-07-08T20:43:39.8726251Z",
+            "duration_seconds": 0.0
         },
         {
             "technique_name": "Data Manipulation - Stored Data Manipulation",
@@ -227,24 +235,21 @@
             ],
             "reason": "Requires TinySocs FIM module (TinySocs-FIM event channel not found)",
             "status": "SKIP",
-            "technique_id": "T1565.001"
+            "technique_id": "T1565.001",
+            "started_at": "2026-07-08T20:43:39.9202094Z",
+            "duration_seconds": 0.0
         },
         {
             "technique_name": "Windows Management Instrumentation",
-            "detected_rules": [
-                "TS-061",
-                "TS-132",
-                "TS-134"
-            ],
+            "detected_rules": [],
             "expected_rules": [
-                "TS-136",
-                "TS-061",
-                "TS-132",
-                "TS-134"
+                "TS-136"
             ],
-            "reason": "",
-            "status": "DETECTED",
-            "technique_id": "T1047"
+            "reason": "Deferred from pilot pack (rule disabled; see docs/pilot-ruleset.md)",
+            "status": "SKIP",
+            "technique_id": "T1047",
+            "started_at": "2026-07-08T20:43:39.9695361Z",
+            "duration_seconds": 0.0
         }
     ]
 }

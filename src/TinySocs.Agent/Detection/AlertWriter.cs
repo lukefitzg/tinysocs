@@ -42,13 +42,17 @@ namespace TinySocs.Agent.Detection
         // Phase 13 (M4): Retry queue for failed notifications
         private readonly RetryQueue? _retryQueue;
 
+        // Plain-English rule docs (TinyDocs) — human titles + triage steps for notifications
+        private readonly IReadOnlyDictionary<string, RuleDoc> _ruleDocs;
+
         public AlertWriter(
             ILogger<AlertWriter> logger,
             HttpClient httpClient,
             Uri bulkUri,
             string alertLogPath,
             NotificationConfig? notification = null,
-            RetryQueue? retryQueue = null)
+            RetryQueue? retryQueue = null,
+            IReadOnlyDictionary<string, RuleDoc>? ruleDocs = null)
         {
             _logger = logger;
             _httpClient = httpClient;
@@ -56,6 +60,7 @@ namespace TinySocs.Agent.Detection
             _alertLogPath = alertLogPath;
             _notification = notification ?? new NotificationConfig();
             _retryQueue = retryQueue;
+            _ruleDocs = ruleDocs ?? new Dictionary<string, RuleDoc>();
             _writtenAlertIds = new HashSet<string>();
             _lastEmailPerRule = new ConcurrentDictionary<string, DateTime>();
 
@@ -277,9 +282,17 @@ namespace TinySocs.Agent.Detection
                 _ => "\U0001f7e1"
             };
 
-            var text = $"{emoji} *[TinySocs] [{severity}] {alert.Alert.RuleName}*\n" +
-                       $"{alert.Alert.Description}\n" +
-                       $"Events: {alert.Alert.EventCount} | Window: {alert.Alert.WindowStart}";
+            // Prefer the plain-English rule doc; fall back to the technical
+            // rule name/description for rules without one.
+            _ruleDocs.TryGetValue(alert.Alert.RuleId, out var doc);
+            var headline = !string.IsNullOrWhiteSpace(doc?.Title) ? doc!.Title : alert.Alert.RuleName;
+            var summary = !string.IsNullOrWhiteSpace(doc?.WhatHappened) ? doc!.WhatHappened.Trim() : alert.Alert.Description;
+            var firstStep = (doc?.DoFirst != null && doc.DoFirst.Count > 0) ? doc.DoFirst[0] : null;
+
+            var text = $"{emoji} *[TinySocs] {severity}: {headline}*\n" +
+                       $"{summary}\n" +
+                       (firstStep != null ? $"First step: {firstStep}\n" : "") +
+                       $"Rule: {alert.Alert.RuleId} | Events: {alert.Alert.EventCount} | Window: {alert.Alert.WindowStart}";
 
             var payload = JsonSerializer.Serialize(new { text });
 
@@ -342,12 +355,14 @@ namespace TinySocs.Agent.Detection
 
             // Build subject and body before try block for retry access
             var severity = alert.Alert.Severity.ToUpperInvariant();
-            var subject = $"[TinySocs] [{severity}] {alert.Alert.RuleName} \u2014 {alert.Alert.Description}";
+            _ruleDocs.TryGetValue(alert.Alert.RuleId, out var doc);
+            var headline = !string.IsNullOrWhiteSpace(doc?.Title) ? doc!.Title : $"{alert.Alert.RuleName} \u2014 {alert.Alert.Description}";
+            var subject = $"[TinySocs] [{severity}] {headline}";
             if (subject.Length > 200)
             {
                 subject = subject.Substring(0, 197) + "...";
             }
-            var body = BuildEmailBody(alert);
+            var body = BuildEmailBody(alert, doc);
 
             try
             {
@@ -370,7 +385,7 @@ namespace TinySocs.Agent.Detection
             }
         }
 
-        private static string BuildEmailBody(AlertDocument alert)
+        private static string BuildEmailBody(AlertDocument alert, RuleDoc? doc = null)
         {
             var severity = alert.Alert.Severity.ToUpperInvariant();
             var badgeColor = severity switch
@@ -380,6 +395,31 @@ namespace TinySocs.Agent.Detection
                 "MEDIUM" => "#fd7e14",
                 _ => "#ffc107"
             };
+
+            // Plain-English sections from the rule doc, when available
+            var docInfo = "";
+            if (doc != null)
+            {
+                var sb = new StringBuilder();
+                if (!string.IsNullOrWhiteSpace(doc.WhatHappened))
+                {
+                    sb.Append($"<p>{EscapeHtml(doc.WhatHappened.Trim())}</p>");
+                }
+                if (doc.DoFirst != null && doc.DoFirst.Count > 0)
+                {
+                    sb.Append("<p style=\"margin-bottom:4px;\"><strong>What to do first</strong></p><ol style=\"margin-top:0;\">");
+                    foreach (var step in doc.DoFirst)
+                    {
+                        sb.Append($"<li>{EscapeHtml(step)}</li>");
+                    }
+                    sb.Append("</ol>");
+                }
+                if (!string.IsNullOrWhiteSpace(doc.FalseAlarmIf))
+                {
+                    sb.Append($"<p><strong>Likely a false alarm if:</strong> {EscapeHtml(doc.FalseAlarmIf.Trim())}</p>");
+                }
+                docInfo = sb.ToString();
+            }
 
             var sourceInfo = "";
             if (alert.Source != null && alert.Source.Count > 0)
@@ -397,10 +437,10 @@ namespace TinySocs.Agent.Detection
 <div style=""font-family:sans-serif;max-width:600px;"">
   <h2 style=""margin-bottom:4px;"">TinySocs Alert</h2>
   <span style=""display:inline-block;padding:2px 8px;border-radius:4px;color:#fff;background:{badgeColor};font-weight:bold;"">{severity}</span>
-  <h3 style=""margin-top:12px;"">{EscapeHtml(alert.Alert.RuleName)}</h3>
-  <p>{EscapeHtml(alert.Alert.Description)}</p>
+  <h3 style=""margin-top:12px;"">{EscapeHtml(!string.IsNullOrWhiteSpace(doc?.Title) ? doc!.Title : alert.Alert.RuleName)}</h3>
+  {(docInfo.Length > 0 ? docInfo : $"<p>{EscapeHtml(alert.Alert.Description)}</p>")}
   <table style=""border-collapse:collapse;"">
-    <tr><td style=""padding:4px 8px;font-weight:bold;"">Rule ID</td><td style=""padding:4px 8px;"">{EscapeHtml(alert.Alert.RuleId)}</td></tr>
+    <tr><td style=""padding:4px 8px;font-weight:bold;"">Rule</td><td style=""padding:4px 8px;"">{EscapeHtml(alert.Alert.RuleId)} ({EscapeHtml(alert.Alert.RuleName)})</td></tr>
     <tr><td style=""padding:4px 8px;font-weight:bold;"">Event Count</td><td style=""padding:4px 8px;"">{alert.Alert.EventCount}</td></tr>
     <tr><td style=""padding:4px 8px;font-weight:bold;"">First Seen</td><td style=""padding:4px 8px;"">{EscapeHtml(alert.Alert.FirstSeen ?? "")}</td></tr>
     <tr><td style=""padding:4px 8px;font-weight:bold;"">Last Seen</td><td style=""padding:4px 8px;"">{EscapeHtml(alert.Alert.LastSeen ?? "")}</td></tr>

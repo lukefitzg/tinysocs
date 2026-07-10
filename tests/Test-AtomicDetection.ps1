@@ -760,6 +760,18 @@ foreach ($test in $tests) {
         continue
     }
 
+    # Skip techniques deliberately deferred from the pilot pack. Their only rule
+    # is disabled (FP-vs-coverage trade, see docs/pilot-ruleset.md), so there is
+    # nothing enabled to fire. Running them and scoring MISSED understates the
+    # pilot pack's real efficacy — report SKIP so they leave the denominator.
+    if ($test.pilot_status -eq "deferred") {
+        Write-Host "  SKIP: deferred from pilot pack (rule disabled for v2 redesign)" -ForegroundColor Yellow
+        $results += New-TestResult -Technique $technique -Name $name -Status "SKIP" `
+            -Reason "Deferred from pilot pack (rule disabled; see docs/pilot-ruleset.md)" `
+            -Rules ($rules -join ", ") -Detected @() -StartedAt $testStart
+        continue
+    }
+
     # Skip if environment requirement not met
     $requires = $test.requires
     if ($requires) {

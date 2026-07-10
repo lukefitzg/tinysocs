@@ -1623,6 +1623,161 @@ def api_detection_tags(alert_id: str, body: Dict[str, Any] = Body(...)):
     return {"ok": True, "alert_id": alert_id, "tags": _alert_states[alert_id]["tags"]}
 
 
+# ---------------------------------------------------------------------------
+# Rule docs (TinyDocs): plain-English titles + triage guidance per rule ID.
+# Single source of truth is rule_docs.yml shipped alongside rules.yml by the
+# installer; the repo copy is the dev fallback. Missing file is non-fatal —
+# the UI falls back to technical rule names.
+# ---------------------------------------------------------------------------
+_rule_docs_cache: Optional[Dict[str, Any]] = None
+
+
+def _load_rule_docs() -> Dict[str, Any]:
+    global _rule_docs_cache
+    if _rule_docs_cache is not None:
+        return _rule_docs_cache
+    import yaml
+    candidates = [
+        Path(os.getenv("ProgramData", "C:\\ProgramData")) / "TinySocs" / "Collector" / "rules" / "rule_docs.yml",
+        Path(__file__).resolve().parents[3] / "packaging" / "detection" / "rule_docs.yml",
+    ]
+    for p in candidates:
+        try:
+            if p.is_file():
+                raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+                _rule_docs_cache = raw.get("docs", {}) or {}
+                return _rule_docs_cache
+        except Exception:
+            continue
+    _rule_docs_cache = {}
+    return _rule_docs_cache
+
+
+@dashboard_app.get("/api/rule-docs")
+def api_rule_docs():
+    """Plain-English rule documentation keyed by rule ID."""
+    return {"docs": _load_rule_docs()}
+
+
+# ---------------------------------------------------------------------------
+# Status headline: the one-line answer to "are we ok right now?"
+#
+# Composed only from checkable facts so it cannot lie:
+#   - unresolved (status == "new") high/critical alerts in the window
+#   - hosts that have gone silent (no events recently)
+# An agent being down degrades the status rather than leaving it green.
+# ---------------------------------------------------------------------------
+_SILENT_HOST_HOURS = 2  # a host with no events for this long counts as not reporting
+
+
+@dashboard_app.get("/api/status/headline")
+async def api_status_headline(hours: int = Query(24, ge=1, le=720)):
+    if _DEMO_MODE:
+        return {
+            "state": "attention",
+            "headline": "Needs attention — 3 unresolved critical alerts in the last 24 hours.",
+            "detail": "Open the alerts below, starting with the critical ones. 5 machines monitored, all reporting.",
+            "hosts_total": 5,
+            "hosts_reporting": 5,
+            "hosts_silent": [],
+            "unresolved": {"critical": 3, "high": 8},
+            "window_hours": hours,
+        }
+
+    time_filter: Dict[str, Any] = {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}}
+    sev_filter = {"terms": {"alert.severity": ["high", "critical", "HIGH", "CRITICAL"]}}
+    alert_body = {
+        "query": {"bool": {"filter": [time_filter, sev_filter]}},
+        "sort": [{"timestamp": {"order": "desc"}}],
+    }
+    fleet_body = {
+        "query": {"range": {"@timestamp": {"gte": "now-24h", "lte": "now"}}},
+        "aggs": {
+            "by_host": {
+                "terms": {"field": "winlog.computer_name", "size": 100},
+                "aggs": {"last_seen": {"max": {"field": "@timestamp"}}},
+            }
+        },
+    }
+    alert_resp, fleet_resp = await asyncio.gather(
+        _safe_query_async("tinysocs-alerts-*", alert_body, size=200),
+        _safe_query_async("tinysocs-winlog-*", fleet_body),
+    )
+
+    if alert_resp.get("error") and fleet_resp.get("error"):
+        return {
+            "state": "unknown",
+            "headline": "Status unavailable — can't reach the data store.",
+            "detail": str(alert_resp.get("error", ""))[:200],
+            "hosts_total": 0,
+            "hosts_reporting": 0,
+            "hosts_silent": [],
+            "unresolved": {},
+            "window_hours": hours,
+        }
+
+    # Unresolved high/critical alerts (status "new"; acknowledged means someone is on it)
+    _init_alert_state_file()
+    unresolved: Dict[str, int] = {}
+    for h in alert_resp.get("hits", {}).get("hits", []):
+        doc_id = h.get("_id", "")
+        if _alert_states.get(doc_id, {}).get("status", "new") != "new":
+            continue
+        sev = str(h.get("_source", {}).get("alert", {}).get("severity", "")).lower()
+        unresolved[sev] = unresolved.get(sev, 0) + 1
+    unresolved_total = sum(unresolved.values())
+
+    # Host reporting status: silent = no events in the last _SILENT_HOST_HOURS
+    hosts_silent: List[str] = []
+    hosts_total = 0
+    now = datetime.now(timezone.utc)
+    for b in fleet_resp.get("aggregations", {}).get("by_host", {}).get("buckets", []):
+        hosts_total += 1
+        last_seen = b.get("last_seen", {}).get("value_as_string", "")
+        try:
+            seen_dt = datetime.fromisoformat(last_seen.replace("Z", "+00:00"))
+            if (now - seen_dt).total_seconds() > _SILENT_HOST_HOURS * 3600:
+                hosts_silent.append(b["key"])
+        except Exception:
+            hosts_silent.append(b["key"])
+    hosts_reporting = hosts_total - len(hosts_silent)
+
+    machines = f"{hosts_total} machine{'s' if hosts_total != 1 else ''}"
+    window = f"the last {hours} hours" if hours != 24 else "the last 24 hours"
+
+    if hosts_total == 0:
+        state = "no_data"
+        headline = "No machines reporting yet."
+        detail = "Install the TinySocs agent on your first machine to start monitoring — see the Getting Started guide."
+    elif unresolved_total > 0:
+        state = "attention"
+        parts = [f"{unresolved[s]} {s}" for s in ("critical", "high") if unresolved.get(s)]
+        headline = f"Needs attention — {' and '.join(parts)} unresolved alert{'s' if unresolved_total != 1 else ''} in {window}."
+        detail = "Open the alerts below, starting with the most severe."
+        if hosts_silent:
+            detail += f" Also: {len(hosts_silent)} of {hosts_total} machines not reporting."
+    elif hosts_silent:
+        state = "degraded"
+        headline = f"Monitoring degraded — {len(hosts_silent)} of {machines} not reporting."
+        detail = ("No unresolved high-severity alerts, but a machine that isn't reporting isn't protected. "
+                  "Not reporting: " + ", ".join(hosts_silent[:5]) + ("…" if len(hosts_silent) > 5 else ""))
+    else:
+        state = "clear"
+        headline = f"All clear — no unresolved high-severity alerts in {window} across {machines}."
+        detail = "All machines reporting. Detections active."
+
+    return {
+        "state": state,
+        "headline": headline,
+        "detail": detail,
+        "hosts_total": hosts_total,
+        "hosts_reporting": hosts_reporting,
+        "hosts_silent": hosts_silent[:20],
+        "unresolved": unresolved,
+        "window_hours": hours,
+    }
+
+
 @dashboard_app.post("/api/alerts/purge")
 def api_alerts_purge(body: Dict[str, Any] = Body(...)):
     """Delete alerts older than the specified number of days from OpenSearch.
@@ -6491,6 +6646,13 @@ select { cursor: pointer; }
 
     <!-- ==================== OVERVIEW TAB ==================== -->
     <div class="tab-pane active" id="tab-overview">
+      <!-- Status headline: the one-line answer to "are we ok right now?" -->
+      <div class="card full" id="status-headline-card" style="border-left:4px solid var(--border)">
+        <div class="card-body" id="status-headline" style="padding:14px 16px">
+          <div class="loading">Checking status...</div>
+        </div>
+      </div>
+
       <!-- Alert Summary -->
       <div class="card">
         <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
@@ -6876,7 +7038,7 @@ function loadTabData(tabId) {
   _tabLoaded[tabId] = true;
   switch(tabId) {
     case 'sites': loadSites(); break;
-    case 'overview': loadSummary(); loadTimeline(); loadDetections(); loadStorage(); loadOverviewAggregate(); break;
+    case 'overview': loadStatusHeadline(); loadSummary(); loadTimeline(); loadDetections(); loadStorage(); loadOverviewAggregate(); break;
     case 'fleet': loadFleet(); break;
     case 'data': loadEvents(); break;
     case 'detections': loadRules(); loadActions(); break;
@@ -7372,6 +7534,31 @@ async function initSitesTab() {
   }
 }
 
+// ── Status headline: "are we ok right now?" ──
+const STATUS_STYLES = {
+  clear:     {color: 'var(--green, #27ae60)',  icon: '✓'},
+  attention: {color: 'var(--red, #e74c3c)',    icon: '⚠'},
+  degraded:  {color: 'var(--orange, #e67e22)', icon: '⚠'},
+  no_data:   {color: 'var(--blue, #3498db)',   icon: 'ℹ'},
+  unknown:   {color: 'var(--muted, #888)',     icon: '?'},
+};
+
+async function loadStatusHeadline() {
+  const el = document.getElementById('status-headline');
+  const card = document.getElementById('status-headline-card');
+  if (!el) return;
+  const d = await fetchJSON(`${apiBase()}/status/headline?hours=${hours}`);
+  if (d.error && !d.state) { el.innerHTML = `<div class="empty">${escapeHtml(d.error)}</div>`; return; }
+  const style = STATUS_STYLES[d.state] || STATUS_STYLES.unknown;
+  if (card) card.style.borderLeft = `4px solid ${style.color}`;
+  let html = `<div style="display:flex;align-items:baseline;gap:10px">`;
+  html += `<span style="font-size:20px;font-weight:700;color:${style.color};flex-shrink:0">${style.icon}</span>`;
+  html += `<div><div style="font-size:16px;font-weight:600">${escapeHtml(d.headline || '')}</div>`;
+  if (d.detail) html += `<div style="font-size:13px;color:var(--muted);margin-top:3px">${escapeHtml(d.detail)}</div>`;
+  html += `</div></div>`;
+  el.innerHTML = html;
+}
+
 async function loadSummary() {
   const el = document.getElementById('summary-content');
   let url = `${apiBase()}/alerts/summary?hours=${hours}`;
@@ -7675,8 +7862,24 @@ let _detectionsPage = 0;
 // Dynamic: fit detections to viewport (same pattern as Event Explorer)
 let _DETECTIONS_PER_PAGE = Math.max(5, Math.floor((window.innerHeight - 120 - 150) / 42));
 
+// Plain-English rule docs (TinyDocs), keyed by rule ID — loaded once.
+let _ruleDocs = null;
+async function ensureRuleDocs() {
+  if (_ruleDocs !== null) return;
+  try {
+    const d = await fetchJSON('/api/rule-docs');
+    _ruleDocs = d.docs || {};
+  } catch (e) {
+    _ruleDocs = {};
+  }
+}
+function ruleDocFor(det) {
+  return (_ruleDocs || {})[det.rule_id] || null;
+}
+
 async function loadDetections() {
   const el = document.getElementById('detections-content');
+  await ensureRuleDocs();
   let dUrl = `${apiBase()}/detections/fired?hours=${hours}&limit=50`;
   const fhD = focusedHostname();
   if (fhD) dUrl += `&hostname=${encodeURIComponent(fhD)}`;
@@ -7695,6 +7898,11 @@ function renderDetections() {
     filtered = detections.filter(d => d.status !== 'dismissed');
   } else if (filter !== 'all') {
     filtered = detections.filter(d => d.status === filter);
+  }
+  if (!detections.length) {
+    el.innerHTML = '<div class="empty">No alerts in the last ' + hours + ' hours &mdash; monitoring is active. '
+      + 'New alerts appear here, and you will be notified via webhook/email if configured.</div>';
+    return;
   }
   if (!filtered.length) { el.innerHTML = '<div class="empty">No detections match this filter</div>'; return; }
   const filteredMap = filtered.map(det => detections.indexOf(det));
@@ -7721,11 +7929,12 @@ function renderDetections() {
     const statusColors = {new:'#e67e22', acknowledged:'#27ae60', dismissed:'#7f8c8d'};
     const statusColor = statusColors[detStatus] || '#e67e22';
 
+    const doc = ruleDocFor(det);
     html += `<div class="detection-row" onclick="toggleDetection(${i})">`;
     html += '<div class="detection-row-header">';
     html += `<span style="font-size:10px;padding:2px 7px;border-radius:3px;background:${statusColor};color:#fff;text-transform:uppercase;flex-shrink:0;font-weight:600">${detStatus}</span>`;
     html += severityBadge(det.severity);
-    html += `<span class="rule-name">${escapeHtml(det.rule_name || det.rule_id || 'Unknown Rule')}</span>`;
+    html += `<span class="rule-name">${escapeHtml((doc && doc.title) || det.rule_name || det.rule_id || 'Unknown Rule')}</span>`;
     if (detTags.length) {
       for (const tag of detTags) {
         html += `<span style="font-size:10px;padding:1px 5px;border-radius:3px;background:var(--accent);color:#fff;flex-shrink:0">${escapeHtml(tag)}</span>`;
@@ -7738,6 +7947,24 @@ function renderDetections() {
 
     // Expandable detail section — restore open state after refresh
     html += `<div class="detection-detail${isOpen ? ' open' : ''}" id="det-detail-${i}">`;
+
+    // Plain-English explanation (TinyDocs) — what happened, what to do, false-alarm hint
+    if (doc) {
+      html += '<div style="padding:10px 12px;margin-bottom:8px;border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:6px;background:var(--surface,rgba(255,255,255,0.03))">';
+      if (doc.what_happened) {
+        html += `<div style="font-size:13px;line-height:1.5">${escapeHtml(doc.what_happened)}</div>`;
+      }
+      if (doc.do_first && doc.do_first.length) {
+        html += '<div style="font-size:12px;font-weight:600;margin-top:8px">What to do first</div><ol style="margin:4px 0 0 18px;padding:0;font-size:13px;line-height:1.5">';
+        for (const step of doc.do_first) html += `<li>${escapeHtml(step)}</li>`;
+        html += '</ol>';
+      }
+      if (doc.false_alarm_if) {
+        html += `<div style="font-size:12px;color:var(--muted);margin-top:8px"><strong>Likely a false alarm if:</strong> ${escapeHtml(doc.false_alarm_if)}</div>`;
+      }
+      html += '</div>';
+    }
+
     html += '<table>';
     html += `<tr><td>Rule ID</td><td><code>${escapeHtml(det.rule_id || '')}</code></td></tr>`;
     html += `<tr><td>Rule Name</td><td>${escapeHtml(det.rule_name || '')}</td></tr>`;
@@ -8131,7 +8358,11 @@ async function loadFleet() {
 function renderFleet() {
   const el = document.getElementById('fleet-content');
   const hosts = _fleetCache;
-  if (!hosts.length) { el.innerHTML = '<div class="empty">No hosts reporting</div>'; return; }
+  if (!hosts.length) {
+    el.innerHTML = '<div class="empty">No machines reporting yet. Install the TinySocs agent on a machine '
+      + 'and it will appear here within a few minutes &mdash; see the Getting Started guide.</div>';
+    return;
+  }
 
   // Pagination
   const totalItems = hosts.length;
@@ -9077,7 +9308,7 @@ function refreshAll() {
         tasks.push(loadSites());
         break;
       case 'overview':
-        tasks.push(loadSummary(), loadTimeline(), loadDetections(), loadStorage());
+        tasks.push(loadStatusHeadline(), loadSummary(), loadTimeline(), loadDetections(), loadStorage());
         if (_sitesVisible) { _sitesCache = null; tasks.push(loadOverviewAggregate()); }
         break;
       case 'fleet':

@@ -85,6 +85,12 @@ Source: "..\..\packaging\detection\rules.yml"; \
     DestDir: "{commonappdata}\TinySocs\Collector\rules"; \
     Flags: ignoreversion onlyifdoesntexist
 
+; Rule docs (plain-English alert companion) → same directory as rules.yml.
+; Vendor-authored content, not operator-edited: always overwrite on upgrade.
+Source: "..\..\packaging\detection\rule_docs.yml"; \
+    DestDir: "{commonappdata}\TinySocs\Collector\rules"; \
+    Flags: ignoreversion
+
 ; NSSM is optional — include only if present at build time
 #if FileExists('..\..\thirdparty\nssm.exe')
 Source: "..\..\thirdparty\nssm.exe";       DestDir: "{app}\bin"; Flags: ignoreversion

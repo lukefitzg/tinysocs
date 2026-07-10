@@ -2,9 +2,13 @@
 
 ## General
 
+### Who is TinySocs for?
+
+Companies of roughly 10–200 staff that need security monitoring but don't have a security team — usually because a customer's security questionnaire, a cyber-insurance renewal, or an audit now requires it. If your IT is handled by one generalist, an office manager who wears the IT hat, or an outsourced IT provider, TinySocs is built for you. You get an answer to "are we being attacked?", alerts in plain English, and one-click reports you can hand to a customer, insurer, or auditor.
+
 ### How is TinySocs different from Splunk / Elastic / Sentinel?
 
-TinySocs is designed for small teams that need security monitoring without dedicated security engineers. It installs in 15 minutes, includes an AI assistant that explains alerts in plain English, and generates compliance reports with one click. Enterprise SIEMs require weeks of setup, custom dashboards, and specialised staff.
+Those are enterprise tools that assume dedicated security engineers, weeks of setup, and custom dashboards. TinySocs installs in 15 minutes, keeps its detections current for you, includes an AI assistant that explains alerts in plain English, and generates compliance reports with one click. You operate it with the IT staff you already have.
 
 ### What events does TinySocs collect?
 
@@ -31,11 +35,11 @@ Minimum: Windows 10/Server 2019, 8 GB RAM, 20 GB disk, 2 CPU cores. Recommended:
 
 ### How many detection rules are included?
 
-40+ built-in rules across 8 categories: authentication, PowerShell, process execution, credential access, lateral movement, persistence, defence evasion, and exfiltration. All rules are mapped to MITRE ATT&CK techniques.
+The free base pack ships **19 high-fidelity rules** enabled — the highest-signal, lowest-false-positive subset for a business with no security team — spanning authentication, credential access, lateral movement, persistence, defence evasion, discovery, and ransomware/impact. The engine defines 39 rules in total (the rest are held back for per-environment tuning), and a further 50-rule catalogue is roadmapped for the backend engine. Every shipped rule is mapped to MITRE ATT&CK and validated against real (Atomic Red Team) attacks before release.
 
-### Can I write custom detection rules?
+### Do I have to write or tune detection rules?
 
-Yes. Use the Rule Builder in the dashboard to create rules with KQL queries, or upload YAML/JSON rule packs. Custom rules support threshold grouping, field enrichment, and severity levels.
+No — that's the point. TinySocs ships validated detections and keeps them current; you never edit a rule file. When an alert doesn't apply to your environment (for example, your IT tool legitimately does something an attacker also does), you dismiss it or tag it as a false positive from the dashboard, and the AI assistant helps you judge which is which. Advanced users *can* create custom rules via the Rule Builder, but no customer needs to.
 
 ### What is Sysmon and do I need it?
 

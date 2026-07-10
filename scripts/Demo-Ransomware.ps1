@@ -8,7 +8,7 @@
     (invoice.docx, payroll.xlsx, ...). Nothing legitimate ever touches them, so a
     burst of modifications is a high-signal ransomware indicator. This script
     "encrypts" every decoy (appends a marker + a fake .locked rename), which the
-    FIM watcher reports as a mass modification — TS-113 fires at threshold 50/min.
+    FIM watcher reports as a mass modification - TS-113 fires at threshold 50/min.
 
     Safe: only the canary decoys are touched; no real files are modified.
 
@@ -45,7 +45,7 @@ if (-not (Test-Path $CanaryPath)) {
 
 $files = Get-ChildItem -Path $CanaryPath -File
 if ($files.Count -lt 50) {
-    Write-Warning "Only $($files.Count) canary files present (need >=50 for TS-113). The agent seeds 60 on startup — is FIM enabled?"
+    Write-Warning "Only $($files.Count) canary files present (need >=50 for TS-113). The agent seeds 60 on startup - is FIM enabled?"
     exit 1
 }
 
@@ -54,7 +54,7 @@ Write-Host "[*] Simulating a ransomware encryption sweep (modifying every decoy)
 
 $stamp = Get-Date -Format "o"
 foreach ($f in $files) {
-    # Append an 'encryption' marker — a real change the FIM watcher will hash-diff.
+    # Append an 'encryption' marker - a real change the FIM watcher will hash-diff.
     Add-Content -Path $f.FullName -Value "ENCRYPTED_BY_DEMO $stamp" -ErrorAction SilentlyContinue
 }
 Write-Host "    Modified $($files.Count) files at $stamp" -ForegroundColor Yellow
@@ -67,8 +67,8 @@ Write-Host ""
 # operator to watch the dashboard.
 if (-not $Password) {
     Write-Host "[*] No -Password given; skipping automated check." -ForegroundColor DarkGray
-    Write-Host "    Open the TinySocs dashboard — you should see a CRITICAL alert:" -ForegroundColor Cyan
-    Write-Host "      'fim_mass_modification' — ransomware indicator on this host." -ForegroundColor Cyan
+    Write-Host "    Open the TinySocs dashboard - you should see a CRITICAL alert:" -ForegroundColor Cyan
+    Write-Host "      'fim_mass_modification' - ransomware indicator on this host." -ForegroundColor Cyan
     exit 0
 }
 

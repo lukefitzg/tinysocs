@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using TinySocs.Agent.Configuration;
 using TinySocs.Agent.Detection;
+using TinySocs.Agent.Inputs;
 using TinySocs.Agent.Models;
 using Xunit;
 
@@ -392,6 +393,25 @@ namespace TinySocs.Agent.Tests
             // cross it, so the canary has to seed at least that many files.
             Assert.True(fim.CanaryFileCount >= 50,
                 $"canary seeds {fim.CanaryFileCount} files but TS-113 needs 50 to fire");
+        }
+
+        [Theory]
+        // must match (real targets):
+        [InlineData(@"C:\ProgramData\TinySocs\Canary\invoice_001.docx", true)]
+        [InlineData(@"C:\Windows\System32\drivers\etc\hosts", true)]
+        [InlineData(@"C:\Windows\System32\config\SAM", true)]
+        [InlineData(@"C:\Windows\System32\GroupPolicy\Machine\Registry.pol", true)]
+        // must NOT match (the flood/feedback-loop bug): the agent's own queue,
+        // the FIM baseline, and the bundled OpenSearch data must be invisible to FIM.
+        [InlineData(@"C:\ProgramData\TinySocs\Collector\agent\queue\segment-1.jsonl", false)]
+        [InlineData(@"C:\ProgramData\TinySocs\Agent\fim-baseline.json", false)]
+        [InlineData(@"C:\ProgramData\TinySocs\OpenSearch\data\nodes\0\_state\x.liv", false)]
+        [InlineData(@"C:\ProgramData\TinySocs\OpenSearch\logs\opensearch_server.json", false)]
+        public void Fim_WatcherPatternMatch_IgnoresAgentAndOpenSearchInternals(string path, bool expected)
+        {
+            var input = new FileIntegrityInput(
+                NullLogger<FileIntegrityInput>.Instance, new AgentConfig(), null!, new FimConfig());
+            Assert.Equal(expected, input.MatchesWatchedPattern(path));
         }
 
         // ---- pilot base-pack composition --------------------------------

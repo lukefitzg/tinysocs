@@ -293,6 +293,54 @@ namespace TinySocs.Agent.Inputs
             return result;
         }
 
+        /// <summary>
+        /// True if <paramref name="fullPath"/> matches one of the configured watch
+        /// patterns, honouring the filename glob (e.g. *.yml). FileSystemWatcher
+        /// only filters by directory, so without this a pattern like
+        /// C:\dir\**\*.yml would report EVERY file under C:\dir in real time — the
+        /// bug that had FIM monitoring the agent's own queue and the OpenSearch
+        /// data dir. Keeps the real-time watcher consistent with the periodic scan.
+        /// </summary>
+        internal bool MatchesWatchedPattern(string fullPath)
+        {
+            foreach (var pattern in _fimConfig.Paths)
+            {
+                if (pattern.Contains("*"))
+                {
+                    var parts = pattern.Replace("/", "\\").Split(new[] { "**" }, 2, StringSplitOptions.None);
+                    var baseDir = parts[0].TrimEnd('\\');
+                    if (string.IsNullOrEmpty(baseDir)) continue;
+                    if (!fullPath.StartsWith(baseDir + "\\", StringComparison.OrdinalIgnoreCase)) continue;
+
+                    // Non-recursive glob (single '*'): the file must sit directly in baseDir.
+                    if (!pattern.Contains("**"))
+                    {
+                        var parent = Path.GetDirectoryName(fullPath);
+                        if (!string.Equals(parent, baseDir, StringComparison.OrdinalIgnoreCase)) continue;
+                    }
+
+                    var searchPattern = parts.Length > 1 ? parts[1] : "*";
+                    var filePattern = Path.GetFileName(searchPattern.Replace("/", "\\"));
+                    if (string.IsNullOrEmpty(filePattern)) filePattern = "*";
+                    if (FileNameMatchesPattern(Path.GetFileName(fullPath), filePattern))
+                        return true;
+                }
+                else if (string.Equals(fullPath, pattern, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static bool FileNameMatchesPattern(string name, string pattern)
+        {
+            if (string.IsNullOrEmpty(pattern) || pattern == "*") return true;
+            if (pattern.StartsWith("*."))
+                return name.EndsWith(pattern.Substring(1), StringComparison.OrdinalIgnoreCase);
+            return string.Equals(name, pattern, StringComparison.OrdinalIgnoreCase);
+        }
+
         private bool ShouldExclude(string filePath)
         {
             var fileName = Path.GetFileName(filePath);
@@ -380,7 +428,7 @@ namespace TinySocs.Agent.Inputs
 
         private void OnFileCreated(object sender, FileSystemEventArgs e)
         {
-            if (!_baselineInitialized || ShouldExclude(e.FullPath) || !ShouldDebounce(e.FullPath)) return;
+            if (!_baselineInitialized || ShouldExclude(e.FullPath) || !MatchesWatchedPattern(e.FullPath) || !ShouldDebounce(e.FullPath)) return;
             var hash = ComputeHash(e.FullPath);
             if (hash != null)
             {
@@ -392,7 +440,7 @@ namespace TinySocs.Agent.Inputs
 
         private void OnFileChanged(object sender, FileSystemEventArgs e)
         {
-            if (!_baselineInitialized || ShouldExclude(e.FullPath) || !ShouldDebounce(e.FullPath)) return;
+            if (!_baselineInitialized || ShouldExclude(e.FullPath) || !MatchesWatchedPattern(e.FullPath) || !ShouldDebounce(e.FullPath)) return;
             var oldHash = _baseline.GetValueOrDefault(e.FullPath);
             var newHash = ComputeHash(e.FullPath);
             if (newHash != null && newHash != oldHash)
@@ -405,7 +453,7 @@ namespace TinySocs.Agent.Inputs
 
         private void OnFileDeleted(object sender, FileSystemEventArgs e)
         {
-            if (!_baselineInitialized || ShouldExclude(e.FullPath) || !ShouldDebounce(e.FullPath)) return;
+            if (!_baselineInitialized || ShouldExclude(e.FullPath) || !MatchesWatchedPattern(e.FullPath) || !ShouldDebounce(e.FullPath)) return;
             var oldHash = _baseline.GetValueOrDefault(e.FullPath);
             _baseline.TryRemove(e.FullPath, out _);
             EmitEvent(1003, "deleted", e.FullPath, oldHash, null);
@@ -414,7 +462,7 @@ namespace TinySocs.Agent.Inputs
 
         private void OnFileRenamed(object sender, RenamedEventArgs e)
         {
-            if (!_baselineInitialized || !ShouldDebounce(e.FullPath)) return;
+            if (!_baselineInitialized || ShouldExclude(e.FullPath) || !MatchesWatchedPattern(e.FullPath) || !ShouldDebounce(e.FullPath)) return;
             // Remove old entry, add new
             _baseline.TryRemove(e.OldFullPath, out var oldHash);
             var newHash = ComputeHash(e.FullPath);

@@ -15,8 +15,12 @@ public sealed class FimConfig
         @"C:\Windows\System32\config\SECURITY",
         @"C:\Windows\System32\config\SYSTEM",
         @"C:\Windows\System32\GroupPolicy\**",
-        @"C:\ProgramData\TinySocs\**\*.yml",
-        @"C:\ProgramData\TinySocs\**\*.yaml",
+        // NB: do NOT watch C:\ProgramData\TinySocs\** — that tree contains the
+        // agent's own event queue, the FIM baseline, and the bundled OpenSearch
+        // data/logs. Watching it floods FIM with self-generated churn and creates
+        // a save->detect->save feedback loop on the baseline. TinySocs-config
+        // tamper detection (TS-112, currently disabled) can add a narrow, filtered
+        // path when it's re-enabled.
         // Ransomware canary directory (seeded with decoy files at startup).
         // Nothing legitimate touches these, so a mass modification is a
         // high-signal early-warning of ransomware (TS-113).

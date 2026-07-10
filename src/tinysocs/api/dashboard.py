@@ -22,7 +22,7 @@ import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from fastapi import Body, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
@@ -39,7 +39,7 @@ _DEMO_MODE = os.getenv("TINYSOCS_DEMO_MODE", "").strip().lower() in ("1", "true"
 # Uses SIEM_PASS as the single admin password. No more hardcoded "tinysocs".
 # ---------------------------------------------------------------------------
 _AUTH_TOKEN_SECRET = secrets.token_hex(32)  # rotates each process restart
-_active_sessions: Dict[str, float] = {}    # token -> expiry timestamp
+_active_sessions: dict[str, float] = {}    # token -> expiry timestamp
 _SESSION_TTL = 3600  # 1 hour
 
 
@@ -60,7 +60,7 @@ def _get_admin_password() -> str:
     return ""  # empty = force setup on first access
 
 
-def _find_assistant_env_for_auth() -> Optional[Path]:
+def _find_assistant_env_for_auth() -> Path | None:
     """Locate assistant.env (duplicated to avoid forward-ref issues)."""
     candidates = [
         Path(os.getenv("ProgramData", "C:\\ProgramData")) / "TinySocs" / "Assistant" / "assistant.env",
@@ -120,7 +120,7 @@ def _validate_session(token: str) -> bool:
 # ---------------------------------------------------------------------------
 import time as _time_mod
 
-_login_attempts: Dict[str, list] = {}  # IP -> [timestamps]
+_login_attempts: dict[str, list] = {}  # IP -> [timestamps]
 _RATE_LIMIT_WINDOW = 60   # seconds
 _RATE_LIMIT_MAX = 5       # max attempts per window
 
@@ -149,7 +149,7 @@ def _record_login_attempt(ip: str) -> None:
 
 
 @dashboard_app.post("/api/auth/login")
-def api_auth_login(request: Request, body: Dict[str, Any] = Body(...)):
+def api_auth_login(request: Request, body: dict[str, Any] = Body(...)):
     """Authenticate with the admin password (SIEM_PASS)."""
     client_ip = request.client.host if request.client else "unknown"
     if _check_rate_limit(client_ip):
@@ -179,7 +179,7 @@ def api_auth_check(authorization: str = Header("")):
 
 
 @dashboard_app.post("/api/auth/change-password")
-def api_auth_change_password(request: Request, body: Dict[str, Any] = Body(...)):
+def api_auth_change_password(request: Request, body: dict[str, Any] = Body(...)):
     """Change the admin password (updates SIEM_PASS in assistant.env and live env)."""
     _verify_dashboard_session(request)
     current_password = body.get("current_password", "")
@@ -210,15 +210,15 @@ def api_auth_change_password(request: Request, body: Dict[str, Any] = Body(...))
 # In-memory chat sessions: session_id -> list of Anthropic message dicts
 # Persisted to a JSON file so conversations survive restarts / page refreshes.
 # ---------------------------------------------------------------------------
-_chat_sessions: Dict[str, List[Dict[str, Any]]] = {}
-_CHAT_SESSION_FILE: Optional[Path] = None
+_chat_sessions: dict[str, list[dict[str, Any]]] = {}
+_CHAT_SESSION_FILE: Path | None = None
 
 # ---------------------------------------------------------------------------
 # Alert state tracking: alert_id -> {status, tags, notes, updated_at, ...}
 # Persisted to a JSON file so state survives restarts.
 # ---------------------------------------------------------------------------
-_alert_states: Dict[str, Dict[str, Any]] = {}
-_ALERT_STATE_FILE: Optional[Path] = None
+_alert_states: dict[str, dict[str, Any]] = {}
+_ALERT_STATE_FILE: Path | None = None
 
 
 def _init_alert_state_file() -> Path:
@@ -321,25 +321,25 @@ _load_assistant_env()
 # ---------------------------------------------------------------------------
 # TLS CA cert resolution (delegated to shared module)
 # ---------------------------------------------------------------------------
-from tinysocs.tls import resolve_ca_cert as _resolve_ca_cert
-
+import asyncio
 
 # ---------------------------------------------------------------------------
 # OpenSearch helper (reuse same pattern as daily_summary)
 # ---------------------------------------------------------------------------
 import time as _time
-import asyncio
 from concurrent.futures import ThreadPoolExecutor
+
+from tinysocs.tls import resolve_ca_cert as _resolve_ca_cert
 
 # Thread pool for running blocking OpenSearch queries without blocking uvicorn
 _os_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="os-query")
 
 # Connection failure cache: avoid hammering a down SIEM with long timeouts
-_siem_fail_cache: Dict[str, Any] = {"error": None, "until": 0.0}
+_siem_fail_cache: dict[str, Any] = {"error": None, "until": 0.0}
 _SIEM_FAIL_CACHE_SECS = 5  # cache a connection failure briefly (local app, recovers fast)
 
 
-def _os_query(index: str, body: Dict[str, Any], size: int = 0) -> Dict[str, Any]:
+def _os_query(index: str, body: dict[str, Any], size: int = 0) -> dict[str, Any]:
     import requests as _req
     try:
         import urllib3 as _u3
@@ -398,7 +398,7 @@ def _os_query(index: str, body: Dict[str, Any], size: int = 0) -> Dict[str, Any]
         raise
 
 
-def _safe_query(index: str, body: Dict[str, Any], size: int = 0) -> Dict[str, Any]:
+def _safe_query(index: str, body: dict[str, Any], size: int = 0) -> dict[str, Any]:
     """Query with graceful error handling (synchronous wrapper)."""
     try:
         return _os_query(index, body, size)
@@ -406,7 +406,7 @@ def _safe_query(index: str, body: Dict[str, Any], size: int = 0) -> Dict[str, An
         return _format_query_error(index, exc)
 
 
-async def _safe_query_async(index: str, body: Dict[str, Any], size: int = 0) -> Dict[str, Any]:
+async def _safe_query_async(index: str, body: dict[str, Any], size: int = 0) -> dict[str, Any]:
     """Query with graceful error handling (async — runs in thread pool)."""
     loop = asyncio.get_event_loop()
     try:
@@ -415,7 +415,7 @@ async def _safe_query_async(index: str, body: Dict[str, Any], size: int = 0) -> 
         return _format_query_error(index, exc)
 
 
-def _format_query_error(index: str, exc: Exception) -> Dict[str, Any]:
+def _format_query_error(index: str, exc: Exception) -> dict[str, Any]:
     """Format a query exception into a friendly error dict."""
     err_type = type(exc).__name__
     err_str = str(exc)
@@ -458,7 +458,7 @@ _DEMO_HOSTS = [
 ]
 
 # Demo alerts (offsets in hours from now)
-_DEMO_ALERTS_TEMPLATE = [
+_DEMO_ALERTS_TEMPLATE: list[dict[str, Any]] = [
     {"offset": -14, "rule_id": "TS-001", "rule_name": "brute_force_logon",
      "severity": "critical", "host": "RECEPTION-PC", "source_ip": "203.0.113.47",
      "description": "8 failed logon attempts from 203.0.113.47 for user jdoe in 5 minutes",
@@ -574,7 +574,6 @@ def _demo_detections_fired(hours: int = 24, limit: int = 30) -> dict:
 
 
 def _demo_fleet_health() -> dict:
-    now_iso = _demo_iso(0)
     hosts = [
         {
             "hostname": "RECEPTION-PC",
@@ -751,7 +750,7 @@ def _demo_version_status() -> dict:
 
 
 def _demo_compliance_report(framework: str = "nist_csf", hours: int = 720) -> dict:
-    frameworks = {
+    frameworks: dict[str, dict[str, Any]] = {
         "nist_csf": {
             "name": "NIST CSF 2.0",
             "controls": [
@@ -929,7 +928,7 @@ def _demo_mitre_coverage() -> dict:
 # ---------------------------------------------------------------------------
 # Phase 18 M4: Per-site demo data generators
 # ---------------------------------------------------------------------------
-_DEMO_SITE_HOSTS = {
+_DEMO_SITE_HOSTS: dict[str, list[dict[str, Any]]] = {
     "head-office": [
         {"hostname": "RECEPTION-PC", "role": "workstation", "events": 12400, "uptime": "3d 8h 15m"},
         {"hostname": "EXEC-LAPTOP", "role": "workstation", "events": 12180, "uptime": "1d 22h 45m"},
@@ -945,7 +944,7 @@ _DEMO_SITE_HOSTS = {
     ],
 }
 
-_DEMO_SITE_ALERTS = {
+_DEMO_SITE_ALERTS: dict[str, dict[str, Any]] = {
     "head-office": {
         "severity": {"critical": 2, "high": 5, "medium": 4, "low": 3},
         "top_rules": [
@@ -1085,8 +1084,7 @@ def _demo_site_alerts_summary(site_id: str, hours: int = 24) -> dict:
         return {"error": f"Unknown site: {site_id}"}
     sev = site["severity"]
     total = sum(sev.values())
-    hosts = _DEMO_SITE_HOSTS.get(site_id, [])
-    host_counts = {}
+    host_counts: dict[str, int] = {}
     for a in site.get("alerts_detail", []):
         host_counts[a["host"]] = host_counts.get(a["host"], 0) + 1
     return {
@@ -1149,7 +1147,7 @@ def _demo_site_fleet_health(site_id: str) -> dict:
         return {"error": f"Unknown site: {site_id}"}
     site_alerts = _DEMO_SITE_ALERTS.get(site_id, {})
     # Count alerts per host
-    host_alert_counts: Dict[str, Dict[str, int]] = {}
+    host_alert_counts: dict[str, dict[str, int]] = {}
     for a in site_alerts.get("alerts_detail", []):
         h = a["host"]
         if h not in host_alert_counts:
@@ -1286,7 +1284,7 @@ def _demo_site_host_timeline(site_id: str, hostname: str = "", hours: int = 24) 
 
 def _demo_nodes() -> dict:
     """Synthetic multi-site data for the Sites tab (Phase 18: enriched with operational data)."""
-    nodes = [
+    nodes: list[dict[str, Any]] = [
         {
             "url": "https://acme-node:8081",
             "node_id": "head-office",
@@ -1367,13 +1365,13 @@ def api_local_meta():
 @dashboard_app.get("/api/alerts/timeline")
 async def api_alert_timeline(
     hours: int = Query(24, ge=1, le=720),
-    hostname: Optional[str] = Query(None),
+    hostname: str | None = Query(None),
 ):
     """Alert counts bucketed by hour and severity."""
     if _DEMO_MODE:
         return _demo_alerts_timeline(hours)
     host_filter = _alert_host_filter(hostname)
-    time_filter: Dict[str, Any] = {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}}
+    time_filter: dict[str, Any] = {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}}
     body = {
         "query": {"bool": {"filter": [time_filter] + host_filter}},
         "aggs": {
@@ -1403,7 +1401,7 @@ async def api_alert_timeline(
     if _get_node_urls() and not hostname:
         remote_results = await _fan_out_nodes("alerts/timeline", {"hours": str(hours)})
         # Index local buckets by time for merging
-        bucket_map: Dict[str, Dict[str, Any]] = {b["time"]: b for b in local_buckets}
+        bucket_map: dict[str, dict[str, Any]] = {b["time"]: b for b in local_buckets}
         for rd in remote_results:
             for rb in rd.get("buckets", []):
                 t = rb.get("time", "")
@@ -1428,7 +1426,7 @@ async def api_alert_timeline(
     }
 
 
-def _alert_host_filter(hostname: Optional[str]) -> List[Dict[str, Any]]:
+def _alert_host_filter(hostname: str | None) -> list[dict[str, Any]]:
     """Build filter clauses for alert queries scoped to a hostname."""
     if not hostname:
         return []
@@ -1442,14 +1440,14 @@ def _alert_host_filter(hostname: Optional[str]) -> List[Dict[str, Any]]:
 @dashboard_app.get("/api/alerts/summary")
 async def api_alert_summary(
     hours: int = Query(24, ge=1, le=720),
-    hostname: Optional[str] = Query(None),
+    hostname: str | None = Query(None),
 ):
     """Summary stats: total, by severity, top rules, top hosts."""
     if _DEMO_MODE:
         return _demo_alerts_summary(hours)
     host_filter = _alert_host_filter(hostname)
     # Total + severity
-    time_filter: Dict[str, Any] = {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}}
+    time_filter: dict[str, Any] = {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}}
     body_sev = {
         "query": {"bool": {"filter": [time_filter] + host_filter}},
         "aggs": {"by_severity": {"terms": {"field": "alert.severity", "size": 10}}},
@@ -1524,13 +1522,13 @@ async def api_alert_summary(
 async def api_detections_fired(
     hours: int = Query(24, ge=1, le=720),
     limit: int = Query(30, ge=1, le=200),
-    hostname: Optional[str] = Query(None),
+    hostname: str | None = Query(None),
 ):
     """Fetch individual fired detections with full details."""
     if _DEMO_MODE:
         return _demo_detections_fired(hours, limit)
     host_filter = _alert_host_filter(hostname)
-    time_filter: Dict[str, Any] = {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}}
+    time_filter: dict[str, Any] = {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}}
     body = {
         "query": {"bool": {"filter": [time_filter] + host_filter}},
         "sort": [{"timestamp": {"order": "desc"}}],
@@ -1592,7 +1590,7 @@ async def api_detections_fired(
 
 
 @dashboard_app.post("/api/detections/{alert_id}/status")
-def api_detection_status(alert_id: str, body: Dict[str, Any] = Body(...)):
+def api_detection_status(alert_id: str, body: dict[str, Any] = Body(...)):
     """Update the status of a detection: new, acknowledged, dismissed."""
     _init_alert_state_file()
     status = body.get("status", "")
@@ -1608,7 +1606,7 @@ def api_detection_status(alert_id: str, body: Dict[str, Any] = Body(...)):
 
 
 @dashboard_app.post("/api/detections/{alert_id}/tags")
-def api_detection_tags(alert_id: str, body: Dict[str, Any] = Body(...)):
+def api_detection_tags(alert_id: str, body: dict[str, Any] = Body(...)):
     """Set tags on a detection. Body: {"tags": ["investigating", "false-positive"]}"""
     _init_alert_state_file()
     tags = body.get("tags", [])
@@ -1629,10 +1627,10 @@ def api_detection_tags(alert_id: str, body: Dict[str, Any] = Body(...)):
 # installer; the repo copy is the dev fallback. Missing file is non-fatal —
 # the UI falls back to technical rule names.
 # ---------------------------------------------------------------------------
-_rule_docs_cache: Optional[Dict[str, Any]] = None
+_rule_docs_cache: dict[str, Any] | None = None
 
 
-def _load_rule_docs() -> Dict[str, Any]:
+def _load_rule_docs() -> dict[str, Any]:
     global _rule_docs_cache
     if _rule_docs_cache is not None:
         return _rule_docs_cache
@@ -1684,7 +1682,7 @@ async def api_status_headline(hours: int = Query(24, ge=1, le=720)):
             "window_hours": hours,
         }
 
-    time_filter: Dict[str, Any] = {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}}
+    time_filter: dict[str, Any] = {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}}
     sev_filter = {"terms": {"alert.severity": ["high", "critical", "HIGH", "CRITICAL"]}}
     alert_body = {
         "query": {"bool": {"filter": [time_filter, sev_filter]}},
@@ -1718,7 +1716,7 @@ async def api_status_headline(hours: int = Query(24, ge=1, le=720)):
 
     # Unresolved high/critical alerts (status "new"; acknowledged means someone is on it)
     _init_alert_state_file()
-    unresolved: Dict[str, int] = {}
+    unresolved: dict[str, int] = {}
     for h in alert_resp.get("hits", {}).get("hits", []):
         doc_id = h.get("_id", "")
         if _alert_states.get(doc_id, {}).get("status", "new") != "new":
@@ -1728,7 +1726,7 @@ async def api_status_headline(hours: int = Query(24, ge=1, le=720)):
     unresolved_total = sum(unresolved.values())
 
     # Host reporting status: silent = no events in the last _SILENT_HOST_HOURS
-    hosts_silent: List[str] = []
+    hosts_silent: list[str] = []
     hosts_total = 0
     now = datetime.now(timezone.utc)
     for b in fleet_resp.get("aggregations", {}).get("by_host", {}).get("buckets", []):
@@ -1779,7 +1777,7 @@ async def api_status_headline(hours: int = Query(24, ge=1, le=720)):
 
 
 @dashboard_app.post("/api/alerts/purge")
-def api_alerts_purge(body: Dict[str, Any] = Body(...)):
+def api_alerts_purge(body: dict[str, Any] = Body(...)):
     """Delete alerts older than the specified number of days from OpenSearch.
 
     Also purges corresponding alert states from the local state file.
@@ -1845,7 +1843,7 @@ def api_alerts_retention():
     retention_days = int(os.getenv("ALERT_RETENTION_DAYS", "90"))
     _init_alert_state_file()
     total_states = len(_alert_states)
-    by_status = {}
+    by_status: dict[str, int] = {}
     for v in _alert_states.values():
         s = v.get("status", "new")
         by_status[s] = by_status.get(s, 0) + 1
@@ -1946,8 +1944,9 @@ async def api_purge_logs(request: Request):
     deleted_custom = 0
     deleted_indices = []
     try:
-        from tinysocs.tls import get_opensearch_session
         import datetime as _dt
+
+        from tinysocs.tls import get_opensearch_session
 
         session = get_opensearch_session()
         siem_url = os.getenv("SIEM_URL", "https://localhost:9201").rstrip("/")
@@ -2034,11 +2033,12 @@ async def api_storage_purge_alias(request: Request):
 
 def _human_bytes(b: int) -> str:
     """Format byte count as human-readable string."""
+    size: float = b
     for unit in ("B", "KB", "MB", "GB", "TB"):
-        if abs(b) < 1024:
-            return f"{b:.1f} {unit}" if unit != "B" else f"{b} {unit}"
-        b /= 1024
-    return f"{b:.1f} PB"
+        if abs(size) < 1024:
+            return f"{size:.1f} {unit}" if unit != "B" else f"{b} {unit}"
+        size /= 1024
+    return f"{size:.1f} PB"
 
 
 # ---------------------------------------------------------------------------
@@ -2051,7 +2051,7 @@ async def api_diagnostics_health(request: Request):
     _verify_dashboard_session(request)
     import time as _time
 
-    result = {
+    result: dict[str, Any] = {
         "opensearch": {"status": "unknown", "error": None},
         "nodes": [],
         "disk": {"error": None},
@@ -2339,7 +2339,7 @@ async def api_storage_stats():
         )
         cluster_status = health_resp.json().get("status", "unknown") if health_resp.status_code == 200 else "unknown"
 
-        result = {
+        result: dict[str, Any] = {
             "indices": {
                 "winlog": {
                     "doc_count": winlog_docs, "size_bytes": winlog_bytes,
@@ -2545,6 +2545,7 @@ async def api_emergency_purge(request: Request):
     if result.get("ok") and result.get("deleted_indices"):
         try:
             from datetime import datetime, timezone
+
             from tinysocs.tls import get_opensearch_session
 
             siem_url = os.getenv("SIEM_URL", "https://localhost:9201").rstrip("/")
@@ -2582,8 +2583,8 @@ async def api_emergency_purge(request: Request):
 # ---------------------------------------------------------------------------
 # Alert Rules management — custom rules stored as JSON, built-in rules read from YAML
 # ---------------------------------------------------------------------------
-_custom_rules: List[Dict[str, Any]] = []
-_CUSTOM_RULES_FILE: Optional[Path] = None
+_custom_rules: list[dict[str, Any]] = []
+_CUSTOM_RULES_FILE: Path | None = None
 
 _RULE_REQUIRED_FIELDS = {"id", "description", "kql", "severity"}
 _RULE_ALL_FIELDS = {
@@ -2635,7 +2636,7 @@ def _save_custom_rules() -> None:
         pass
 
 
-def _validate_kql(kql: str, index: str = "tinysocs-winlog-*") -> Dict[str, Any]:
+def _validate_kql(kql: str, index: str = "tinysocs-winlog-*") -> dict[str, Any]:
     """Test a KQL query against OpenSearch.
 
     Returns {"valid": True/False, "error": str|None, "hits": int, "warning": str|None}.
@@ -2659,11 +2660,12 @@ def _validate_kql(kql: str, index: str = "tinysocs-winlog-*") -> Dict[str, Any]:
         return {"valid": False, "error": str(exc), "hits": 0, "warning": None}
 
 
-def _load_builtin_rules() -> List[Dict[str, Any]]:
+def _load_builtin_rules() -> list[dict[str, Any]]:
     """Load built-in rules from the packaged rules.yaml (read-only)."""
     try:
-        import yaml
         from importlib import resources as _res
+
+        import yaml
         pkg = "tinysocs.agent.detections"
         text = _res.files(pkg).joinpath("rules.yaml").read_text(encoding="utf-8")
         raw = yaml.safe_load(text) or []
@@ -2689,7 +2691,7 @@ def api_rules_list():
 
 
 @dashboard_app.post("/api/rules")
-def api_rules_create(body: Dict[str, Any] = Body(...)):
+def api_rules_create(body: dict[str, Any] = Body(...)):
     """Create a single custom detection rule."""
     _init_custom_rules_file()
     rule = body.get("rule", body)
@@ -2741,14 +2743,14 @@ def api_rules_create(body: Dict[str, Any] = Body(...)):
     }
     _custom_rules.append(clean)
     _save_custom_rules()
-    result: Dict[str, Any] = {"ok": True, "rule": clean}
+    result: dict[str, Any] = {"ok": True, "rule": clean}
     if kql_warning:
         result["warning"] = kql_warning
     return result
 
 
 @dashboard_app.post("/api/rules/upload")
-def api_rules_upload(body: Dict[str, Any] = Body(...)):
+def api_rules_upload(body: dict[str, Any] = Body(...)):
     """Upload a rule pack (YAML or JSON content as a string).
 
     Body: {"content": "<yaml or json string>", "format": "yaml"|"json"}
@@ -2813,7 +2815,7 @@ def api_rules_upload(body: Dict[str, Any] = Body(...)):
 
 
 @dashboard_app.put("/api/rules/{rule_id}")
-def api_rules_update(rule_id: str, body: Dict[str, Any] = Body(...)):
+def api_rules_update(rule_id: str, body: dict[str, Any] = Body(...)):
     """Update a custom rule (cannot update built-in rules)."""
     _init_custom_rules_file()
     for i, r in enumerate(_custom_rules):
@@ -2863,7 +2865,7 @@ def api_rules_toggle(rule_id: str):
 
 
 @dashboard_app.post("/api/rules/validate")
-def api_rules_validate(body: Dict[str, Any] = Body(...)):
+def api_rules_validate(body: dict[str, Any] = Body(...)):
     """Validate a KQL query against OpenSearch without saving anything."""
     kql = str(body.get("kql", "")).strip()
     index = str(body.get("index", "tinysocs-winlog-*")).strip()
@@ -2948,7 +2950,7 @@ async def api_host_timeline(
     return {"hostname": hostname, "hours": hours, "interval": interval, "buckets": buckets, "channels": sorted(all_channels), "error": resp.get("error")}
 
 
-def _llm_is_configured() -> Dict[str, Any]:
+def _llm_is_configured() -> dict[str, Any]:
     """Check whether an LLM backend is configured and return status info."""
     mode = os.getenv("LLM_MODE", "openai").strip().lower()
     if mode in ("offline", "disabled", "none", ""):
@@ -2975,7 +2977,7 @@ def api_llm_status():
 
 
 @dashboard_app.post("/api/detections/summarize")
-def api_detection_summarize(body: Dict[str, Any] = Body(...)):
+def api_detection_summarize(body: dict[str, Any] = Body(...)):
     """Generate an LLM summary for a specific fired detection."""
     alert_data = body.get("alert", {})
     if not alert_data:
@@ -3017,7 +3019,7 @@ def api_detection_summarize(body: Dict[str, Any] = Body(...)):
 
     # Use a unique ephemeral session to avoid conflicts
     session_id = f"sum-{uuid.uuid4().hex[:8]}"
-    ephemeral_messages: List[Dict[str, Any]] = []
+    ephemeral_messages: list[dict[str, Any]] = []
 
     try:
         if llm_mode in ("anthropic", "claude"):
@@ -3076,8 +3078,8 @@ async def api_fleet_health():
         _safe_query_async("tinysocs-winlog-*", body),
         _safe_query_async("tinysocs-alerts-*", alert_body),
     )
-    alert_counts: Dict[str, int] = {}
-    alert_severities: Dict[str, Dict[str, int]] = {}
+    alert_counts: dict[str, int] = {}
+    alert_severities: dict[str, dict[str, int]] = {}
     for ab in alert_resp.get("aggregations", {}).get("by_host", {}).get("buckets", []):
         hname = ab["key"]
         alert_counts[hname] = ab["doc_count"]
@@ -3087,7 +3089,7 @@ async def api_fleet_health():
         }
 
     # Get recent detection names per host from the raw alert hits
-    host_detections: Dict[str, List[str]] = {}
+    host_detections: dict[str, list[str]] = {}
     for h in alert_resp.get("hits", {}).get("hits", []):
         src = h.get("_source", {})
         hname = src.get("source", {}).get("computer_name", "")
@@ -3096,9 +3098,9 @@ async def api_fleet_health():
             host_detections.setdefault(hname, []).append(rule)
 
     # Query heartbeat index for agent metadata (version, uptime, queue)
-    heartbeat_data: Dict[str, Dict[str, Any]] = {}
+    heartbeat_data: dict[str, dict[str, Any]] = {}
     try:
-        hb_body: Dict[str, Any] = {"query": {"match_all": {}}, "size": 50}
+        hb_body: dict[str, Any] = {"query": {"match_all": {}}, "size": 50}
         hb_resp = await _safe_query_async("tinysocs-heartbeat", hb_body, size=50)
         for h in hb_resp.get("hits", {}).get("hits", []):
             src = h.get("_source", {})
@@ -3214,12 +3216,12 @@ async def api_fleet_host_detail(hostname: str = Query(...)):
 # ---------------------------------------------------------------------------
 # Node / Sites API (Phase 17 M1 + Phase 18 M1 — Federation visibility)
 # ---------------------------------------------------------------------------
-_NODES_LIST: Optional[List[str]] = None
-_node_id_to_url: Dict[str, str] = {}  # Phase 18 M3: cache for proxy lookups
-_url_to_node_id: Dict[str, str] = {}  # Reverse mapping: persist node_id for unreachable sites
+_NODES_LIST: list[str] | None = None
+_node_id_to_url: dict[str, str] = {}  # Phase 18 M3: cache for proxy lookups
+_url_to_node_id: dict[str, str] = {}  # Reverse mapping: persist node_id for unreachable sites
 
 
-def _get_node_urls() -> List[str]:
+def _get_node_urls() -> list[str]:
     global _NODES_LIST
     if _NODES_LIST is None:
         raw = os.getenv("TINYSOCS_NODES", "").strip()
@@ -3227,7 +3229,7 @@ def _get_node_urls() -> List[str]:
     return _NODES_LIST
 
 
-async def _fetch_node_json(client: Any, url: str, path: str) -> Optional[Dict[str, Any]]:
+async def _fetch_node_json(client: Any, url: str, path: str) -> dict[str, Any] | None:
     """Fetch JSON from a node endpoint, returning None on any failure."""
     try:
         resp = await client.get(f"{url.rstrip('/')}{path}")
@@ -3237,7 +3239,7 @@ async def _fetch_node_json(client: Any, url: str, path: str) -> Optional[Dict[st
         return None
 
 
-async def _fan_out_nodes(path: str, params: Optional[Dict[str, str]] = None, timeout: float = 8.0) -> List[Dict[str, Any]]:
+async def _fan_out_nodes(path: str, params: dict[str, str] | None = None, timeout: float = 8.0) -> list[dict[str, Any]]:
     """Query *all* configured remote nodes in parallel, returning a list of non-None responses.
 
     Used by dashboard endpoints in the "All Sites" view to aggregate data
@@ -3250,7 +3252,7 @@ async def _fan_out_nodes(path: str, params: Optional[Dict[str, str]] = None, tim
     import httpx
     qs = "&".join(f"{k}={v}" for k, v in (params or {}).items())
     suffix = f"?{qs}" if qs else ""
-    results: List[Dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
     try:
         async with httpx.AsyncClient(verify=False, timeout=timeout) as client:
             coros = [
@@ -3277,9 +3279,15 @@ async def api_nodes():
         return {"nodes": [], "aggregate": None}
 
     import asyncio as _aio
+
     import httpx
-    from tinysocs.federation_certs import make_pinning_ssl_context, load_pinned_certs, get_cert_status
-    nodes_out: List[Dict[str, Any]] = []
+
+    from tinysocs.federation_certs import (
+        get_cert_status,
+        load_pinned_certs,
+        make_pinning_ssl_context,
+    )
+    nodes_out: list[dict[str, Any]] = []
     _pinned = load_pinned_certs()
 
     # Build per-URL SSL contexts from pinned certs for federation security
@@ -3291,7 +3299,7 @@ async def api_nodes():
     # Pre-check pinned cert fingerprints before making data requests.
     # This prevents MITM attacks on federation connections.
     from tinysocs.federation_certs import verify_site_cert
-    _cert_statuses: Dict[str, str] = {}
+    _cert_statuses: dict[str, str] = {}
     _blocked_urls: set = set()
     for url in node_urls:
         pin_status = get_cert_status(url) if url in _pinned else "unpinned"
@@ -3303,7 +3311,7 @@ async def api_nodes():
 
     async with httpx.AsyncClient(verify=False, timeout=5.0) as client:
         for url in node_urls:
-            node_info: Dict[str, Any] = {
+            node_info: dict[str, Any] = {
                 "url": url, "node_id": "", "version": "", "status": "unreachable",
                 "ledger_sequence": 0, "ledger_head": "", "last_anchor_at": "",
                 "last_anchor_items": 0, "reachable": False, "error": None,
@@ -3445,7 +3453,7 @@ async def api_nodes():
             nid = node_info["node_id"]
             if nid:
                 try:
-                    anchor_body: Dict[str, Any] = {
+                    anchor_body: dict[str, Any] = {
                         "query": {"term": {"node_id": nid}},
                         "sort": [{"anchored_at": {"order": "desc"}}],
                     }
@@ -3509,7 +3517,7 @@ async def api_nodes():
 # ---------------------------------------------------------------------------
 
 @dashboard_app.post("/api/nodes/add")
-def api_nodes_add(body: Dict[str, Any] = Body(...)):
+def api_nodes_add(body: dict[str, Any] = Body(...)):
     """Add a remote site node URL to the federation."""
     global _NODES_LIST
 
@@ -3556,7 +3564,7 @@ def api_nodes_add(body: Dict[str, Any] = Body(...)):
 
 
 @dashboard_app.post("/api/nodes/remove")
-def api_nodes_remove(body: Dict[str, Any] = Body(...)):
+def api_nodes_remove(body: dict[str, Any] = Body(...)):
     """Remove a remote site node URL from the federation."""
     global _NODES_LIST
 
@@ -3595,7 +3603,7 @@ def api_nodes_remove(body: Dict[str, Any] = Body(...)):
 # ---------------------------------------------------------------------------
 
 _PENDING_FILE = Path(os.getenv("ProgramData", os.getenv("PROGRAMDATA", "C:\\ProgramData"))) / "TinySocs" / "Assistant" / "pending_sites.json"
-_HUB_SHARED_SECRET: Optional[str] = None
+_HUB_SHARED_SECRET: str | None = None
 
 
 def _get_hub_secret() -> str:
@@ -3657,7 +3665,7 @@ def _save_pending_sites(data: dict) -> None:
 
 
 @dashboard_app.post("/api/nodes/register")
-async def api_nodes_register(request: Request, body: Dict[str, Any] = Body(...)):
+async def api_nodes_register(request: Request, body: dict[str, Any] = Body(...)):
     """Receive auto-registration from a Site node (HMAC-authenticated)."""
     hmac_ok, hmac_reason = _verify_registration_hmac(request)
     if not hmac_ok:
@@ -3740,7 +3748,7 @@ async def api_nodes_pending(request: Request):
 
 
 @dashboard_app.post("/api/nodes/approve")
-async def api_nodes_approve(body: Dict[str, Any] = Body(...)):
+async def api_nodes_approve(body: dict[str, Any] = Body(...)):
     """Approve a pending site — adds it to TINYSOCS_NODES."""
     global _NODES_LIST
     token = body.get("token", "")
@@ -3797,7 +3805,7 @@ async def api_nodes_approve(body: Dict[str, Any] = Body(...)):
 
 
 @dashboard_app.post("/api/nodes/reject")
-async def api_nodes_reject(body: Dict[str, Any] = Body(...)):
+async def api_nodes_reject(body: dict[str, Any] = Body(...)):
     """Reject a pending site registration."""
     token = body.get("token", "")
     if not _validate_session(token):
@@ -3871,7 +3879,7 @@ async def api_site_proxy(node_id: str, path: str, request: Request):
         return JSONResponse(status_code=404, content={"error": f"Unknown site: {node_id}"})
 
     # SECURITY: check pinned cert before proxying
-    from tinysocs.federation_certs import verify_site_cert, load_pinned_certs as _lpc
+    from tinysocs.federation_certs import verify_site_cert
     _pin_check = verify_site_cert(url)
     if _pin_check:
         print(f"[SECURITY] {_pin_check}", flush=True)
@@ -3943,8 +3951,8 @@ async def api_version_status():
     if _DEMO_MODE:
         return _demo_version_status()
     from tinysocs.reporting.version_check import (
-        load_version_manifest,
         check_fleet_versions,
+        load_version_manifest,
     )
     manifest = load_version_manifest()
     # Fetch fleet health for version comparison
@@ -3975,7 +3983,9 @@ async def api_mitre_coverage():
         return _demo_mitre_coverage()
     try:
         from tinysocs.reporting.mitre_coverage import (
-            load_all_rules, extract_mitre_annotations, calculate_coverage,
+            calculate_coverage,
+            extract_mitre_annotations,
+            load_all_rules,
         )
         rules = load_all_rules()
         annotations = extract_mitre_annotations(rules)
@@ -4013,8 +4023,10 @@ async def api_mitre_navigator_layer():
         )
     try:
         from tinysocs.reporting.mitre_coverage import (
-            load_all_rules, extract_mitre_annotations, calculate_coverage,
+            calculate_coverage,
+            extract_mitre_annotations,
             generate_navigator_layer,
+            load_all_rules,
         )
         rules = load_all_rules()
         annotations = extract_mitre_annotations(rules)
@@ -4044,7 +4056,7 @@ def api_indices():
     passwd = os.getenv("SIEM_PASS", "")
     verify = _resolve_ca_cert()
 
-    indices_info: List[Dict[str, Any]] = []
+    indices_info: list[dict[str, Any]] = []
     # Known index patterns
     known_patterns = ["tinysocs-winlog-*", "tinysocs-alerts-*"]
 
@@ -4059,7 +4071,7 @@ def api_indices():
             if resp.status_code == 200:
                 mapping_data = resp.json()
                 # Collect all field names across concrete indices
-                all_fields: Dict[str, str] = {}
+                all_fields: dict[str, str] = {}
                 for idx_name, idx_data in mapping_data.items():
                     props = idx_data.get("mappings", {}).get("properties", {})
                     _flatten_mapping(props, "", all_fields)
@@ -4091,7 +4103,7 @@ def api_indices():
 
 
 def _flatten_mapping(
-    properties: Dict[str, Any], prefix: str, result: Dict[str, str]
+    properties: dict[str, Any], prefix: str, result: dict[str, str]
 ) -> None:
     """Recursively flatten an OpenSearch mapping into dotted field names."""
     for field_name, field_meta in properties.items():
@@ -4124,8 +4136,8 @@ async def api_events_recent(
     ts_field = _chat_ts_field(index)
 
     # Build query: combine text filter + optional time range
-    text_q: Dict[str, Any] = {"match_all": {}} if not q else _chat_build_query(q, index)
-    range_q: Optional[Dict[str, Any]] = None
+    text_q: dict[str, Any] = {"match_all": {}} if not q else _chat_build_query(q, index)
+    range_q: dict[str, Any] | None = None
     if time_range:
         tr_map = {"5m": "now-5m", "15m": "now-15m", "1h": "now-1h",
                   "6h": "now-6h", "24h": "now-24h", "7d": "now-7d"}
@@ -4140,7 +4152,7 @@ async def api_events_recent(
     else:
         query = text_q
 
-    body: Dict[str, Any] = {
+    body: dict[str, Any] = {
         "query": query,
         "sort": [{ts_field: {"order": "desc"}}],
     }
@@ -4361,7 +4373,7 @@ def _chat_index_allowed(idx: str) -> bool:
     return any(fnmatch(idx or "", pat) for pat in _CHAT_ALLOW_INDICES)
 
 
-def _privacy_mask_result(result: Dict[str, Any]) -> Dict[str, Any]:
+def _privacy_mask_result(result: dict[str, Any]) -> dict[str, Any]:
     """Apply privacy masking to tool results before sending to external LLM."""
     try:
         from tinysocs.agent.privacy import coarse_mask
@@ -4371,7 +4383,7 @@ def _privacy_mask_result(result: Dict[str, Any]) -> Dict[str, Any]:
         return result
 
 
-def _chat_call_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+def _chat_call_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
     """Execute a tool call using the dashboard's own SIEM connection."""
     args = dict(args or {})
     default_index = _CHAT_ALLOW_INDICES[0]
@@ -4410,7 +4422,7 @@ def _chat_call_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         return {"error": str(e), "tool": name}
 
 
-def _chat_call_tool_masked(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+def _chat_call_tool_masked(name: str, args: dict[str, Any]) -> dict[str, Any]:
     """Execute a tool and apply privacy masking to the result."""
     result = _chat_call_tool(name, args)
     return _privacy_mask_result(result)
@@ -4424,7 +4436,7 @@ def _chat_ts_field(index: str) -> str:
     return "timestamp" if "alerts" in (index or "") else "@timestamp"
 
 
-def _chat_build_query(kql: str, index: str = "") -> Dict[str, Any]:
+def _chat_build_query(kql: str, index: str = "") -> dict[str, Any]:
     """Convert a KQL-like string into an OpenSearch DSL query.
 
     Handles:
@@ -4439,23 +4451,23 @@ def _chat_build_query(kql: str, index: str = "") -> Dict[str, Any]:
     ts_field = _chat_ts_field(index)
 
     # Fix common field-name mistakes from LLMs — expand short names to nested paths.
-    _ALERT_ALIASES = {
+    alert_aliases = {
         "rule_id:": "alert.rule_id:",
         "rule_name:": "alert.rule_name:",
         "severity:": "alert.severity:",
         "description:": "alert.description:",
         "event_count:": "alert.event_count:",
     }
-    _WINLOG_ALIASES = {
+    winlog_aliases = {
         "event_id:": "winlog.event_id:",
         "channel:": "winlog.channel:",
     }
     # computer_name alias depends on the index
     is_alert_idx = "alert" in index.lower() if index else False
     if is_alert_idx:
-        aliases = {**_ALERT_ALIASES, "computer_name:": "source.computer_name:"}
+        aliases = {**alert_aliases, "computer_name:": "source.computer_name:"}
     else:
-        aliases = {**_WINLOG_ALIASES, "computer_name:": "winlog.computer_name:"}
+        aliases = {**winlog_aliases, "computer_name:": "winlog.computer_name:"}
     for short, full in aliases.items():
         # Only replace bare short names that aren't already prefixed
         # e.g. replace "rule_id:" but not "alert.rule_id:"
@@ -4477,7 +4489,7 @@ def _chat_build_query(kql: str, index: str = "") -> Dict[str, Any]:
         re.IGNORECASE,
     )
 
-    range_filters: Dict[str, Any] = {}
+    range_filters: dict[str, Any] = {}
     remaining_kql = kql
 
     for m in ts_clause_re.finditer(kql):
@@ -4519,7 +4531,7 @@ def _chat_build_query(kql: str, index: str = "") -> Dict[str, Any]:
     return {"bool": {"must": parts}}
 
 
-def _chat_tool_search_kql(args: Dict[str, Any]) -> Dict[str, Any]:
+def _chat_tool_search_kql(args: dict[str, Any]) -> dict[str, Any]:
     """Search SIEM using the dashboard's requests-based _safe_query()."""
     index = args.get("index", "tinysocs-winlog-*")
     kql = args.get("kql", "*")
@@ -4543,7 +4555,7 @@ def _chat_tool_search_kql(args: Dict[str, Any]) -> Dict[str, Any]:
 
     if size == 0:
         # Count-only query
-        body: Dict[str, Any] = {"query": query, "track_total_hits": True}
+        body: dict[str, Any] = {"query": query, "track_total_hits": True}
         resp = _safe_query(index, body, size=0)
         if resp.get("error"):
             return {"ok": False, "error": resp["error"], "index": index}
@@ -4563,7 +4575,7 @@ def _chat_tool_search_kql(args: Dict[str, Any]) -> Dict[str, Any]:
     return {"ok": True, "hits": docs[:size], "count": len(docs), "total": total, "index": index}
 
 
-def _chat_tool_aggregate(args: Dict[str, Any]) -> Dict[str, Any]:
+def _chat_tool_aggregate(args: dict[str, Any]) -> dict[str, Any]:
     """Run aggregation using the dashboard's requests-based connection."""
     index = args.get("index", "tinysocs-winlog-*")
     dsl = args.get("dsl") or {}
@@ -4652,7 +4664,7 @@ def api_chat_history(session_id: str = Query(...)):
 # ---------------------------------------------------------------------------
 # Product knowledge injection (cached at module level)
 # ---------------------------------------------------------------------------
-_product_knowledge_cache: Optional[str] = None
+_product_knowledge_cache: str | None = None
 _product_knowledge_loaded = False
 
 
@@ -4688,7 +4700,7 @@ def _chat_get_environment_context() -> str:
     parts: list[str] = []
     try:
         # Get known hostnames from alerts (last 24h)
-        host_body: Dict[str, Any] = {
+        host_body: dict[str, Any] = {
             "query": {"range": {"timestamp": {"gte": "now-24h", "lte": "now"}}},
             "aggs": {
                 "hosts": {"terms": {"field": "source.computer_name.keyword", "size": 20}},
@@ -4717,7 +4729,7 @@ def _chat_get_environment_context() -> str:
                 parts.append(f"Alerts in last 24h: {alert_count}{sev_str}")
 
         # Get known hostnames from winlog
-        winlog_body: Dict[str, Any] = {
+        winlog_body: dict[str, Any] = {
             "query": {"range": {"@timestamp": {"gte": "now-24h", "lte": "now"}}},
             "aggs": {"hosts": {"terms": {"field": "winlog.computer_name", "size": 20}}},
         }
@@ -4764,7 +4776,7 @@ def api_llm_mode():
 
 
 @dashboard_app.post("/api/chat")
-def api_chat(body: Dict[str, Any] = Body(...)):
+def api_chat(body: dict[str, Any] = Body(...)):
     """Chat with the TinySocs assistant (multi-LLM with tool-calling).
 
     Routes to Anthropic Claude or OpenAI based on LLM_MODE env var.
@@ -4879,17 +4891,17 @@ def api_chat(body: Dict[str, Any] = Body(...)):
 def _chat_anthropic(
     user_message: str,
     session_id: str,
-    messages: List[Dict[str, Any]],
+    messages: list[dict[str, Any]],
     system_text: str,
     call_tool,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Anthropic Claude chat with tool-calling."""
     try:
         import anthropic
     except ImportError as exc:
         return {"error": f"Chat unavailable (anthropic): {exc}", "session_id": session_id}
 
-    _TOOLS = _CHAT_TOOLS_ANTHROPIC
+    tools_schema = _CHAT_TOOLS_ANTHROPIC
 
     # Read API key and model fresh from env (use `or` so empty string falls back)
     api_key = os.getenv("ANTHROPIC_API_KEY", "")
@@ -4908,7 +4920,7 @@ def _chat_anthropic(
 
     messages.append({"role": "user", "content": user_message})
     client = anthropic.Anthropic(api_key=api_key)
-    tool_calls_made: List[Dict[str, Any]] = []
+    tool_calls_made: list[dict[str, Any]] = []
 
     try:
         for _round in range(6):  # max 3 tool rounds + 1 final
@@ -4916,8 +4928,8 @@ def _chat_anthropic(
                 model=model,
                 max_tokens=2048,
                 system=system_text,
-                messages=messages,
-                tools=_TOOLS,
+                messages=messages,  # type: ignore[arg-type]
+                tools=tools_schema,  # type: ignore[arg-type]
                 temperature=0.2,
             )
 
@@ -4971,28 +4983,28 @@ def _chat_anthropic(
 def _chat_openai(
     user_message: str,
     session_id: str,
-    messages: List[Dict[str, Any]],
+    messages: list[dict[str, Any]],
     system_text: str,
     call_tool,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """OpenAI chat with tool-calling (using httpx like the summarizer)."""
     try:
         import httpx
     except ImportError as exc:
         return {"error": f"Chat unavailable (openai): {exc}", "session_id": session_id}
 
-    _OAI_TOOLS = _CHAT_TOOLS_OPENAI
+    oai_tools = _CHAT_TOOLS_OPENAI
 
     # Read API key and model fresh from env (use `or` so empty string falls back)
-    _OAI_KEY = os.getenv("OPENAI_API_KEY", "")
-    _OAI_MODEL = os.getenv("OPENAI_MODEL", "").strip()
-    if not _OAI_MODEL:
+    oai_key = os.getenv("OPENAI_API_KEY", "")
+    oai_model = os.getenv("OPENAI_MODEL", "").strip()
+    if not oai_model:
         return {
             "error": "No OpenAI model configured. Set OPENAI_MODEL in Settings (e.g. gpt-4o, gpt-4o-mini).",
             "session_id": session_id,
         }
 
-    if not _OAI_KEY:
+    if not oai_key:
         return {
             "error": "OPENAI_API_KEY not set. Configure it in Settings (gear icon).",
             "session_id": session_id,
@@ -5012,16 +5024,16 @@ def _chat_openai(
     oai_messages.append({"role": "user", "content": user_message})
     messages.append({"role": "user", "content": user_message})
 
-    headers = {"Authorization": f"Bearer {_OAI_KEY}", "Content-Type": "application/json"}
-    tool_calls_made: List[Dict[str, Any]] = []
+    headers = {"Authorization": f"Bearer {oai_key}", "Content-Type": "application/json"}
+    tool_calls_made: list[dict[str, Any]] = []
 
     try:
         with httpx.Client(timeout=90) as http:
             for _round in range(6):
-                body_req: Dict[str, Any] = {
-                    "model": _OAI_MODEL,
+                body_req: dict[str, Any] = {
+                    "model": oai_model,
                     "messages": oai_messages,
-                    "tools": _OAI_TOOLS,
+                    "tools": oai_tools,
                     "tool_choice": "auto",
                     "temperature": 0.2,
                 }
@@ -5094,9 +5106,9 @@ def _chat_openai(
 def _chat_ollama(
     user_message: str,
     session_id: str,
-    messages: List[Dict[str, Any]],
+    messages: list[dict[str, Any]],
     system_text: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Ollama chat (no tool-calling, simple request-response)."""
     try:
         import httpx
@@ -5184,7 +5196,7 @@ _SECRET_KEYS = {
 }
 
 
-def _find_assistant_env() -> Optional[Path]:
+def _find_assistant_env() -> Path | None:
     """Locate the assistant.env file."""
     candidates = [
         Path(os.getenv("ProgramData", "C:\\ProgramData")) / "TinySocs" / "Assistant" / "assistant.env",
@@ -5197,9 +5209,9 @@ def _find_assistant_env() -> Optional[Path]:
     return None
 
 
-def _read_env_file(path: Path) -> Dict[str, str]:
+def _read_env_file(path: Path) -> dict[str, str]:
     """Parse a .env file into a dict."""
-    result: Dict[str, str] = {}
+    result: dict[str, str] = {}
     try:
         for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
             line = line.strip()
@@ -5212,7 +5224,7 @@ def _read_env_file(path: Path) -> Dict[str, str]:
     return result
 
 
-def _write_env_file(path: Path, updates: Dict[str, str]) -> None:
+def _write_env_file(path: Path, updates: dict[str, str]) -> None:
     """Update specific keys in an .env file, preserving comments and order."""
     lines = []
     seen_keys: set = set()
@@ -5243,7 +5255,7 @@ def _write_env_file(path: Path, updates: Dict[str, str]) -> None:
 # ---------------------------------------------------------------------------
 # agent-config.yml helpers (email/webhook notification settings for the C# agent)
 # ---------------------------------------------------------------------------
-def _find_agent_config() -> Optional[Path]:
+def _find_agent_config() -> Path | None:
     """Locate the agent-config.yml file used by the C# collector agent."""
     candidates = [
         Path(os.getenv("ProgramData", "C:\\ProgramData")) / "TinySocs" / "Collector" / "agent-config.yml",
@@ -5312,7 +5324,7 @@ def api_notification_settings_get(request: Request):
 
 
 @dashboard_app.post("/api/settings/notifications")
-def api_notification_settings_post(request: Request, body: Dict[str, Any] = Body(...)):
+def api_notification_settings_post(request: Request, body: dict[str, Any] = Body(...)):
     """Update notification settings in agent-config.yml."""
     _verify_dashboard_session(request)
 
@@ -5321,7 +5333,7 @@ def api_notification_settings_post(request: Request, body: Dict[str, Any] = Body
         return JSONResponse(status_code=400, content={"error": "settings must be a dict"})
 
     # Build the notification update
-    updates: Dict[str, Any] = {}
+    updates: dict[str, Any] = {}
     if "webhook_url" in settings:
         updates["webhook_url"] = str(settings["webhook_url"]).strip()
     email_updates = {}
@@ -5371,7 +5383,7 @@ def api_notification_settings_post(request: Request, body: Dict[str, Any] = Body
 
 
 @dashboard_app.post("/api/settings/test-webhook")
-def api_test_webhook(request: Request, body: Dict[str, Any] = Body(...)):
+def api_test_webhook(request: Request, body: dict[str, Any] = Body(...)):
     """Send a test payload to the configured webhook URL."""
     import requests as _req
 
@@ -5413,7 +5425,7 @@ def api_test_webhook(request: Request, body: Dict[str, Any] = Body(...)):
 
 
 @dashboard_app.post("/api/settings/test-email")
-def api_test_email(request: Request, body: Dict[str, Any] = Body(...)):
+def api_test_email(request: Request, body: dict[str, Any] = Body(...)):
     """Send a test email via the configured SMTP settings."""
     import smtplib
     from email.mime.text import MIMEText
@@ -5499,11 +5511,11 @@ def api_settings_get(request: Request):
     _verify_dashboard_session(request)
 
     env_path = _find_assistant_env()
-    file_values: Dict[str, str] = {}
+    file_values: dict[str, str] = {}
     if env_path:
         file_values = _read_env_file(env_path)
 
-    settings: Dict[str, Any] = {}
+    settings: dict[str, Any] = {}
     for key in _SETTINGS_KEYS:
         # Prefer live env var (may differ from file if service hasn't restarted)
         val = os.getenv(key, file_values.get(key, ""))
@@ -5521,7 +5533,7 @@ def api_settings_get(request: Request):
 
 
 @dashboard_app.post("/api/settings")
-def api_settings_post(request: Request, body: Dict[str, Any] = Body(...)):
+def api_settings_post(request: Request, body: dict[str, Any] = Body(...)):
     """Update settings in assistant.env and live environment."""
     _verify_dashboard_session(request)
 
@@ -5530,7 +5542,7 @@ def api_settings_post(request: Request, body: Dict[str, Any] = Body(...)):
         return JSONResponse(status_code=400, content={"error": "settings must be a dict"})
 
     # Filter to allowed keys only, skip masked/unchanged secrets
-    filtered: Dict[str, str] = {}
+    filtered: dict[str, str] = {}
     for k, v in updates.items():
         if k not in _SETTINGS_KEYS:
             continue
@@ -5584,7 +5596,7 @@ def api_password_status():
 
 
 @dashboard_app.post("/api/settings/setup-password")
-def api_setup_password(body: Dict[str, Any] = Body(...)):
+def api_setup_password(body: dict[str, Any] = Body(...)):
     """First-time password setup. Only works when SIEM_PASS is empty/unset."""
     current_pw = _get_admin_password()
     if current_pw:
@@ -5607,7 +5619,7 @@ def api_setup_password(body: Dict[str, Any] = Body(...)):
 
 
 @dashboard_app.post("/api/settings/change-password")
-def api_change_password(request: Request, body: Dict[str, Any] = Body(...)):
+def api_change_password(request: Request, body: dict[str, Any] = Body(...)):
     """Change the dashboard/SIEM password. Requires session + current password."""
     _verify_dashboard_session(request)
     current_pw = _get_admin_password()
@@ -5646,7 +5658,7 @@ def api_diag():
     user = os.getenv("SIEM_USER", "admin")
     passwd = os.getenv("SIEM_PASS", "")
 
-    diag: Dict[str, Any] = {
+    diag: dict[str, Any] = {
         "siem_url": url,
         "siem_user": user,
         "siem_pass_set": bool(passwd and passwd != "admin"),
@@ -5793,8 +5805,8 @@ async def api_threat_intel_status():
     if _DEMO_MODE:
         return _demo_threat_intel_status()
     try:
-        from tinysocs.agent.threat_intel import get_providers
         from tinysocs.agent.threat_cache import ThreatCache
+        from tinysocs.agent.threat_intel import get_providers
         providers = []
         for p in get_providers():
             providers.append({
@@ -5857,8 +5869,8 @@ async def api_threat_intel_enrich(
         return {"ok": True, "enrichment": results}
 
     try:
-        from tinysocs.agent.threat_intel import enrich_ioc, get_available_providers
         from tinysocs.agent.threat_cache import ThreatCache
+        from tinysocs.agent.threat_intel import enrich_ioc, get_available_providers
         providers = get_available_providers()
         if not providers:
             return {"ok": False, "error": "No threat intel providers configured"}
@@ -7201,7 +7213,7 @@ async function loadSites() {
     html += '<strong style="flex:1">' + escapeHtml(n.node_id || n.url) + '</strong>';
     // Certificate pinning badge
     const certSt = n.cert_status || 'unpinned';
-    const isLocalNode = (n.url && /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(n.url)) || (n.node_id && n.node_id === _localNodeId);
+    const isLocalNode = (n.url && /^https?:\\/\\/(localhost|127\\.0\\.0\\.1)(:|\\/|$)/.test(n.url)) || (n.node_id && n.node_id === _localNodeId);
     if (certSt === 'pinned') html += '<span class="cert-badge pinned" title="TLS certificate verified">&#x1f512;</span>';
     else if (certSt === 'mismatch') html += '<span class="cert-badge mismatch" title="SECURITY: Certificate mismatch!">&#x26a0; CERT</span>';
     else if (isLocalNode) html += '<span class="cert-badge local" title="Local node (no pinning needed)">&#x1f512;</span>';

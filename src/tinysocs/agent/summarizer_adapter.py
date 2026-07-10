@@ -6,7 +6,7 @@ import hmac
 import json
 import os
 import re
-from typing import Any, Dict, List
+from typing import Any
 
 # --------- env + defaults ----------
 PRIVACY_MODE = os.getenv("PRIVACY_MODE", "abstract").strip().lower()  # abstract|raw
@@ -65,9 +65,9 @@ def _mask_any(v: Any) -> Any:
         return [_mask_any(x) for x in v]
     return v
 
-def _extract_top_tokens(evidences: List[Dict[str, Any]]) -> List[str]:
+def _extract_top_tokens(evidences: list[dict[str, Any]]) -> list[str]:
     from collections import Counter
-    c = Counter()
+    c: Counter[str] = Counter()
     for e in evidences:
         for k in ("summary", "exemplars"):
             if k not in e:
@@ -93,7 +93,7 @@ def _extract_top_tokens(evidences: List[Dict[str, Any]]) -> List[str]:
 def _fingerprint_exemplar(ex: Any) -> str:
     return _salted_hash(ex, PRIVACY_SALT)
 
-def prepare_payload(evidences: List[Dict[str, Any]], window: str) -> Dict[str, Any]:
+def prepare_payload(evidences: list[dict[str, Any]], window: str) -> dict[str, Any]:
     """
     Returns a dict to send to the summariser LLM.
     In 'abstract' mode: masked fact table (no raw PII or full cmdlines).
@@ -131,7 +131,7 @@ def prepare_payload(evidences: List[Dict[str, Any]], window: str) -> Dict[str, A
         })
 
     tokens = _extract_top_tokens(evidences)
-    by_rule: Dict[str, Dict[str, Any]] = {}
+    by_rule: dict[str, dict[str, Any]] = {}
     for m in minimal:
         key = (m["rule"] or "unknown")
         r = by_rule.setdefault(key, {"total": 0, "hosts": set()})
@@ -145,7 +145,7 @@ def prepare_payload(evidences: List[Dict[str, Any]], window: str) -> Dict[str, A
         "hosts_per_rule": {k: sorted(list(v["hosts"])) for k, v in by_rule.items()},
     }
 
-    payload = {
+    payload: dict[str, Any] = {
         "mode": "abstract",
         "window": window,
         "aggregate": aggregate,

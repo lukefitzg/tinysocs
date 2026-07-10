@@ -46,14 +46,14 @@ import hmac
 import json
 import os
 import random
-import secrets
 import smtplib
 import textwrap
 import time
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from email.message import EmailMessage
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -147,7 +147,7 @@ def _load_secret() -> str:
     sys.exit(1)
 
 
-NODES: List[str] = [x.strip() for x in os.getenv("TINYSOCS_NODES", "http://localhost:8081").split(",") if x.strip()]
+NODES: list[str] = [x.strip() for x in os.getenv("TINYSOCS_NODES", "http://localhost:8081").split(",") if x.strip()]
 SECRET: str = _load_secret()
 NODE_TLS_VERIFY: bool = not _env_bool("TINYSOCS_INSECURE_SKIP_VERIFY", False)  # default: verify TLS
 
@@ -223,10 +223,10 @@ try:
     if _ADAPTER_PRIVACY_MODE:
         PRIVACY_MODE = (_ADAPTER_PRIVACY_MODE or PRIVACY_MODE).strip().lower()
 except Exception as _e:
-    def _prepare_privacy_payload(evidences: List[Dict[str, Any]], window: str) -> Dict[str, Any]:
+    def _prepare_privacy_payload(evidences: list[dict[str, Any]], window: str) -> dict[str, Any]:
         return {"mode": "raw", "window": window, "evidences": evidences}
-    def _annotate_header(md: str, llm_mode: str = "openai") -> str:
-        return md
+    def _annotate_header(report_md: str, llm_mode: str = "openai") -> str:
+        return report_md
     print(f"[master] WARN: summarizer_adapter not available: {_e}. Using raw fallback.")
 
 try:
@@ -244,7 +244,7 @@ def _display_privacy_mode() -> str:
     return "raw" if m == "raw" else "abstract"
 
 # ---------------- HMAC headers (ts-only; raw hex or "sha256=<hex>") ----------------
-def _headers() -> Dict[str, str]:
+def _headers() -> dict[str, str]:
     """
     Generate TinySOCS HMAC headers.
 
@@ -304,7 +304,7 @@ def _try_call(fn, *, tries: int, min_ms: int, max_ms: int, label: str):
 # --------------------------------------------------------
 
 # ---------------- Node client calls (sync) ----------------
-def _agg_get(node: str, rules: str, window: str, host: Optional[str]) -> Dict[str, Any]:
+def _agg_get(node: str, rules: str, window: str, host: str | None) -> dict[str, Any]:
     url = node.rstrip("/") + "/agg"
     params = {"rules": rules, "window": window}
     if host:
@@ -313,7 +313,7 @@ def _agg_get(node: str, rules: str, window: str, host: Optional[str]) -> Dict[st
     r.raise_for_status()
     return r.json()
 
-def _agg_post(node: str, rules: str, window: str, host: Optional[str]) -> Dict[str, Any]:
+def _agg_post(node: str, rules: str, window: str, host: str | None) -> dict[str, Any]:
     url = node.rstrip("/") + "/agg"
     body = {"rules": rules, "window": window}
     if host:
@@ -322,7 +322,7 @@ def _agg_post(node: str, rules: str, window: str, host: Optional[str]) -> Dict[s
     r.raise_for_status()
     return r.json()
 
-def _get_head(node: str) -> Dict[str, Any]:
+def _get_head(node: str) -> dict[str, Any]:
     url = node.rstrip("/") + "/evidence/head"
     r = requests.get(url, headers=_headers(), timeout=REQUEST_TIMEOUT_SEC, verify=NODE_TLS_VERIFY)
     if r.status_code == 501:
@@ -331,7 +331,7 @@ def _get_head(node: str) -> Dict[str, Any]:
     return r.json()
 
 # ---------------- Node client calls (sync) ----------------
-def _post_json(node_url: str, obj: Dict[str, Any], timeout: float = 6.0) -> None:
+def _post_json(node_url: str, obj: dict[str, Any], timeout: float = 6.0) -> None:
     """
     Best-effort POST (uses same HMAC headers as /agg and /evidence/head).
     """
@@ -345,8 +345,8 @@ def _post_json(node_url: str, obj: Dict[str, Any], timeout: float = 6.0) -> None
 # ----------------------------------------------------
 
 # ---------------- Async fan-out helpers (Phase 5) ----------------
-async def _fetch_node_agg_async(client: httpx.AsyncClient, node_url: str, rules: str, window: str, host: Optional[str], per_timeout: float) -> Dict[str, Any]:
-    last_exc: Optional[Exception] = None
+async def _fetch_node_agg_async(client: httpx.AsyncClient, node_url: str, rules: str, window: str, host: str | None, per_timeout: float) -> dict[str, Any]:
+    last_exc: Exception | None = None
     params = {"rules": rules, "window": window}
     if host:
         params["host"] = host
@@ -368,7 +368,7 @@ async def _fetch_node_agg_async(client: httpx.AsyncClient, node_url: str, rules:
                 await _async_sleep_jitter(MASTER_RETRY_MIN_MS, MASTER_RETRY_MAX_MS)
     return {"node": node_url, "ok": False, "error": f"{type(last_exc).__name__}: {last_exc}" if last_exc else "unknown"}
 
-async def _fanout_agg_async(nodes: List[str], rules: str, window: str, host: Optional[str], deadline_sec: float) -> List[Dict[str, Any]]:
+async def _fanout_agg_async(nodes: list[str], rules: str, window: str, host: str | None, deadline_sec: float) -> list[dict[str, Any]]:
     """
     Fire all node requests concurrently.
 
@@ -377,10 +377,10 @@ async def _fanout_agg_async(nodes: List[str], rules: str, window: str, host: Opt
                           errors alone won't cancel the remaining tasks.
     """
     start = time.monotonic()
-    results: List[Dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
 
     async with httpx.AsyncClient(verify=NODE_TLS_VERIFY, follow_redirects=True) as client:
-        tasks: Dict[asyncio.Task, str] = {}
+        tasks: dict[asyncio.Task, str] = {}
         for n in nodes:
             remaining = max(0.2, deadline_sec - (time.monotonic() - start))
             per_timeout = min(REQUEST_TIMEOUT_SEC, remaining)
@@ -426,9 +426,9 @@ async def _fanout_agg_async(nodes: List[str], rules: str, window: str, host: Opt
     results_bad = [r for r in results if not r.get("ok")]
     return results_ok + results_bad
 
-def merge_evidence(batches: List[List[DetectionEvidence]]) -> List[DetectionEvidence]:
-    def deep_union(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
-        out: Dict[str, Any] = dict(a)
+def merge_evidence(batches: list[list[DetectionEvidence]]) -> list[dict[str, Any]]:
+    def deep_union(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
+        out: dict[str, Any] = dict(a)
         for k, v in (b or {}).items():
             if k not in out:
                 out[k] = v
@@ -449,7 +449,7 @@ def merge_evidence(batches: List[List[DetectionEvidence]]) -> List[DetectionEvid
                     out[k] = v
         return out
 
-    def as_dict(ev: Any) -> Dict[str, Any]:
+    def as_dict(ev: Any) -> dict[str, Any]:
         if isinstance(ev, dict):
             return ev
         if hasattr(ev, "model_dump"):
@@ -471,7 +471,7 @@ def merge_evidence(batches: List[List[DetectionEvidence]]) -> List[DetectionEvid
                 "exemplars": getattr(ev, "exemplars", []) or [],
             }
 
-    by_key: Dict[Tuple[Optional[str], Optional[str]], Dict[str, Any]] = {}
+    by_key: dict[tuple[str | None, str | None], dict[str, Any]] = {}
 
     for ev in (e for batch in batches for e in batch):
         d = as_dict(ev)
@@ -504,8 +504,8 @@ def merge_evidence(batches: List[List[DetectionEvidence]]) -> List[DetectionEvid
 # ---------------------------------------------------------
 
 # ---------------- Summarizer helpers ----------------
-def _to_findings(ev_list: List[DetectionEvidence]) -> List[Dict[str, Any]]:
-    findings: List[Dict[str, Any]] = []
+def _to_findings(ev_list: Sequence[DetectionEvidence | dict[str, Any]]) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
     for ev in ev_list:
         asdict = ev.model_dump() if hasattr(ev, "model_dump") else (ev if isinstance(ev, dict) else ev.__dict__)
         rule = asdict.get("rule")
@@ -524,8 +524,8 @@ def _to_findings(ev_list: List[DetectionEvidence]) -> List[Dict[str, Any]]:
         )
     return findings
 
-def _minimal_local_summary(merged: List[DetectionEvidence], window: str) -> Dict[str, Any]:
-    by_rule: Dict[str, Dict[str, Any]] = {}
+def _minimal_local_summary(merged: Sequence[DetectionEvidence | dict[str, Any]], window: str) -> dict[str, Any]:
+    by_rule: dict[str, dict[str, Any]] = {}
     for e in merged:
         asdict = e.model_dump() if hasattr(e, "model_dump") else (e if isinstance(e, dict) else e.__dict__)
         rule = asdict.get("rule")
@@ -551,7 +551,7 @@ def _minimal_local_summary(merged: List[DetectionEvidence], window: str) -> Dict
 # ----------------------------------------------------
 
 # ---------------- Actions renderer ----------------
-def _actions_path() -> Optional[Path]:
+def _actions_path() -> Path | None:
     env_p = os.getenv("TINYSOCS_ACTIONS_PATH")
     if env_p:
         p = Path(env_p).expanduser()
@@ -570,7 +570,7 @@ def _actions_path() -> Optional[Path]:
             return p
     return None
 
-def _load_actions() -> Dict[str, List[Dict[str, str]]]:
+def _load_actions() -> dict[str, list[dict[str, str]]]:
     path = _actions_path()
     if not path:
         return {}
@@ -582,11 +582,11 @@ def _load_actions() -> Dict[str, List[Dict[str, str]]]:
         print(f"[master] WARN: failed to load actions.yaml: {e}")
         return {}
 
-def _render_actions_md(merged: List[DetectionEvidence]) -> str:
+def _render_actions_md(merged: list[DetectionEvidence]) -> str:
     actions = _load_actions()
     if not actions:
         return ""
-    norm: List[Dict[str, Any]] = []
+    norm: list[dict[str, Any]] = []
     for e in merged:
         if isinstance(e, dict):
             norm.append(e)
@@ -600,7 +600,7 @@ def _render_actions_md(merged: List[DetectionEvidence]) -> str:
     fired = [e for e in norm if (e.get("count") or 0) > 0 and e.get("rule") in actions]
     if not fired:
         return ""
-    lines: List[str] = ["## Candidate Actions"]
+    lines: list[str] = ["## Candidate Actions"]
     for ev in sorted(fired, key=lambda x: x.get("rule")):
         items = actions.get(ev.get("rule")) or []
         if not items:
@@ -620,15 +620,15 @@ def _privacy_share_body() -> bool:
     allow_raw = os.getenv("ALLOW_NOTIFY_IN_RAW", "0") == "1"
     return mode != "raw" or allow_raw
 
-def _pack_preview_extras(merged: List[DetectionEvidence], *, max_rules: int = 5, top_hosts: int = 3) -> Dict[str, Any]:
-    def _asdict(e: Any) -> Dict[str, Any]:
+def _pack_preview_extras(merged: Sequence[DetectionEvidence | dict[str, Any]], *, max_rules: int = 5, top_hosts: int = 3) -> dict[str, Any]:
+    def _asdict(e: Any) -> dict[str, Any]:
         if isinstance(e, dict):
             return e
         if hasattr(e, "model_dump"):
             return e.model_dump()
         return e.__dict__
 
-    def _extract_hosts(summary: Dict[str, Any]) -> List[Tuple[str, int]]:
+    def _extract_hosts(summary: dict[str, Any]) -> list[tuple[str, int]]:
         if not isinstance(summary, dict):
             return []
         candidates = (
@@ -639,7 +639,7 @@ def _pack_preview_extras(merged: List[DetectionEvidence], *, max_rules: int = 5,
         if isinstance(candidates, dict) and "buckets" in candidates:
             candidates = candidates.get("buckets")
 
-        out: List[Tuple[str, int]] = []
+        out: list[tuple[str, int]] = []
         if isinstance(candidates, list):
             for g in candidates:
                 if not isinstance(g, dict):
@@ -663,8 +663,8 @@ def _pack_preview_extras(merged: List[DetectionEvidence], *, max_rules: int = 5,
         out.sort(key=lambda x: x[1], reverse=True)
         return out[:top_hosts]
 
-    rule_totals: Dict[str, int] = {}
-    hosts_by_rule: Dict[str, List[Tuple[str, int]]] = {}
+    rule_totals: dict[str, int] = {}
+    hosts_by_rule: dict[str, list[tuple[str, int]]] = {}
 
     for ev in merged:
         d = _asdict(ev)
@@ -685,7 +685,7 @@ def _pack_preview_extras(merged: List[DetectionEvidence], *, max_rules: int = 5,
 
     return {"rule_counts": rule_counts, "top_hosts": hosts_by_rule}
 
-def notify_webhook(preview: Dict[str, Any], incident: Optional[Dict[str, Any]]) -> None:
+def notify_webhook(preview: dict[str, Any], incident: dict[str, Any] | None) -> None:
     """Send alert notification to a generic webhook URL (webhook.site, Slack, Teams, etc.)."""
     url = os.getenv("WEBHOOK_URL")
     if not url:
@@ -697,8 +697,8 @@ def notify_webhook(preview: Dict[str, Any], incident: Optional[Dict[str, Any]]) 
     items = int(preview.get("items") or 0)
     tldr  = preview.get("tldr") or "(no TL;DR)"
 
-    rule_counts: List[Tuple[str, int]] = preview.get("rule_counts") or []
-    top_hosts: Dict[str, List[Tuple[str, int]]] = preview.get("top_hosts") or {}
+    rule_counts: list[tuple[str, int]] = preview.get("rule_counts") or []
+    top_hosts: dict[str, list[tuple[str, int]]] = preview.get("top_hosts") or {}
 
     lines = [
         f"TinySocs Alert: {sev} \u00b7 {items} item(s)",
@@ -735,7 +735,7 @@ def notify_webhook(preview: Dict[str, Any], incident: Optional[Dict[str, Any]]) 
     except Exception as e:
         print(f"[master] WARN: webhook notify failed: {e}")
 
-def notify_slack(preview: Dict[str, Any], incident: Optional[Dict[str, Any]]) -> None:
+def notify_slack(preview: dict[str, Any], incident: dict[str, Any] | None) -> None:
     url = os.getenv("SLACK_WEBHOOK_URL")
     if not url:
         return
@@ -744,8 +744,8 @@ def notify_slack(preview: Dict[str, Any], incident: Optional[Dict[str, Any]]) ->
     items = int(preview.get("items") or 0)
     tldr  = preview.get("tldr") or "(no TL;DR)"
 
-    rule_counts: List[Tuple[str, int]] = preview.get("rule_counts") or []
-    top_hosts: Dict[str, List[Tuple[str, int]]] = preview.get("top_hosts") or {}
+    rule_counts: list[tuple[str, int]] = preview.get("rule_counts") or []
+    top_hosts: dict[str, list[tuple[str, int]]] = preview.get("top_hosts") or {}
 
     lines = [
         f"TinySocs: {sev} · {items} item(s)",
@@ -774,7 +774,7 @@ def notify_slack(preview: Dict[str, Any], incident: Optional[Dict[str, Any]]) ->
     except Exception as e:
         print(f"[master] WARN: slack notify failed: {e}")
 
-def notify_gchat(preview: Dict[str, Any], incident: Optional[Dict[str, Any]]) -> None:
+def notify_gchat(preview: dict[str, Any], incident: dict[str, Any] | None) -> None:
     url = os.getenv("GCHAT_WEBHOOK_URL")
     if not url:
         return
@@ -791,7 +791,7 @@ def notify_gchat(preview: Dict[str, Any], incident: Optional[Dict[str, Any]]) ->
     except Exception as e:
         print(f"[master] WARN: gchat notify failed: {e}")
 
-def notify_email(preview: Dict[str, Any], incident: Optional[Dict[str, Any]]) -> None:
+def notify_email(preview: dict[str, Any], incident: dict[str, Any] | None) -> None:
     to_addr = os.getenv("NOTIFY_EMAIL_TO")
     host = os.getenv("SMTP_HOST")
     if not to_addr or not host:
@@ -832,17 +832,17 @@ def notify_email(preview: Dict[str, Any], incident: Optional[Dict[str, Any]]) ->
 def _es_auth() -> HTTPBasicAuth:
     return HTTPBasicAuth(SIEM_USER, SIEM_PASS)
 
-def _es_index(doc: Dict[str, Any]) -> None:
+def _es_index(doc: dict[str, Any]) -> None:
     post_url = urljoin(SIEM_URL.rstrip("/") + "/", "tinysocs_anchors/_doc")
     r = requests.post(post_url, auth=_es_auth(), verify=resolve_ca_cert(), json=doc, timeout=REQUEST_TIMEOUT_SEC)
     r.raise_for_status()
 # ----------------------------------------------------
 
-def run_master(rules: str, window: str, host: Optional[str], deadline_sec: float, always_anchor: bool) -> Dict[str, Any]:
+def run_master(rules: str, window: str, host: str | None, deadline_sec: float, always_anchor: bool) -> dict[str, Any]:
     _maybe_ensure_anchors()
     t0 = time.time()
     deadline_at = t0 + max(0.1, deadline_sec)
-    summary = {
+    summary: dict[str, Any] = {
         "rules": rules,
         "window": window,
         "nodes": [],
@@ -857,7 +857,7 @@ def run_master(rules: str, window: str, host: Optional[str], deadline_sec: float
         heartbeat_sec = int(os.getenv("ANCHOR_HEARTBEAT_SEC", "0") or "0")
     except Exception:
         heartbeat_sec = 0
-    _last_anchor_ts: Dict[str, float] = {}
+    _last_anchor_ts: dict[str, float] = {}
 
     print(f"[master] fan-out to {','.join(NODES)}; rules={rules}; window={window}")
 
@@ -881,11 +881,11 @@ def run_master(rules: str, window: str, host: Optional[str], deadline_sec: float
     results_bad = [r for r in results if not r.get("ok")]
     results = results_ok + results_bad
 
-    all_rule_rows: List[DetectionEvidence] = []
+    all_rule_rows: list[DetectionEvidence] = []
 
     for res in results:
         node = res.get("node")
-        node_row: Dict[str, Any] = {"node": node, "ok": False}
+        node_row: dict[str, Any] = {"node": node, "ok": False}
 
         if res.get("ok"):
             agg = res.get("data")
@@ -893,15 +893,15 @@ def run_master(rules: str, window: str, host: Optional[str], deadline_sec: float
             rule_count: int = 0
 
             if isinstance(agg, list):
-                norm: List[Dict[str, Any]] = []
-                for e in agg:
-                    if hasattr(e, "model_dump"):
-                        norm.append(e.model_dump())
-                    elif isinstance(e, dict):
-                        norm.append(e)
+                norm: list[dict[str, Any]] = []
+                for item in agg:
+                    if hasattr(item, "model_dump"):
+                        norm.append(item.model_dump())
+                    elif isinstance(item, dict):
+                        norm.append(item)
                     else:
                         try:
-                            norm.append(dict(e))
+                            norm.append(dict(item))
                         except Exception:
                             continue
                 rule_count = len(norm)
@@ -1009,6 +1009,7 @@ def run_master(rules: str, window: str, host: Optional[str], deadline_sec: float
 
         summary["nodes"].append(node_row)
 
+    merged: Sequence[DetectionEvidence | dict[str, Any]]
     if all_rule_rows:
         merged = merge_evidence([all_rule_rows])
         total_items = sum(int((e.get("count") if isinstance(e, dict) else getattr(e, "count", 0)) or 0)
@@ -1051,7 +1052,7 @@ def run_master(rules: str, window: str, host: Optional[str], deadline_sec: float
                 called = False
                 for attempt in (lambda: _summarize(payload),
                                 lambda: _summarize(data=payload),
-                                lambda: _summarize(findings=payload)):
+                                lambda: _summarize(findings=payload)):  # type: ignore[arg-type]
                     try:
                         incident = attempt()
                         called = True
@@ -1100,7 +1101,6 @@ def run_master(rules: str, window: str, host: Optional[str], deadline_sec: float
     return summary
 
 def cli() -> None:
-    import argparse
     ap = argparse.ArgumentParser(
         prog="tinysocs-master",
         description="TinySOCS Master (fan-out + summarize + anchor)"

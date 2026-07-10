@@ -18,7 +18,7 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import httpx
 
@@ -34,8 +34,8 @@ class EnrichmentResult:
     provider: str
     ioc_type: str          # ip, domain, hash
     ioc_value: str
-    data: Dict[str, Any]   # provider-specific payload
-    error: Optional[str] = None
+    data: dict[str, Any]   # provider-specific payload
+    error: str | None = None
     cached: bool = False
 
 
@@ -44,11 +44,11 @@ class CompositeEnrichment:
     """Merged enrichment results for a single IOC from all providers."""
     ioc_type: str
     ioc_value: str
-    results: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    results: dict[str, dict[str, Any]] = field(default_factory=dict)
     threat_level: str = "none"  # none, low, medium, high
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = dict(self.results)
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = dict(self.results)
         d["threat_level"] = self.threat_level
         return d
 
@@ -92,16 +92,16 @@ class ThreatIntelProvider(ABC):
     def _is_rate_limited(self) -> bool:
         return self.quota_remaining() <= 0
 
-    async def enrich_ip(self, ip: str) -> Optional[EnrichmentResult]:
+    async def enrich_ip(self, ip: str) -> EnrichmentResult | None:
         return None
 
-    async def enrich_domain(self, domain: str) -> Optional[EnrichmentResult]:
+    async def enrich_domain(self, domain: str) -> EnrichmentResult | None:
         return None
 
-    async def enrich_hash(self, file_hash: str) -> Optional[EnrichmentResult]:
+    async def enrich_hash(self, file_hash: str) -> EnrichmentResult | None:
         return None
 
-    async def health_check(self) -> Dict[str, Any]:
+    async def health_check(self) -> dict[str, Any]:
         """Return provider health status."""
         return {
             "provider": self.name,
@@ -145,7 +145,7 @@ class AbuseIPDBProvider(ThreatIntelProvider):
     def is_configured(self) -> bool:
         return bool(self._api_key)
 
-    async def enrich_ip(self, ip: str) -> Optional[EnrichmentResult]:
+    async def enrich_ip(self, ip: str) -> EnrichmentResult | None:
         if not self.is_available():
             return None
         self._record_call()
@@ -198,7 +198,7 @@ class AlienVaultOTXProvider(ThreatIntelProvider):
     def is_configured(self) -> bool:
         return bool(self._api_key)
 
-    async def _otx_get(self, path: str) -> Optional[dict]:
+    async def _otx_get(self, path: str) -> dict | None:
         async with httpx.AsyncClient(timeout=10.0) as client:
             r = await client.get(
                 f"https://otx.alienvault.com/api/v1{path}",
@@ -207,7 +207,7 @@ class AlienVaultOTXProvider(ThreatIntelProvider):
             r.raise_for_status()
             return r.json()
 
-    async def enrich_ip(self, ip: str) -> Optional[EnrichmentResult]:
+    async def enrich_ip(self, ip: str) -> EnrichmentResult | None:
         if not self.is_available():
             return None
         self._record_call()
@@ -231,7 +231,7 @@ class AlienVaultOTXProvider(ThreatIntelProvider):
                 data={}, error=str(e),
             )
 
-    async def enrich_domain(self, domain: str) -> Optional[EnrichmentResult]:
+    async def enrich_domain(self, domain: str) -> EnrichmentResult | None:
         if not self.is_available():
             return None
         self._record_call()
@@ -253,7 +253,7 @@ class AlienVaultOTXProvider(ThreatIntelProvider):
                 data={}, error=str(e),
             )
 
-    async def enrich_hash(self, file_hash: str) -> Optional[EnrichmentResult]:
+    async def enrich_hash(self, file_hash: str) -> EnrichmentResult | None:
         if not self.is_available():
             return None
         self._record_call()
@@ -301,7 +301,7 @@ class GreyNoiseCommunityProvider(ThreatIntelProvider):
         # Always configured — works without an API key (unauthenticated)
         return True
 
-    async def enrich_ip(self, ip: str) -> Optional[EnrichmentResult]:
+    async def enrich_ip(self, ip: str) -> EnrichmentResult | None:
         if not self.is_available():
             return None
         self._record_call()
@@ -353,10 +353,10 @@ class GreyNoiseCommunityProvider(ThreatIntelProvider):
 # Provider registry
 # ---------------------------------------------------------------------------
 
-_ALL_PROVIDERS: List[ThreatIntelProvider] = []
+_ALL_PROVIDERS: list[ThreatIntelProvider] = []
 
 
-def get_providers() -> List[ThreatIntelProvider]:
+def get_providers() -> list[ThreatIntelProvider]:
     """Return singleton list of all provider instances."""
     global _ALL_PROVIDERS
     if not _ALL_PROVIDERS:
@@ -368,12 +368,12 @@ def get_providers() -> List[ThreatIntelProvider]:
     return _ALL_PROVIDERS
 
 
-def get_configured_providers() -> List[ThreatIntelProvider]:
+def get_configured_providers() -> list[ThreatIntelProvider]:
     """Return only providers that have API keys configured."""
     return [p for p in get_providers() if p.is_configured()]
 
 
-def get_available_providers() -> List[ThreatIntelProvider]:
+def get_available_providers() -> list[ThreatIntelProvider]:
     """Return only providers that are configured and not rate-limited."""
     return [p for p in get_providers() if p.is_available()]
 
@@ -382,7 +382,7 @@ def get_available_providers() -> List[ThreatIntelProvider]:
 # Composite threat level calculation
 # ---------------------------------------------------------------------------
 
-def compute_threat_level(results: Dict[str, Dict[str, Any]]) -> str:
+def compute_threat_level(results: dict[str, dict[str, Any]]) -> str:
     """
     Compute composite threat level from provider results.
     high:   any provider reports malicious + score > 75
@@ -393,7 +393,7 @@ def compute_threat_level(results: Dict[str, Dict[str, Any]]) -> str:
     if not results:
         return "none"
 
-    max_score = 0
+    max_score: float = 0
     has_malicious = False
 
     for provider, data in results.items():
@@ -436,7 +436,7 @@ def compute_threat_level(results: Dict[str, Dict[str, Any]]) -> str:
 async def enrich_ioc(
     ioc_type: str,
     ioc_value: str,
-    providers: Optional[List[ThreatIntelProvider]] = None,
+    providers: list[ThreatIntelProvider] | None = None,
     cache: Any = None,
     timeout: float = 15.0,
 ) -> CompositeEnrichment:
@@ -479,7 +479,7 @@ async def enrich_ioc(
                     return_exceptions=True,
                 )
                 for (pname, _), result in zip(tasks, results):
-                    if isinstance(result, Exception):
+                    if isinstance(result, BaseException):
                         logger.warning("Provider %s timed out or errored: %s", pname, result)
                         continue
                     if result and not result.error:

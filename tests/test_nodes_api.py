@@ -13,8 +13,6 @@ Validates the /api/nodes endpoint logic including:
 import os
 import sys
 
-import pytest
-
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import tinysocs.api.dashboard as dashboard_mod

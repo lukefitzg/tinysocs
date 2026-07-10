@@ -1,5 +1,5 @@
 ﻿import collections
-from typing import Any, Dict, List
+from typing import Any
 
 import yaml
 
@@ -7,12 +7,13 @@ from ..adapters.select import make_client
 
 client = make_client()
 
-def run_detections(rules_path="agent/detections/rules.yaml") -> List[Dict[str, Any]]:
+def run_detections(rules_path="agent/detections/rules.yaml") -> list[dict[str, Any]]:
     rules = yaml.safe_load(open(rules_path, encoding="utf-8"))
-    findings: List[Dict[str, Any]] = []
+    findings: list[dict[str, Any]] = []
 
     for r in rules:
         hits = client.search_kql(r.get("index",""), r["kql"], size=2000)
+        assert isinstance(hits, list)  # size > 0 always returns a doc list, never the count-only dict/int
 
         if r.get("threshold"):
             # count by (source.ip, user.name)

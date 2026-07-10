@@ -1,9 +1,9 @@
 ﻿import json
 import os
-from http.server import BaseHTTPRequestHandler, HTTPServer
 import urllib.parse as urlparse
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
 import requests
-import re
 
 # ==== target & tuning ====
 TARGET = "http://127.0.0.1:9200"  # TinyBox OpenSearch endpoint

@@ -27,8 +27,8 @@ os.environ["TINYSOCS_FEED_STORE"] = str(_REPO_ROOT / "data" / "feed" / "_pytest_
 
 sys.path.insert(0, str(_REPO_ROOT / "scripts"))
 import licence as lic  # noqa: E402
-
 from fastapi.testclient import TestClient  # noqa: E402
+
 from tinysocs.api import feed  # noqa: E402
 
 _KEY_DIR = _REPO_ROOT / "keys"

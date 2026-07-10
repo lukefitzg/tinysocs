@@ -38,7 +38,6 @@ from pathlib import Path
 # Reuse the ed25519 key io from the signing tool -- same key format, same dir.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pack_sign as ps  # noqa: E402
-
 from cryptography.exceptions import InvalidSignature  # noqa: E402
 
 TIERS = ("free", "pro", "msp")

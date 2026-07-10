@@ -8,8 +8,7 @@ Then open: http://localhost:8090/dashboard/
 Password:  test
 """
 import json
-import re
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 # Extract the HTML from dashboard.py by executing the assignment
@@ -34,7 +33,9 @@ def _mitre_coverage_data():
         sys.path.insert(0, src_dir)
     try:
         from tinysocs.reporting.mitre_coverage import (
-            load_all_rules, extract_mitre_annotations, calculate_coverage,
+            calculate_coverage,
+            extract_mitre_annotations,
+            load_all_rules,
         )
         rules = load_all_rules()
         annotations = extract_mitre_annotations(rules)

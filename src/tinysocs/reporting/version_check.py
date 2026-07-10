@@ -13,10 +13,8 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Manifest loading
@@ -25,9 +23,9 @@ from typing import Any, Dict, List, Optional, Tuple
 _MANIFEST_FILENAME = "version-manifest.json"
 
 
-def _manifest_search_paths() -> List[Path]:
+def _manifest_search_paths() -> list[Path]:
     """Return platform-appropriate paths to search for version-manifest.json."""
-    paths: List[Path] = []
+    paths: list[Path] = []
     # Windows paths
     prog_data = os.getenv("ProgramData", r"C:\ProgramData")
     paths.append(Path(prog_data) / "TinySocs" / _MANIFEST_FILENAME)
@@ -39,7 +37,7 @@ def _manifest_search_paths() -> List[Path]:
     return paths
 
 
-def load_version_manifest(path: Optional[Path] = None) -> Dict[str, Any]:
+def load_version_manifest(path: Path | None = None) -> dict[str, Any]:
     """Read version-manifest.json from *path* or from standard search paths.
 
     Returns the parsed dict, or an empty dict if no manifest is found.
@@ -66,7 +64,7 @@ def load_version_manifest(path: Optional[Path] = None) -> Dict[str, Any]:
 # Version comparison
 # ---------------------------------------------------------------------------
 
-def _parse_semver(version_str: str) -> Optional[Tuple[int, int, int]]:
+def _parse_semver(version_str: str) -> tuple[int, int, int] | None:
     """Parse a semver-like string (e.g. '0.8.0') into (major, minor, patch).
 
     Returns None if the string cannot be parsed.
@@ -111,9 +109,9 @@ def compare_versions(agent_version: str, manifest_version: str) -> str:
 # ---------------------------------------------------------------------------
 
 def check_fleet_versions(
-    fleet_health_data: List[Dict[str, Any]],
-    manifest: Dict[str, Any],
-) -> List[Dict[str, Any]]:
+    fleet_health_data: list[dict[str, Any]],
+    manifest: dict[str, Any],
+) -> list[dict[str, Any]]:
     """Compare each host's agent version from fleet health data against the manifest.
 
     *fleet_health_data* is a list of host dicts (from /api/fleet/health).
@@ -129,7 +127,7 @@ def check_fleet_versions(
     """
     manifest_version = manifest.get("current_version", "")
     min_compatible = manifest.get("minimum_compatible", "")
-    results: List[Dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
 
     for host in fleet_health_data:
         hostname = host.get("hostname", "")

@@ -21,7 +21,7 @@ import json
 import sys
 import unittest
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field, validator
 
@@ -41,17 +41,19 @@ def _dt_to_rfc3339_z(dt: datetime) -> str:
 
 class EvidenceExemplar(BaseModel):
     timestamp: datetime = Field(..., description="UTC timestamp")
-    id: Optional[str] = Field(None, description="Optional stable ingest/event id")
-    message: Optional[str] = Field(None, description="Short summary (avoid raw PII)")
-    fields: Optional[Dict[str, Any]] = Field(default=None, description="Sparse high-signal fields")
+    id: str | None = Field(default=None, description="Optional stable ingest/event id")
+    message: str | None = Field(default=None, description="Short summary (avoid raw PII)")
+    fields: dict[str, Any] | None = Field(default=None, description="Sparse high-signal fields")
 
     class Config:
         frozen = True
 
-    def canonical(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {"timestamp": _dt_to_rfc3339_z(self.timestamp)}
-        if self.id is not None: d["id"] = self.id
-        if self.message is not None: d["message"] = self.message
+    def canonical(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"timestamp": _dt_to_rfc3339_z(self.timestamp)}
+        if self.id is not None:
+            d["id"] = self.id
+        if self.message is not None:
+            d["message"] = self.message
         if self.fields is not None:
             def sort_obj(o: Any) -> Any:
                 if isinstance(o, dict):
@@ -66,19 +68,20 @@ class EvidenceExemplar(BaseModel):
 class DetectionEvidence(BaseModel):
     rule: str = Field(..., min_length=1)
     window: str = Field(..., min_length=1)
-    host: Optional[str] = None
+    host: str | None = None
     count: int = Field(..., ge=0)
-    summary: Dict[str, Any] = Field(default_factory=dict)
-    exemplars: List[EvidenceExemplar] = Field(default_factory=list)
-    generated_at: Optional[datetime] = None
-    hash: Optional[str] = None
+    summary: dict[str, Any] = Field(default_factory=dict)
+    exemplars: list[EvidenceExemplar] = Field(default_factory=list)
+    generated_at: datetime | None = None
+    hash: str | None = None
 
     @validator("window")
-    def _window_not_blank(cls, v: str) -> str:
-        if not v.strip(): raise ValueError("window cannot be blank")
+    def _window_not_blank(cls, v: str) -> str:  # noqa: N805 (pydantic v1 validator is implicitly a classmethod)
+        if not v.strip():
+            raise ValueError("window cannot be blank")
         return v
 
-    def _canonical_payload(self) -> Dict[str, Any]:
+    def _canonical_payload(self) -> dict[str, Any]:
         def sort_obj(o: Any) -> Any:
             if isinstance(o, dict):
                 return {k: sort_obj(o[k]) for k in sorted(o.keys())}
@@ -95,7 +98,7 @@ class DetectionEvidence(BaseModel):
         }
 
     @staticmethod
-    def _hash_dict(d: Dict[str, Any]) -> str:
+    def _hash_dict(d: dict[str, Any]) -> str:
         s = json.dumps(d, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         return hashlib.sha256(s.encode("utf-8")).hexdigest()
 

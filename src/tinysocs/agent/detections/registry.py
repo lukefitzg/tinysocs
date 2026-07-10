@@ -1,10 +1,11 @@
 # src/tinysocs/agent/detections/registry.py
-from dataclasses import dataclass, fields as dc_fields
-from typing import List, Dict, Optional
 import json
 import os
-import yaml
+from dataclasses import dataclass
+from dataclasses import fields as dc_fields
 from importlib import resources
+
+import yaml
 
 
 @dataclass
@@ -21,18 +22,18 @@ class Rule:
     index: str = "tinysocs-winlog-*"
     time_field: str = "@timestamp"
     kql: str = "*"
-    group_by: List[str] = None  # type: ignore[assignment]
+    group_by: list[str] = None  # type: ignore[assignment]
     threshold: int = 1
     severity: str = "medium"
     category: str = "custom"
-    tuning_envvars: Optional[List[str]] = None
+    tuning_envvars: list[str] | None = None
 
     def __post_init__(self):
         if self.group_by is None:
             self.group_by = []
 
 
-def _load_rules_from_yaml() -> Dict[str, Rule]:
+def _load_rules_from_yaml() -> dict[str, Rule]:
     """Load rules from rules.yaml into a dict keyed by rule id.
 
     rules.yaml lives alongside this module in tinysocs/agent/detections/.
@@ -45,7 +46,7 @@ def _load_rules_from_yaml() -> Dict[str, Rule]:
     text = resources.files(pkg).joinpath("rules.yaml").read_text(encoding="utf-8")
     raw = yaml.safe_load(text) or []
 
-    rules: Dict[str, Rule] = {}
+    rules: dict[str, Rule] = {}
     allowed_fields = {f.name for f in dc_fields(Rule)}
     for r in raw:
         rid = r.get("id")
@@ -58,7 +59,7 @@ def _load_rules_from_yaml() -> Dict[str, Rule]:
     return rules
 
 
-def _resolve_custom_rules_path() -> Optional[str]:
+def _resolve_custom_rules_path() -> str | None:
     """Find the custom_rules.json file.
 
     Search order:
@@ -82,7 +83,7 @@ def _resolve_custom_rules_path() -> Optional[str]:
     return None
 
 
-def load_custom_rules() -> Dict[str, Rule]:
+def load_custom_rules() -> dict[str, Rule]:
     """Load custom rules from custom_rules.json.
 
     Returns a dict keyed by rule id. Rules with enabled=False are excluded.
@@ -99,7 +100,7 @@ def load_custom_rules() -> Dict[str, Rule]:
               flush=True)
         return {}
 
-    rules: Dict[str, Rule] = {}
+    rules: dict[str, Rule] = {}
     allowed_fields = {f.name for f in dc_fields(Rule)}
     for r in raw:
         if not isinstance(r, dict):
@@ -137,7 +138,7 @@ def reload_rules() -> None:
 
 
 # Global registry used by the node /agg endpoint
-RULES: Dict[str, Rule] = _load_rules_from_yaml()
+RULES: dict[str, Rule] = _load_rules_from_yaml()
 
 # Merge in any custom rules on first import
 _custom = load_custom_rules()
@@ -147,7 +148,7 @@ if _custom:
           flush=True)
 
 
-def get_rule(rule_id: str) -> Optional[Rule]:
+def get_rule(rule_id: str) -> Rule | None:
     """Convenience accessor for a single rule by id.
 
     Returns None if the rule is not found.

@@ -14,8 +14,6 @@ import os
 import sys
 from datetime import datetime, timezone
 
-import pytest
-
 # Enable demo mode before importing dashboard
 os.environ["TINYSOCS_DEMO_MODE"] = "1"
 
@@ -31,18 +29,16 @@ from tinysocs.api.dashboard import (  # noqa: E402
     _demo_fleet_health,
     _demo_host_timeline,
     _demo_nodes,
-    _demo_threat_intel_status,
-    _demo_version_status,
     # Phase 18 M4: per-site demo data generators
     _demo_site_alerts_summary,
     _demo_site_alerts_timeline,
-    _demo_site_fleet_health,
     _demo_site_detections_fired,
     _demo_site_events_recent,
+    _demo_site_fleet_health,
     _demo_site_host_timeline,
     _demo_site_proxy,
-    _DEMO_SITE_HOSTS,
-    _DEMO_SITE_ALERTS,
+    _demo_threat_intel_status,
+    _demo_version_status,
 )
 
 

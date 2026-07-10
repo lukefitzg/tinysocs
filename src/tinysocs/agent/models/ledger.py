@@ -6,7 +6,7 @@ import os
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 # Resolve and ensure the ledger directory exists
 LEDGER_DIR = Path(os.getenv("TINYSOCS_LEDGER_DIR", "ledger")).resolve()
@@ -24,11 +24,11 @@ class EvidenceLedgerEntry:
     node_id: str
     sequence: int
     ts_utc: str
-    head_prev: Optional[str]  # previous head digest (or None for genesis)
+    head_prev: str | None  # previous head digest (or None for genesis)
     payload_sha256: str       # sha256 of compact evidence batch payload (not the full logs)
     head_sha256: str          # sha256 of the entry itself (computed)
 
-    def to_json(self) -> Dict[str, Any]:
+    def to_json(self) -> dict[str, Any]:
         return asdict(self)
 
 def _node_file(node_id: str) -> Path:
@@ -37,7 +37,7 @@ def _node_file(node_id: str) -> Path:
 def _head_file(node_id: str) -> Path:
     return LEDGER_DIR / f"{node_id}.head"
 
-def _read_head(node_id: str) -> Tuple[Optional[int], Optional[str]]:
+def _read_head(node_id: str) -> tuple[int | None, str | None]:
     """
     Read the cached head pointer. Be tolerant to UTF-8 BOM and stray whitespace.
     Format: '<seq> <sha256>'
@@ -62,7 +62,7 @@ def _write_head(node_id: str, seq: int, head: str) -> None:
     # Write without BOM; callers only read with utf-8-sig, so either way is safe
     _head_file(node_id).write_text(f"{seq} {head}", encoding="utf-8")
 
-def append_entry(node_id: str, payload: Dict[str, Any]) -> EvidenceLedgerEntry:
+def append_entry(node_id: str, payload: dict[str, Any]) -> EvidenceLedgerEntry:
     f = _node_file(node_id)
     f.parent.mkdir(parents=True, exist_ok=True)
 
@@ -70,7 +70,7 @@ def append_entry(node_id: str, payload: Dict[str, Any]) -> EvidenceLedgerEntry:
     seq = 0 if seq_prev is None else seq_prev + 1
 
     payload_sha = _sha256_hex(_canon(payload))
-    core = {
+    core: dict[str, Any] = {
         "node_id": node_id,
         "sequence": seq,
         "ts_utc": datetime.now(timezone.utc).isoformat(),
@@ -78,7 +78,14 @@ def append_entry(node_id: str, payload: Dict[str, Any]) -> EvidenceLedgerEntry:
         "payload_sha256": payload_sha,
     }
     head_sha = _sha256_hex(_canon(core))
-    entry = EvidenceLedgerEntry(head_sha256=head_sha, **core)
+    entry = EvidenceLedgerEntry(
+        node_id=core["node_id"],
+        sequence=core["sequence"],
+        ts_utc=core["ts_utc"],
+        head_prev=core["head_prev"],
+        payload_sha256=core["payload_sha256"],
+        head_sha256=head_sha,
+    )
 
     # Append a single compact JSON line; no BOM on write
     with f.open("a", encoding="utf-8") as fp:
@@ -87,7 +94,7 @@ def append_entry(node_id: str, payload: Dict[str, Any]) -> EvidenceLedgerEntry:
     _write_head(node_id, seq, head_sha)
     return entry
 
-def verify_chain(node_id: str) -> Tuple[bool, Optional[int], Optional[str]]:
+def verify_chain(node_id: str) -> tuple[bool, int | None, str | None]:
     """
     Verify the JSONL chain for a node:
       - each line must be valid JSON (tolerate BOM/whitespace/blank lines)
@@ -100,7 +107,7 @@ def verify_chain(node_id: str) -> Tuple[bool, Optional[int], Optional[str]]:
     if not f.exists():
         return (True, None, None)
 
-    prev_head: Optional[str] = None
+    prev_head: str | None = None
     prev_seq: int = -1
 
     # 'utf-8-sig' drops BOM if the first line/file was saved with one

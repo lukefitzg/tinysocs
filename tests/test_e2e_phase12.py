@@ -20,7 +20,7 @@ import os
 import time
 import uuid
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
@@ -70,8 +70,9 @@ def _hmac_headers() -> dict:
 def client(_bot_env):
     # Patch out the ledger POST so /bot/exec doesn't try to reach the node
     with patch("tinysocs.api.bot._post_ledger", return_value={"ok": True, "mocked": True}):
-        from tinysocs.api.bot import app
         from starlette.testclient import TestClient
+
+        from tinysocs.api.bot import app
         with TestClient(app, raise_server_exceptions=False) as c:
             yield c
 
@@ -336,7 +337,7 @@ class TestAuditTrailE2E:
             pytest.skip("No audit file yet")
 
         lines = audit_file.read_text().strip().split("\n")
-        events = [json.loads(l) for l in lines if l.strip()]
+        events = [json.loads(line) for line in lines if line.strip()]
 
         # Should have at least some events from earlier tests
         assert len(events) > 0
@@ -360,7 +361,7 @@ class TestDashboardArtefacts:
     def test_ndjson_contains_expected_objects(self):
         ndjson = Path(__file__).resolve().parents[1] / "packaging" / "opensearch" / "dashboards" / "tinysocs-dashboards.ndjson"
         lines = ndjson.read_text().strip().split("\n")
-        objects = [json.loads(l) for l in lines if l.strip()]
+        objects = [json.loads(line) for line in lines if line.strip()]
         types = {obj.get("type") for obj in objects}
         # Must contain dashboards, visualizations, index patterns, and a saved search
         assert "dashboard" in types

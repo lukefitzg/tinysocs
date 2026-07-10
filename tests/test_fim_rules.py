@@ -5,8 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
-import pytest
-
 
 RULES_FILE = Path(__file__).resolve().parent.parent / "src" / "tinysocs" / "agent" / "detections" / "rules.yaml"
 CSHARP_RULES = Path(__file__).resolve().parent.parent / "packaging" / "detection" / "rules.yml"

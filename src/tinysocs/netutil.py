@@ -7,10 +7,10 @@ try:
     from .agent.netutil import is_loopback  # noqa: F401
 except Exception:
     # Minimal fallback (never used if the above succeeds)
-    def is_loopback(ip: str | None) -> bool:
-        if not ip:
+    def is_loopback(raw: str | None) -> bool:
+        if not raw:
             return False
-        s = str(ip).strip().lower()
+        s = str(raw).strip().lower()
         return s.startswith("127.0.") or s in {"::1", "0:0:0:0:0:0:0:1"}
 
 def env_str(name: str, default: str | None = None) -> str | None:

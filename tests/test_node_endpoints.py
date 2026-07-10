@@ -20,7 +20,6 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import tinysocs.api.node as node_mod  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

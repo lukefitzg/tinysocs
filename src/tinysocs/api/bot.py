@@ -40,7 +40,7 @@ import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import requests
 import urllib3
@@ -90,7 +90,7 @@ _load_dotenv_inplace()
 # ---------------------------------------------------------------------------
 
 # ---------- Env / defaults ----------
-def _env(name: str, default: Optional[str] = None) -> Optional[str]:
+def _env(name: str, default: str | None = None) -> str | None:
     v = os.getenv(name)
     return v if v is not None else default
 
@@ -124,7 +124,7 @@ from tinysocs.api.auth import make_verify_hmac
 
 # ---------- Try to use the project's existing actions_queue.py ---------------
 _aq = None
-_aq_queue_path: Optional[str] = None
+_aq_queue_path: str | None = None
 try:
     # Preferred: package style
     from tinysocs.agent import actions_queue as _aq  # type: ignore
@@ -164,7 +164,7 @@ verify_hmac = make_verify_hmac(BOT_SECRET, skew_secs=ALLOWED_SKEW_SECONDS)
 # ---------- Rate limiting (per-IP, in-memory) ----------
 _RATE_LIMIT_WINDOW = 60   # seconds
 _RATE_LIMIT_MAX = 30       # max requests per window per IP
-_rate_buckets: Dict[str, List[float]] = {}
+_rate_buckets: dict[str, list[float]] = {}
 
 _rate_gc_counter = 0
 
@@ -189,14 +189,14 @@ def _check_rate_limit(request: Request) -> None:
             _rate_buckets.pop(k, None)
 
 # ---------- Queue + ledger helpers ----------
-def _fallback_queue_append(obj: Dict[str, Any]) -> Path:
+def _fallback_queue_append(obj: dict[str, Any]) -> Path:
     p = _effective_queue_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     with open(p, "a", encoding="utf-8") as f:
         f.write(json.dumps(obj, ensure_ascii=False) + "\n")
     return p
 
-def _stage_entry(entry: Dict[str, Any]) -> Path:
+def _stage_entry(entry: dict[str, Any]) -> Path:
     """
     Prefer the project's actions_queue.stage_actions if present.
     Otherwise, write to our fallback JSONL path.
@@ -212,7 +212,7 @@ def _stage_entry(entry: Dict[str, Any]) -> Path:
     else:
         return _fallback_queue_append(entry)
 
-def _read_queue_items(limit: int) -> List[Dict[str, Any]]:
+def _read_queue_items(limit: int) -> list[dict[str, Any]]:
     """
     Read up to `limit` newest items from the JSONL queue file. Newest-first.
     """
@@ -226,7 +226,7 @@ def _read_queue_items(limit: int) -> List[Dict[str, Any]]:
         return []
     # take tail, then reverse for newest-first
     tail = lines[-limit:] if limit > 0 else lines
-    items: List[Dict[str, Any]] = []
+    items: list[dict[str, Any]] = []
     for ln in tail:
         try:
             items.append(json.loads(ln))
@@ -238,7 +238,7 @@ def _read_queue_items(limit: int) -> List[Dict[str, Any]]:
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
-def _node_hmac_headers() -> Dict[str, str]:
+def _node_hmac_headers() -> dict[str, str]:
     """
     Bot -> node ledger append uses timestamp-only HMAC (node accepts ts).
     If TINYSOCS_SIG_PREFIX is truthy, emit 'sha256=<hex>' form.
@@ -255,7 +255,7 @@ def _node_hmac_headers() -> Dict[str, str]:
     }
 
 
-def _ledger_attempts(entry: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
+def _ledger_attempts(entry: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
     """
     Try several body shapes against /evidence/append and return
     (success, details). details contains per-shape status + body.
@@ -263,14 +263,14 @@ def _ledger_attempts(entry: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
     url = f"{NODE_URL.rstrip('/')}/evidence/append"
     headers = _node_hmac_headers()
 
-    shapes: List[Tuple[str, Any]] = [
+    shapes: list[tuple[str, Any]] = [
         ("payload", {"payload": entry}),
         ("entry",   {"entry": entry}),
         ("raw",     entry),
         ("evidence",{"evidence": entry}),
     ]
 
-    results: List[Dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
     for name, body in shapes:
         try:
             r = requests.post(url, headers=headers, json=body, timeout=8, verify=NODE_TLS_VERIFY)
@@ -292,7 +292,7 @@ def _ledger_attempts(entry: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
             })
     return False, {"attempts": results}
 
-def _post_ledger(entry: Dict[str, Any]) -> str:
+def _post_ledger(entry: dict[str, Any]) -> str:
     ok, details = _ledger_attempts(entry)
     if ok:
         return "ok"
@@ -305,32 +305,32 @@ def _post_ledger(entry: Dict[str, Any]) -> str:
 # ---------- Models ----------
 class AckBody(BaseModel):
     incident_id: str = Field(..., description="Incident identifier (opaque)")
-    tldr: Optional[str] = Field(None, description="Short description/summary")
-    who: Optional[str] = Field(None, description="Human display name (optional)")
+    tldr: str | None = Field(None, description="Short description/summary")
+    who: str | None = Field(None, description="Human display name (optional)")
 
 ALLOWED_ACTIONS = {"block_ip", "disable_user", "isolate_host", "open_ticket", "ack_incident"}
 
 class ExecBody(BaseModel):
     action: str = Field(..., description=f"One of: {', '.join(sorted(ALLOWED_ACTIONS))}")
-    params: Dict[str, Any] = Field(default_factory=dict)
-    who: Optional[str] = Field(None, description="Human display name (optional)")
-    dry_run: Optional[bool] = True  # allow caller to specify, default True
+    params: dict[str, Any] = Field(default_factory=dict)
+    who: str | None = Field(None, description="Human display name (optional)")
+    dry_run: bool | None = True  # allow caller to specify, default True
 
 class QueueItem(BaseModel):
     timestamp: str
     action: str
-    params: Dict[str, Any] = Field(default_factory=dict)
+    params: dict[str, Any] = Field(default_factory=dict)
     status: str = "staged"
-    who: Optional[str] = None
-    kind: Optional[str] = "bot_action"
+    who: str | None = None
+    kind: str | None = "bot_action"
 
 class ActionsResponse(BaseModel):
-    items: List[QueueItem]
+    items: list[QueueItem]
     count: int
-    next_cursor: Optional[str] = None
+    next_cursor: str | None = None
 
 # ---------- Guards ----------
-def _guard_params(action: str, params: Dict[str, Any]) -> None:
+def _guard_params(action: str, params: dict[str, Any]) -> None:
     if action == "block_ip":
         ip = str(params.get("ip", "")).strip()
         if not ip:
@@ -392,6 +392,7 @@ app.add_middleware(_BotMaxBodySizeMiddleware)
 # Must set env var BEFORE importing dashboard, since _DEMO_MODE and _DASHBOARD_HTML
 # are evaluated at module load time.
 import sys as _sys
+
 if "--demo" in _sys.argv:
     os.environ["TINYSOCS_DEMO_MODE"] = "1"
     os.environ.setdefault("SIEM_PASS", "demo")
@@ -414,10 +415,13 @@ except ImportError:
 # ---------- Action executor integration (Phase 12) ----------
 try:
     from tinysocs.actions.executor import (
-        stage_action as _executor_stage,
         approve_action as _executor_approve,
+    )
+    from tinysocs.actions.executor import (
         get_action as _executor_get,
-        list_actions as _executor_list,
+    )
+    from tinysocs.actions.executor import (
+        stage_action as _executor_stage,
     )
     _HAS_EXECUTOR = True
 except ImportError:
@@ -425,21 +429,21 @@ except ImportError:
 
 class ApproveBody(BaseModel):
     action_id: str = Field(..., description="ID of the staged action to approve")
-    approved_by: Optional[str] = Field("operator", description="Who is approving")
+    approved_by: str | None = Field("operator", description="Who is approving")
 
 class ActionStatusResponse(BaseModel):
     action_id: str
     action: str
     status: str
-    params: Dict[str, Any] = Field(default_factory=dict)
+    params: dict[str, Any] = Field(default_factory=dict)
     dry_run: bool = True
-    staged_at: Optional[str] = None
-    approved_at: Optional[str] = None
-    completed_at: Optional[str] = None
-    result: Optional[Dict[str, Any]] = None
+    staged_at: str | None = None
+    approved_at: str | None = None
+    completed_at: str | None = None
+    result: dict[str, Any] | None = None
 
 @app.post("/bot/ack", dependencies=[Depends(verify_hmac), Depends(_check_rate_limit)])
-def bot_ack(body: AckBody = Body(...)) -> Dict[str, Any]:
+def bot_ack(body: AckBody = Body(...)) -> dict[str, Any]:
     entry = {
         "kind": "bot_action",
         "action": "ack_incident",
@@ -453,7 +457,7 @@ def bot_ack(body: AckBody = Body(...)) -> Dict[str, Any]:
     return {"queued": True, "ledger": ledger_res, "node": NODE_URL, "path": str(qpath)}
 
 @app.post("/bot/exec", dependencies=[Depends(verify_hmac), Depends(_check_rate_limit)])
-def bot_exec(body: ExecBody = Body(...)) -> Dict[str, Any]:
+def bot_exec(body: ExecBody = Body(...)) -> dict[str, Any]:
     if body.action not in ALLOWED_ACTIONS:
         raise HTTPException(status_code=400, detail=f"action not allowed: {body.action}")
     _guard_params(body.action, body.params)
@@ -487,7 +491,7 @@ def bot_exec(body: ExecBody = Body(...)) -> Dict[str, Any]:
 
 # ---- Action Approval (Phase 12) ----
 @app.post("/bot/approve", dependencies=[Depends(verify_hmac), Depends(_check_rate_limit)])
-def bot_approve(body: ApproveBody = Body(...)) -> Dict[str, Any]:
+def bot_approve(body: ApproveBody = Body(...)) -> dict[str, Any]:
     if not _HAS_EXECUTOR:
         raise HTTPException(status_code=501, detail="Action executor not available")
     try:
@@ -525,9 +529,9 @@ def bot_action_status(action_id: str) -> ActionStatusResponse:
 @app.get("/bot/actions", response_model=ActionsResponse, dependencies=[Depends(verify_hmac)])
 def bot_actions(
     limit: int = Query(50, ge=1, le=500),
-    action: Optional[str] = Query(None, description="Exact action filter"),
-    since: Optional[str] = Query(None, description="ISO8601 (e.g., 2025-10-31T12:00:00Z)"),
-    status: Optional[str] = Query(None, description="status filter, e.g. 'staged'"),
+    action: str | None = Query(None, description="Exact action filter"),
+    since: str | None = Query(None, description="ISO8601 (e.g., 2025-10-31T12:00:00Z)"),
+    status: str | None = Query(None, description="status filter, e.g. 'staged'"),
 ) -> ActionsResponse:
     # Read extra to allow filtering, then apply filters and cut to limit.
     items = _read_queue_items(limit * 5)
@@ -539,7 +543,7 @@ def bot_actions(
         except Exception:
             dt_cut = None
 
-    out: List[QueueItem] = []
+    out: list[QueueItem] = []
     for it in items:
         # normalize missing fields
         act = it.get("action")
@@ -580,7 +584,7 @@ def bot_actions(
 _DIAG_ENABLED = str(os.getenv("BOT_ENABLE_DIAG", "0")).strip().lower() in ("1", "true", "yes", "on")
 
 @app.post("/bot/_diag/ledger-shapes", dependencies=[Depends(verify_hmac)])
-def bot_diag_ledger_shapes(sample: Dict[str, Any] = Body(default=None)) -> Dict[str, Any]:
+def bot_diag_ledger_shapes(sample: dict[str, Any] = Body(default=None)) -> dict[str, Any]:
     """
     Test all body shapes against /evidence/append and return per-shape results.
     If no sample provided, a minimal bot_action ack is used.
@@ -598,13 +602,13 @@ def bot_diag_ledger_shapes(sample: Dict[str, Any] = Body(default=None)) -> Dict[
     }
     url = f"{NODE_URL.rstrip('/')}/evidence/append"
     headers = _node_hmac_headers()
-    shapes: List[Tuple[str, Any]] = [
+    shapes: list[tuple[str, Any]] = [
         ("payload", {"payload": entry}),
         ("entry",   {"entry": entry}),
         ("raw",     entry),
         ("evidence",{"evidence": entry}),
     ]
-    results: List[Dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
     for name, body in shapes:
         try:
             r = requests.post(url, headers=headers, json=body, timeout=8, verify=NODE_TLS_VERIFY)
@@ -631,7 +635,7 @@ def meta():
 
 # ---- Diagnostic endpoint: append sample queue items (HMAC-protected) ----
 @app.post("/bot/_diag/queue-append-sample", dependencies=[Depends(verify_hmac)])
-def bot_diag_queue_append_sample() -> Dict[str, Any]:
+def bot_diag_queue_append_sample() -> dict[str, Any]:
     """
     Append a couple of canned items to the queue for quick testing.
     Enable with BOT_ENABLE_DIAG=1 (or true/yes/on).

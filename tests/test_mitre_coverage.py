@@ -9,8 +9,8 @@ import pytest
 import yaml
 
 from tinysocs.reporting.mitre_coverage import (
-    TACTIC_ORDER,
     TACTIC_LABELS,
+    TACTIC_ORDER,
     _find_csharp_rules,
     _find_python_rules,
     calculate_coverage,

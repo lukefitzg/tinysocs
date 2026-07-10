@@ -15,7 +15,7 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ _MAX_ENTRIES = 100_000
 class ThreatCache:
     """SQLite-backed TTL cache for threat intel results."""
 
-    def __init__(self, db_path: Optional[str] = None) -> None:
+    def __init__(self, db_path: str | None = None) -> None:
         if db_path:
             self._db_path = Path(db_path)
         elif os.name == "nt":
@@ -64,7 +64,7 @@ class ThreatCache:
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(str(self._db_path), timeout=5.0)
 
-    def get(self, ioc_type: str, ioc_value: str, provider: str) -> Optional[Dict[str, Any]]:
+    def get(self, ioc_type: str, ioc_value: str, provider: str) -> dict[str, Any] | None:
         """Return cached result if still valid (within TTL), else None."""
         try:
             with self._lock, self._connect() as conn:
@@ -89,7 +89,7 @@ class ThreatCache:
             return None
 
     def put(self, ioc_type: str, ioc_value: str, provider: str,
-            result: Dict[str, Any], ttl_seconds: int = 86400) -> None:
+            result: dict[str, Any], ttl_seconds: int = 86400) -> None:
         """Store a result in the cache with the given TTL."""
         try:
             result_json = json.dumps(result, default=str)
@@ -129,7 +129,7 @@ class ThreatCache:
             logger.warning("Cache cleanup error: %s", e)
             return 0
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         """Return cache statistics."""
         try:
             with self._lock, self._connect() as conn:

@@ -32,7 +32,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any
 from urllib.parse import urlparse
 
 import requests
@@ -103,7 +103,7 @@ except Exception:
     pass
 
 # ---------------- Config ----------------
-NODES: List[str] = [x.strip() for x in (os.getenv("TINYSOCS_NODES", "")).split(",") if x.strip()]
+NODES: list[str] = [x.strip() for x in (os.getenv("TINYSOCS_NODES", "")).split(",") if x.strip()]
 SECRET: str = os.getenv("MASTER_SHARED_SECRET", "dev-secret-change-me")
 NODE_TLS_VERIFY: bool = not _env_bool("TINYSOCS_INSECURE_SKIP_VERIFY", True)  # default skip verify (local lab)
 
@@ -111,6 +111,7 @@ SIEM_URL: str = os.getenv("SIEM_URL", "https://localhost:9201")
 SIEM_USER: str = os.getenv("SIEM_USER", "admin")
 SIEM_PASS: str = os.getenv("SIEM_PASS", "")
 from tinysocs.tls import resolve_ca_cert
+
 SIEM_TIMEOUT: float = float(os.getenv("SIEM_TIMEOUT_SECONDS", "30"))
 
 REQUEST_TIMEOUT: float = float(os.getenv("REQUEST_TIMEOUT_SEC", "30"))
@@ -121,7 +122,7 @@ USE_PREFIX: bool = str(os.getenv("TINYSOCS_SIG_PREFIX", "")).strip().lower() in 
 ANCHORS_ALIAS: str = os.getenv("TINYSOCS_ANCHORS_ALIAS", "tinysocs_anchors")
 
 # ---------------- HMAC headers (supports pipe|dot|ts; raw or prefixed) ----------------
-def _headers() -> Dict[str, str]:
+def _headers() -> dict[str, str]:
     import secrets
     ts = str(int(time.time()))
     if HMAC_STYLE == "dot":
@@ -158,7 +159,7 @@ def _derive_node_id(node_url: str) -> str:
     host = (p.hostname or "node").split(".")[0]
     return f"node-{host}"
 
-def _alt_node_urls(node_url: str) -> Set[str]:
+def _alt_node_urls(node_url: str) -> set[str]:
     """Return a set of equivalent URLs to match anchors (localhost ↔ 127.0.0.1)."""
     p = urlparse(node_url)
     variants = set([node_url.rstrip("/")])
@@ -169,7 +170,7 @@ def _alt_node_urls(node_url: str) -> Set[str]:
     return variants
 
 # ---------------- Node head fetch ----------------
-def _get_head(node_url: str) -> Dict[str, Any]:
+def _get_head(node_url: str) -> dict[str, Any]:
     url = node_url.rstrip("/") + "/evidence/head"
     try:
         r = requests.get(url, headers=_headers(), timeout=REQUEST_TIMEOUT, verify=NODE_TLS_VERIFY)
@@ -191,7 +192,7 @@ def _get_head(node_url: str) -> Dict[str, Any]:
 def _es_auth() -> HTTPBasicAuth:
     return HTTPBasicAuth(SIEM_USER, SIEM_PASS)
 
-def _search_latest_anchor(node_url: str, node_id: str) -> Optional[Dict[str, Any]]:
+def _search_latest_anchor(node_url: str, node_id: str) -> dict[str, Any] | None:
     """
     Return the most recent anchor doc for this node from the anchors alias.
     Tries node_url (with localhost/127.0.0.1 variants) OR node_id.
@@ -229,7 +230,7 @@ def main() -> None:
     if not NODES:
         raise SystemExit("Set TINYSOCS_NODES (comma-separated).")
 
-    rows: List[Dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
 
     if not args.verify:
         # Health-only path (current node heads)

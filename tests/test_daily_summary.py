@@ -2,19 +2,17 @@
 """Unit tests for the daily summary report generator (Phase 12 / M3)."""
 
 import os
-from unittest.mock import patch, MagicMock
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 from tinysocs.reporting.daily_summary import (
-    _alerts_by_severity,
-    _top_rules,
-    _top_hosts,
-    _total_alerts,
     _alert_trend,
-    _new_hosts_seen,
+    _alerts_by_severity,
     _host_count,
+    _new_hosts_seen,
     _severity_color,
+    _top_hosts,
+    _top_rules,
+    _total_alerts,
     generate_summary,
     send_email,
 )

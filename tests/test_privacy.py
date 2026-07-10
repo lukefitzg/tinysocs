@@ -2,10 +2,10 @@
 """Unit tests for the privacy masking module (Phase 11)."""
 
 from tinysocs.agent.privacy import (
-    mask_email,
     coarse_mask,
-    mask_entities,
     extract_tokens,
+    mask_email,
+    mask_entities,
 )
 
 

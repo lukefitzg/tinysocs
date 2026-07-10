@@ -1,15 +1,16 @@
 # tinysocs/api/node.py
 import hashlib
+import hmac
 import json
 import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import requests
 import urllib3
-from fastapi import Depends, FastAPI, HTTPException, Request, Body, Query
+from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 
 # Suppress InsecureRequestWarning for federation connections (verify=False)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -179,7 +180,7 @@ def _get_siem_base_url() -> str:
     return url.rstrip("/")
 
 
-from tinysocs.tls import resolve_ca_cert, get_opensearch_session
+from tinysocs.tls import get_opensearch_session, resolve_ca_cert
 
 
 def _os_search_raw(index_pattern: str, body: dict, size: int = 0) -> dict:
@@ -389,7 +390,6 @@ def list_hec_tokens() -> list[dict]:
 def _verify_bearer_token(raw_token: str) -> bool:
     """Verify a bearer token against stored hashes. Updates last_used on success."""
     _load_hec_tokens()
-    h = _hash_token(raw_token)
     for t in _hec_tokens:
         if hashlib.sha256(raw_token.encode()).hexdigest() == t["token_hash"]:
             t["last_used"] = datetime.now(timezone.utc).isoformat()
@@ -435,7 +435,7 @@ def _normalize_rules(rules: str) -> list[str]:
     return [r.strip() for r in (rules or "").split(",") if r.strip()]
 
 
-def _get_int_env(name: str, default: Optional[int] = None) -> Optional[int]:
+def _get_int_env(name: str, default: int | None = None) -> int | None:
     """
     Robust int parser for env vars.
 
@@ -470,14 +470,14 @@ def _normalize_window(window: str) -> str:
     return win
 
 
-def _run_rule(rule_id: str, window: str, host: Optional[str]) -> Optional[dict[str, Any]]:
+def _run_rule(rule_id: str, window: str, host: str | None) -> dict[str, Any] | None:
     """
     Execute a single detection rule against the local SIEM.
 
     Returns a compact evidence dict if the rule is triggered (count >= threshold),
     otherwise returns None.
     """
-    rule: Optional[Rule] = RULES.get(rule_id)  # type: ignore[assignment]
+    rule: Rule | None = RULES.get(rule_id)  # type: ignore[assignment]
     if rule is None:
         print(f"[tinysocs-node] unknown rule_id={rule_id}", flush=True)
         return None
@@ -566,7 +566,7 @@ async def get_meta() -> dict:
 async def agg_get(
     rules: str = Query("default"),
     window: str = Query("15m"),
-    host: Optional[str] = Query(None),
+    host: str | None = Query(None),
 ) -> list[dict[str, Any]]:
     """
     Aggregate detections for one or more rules over a time window.
@@ -628,10 +628,10 @@ async def agg_post(payload: dict = Body(...)) -> list[dict[str, Any]]:
 async def sample_get(
     rules: str = Query("default"),
     window: str = Query("15m"),
-    host: Optional[str] = Query(None),
+    host: str | None = Query(None),
     limit: int = Query(20, ge=1, le=500),
-    index: Optional[str] = Query(None),
-    index_pattern: Optional[str] = Query(None),
+    index: str | None = Query(None),
+    index_pattern: str | None = Query(None),
     kql: str = Query("*"),
 ) -> list[dict[str, Any]]:
     """
@@ -1149,11 +1149,12 @@ def _parse_os_size(s: str) -> int:
 
 def _human_size(b: int) -> str:
     """Convert bytes to human-readable string."""
+    size: float = b
     for unit in ("B", "KB", "MB", "GB", "TB"):
-        if abs(b) < 1024:
-            return f"{b:.1f} {unit}" if unit != "B" else f"{b} {unit}"
-        b /= 1024
-    return f"{b:.1f} PB"
+        if abs(size) < 1024:
+            return f"{size:.1f} {unit}" if unit != "B" else f"{b} {unit}"
+        size /= 1024
+    return f"{size:.1f} PB"
 
 
 @app.get("/storage/stats", dependencies=[Depends(_verify_hmac_if_enabled), Depends(_check_read_rate)])
@@ -1182,13 +1183,21 @@ async def storage_stats() -> dict:
             docs = int(idx.get("docs.count", 0) or 0)
             size = _parse_os_size(idx.get("store.size", "0"))
             if name.startswith("tinysocs-winlog-"):
-                winlog_docs += docs; winlog_bytes += size; winlog_count += 1
+                winlog_docs += docs
+                winlog_bytes += size
+                winlog_count += 1
             elif name.startswith("tinysocs-alerts-"):
-                alert_docs += docs; alert_bytes += size; alert_count += 1
+                alert_docs += docs
+                alert_bytes += size
+                alert_count += 1
             elif name.startswith("tinysocs-custom-"):
-                custom_docs += docs; custom_bytes += size; custom_count += 1
+                custom_docs += docs
+                custom_bytes += size
+                custom_count += 1
             else:
-                other_docs += docs; other_bytes += size; other_count += 1
+                other_docs += docs
+                other_bytes += size
+                other_count += 1
 
         total_docs = winlog_docs + alert_docs + custom_docs + other_docs
         total_bytes = winlog_bytes + alert_bytes + custom_bytes + other_bytes
@@ -1339,10 +1348,10 @@ async def storage_purge(request: Request) -> dict:
 @app.get("/diagnostics/health")
 async def diagnostics_health() -> dict:
     """Local node health: OpenSearch cluster health + disk usage."""
-    import time as _time
     import shutil
+    import time as _time
 
-    result = {"ok": True, "opensearch": {"status": "unknown"}, "disk": {}}
+    result: dict[str, Any] = {"ok": True, "opensearch": {"status": "unknown"}, "disk": {}}
 
     siem_url = os.getenv("SIEM_URL", "https://localhost:9201").rstrip("/")
     siem_pass = os.getenv("SIEM_PASS", "").strip()
@@ -1467,10 +1476,14 @@ def _registration_loop() -> None:
                 status = data.get("status", "")
 
                 if status == "approved":
-                    print(f"[tinysocs-node] Registration approved by Hub", flush=True)
+                    print("[tinysocs-node] Registration approved by Hub", flush=True)
                     # Pin the Hub's TLS cert for future connections
                     try:
-                        from tinysocs.federation_certs import fetch_cert_info, save_pinned_certs, load_pinned_certs, _pinned_certs_path
+                        from tinysocs.federation_certs import (
+                            fetch_cert_info,
+                            load_pinned_certs,
+                            save_pinned_certs,
+                        )
                         hub_cert = fetch_cert_info(_HUB_URL)
                         if hub_cert:
                             pinned = load_pinned_certs()
@@ -1488,7 +1501,7 @@ def _registration_loop() -> None:
                         print(f"[tinysocs-node] Could not pin Hub cert (non-fatal): {pin_exc}", flush=True)
                     return
                 elif status == "rejected":
-                    print(f"[tinysocs-node] Registration rejected by Hub", flush=True)
+                    print("[tinysocs-node] Registration rejected by Hub", flush=True)
                     return
                 elif status == "pending":
                     print(f"[tinysocs-node] Registration pending Hub approval (url={my_url})",

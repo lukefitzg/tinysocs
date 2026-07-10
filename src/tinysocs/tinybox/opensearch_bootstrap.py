@@ -15,13 +15,12 @@
 import base64
 import json
 import os
-import sys
 import ssl
+import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, Tuple, List, Optional
-
+from typing import Any
 
 DEFAULT_TIMEOUT_SEC = 15
 
@@ -45,7 +44,7 @@ def _bool_env(name: str, default: bool) -> bool:
     return default
 
 
-def _ssl_context_for_url(url: str) -> Optional[ssl.SSLContext]:
+def _ssl_context_for_url(url: str) -> ssl.SSLContext | None:
     if not url.lower().startswith("https://"):
         return None
 
@@ -61,16 +60,16 @@ def _ssl_context_for_url(url: str) -> Optional[ssl.SSLContext]:
     return ssl.create_default_context()
 
 
-def _basic_auth_header() -> Optional[str]:
+def _basic_auth_header() -> str | None:
     user = os.environ.get("SIEM_USER")
     pw = os.environ.get("SIEM_PASS")
     if not user or not pw:
         return None
-    token = base64.b64encode(f"{user}:{pw}".encode("utf-8")).decode("ascii")
+    token = base64.b64encode(f"{user}:{pw}".encode()).decode("ascii")
     return f"Basic {token}"
 
 
-def _http_json(method: str, path: str, body: Any = None, timeout: int = DEFAULT_TIMEOUT_SEC) -> Tuple[int, Any]:
+def _http_json(method: str, path: str, body: Any = None, timeout: int = DEFAULT_TIMEOUT_SEC) -> tuple[int, Any]:
     base = _get_base_url()
     url = f"{base}/{path.lstrip('/')}"
     data_bytes = None
@@ -119,7 +118,7 @@ def _check_cluster() -> None:
     print(f"[tinybox-bootstrap] Connected to OpenSearch node={name!r} cluster={cluster!r}")
 
 
-def _find_templates_dir() -> Optional[Path]:
+def _find_templates_dir() -> Path | None:
     override = os.environ.get("TINYSOCS_OS_TEMPLATES_DIR")
     if override:
         p = Path(override)
@@ -145,12 +144,12 @@ def _find_templates_dir() -> Optional[Path]:
     return None
 
 
-def _list_template_files(templates_dir: Path) -> List[Path]:
+def _list_template_files(templates_dir: Path) -> list[Path]:
     files = sorted([p for p in templates_dir.glob("*.json") if p.is_file()])
     return files
 
 
-def _put_index_template(name: str, body: Dict[str, Any]) -> None:
+def _put_index_template(name: str, body: dict[str, Any]) -> None:
     status, resp = _http_json("PUT", f"/_index_template/{name}", body)
     if 200 <= status < 300:
         print(f"[tinybox-bootstrap] Template ensured: {name} (status={status})")
@@ -159,14 +158,14 @@ def _put_index_template(name: str, body: Dict[str, Any]) -> None:
     sys.exit(1)
 
 
-def _get_indices_for_pattern(pattern: str) -> List[str]:
+def _get_indices_for_pattern(pattern: str) -> list[str]:
     # _cat returns 404 if no indices match in some configurations; treat as "none"
     status, body = _http_json("GET", f"/_cat/indices/{pattern}?format=json", timeout=DEFAULT_TIMEOUT_SEC)
     if status == 404:
         return []
     if not isinstance(body, list):
         return []
-    out: List[str] = []
+    out: list[str] = []
     for row in body:
         if isinstance(row, dict):
             nm = row.get("index")
@@ -175,7 +174,7 @@ def _get_indices_for_pattern(pattern: str) -> List[str]:
     return out
 
 
-def _seed_aliases_for_template(template_body: Dict[str, Any]) -> None:
+def _seed_aliases_for_template(template_body: dict[str, Any]) -> None:
     pats = template_body.get("index_patterns")
     if not isinstance(pats, list):
         return
@@ -200,7 +199,7 @@ def _seed_aliases_for_template(template_body: Dict[str, Any]) -> None:
         if not indices:
             continue
 
-        actions: List[Dict[str, Any]] = []
+        actions: list[dict[str, Any]] = []
         for idx in indices:
             for a in alias_names:
                 actions.append({"add": {"index": idx, "alias": a}})
@@ -243,7 +242,7 @@ def _ensure_templates_and_aliases() -> None:
             sys.exit(1)
 
 
-def _build_retention_policy(description: str, index_pattern: str, retention_days: int) -> Dict[str, Any]:
+def _build_retention_policy(description: str, index_pattern: str, retention_days: int) -> dict[str, Any]:
     """Build an ISM policy JSON for time-based index deletion."""
     return {
         "policy": {
@@ -272,10 +271,10 @@ def _build_retention_policy(description: str, index_pattern: str, retention_days
 
 
 def apply_retention_policies(
-    winlog_days: Optional[int] = None,
-    alert_days: Optional[int] = None,
-    custom_days: Optional[int] = None,
-) -> Dict[str, Any]:
+    winlog_days: int | None = None,
+    alert_days: int | None = None,
+    custom_days: int | None = None,
+) -> dict[str, Any]:
     """Apply ISM retention policies to OpenSearch.
 
     Reads retention days from parameters or env vars (WINLOG_RETENTION_DAYS,
@@ -294,7 +293,7 @@ def apply_retention_policies(
     alert_days = max(7, min(365, alert_days))
     custom_days = max(7, min(365, custom_days))
 
-    results: Dict[str, Any] = {}
+    results: dict[str, Any] = {}
 
     policies = [
         (

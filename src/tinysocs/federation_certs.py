@@ -28,14 +28,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import ssl
 import socket
-import tempfile
+import ssl
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, cast
 from urllib.parse import urlparse
-
 
 # ---------------------------------------------------------------------------
 # Storage helpers
@@ -47,7 +45,7 @@ def _pinned_certs_path() -> Path:
     return Path(pd) / "TinySocs" / "Assistant" / "pinned_certs.json"
 
 
-def load_pinned_certs() -> Dict[str, Any]:
+def load_pinned_certs() -> dict[str, Any]:
     """Load pinned certificate data from disk."""
     path = _pinned_certs_path()
     if path.is_file():
@@ -58,7 +56,7 @@ def load_pinned_certs() -> Dict[str, Any]:
     return {}
 
 
-def save_pinned_certs(data: Dict[str, Any]) -> None:
+def save_pinned_certs(data: dict[str, Any]) -> None:
     """Persist pinned certificate data to disk."""
     path = _pinned_certs_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -75,7 +73,7 @@ def _format_fingerprint(der_bytes: bytes) -> str:
     return ":".join(digest[i:i + 2] for i in range(0, len(digest), 2))
 
 
-def fetch_cert_info(url: str) -> Optional[Dict[str, Any]]:
+def fetch_cert_info(url: str) -> dict[str, Any] | None:
     """Connect to a remote node and extract its TLS certificate info.
 
     Returns None if the URL is not HTTPS or the connection fails.
@@ -103,9 +101,11 @@ def fetch_cert_info(url: str) -> Optional[Dict[str, Any]]:
             return None
 
         # Extract subject CN
+        # ssl's getpeercert() typeshed types every key's value as a union
+        # (str | RDN tuples); "subject" is always the nested-tuple form.
         subject = ""
         if peer_info and "subject" in peer_info:
-            for rdn in peer_info["subject"]:
+            for rdn in cast("tuple[tuple[tuple[str, str], ...], ...]", peer_info["subject"]):
                 for attr_type, attr_value in rdn:
                     if attr_type == "commonName":
                         subject = attr_value
@@ -114,7 +114,7 @@ def fetch_cert_info(url: str) -> Optional[Dict[str, Any]]:
         # Extract expiry
         not_after = ""
         if peer_info and "notAfter" in peer_info:
-            not_after = peer_info["notAfter"]
+            not_after = cast(str, peer_info["notAfter"])
 
         # Build PEM from DER
         import base64
@@ -132,7 +132,7 @@ def fetch_cert_info(url: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def pin_site_cert(url: str, node_id: str) -> Dict[str, Any]:
+def pin_site_cert(url: str, node_id: str) -> dict[str, Any]:
     """Fetch a Site's TLS cert and pin it.  Returns the pin record.
 
     Raises ValueError if the Site is not using HTTPS or cert fetch fails.
@@ -179,7 +179,7 @@ def pin_site_cert(url: str, node_id: str) -> Dict[str, Any]:
 # Verification
 # ---------------------------------------------------------------------------
 
-def verify_site_cert(url: str) -> Optional[str]:
+def verify_site_cert(url: str) -> str | None:
     """Check if a Site's current cert matches the pinned fingerprint.
 
     Returns None if verification passes (or no pin exists).

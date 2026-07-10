@@ -1,15 +1,15 @@
 ﻿# agent/report.py
-from typing import Any, Dict, List
+from typing import Any
 
 
-def _lines_if(title: str, items: List[str]) -> List[str]:
+def _lines_if(title: str, items: list[str]) -> list[str]:
     if not items:
         return []
     out = [f"\n## {title}"]
     out.extend(f"- {x}" for x in items)
     return out
 
-def to_markdown(incident: Dict[str,Any]) -> str:
+def to_markdown(incident: dict[str,Any]) -> str:
     lines = [
       "# TinySocs Incident Report",
       f"**Severity:** {incident.get('severity','Unknown')}",

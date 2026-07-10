@@ -4,7 +4,7 @@ from __future__ import annotations
 import collections
 import ipaddress
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import yaml
 
@@ -40,7 +40,7 @@ def _rules_path(default: str = "rules.yaml") -> str:
 # -------------------------
 # Helpers
 # -------------------------
-def _normalize_ip(raw: Any) -> Optional[str]:
+def _normalize_ip(raw: Any) -> str | None:
     """Normalize loopback; pass through valid IPs/hostnames; tolerate None."""
     if raw in (None, "", "-"):
         return None
@@ -54,7 +54,7 @@ def _normalize_ip(raw: Any) -> Optional[str]:
         return s  # hostname or junk; return as-is
 
 
-def _extract(doc: Dict[str, Any], path: str) -> Any:
+def _extract(doc: dict[str, Any], path: str) -> Any:
     """Dot-path lookup with forgiveness."""
     cur: Any = doc
     for part in path.split("."):
@@ -64,9 +64,9 @@ def _extract(doc: Dict[str, Any], path: str) -> Any:
     return cur
 
 
-def _short_sample(hits: List[Dict[str, Any]], limit: int = 10) -> List[Dict[str, Any]]:
+def _short_sample(hits: list[dict[str, Any]], limit: int = 10) -> list[dict[str, Any]]:
     """Pretty sample for non-threshold rules (4688 etc)."""
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     for h in hits[:limit]:
         ts = h.get("@timestamp") or "-"
         proc = (h.get("process") or {}).get("name") or "-"
@@ -81,26 +81,27 @@ def _short_sample(hits: List[Dict[str, Any]], limit: int = 10) -> List[Dict[str,
     return out
 
 
-def run_detections(rules_path: Optional[str] = None) -> List[Dict[str, Any]]:
+def run_detections(rules_path: str | None = None) -> list[dict[str, Any]]:
     path = rules_path or _rules_path()
     print(f"[DEBUG] rules path -> {path}")
     with open(path, encoding="utf-8") as f:
         rules = yaml.safe_load(f) or []
 
-    findings: List[Dict[str, Any]] = []
+    findings: list[dict[str, Any]] = []
 
     for r in rules:
         index = r.get("index", "")
         kql = r["kql"]
         hits = client.search_kql(index, kql, size=2000)
+        assert isinstance(hits, list)  # size > 0 always returns a doc list, never the count-only dict/int
         print(f"[DEBUG] rule={r.get('id','(no-id)')} hits={len(hits)} index={index}")
 
         if r.get("threshold"):
             # Dynamic bucketing: default to (source.ip, user.name), but allow any list
-            group_fields: List[str] = r.get("group_by") or ["source.ip", "user.name"]
+            group_fields: list[str] = r.get("group_by") or ["source.ip", "user.name"]
 
-            def key_for(doc: Dict[str, Any]) -> tuple:
-                vals: List[Any] = []
+            def key_for(doc: dict[str, Any]) -> tuple:
+                vals: list[Any] = []
                 for fld in group_fields:
                     v = _extract(doc, fld)
                     # Normalize IP-ish fields
@@ -122,8 +123,8 @@ def run_detections(rules_path: Optional[str] = None) -> List[Dict[str, Any]]:
                     continue
 
                 # Evidence map from group fields -> values
-                ev: Dict[str, Any] = {}
-                ip_for_rdns: Optional[str] = None
+                ev: dict[str, Any] = {}
+                ip_for_rdns: str | None = None
                 for fld, val in zip(group_fields, key_tuple):
                     # Flatten known common names for readability
                     if fld == "source.ip":

@@ -11,11 +11,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import yaml
 
@@ -47,7 +46,7 @@ def _resolve_frameworks_dir() -> Path:
 FRAMEWORKS_DIR = _resolve_frameworks_dir()
 
 
-def load_framework(name: str) -> Dict[str, Any]:
+def load_framework(name: str) -> dict[str, Any]:
     """Load a compliance framework YAML file."""
     path = FRAMEWORKS_DIR / f"{name}.yaml"
     if not path.is_file():
@@ -55,7 +54,7 @@ def load_framework(name: str) -> Dict[str, Any]:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
-def list_frameworks() -> List[str]:
+def list_frameworks() -> list[str]:
     """List available framework names."""
     if not FRAMEWORKS_DIR.is_dir():
         return []
@@ -65,7 +64,7 @@ def list_frameworks() -> List[str]:
 # ---------------------------------------------------------------------------
 # Data collection
 # ---------------------------------------------------------------------------
-def _rule_fire_counts(hours: int) -> Dict[str, int]:
+def _rule_fire_counts(hours: int) -> dict[str, int]:
     """Count how many times each rule fired in the last N hours."""
     body = {
         "size": 0,
@@ -90,7 +89,7 @@ def _rule_fire_counts(hours: int) -> Dict[str, int]:
 def generate_compliance_report(
     framework_name: str,
     hours: int = 720,  # default 30 days
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Generate a compliance report for the given framework.
 
     Returns a dict with:
@@ -101,7 +100,7 @@ def generate_compliance_report(
     fw = load_framework(framework_name)
     rule_counts = _rule_fire_counts(hours)
 
-    controls: List[Dict[str, Any]] = []
+    controls: list[dict[str, Any]] = []
     total = 0
     covered = 0
     not_mapped = 0
@@ -155,7 +154,7 @@ def generate_compliance_report(
 # ---------------------------------------------------------------------------
 # HTML rendering
 # ---------------------------------------------------------------------------
-def render_html(report: Dict[str, Any]) -> str:
+def render_html(report: dict[str, Any]) -> str:
     """Render the compliance report as HTML."""
     template_path = Path(__file__).parent / "templates" / "compliance_report.html"
     if template_path.is_file():

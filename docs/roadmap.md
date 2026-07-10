@@ -34,6 +34,7 @@ Sequencing is locked. State as of **2026-06-06**.
 | 4 | **Stripe + licence-key gate** — paywall the feed | **licence mint/verify + entitlement + Stripe webhook built; agent reads tier offline** | `docs/design/signed-feed.md` Parts 4–6; `scripts/licence.py`; `scripts/stripe_pricing.py`; `src/tinysocs/api/feed.py`; C# `LicenceReader` | Pairs with #3 |
 | 5 | **TinyDocs** — per-rule knowledge base, top ~20 most-visible rules | **top-20 published; scaffolder built** | `tinydocs/`; `scripts/scaffold_tinydocs.py` | Independent; can start anytime |
 | 6 | **Documented content cadence** — 1 new rule + 1 tuning patch / week | **drafted** (process doc) | `docs/design/content-cadence.md`; wires `mitre_coverage.py` → `migrate_rules_to_v2.py` → `pack_sign.py` → feed | Independent; needs the feed (#3) to deliver against |
+| 7 | **AI-assisted triage & schema-grounded querying** — ground the AI assistant on live field schema + the v2 catalogue so a generalist can investigate in natural language without editing rules | **concept — design-first; no design doc yet** | extends `src/tinysocs/api/bot.py` + the `search_kql` corpus; design doc TBD (`docs/design/ai-triage.md`) | Needs #1 schema stable; pairs with deferred FP telemetry |
 
 **Progress since 2026-06-05 (this branch).** The keystone schema is locked and the feed/licensing layer is built and proven end-to-end on the CLI, **inside the C# agent**, and now **vendor-side**. Agent: ed25519-verifies a signed pack, pins the signing `key_id`, gates by licence entitlement, refuses tampered/untrusted content (`src/TinySocs.Agent/Detection/{Ed25519Verifier,PackLoader,LicenceReader}.cs`, wired through `OpenSearchBulkShipper`). Vendor: `src/tinysocs/api/feed.py` is a small FastAPI app — an entitlement-gated mint endpoint that 302s to short-TTL signed URLs (Part 4.5) and a Stripe webhook that mints + revokes licence keys with no Stripe SDK (Part 6), both reusing the same `licence.py` decision the agent uses; covered by `tests/test_feed_server.py`. The full revenue loop (Stripe sub → key → live channel + premium → cancel revokes → agent verifies offline) runs locally with no cloud account. What remains for #3/#4 is **operational, not protocol**: the real object store (S3/R2 URL-signing in place of the blob stand-in) and the Stripe dashboard prices. Deferred still-deferred: content cadence (#6), premium-pack tiering enforcement beyond the gate, backend KQL engine (v2.1).
 
@@ -49,9 +50,30 @@ Sequencing is locked. State as of **2026-06-06**.
 
 #5 TinyDocs ─── independent, slots in anytime
 #6 content cadence ─── process; activates once #3 can deliver
+#7 AI-triage (schema-grounded) ─ independent; parallel once #1 stable; NOT on first-customer path
 ```
 
 The two load-bearing, design-first items are **#1 (schema)** and **#3 + #4 (feed + licensing)** — per `CLAUDE.md`, get these right on paper before writing C# or migrations.
+
+---
+
+## Workstream #7 — AI-assisted triage & schema-grounded querying (added 2026-06-15)
+
+An addition to the original 6 (not a reconciliation of the brief's "8"). It makes real a clause the thesis already promises: tuning "via allowlists, **AI-assisted triage**, and FP feedback." Today the only piece that exists is a thin assistant (`src/tinysocs/api/bot.py`) reading the 50-rule KQL catalogue as a `search_kql` corpus. This workstream is what lets an SMB generalist operate the SIEM without ever editing a rule — i.e. the operating model the whole pivot is sold on.
+
+The technique, three parts — all generic engineering, none novel:
+
+1. **Schema grounding.** Profile the live OpenSearch field schema and the v2 rule catalogue into a corpus the assistant reads *before* writing a query, so it queries real field names instead of guessing. Kills the "field not found → try again" loop that makes a generalist give up.
+2. **Known-good-query + gotchas corpus.** Vetted queries, detection context, and query gotchas the assistant retrieves from, so triage starts from proven patterns rather than a blank prompt.
+3. **Lessons / feedback loop.** Findings and corrections from a session are logged for vendor review and fold back into the corpus and into content cadence (#6) — the same flywheel that turns FP feedback into tuning patches.
+
+Placement, honestly:
+
+- **Not on the first-customer critical path.** The first sale closes on feed (#3) + validation proof (#2) + paywall (#4). This is a `pro`/`msp` *differentiator*, not the thing that gets the first signature — do not let it stall the 8-week items.
+- **Design-first** (per `CLAUDE.md`): it touches the AI layer and reads the rule catalogue, so it wants `docs/design/ai-triage.md` before code. Not written yet.
+- **Depends on #1** (v2 schema) for catalogue grounding; **pairs with the deferred FP telemetry channel** — the lessons loop is the consent-friendly front end for that channel.
+- Good **spare-evening / parallel** work once #1 is stable and the revenue loop (#3/#4) is operational — same slot as TinyDocs (#5).
+- **Maintains dual-engine honesty:** the assistant grounds on each rule's `runs_on`, so it never implies a backend (Python) rule is firing when only the C# engine runs.
 
 ---
 
@@ -98,3 +120,4 @@ The pre-pivot planning notes (Oct–Dec 2025) carried a feature-expansion roadma
 - **What's the minimum publishable validation result?** Is a single warm-run honest number enough to go public, or do we want N consecutive stable weeks first?
 - **TinyDocs (#5) is independent — does it jump the queue?** It's customer-visible, low-risk, and unblocks nothing else, which makes it a good "spare-evening" task while #1/#3 designs settle.
 - **How do the historical phase notes (Google Drive) map onto these 6 gaps?** Pending import — may surface gaps or decisions not captured here.
+- **Does #7 (AI-triage) earn a design doc now, or wait until #3/#4 are operational?** It's design-first and customer-visible, but explicitly off the first-customer path; the risk is it becomes the shiny thing that stalls the revenue loop.

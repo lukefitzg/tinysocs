@@ -65,32 +65,44 @@ You can also access OpenSearch Dashboards directly at `https://localhost:5602`.
 
 ## Step 4: Trigger a Test Alert
 
-Generate some failed login attempts to trigger the brute-force detection rule:
+The easiest way is the built-in smoke test, which generates test events, waits for the
+detection cycle, and confirms an alert landed:
 
 ```powershell
-# This creates failed logon events (Event ID 4625)
-1..6 | ForEach-Object {
-    $cred = New-Object PSCredential("fakeuser", (ConvertTo-SecureString "wrong" -AsPlainText -Force))
-    try { Start-Process cmd.exe -Credential $cred -ErrorAction SilentlyContinue } catch {}
+Import-Module "$env:ProgramFiles\TinySocs\modules\TinySocs.Installer.psm1"
+Invoke-TinySocsSmokeTest
+```
+
+To trigger it manually instead, generate failed login attempts for a fake user. The
+brute-force rule (TS-001) fires at **15 failed logons for the same user within 5 minutes**,
+so run at least 20:
+
+```powershell
+# This creates failed logon events (Event ID 4625) for a user that doesn't exist
+$cred = New-Object PSCredential("tinysocs_testuser", (ConvertTo-SecureString "wrong" -AsPlainText -Force))
+1..20 | ForEach-Object {
+    try { Start-Process cmd.exe -ArgumentList "/c exit" -Credential $cred -WindowStyle Hidden -ErrorAction Stop } catch {}
 }
 
 # Wait for the detection cycle
 Start-Sleep -Seconds 30
 ```
 
-## Step 5: Verify Alert Delivery
+## Step 5: See the Alert in the Dashboard
 
-Check that alerts appeared:
+Open the TinySocs dashboard (`http://localhost:8090` — it redirects to `/dashboard`), go to
+the **Detections** tab, and you should see a high-severity alert: **brute_force_logon
+(TS-001)** for user `tinysocs_testuser`. It can take up to a minute after the events are
+generated.
 
-```powershell
-# Check alert log
-Get-Content "C:\ProgramData\TinySocs\Collector\logs\alerts.log" -Tail 10
+If you configured a webhook, the same alert appears in your Slack/Teams channel; if you
+configured email, check the inbox.
 
-# Check the Alert Timeline dashboard in the browser
-Start-Process "https://localhost:5602"
-```
+This is a real alert from the real detection pipeline — acknowledge or dismiss it from the
+Detections tab once you've seen it, the same way you would triage a live one.
 
-If you configured a webhook, you should see a notification in your Slack/Teams channel.
+If nothing appears after two minutes, check the agent service is running
+(`Get-Service TinySocsAgent`) and see [Troubleshooting](troubleshooting.md).
 
 ## Step 6: Review the LLM Assistant (Optional)
 
@@ -109,17 +121,6 @@ curl http://localhost:8090/bot/actions
 ```powershell
 python -m tinysocs.reporting.daily_summary --to admin@localhost --stdout
 ```
-
-### Post-Install Smoke Test (Optional)
-
-Run a full end-to-end smoke test that verifies the detection pipeline is working:
-
-```powershell
-Import-Module "$env:ProgramFiles\TinySocs\modules\TinySocs.Installer.psm1"
-Invoke-TinySocsSmokeTest
-```
-
-This generates test events, waits for the detection engine to process them, and checks that alerts appear in the `tinysocs-alerts-*` index.
 
 ## Next Steps
 

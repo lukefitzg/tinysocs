@@ -400,6 +400,14 @@ if "--demo" in _sys.argv:
 try:
     from tinysocs.api.dashboard import dashboard_app
     app.mount("/dashboard", dashboard_app)
+
+    from starlette.responses import RedirectResponse as _RedirectResponse
+
+    @app.get("/", include_in_schema=False)
+    def _root_redirect():
+        # A browser hitting the bare host:port should land on the dashboard,
+        # not a 404 — this is the first URL a new user types.
+        return _RedirectResponse(url="/dashboard/", status_code=307)
 except ImportError:
     pass
 

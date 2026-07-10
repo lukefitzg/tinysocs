@@ -1,0 +1,291 @@
+# TinySocs Rule Docs (TinyDocs) — plain-English companion to rules.yml
+#
+# One entry per rule ID. This is what a non-security reader sees alongside an
+# alert: what happened in business terms, what to do in the next ten minutes,
+# and how to tell if it's a false alarm.
+#
+# Consumed by:
+#   - C# agent (AlertWriter): `title` in webhook/email notifications
+#   - Dashboard (Python): full entry rendered in the alert detail view
+#
+# Schema (underscore_case; must round-trip YamlDotNet UnderscoredNamingConvention):
+#   title           - human headline, no jargon, no event IDs
+#   what_happened   - 1-3 sentences: what was observed and why it matters
+#   do_first        - 2-4 concrete steps an IT generalist can take now
+#   false_alarm_if  - the most common benign explanation(s)
+#
+# Authoring rules:
+#   - Write for an IT generalist or office manager, not an analyst.
+#   - Windows event IDs, MITRE IDs, and index names do NOT belong here.
+#   - Never promise the product does something it doesn't.
+
+docs:
+  TS-001:
+    title: "Repeated failed logins for one account — possible password guessing"
+    what_happened: >-
+      The same user account failed to log in at least 15 times within 5 minutes.
+      Attackers do this when trying to guess a password — but a program stuck
+      with an old saved password produces the same pattern.
+    do_first:
+      - "Check with the account's owner: were they trying (and failing) to log in just now?"
+      - "If not, reset the account's password and make sure account lockout is enabled."
+      - "Look at which machine the attempts came from (in the alert details) and check what's running on it."
+    false_alarm_if: >-
+      A user genuinely forgot their password, or a service, scheduled task, or
+      mapped drive is still using an old password after a recent change.
+
+  TS-002:
+    title: "Repeated failed logins from one address — possible password spraying"
+    what_happened: >-
+      A single computer or network address failed to log in at least 20 times
+      within 5 minutes. Attackers do this to try passwords across many accounts
+      at once.
+    do_first:
+      - "Find the source address in the alert details. Is it one of your machines, or external?"
+      - "If it's external and this machine is reachable from the internet (e.g. Remote Desktop), block the address at your firewall and consider closing that access."
+      - "If it's internal, go look at that machine — something on it is hammering logins."
+    false_alarm_if: >-
+      A monitoring, backup, or sync system is using stale credentials against
+      many accounts after a password change.
+
+  TS-010:
+    title: "New user account created on a machine"
+    what_happened: >-
+      A new local user account was created directly on one of your machines
+      (not in your central user directory). Attackers create local accounts to
+      keep a way back in that survives password resets.
+    do_first:
+      - "Check whether anyone in IT deliberately created this account (the account name is in the alert details)."
+      - "If nobody recognises it, disable the account immediately."
+      - "Check what else happened on that machine around the same time."
+    false_alarm_if: >-
+      IT created the account deliberately, or a software installer created a
+      service account as part of setup.
+
+  TS-020:
+    title: "New scheduled task created"
+    what_happened: >-
+      A task was set up to run automatically on a schedule. Legitimate software
+      does this all the time — but attackers also use scheduled tasks to make
+      their software restart after every reboot.
+    do_first:
+      - "Open Task Scheduler on the affected machine and find the new task."
+      - "Look at what program it runs. A recognisable app updating itself is normal; an odd name running from a temp or downloads folder is not."
+      - "If it looks wrong, disable the task (don't delete it yet) and scan the machine."
+    false_alarm_if: >-
+      Software was installed or updated around the same time — installers and
+      updaters routinely create scheduled tasks.
+
+  TS-061:
+    title: "Password-stealing tool detected"
+    what_happened: >-
+      A program known for extracting stored passwords from Windows memory
+      (such as Mimikatz) was started on this machine. There is almost no
+      routine business reason for these tools to run.
+    do_first:
+      - "Treat this as serious. Disconnect the machine from the network (unplug the cable / turn off Wi-Fi) but leave it powered on."
+      - "Get help — your IT provider or an incident response contact."
+      - "Plan to change every password used on that machine, starting with administrator accounts."
+    false_alarm_if: >-
+      An authorised security test is running, or IT is deliberately using a
+      diagnostic tool like procdump. If nobody claims it, it's real.
+
+  TS-062:
+    title: "Attempt to read Windows' stored password data"
+    what_happened: >-
+      Something on this machine accessed the files where Windows keeps password
+      and security data. Attackers copy these files to crack your passwords
+      offline.
+    do_first:
+      - "Check the alert details for which program and user account did it."
+      - "If it isn't your backup software, disconnect the machine from the network and get help."
+      - "Plan password resets for accounts used on this machine."
+    false_alarm_if: >-
+      Backup software legitimately reads system files during a full backup —
+      check whether a backup was running at the time.
+
+  TS-070:
+    title: "Remote-control tool (PsExec) used on this machine"
+    what_happened: >-
+      A tool of the PsExec family was used, which lets someone run commands on
+      this machine from another computer. IT people use it for remote admin —
+      and attackers use it to spread between machines.
+    do_first:
+      - "Ask whoever does your IT: was anyone doing remote administration on this machine just now?"
+      - "If nobody was, treat it as an intrusion — find out which machine it came from and get help."
+    false_alarm_if: >-
+      Your IT staff or IT provider uses PsExec-style tools for legitimate
+      remote administration. If so, this alert doubles as a record of when.
+
+  TS-071:
+    title: "Repeated failed Remote Desktop logins — someone may be trying to break in"
+    what_happened: >-
+      One address failed Remote Desktop logins at least 10 times in 10 minutes.
+      Machines with Remote Desktop reachable from the internet get hammered
+      like this constantly by automated attacks.
+    do_first:
+      - "Check the source address in the alert details — internal or external?"
+      - "If external: block it at the firewall, and strongly consider putting Remote Desktop behind a VPN instead of open to the internet."
+      - "Confirm the targeted accounts have strong passwords and lockout enabled."
+    false_alarm_if: >-
+      A staff member kept retrying a wrong password over Remote Desktop —
+      usually right after a password change.
+
+  TS-080:
+    title: "The security log was wiped"
+    what_happened: >-
+      The record of security events on this machine (who logged in, what ran)
+      was deleted. Attackers clear logs to cover their tracks. Windows records
+      who did the clearing.
+    do_first:
+      - "Check the alert details for which account cleared the log."
+      - "If it wasn't a deliberate IT action, assume the machine is compromised and get help — the wipe itself is the evidence."
+    false_alarm_if: >-
+      A technician deliberately cleared the log during maintenance. This should
+      be rare and someone should be able to say so immediately.
+
+  TS-080-sys:
+    title: "An event log was wiped"
+    what_happened: >-
+      One of this machine's event logs was cleared — the machine's record of
+      what happened was deleted. Attackers do this to cover their tracks.
+    do_first:
+      - "Check the alert details for which account cleared the log."
+      - "If it wasn't a deliberate IT action, assume the machine is compromised and get help."
+    false_alarm_if: >-
+      A technician deliberately cleared logs during maintenance. Should be rare
+      and immediately explainable.
+
+  TS-081:
+    title: "Windows Defender protection was turned off"
+    what_happened: >-
+      Real-time virus protection was disabled on this machine, or a folder was
+      excluded from scanning. Malware commonly does this first, so it can work
+      uninterrupted.
+    do_first:
+      - "Turn real-time protection back on (Windows Security → Virus & threat protection)."
+      - "Check who or what turned it off — if no person did it deliberately, assume malware and run a full scan."
+      - "Review any new exclusions and remove ones nobody can explain."
+    false_alarm_if: >-
+      IT deliberately added a scanning exclusion for a legitimate app (databases
+      and some line-of-business software need this), or briefly disabled
+      protection during troubleshooting.
+
+  TS-082:
+    title: "A script tried to disable malware scanning"
+    what_happened: >-
+      A PowerShell script attempted to switch off the mechanism Windows uses to
+      scan scripts for malware before they run. This is a standard attacker
+      technique with essentially no legitimate everyday use.
+    do_first:
+      - "Disconnect the machine from the network but leave it on."
+      - "Check the alert details for the script content and what launched it."
+      - "Get help — this is rarely innocent."
+    false_alarm_if: >-
+      An authorised security test is in progress. Otherwise, treat as real.
+
+  TS-090:
+    title: "New background service installed from an unusual location"
+    what_happened: >-
+      A Windows service — a program that runs in the background with high
+      privileges and starts at every boot — was installed from a temporary,
+      downloads, or user folder. Legitimate software almost always installs its
+      services under Program Files.
+    do_first:
+      - "Look at the program path in the alert details. Do you recognise the software?"
+      - "If not, stop and disable the service (services.msc), then scan the machine."
+      - "Check what was downloaded or installed on that machine around the same time."
+    false_alarm_if: >-
+      Some legitimate installers and remote-management (RMM) agents do run
+      services from ProgramData — your IT provider can confirm theirs.
+
+  TS-110:
+    title: "A critical system file was changed"
+    what_happened: >-
+      A file Windows depends on for security or startup (such as the hosts
+      file, which controls where web addresses point) was modified. Attackers
+      change these to redirect traffic or weaken the system.
+    do_first:
+      - "See which file changed in the alert details."
+      - "If it's the hosts file, open it (notepad as administrator) and look for entries nobody added deliberately."
+      - "If the change wasn't planned, restore the file and scan the machine."
+    false_alarm_if: >-
+      A Windows update or a deliberate IT change touched the file at that time.
+
+  TS-113:
+    title: "Many files changed at once — possible ransomware"
+    what_happened: >-
+      More than 50 monitored files were modified on this machine within about a
+      minute. Ransomware encrypting a disk produces exactly this pattern. Large
+      legitimate jobs (backups, sync tools) can too.
+    do_first:
+      - "Act now: disconnect the machine from the network — unplug the cable, turn off Wi-Fi. Leave it powered on."
+      - "Try opening a few recent documents on it. If they won't open or have strange extensions, treat it as ransomware and get help immediately."
+      - "Check your backups are intact and disconnected from this machine before touching anything else."
+    false_alarm_if: >-
+      A backup client, a file-sync tool doing a first full sync, or a large
+      software install was running on that machine at that moment.
+
+  TS-114:
+    title: "Attempt to delete Windows' security files"
+    what_happened: >-
+      Something tried to delete the files where Windows stores password and
+      security data. Attackers and ransomware delete these to block recovery
+      or hide their traces. Routine software does not do this.
+    do_first:
+      - "Check the alert details for which program attempted the deletion."
+      - "If it's not recognisable, disconnect the machine from the network and get help."
+    false_alarm_if: >-
+      Almost never — disk cleanup tools don't touch these files. Confirm before
+      dismissing.
+
+  TS-120:
+    title: "A machine is running an outdated monitoring agent"
+    what_happened: >-
+      The TinySocs agent on this machine is older than the minimum supported
+      version, so it may be missing newer detections. This is a maintenance
+      issue, not an attack.
+    do_first:
+      - "Update the TinySocs agent on the machine named in the alert."
+    false_alarm_if: >-
+      The update was just installed and the machine hasn't reported in yet —
+      it should clear on the next heartbeat.
+
+  TS-130:
+    title: "Someone ran commands to list user accounts"
+    what_happened: >-
+      A user ran several account-listing commands within a few minutes. IT
+      people do this while troubleshooting — and attackers do it right after
+      breaking in, to map out whose access is worth stealing.
+    do_first:
+      - "Check which user and machine it was (alert details) and simply ask: was that you, and why?"
+      - "If there's no good explanation, look at what else that user account did around the same time."
+    false_alarm_if: >-
+      IT troubleshooting, login-script activity, or an inventory tool. Common —
+      which is why this alert is medium severity, not high.
+
+  TS-131:
+    title: "Someone ran commands to map the network"
+    what_happened: >-
+      A user ran several network-inspection commands (checking addresses,
+      connections, routes) within a few minutes. This is routine for IT work
+      and also the first thing an intruder does to get their bearings.
+    do_first:
+      - "Low urgency on its own. Check whether the user is someone who'd plausibly be troubleshooting the network."
+      - "It matters more if the same user or machine appears in other recent alerts — check the Detections list."
+    false_alarm_if: >-
+      Anyone diagnosing a connectivity problem — very common, hence the low
+      severity.
+
+  TS-132:
+    title: "Built-in Windows tool used to download files — a common malware delivery trick"
+    what_happened: >-
+      A Windows built-in tool (certutil or bitsadmin) was used in a way that
+      can download files. Attackers abuse these because they're already on
+      every machine and look legitimate to antivirus.
+    do_first:
+      - "Check the command line in the alert details for a web address — do you recognise it?"
+      - "If not, find what was downloaded, don't run it, and scan the machine."
+    false_alarm_if: >-
+      IT doing certificate maintenance (certutil) or an older updater using
+      bitsadmin — legitimate but infrequent.

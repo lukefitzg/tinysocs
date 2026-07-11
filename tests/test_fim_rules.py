@@ -29,12 +29,12 @@ FIM_RULE_IDS_CSHARP = [
 
 
 def _load_python_rules():
-    with open(RULES_FILE) as f:
+    with open(RULES_FILE, encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
 def _load_csharp_rules():
-    with open(CSHARP_RULES) as f:
+    with open(CSHARP_RULES, encoding="utf-8") as f:
         data = yaml.safe_load(f)
     return data.get("rules", [])
 

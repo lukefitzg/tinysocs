@@ -1,4 +1,4 @@
-﻿# TinySocs Rule Pack v1 — hardened (dual-field & provider/channel guards)
+# TinySocs Rule Pack v1 — hardened (dual-field & provider/channel guards)
 # Notes:
 # - Use (event.code OR winlog.event_id) to match different shippers.
 # - Guard on provider/channel where it helps (Sysmon, PowerShell).

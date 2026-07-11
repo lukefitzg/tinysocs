@@ -108,7 +108,7 @@ def load_all_rules() -> list[dict[str, Any]]:
     if csharp_path:
         logger.info("Loading C# rules from %s", csharp_path)
         try:
-            with open(csharp_path) as f:
+            with open(csharp_path, encoding="utf-8") as f:
                 data = yaml.safe_load(f)
                 for r in (data.get("rules", []) if isinstance(data, dict) else data or []):
                     if isinstance(r, dict):
@@ -123,7 +123,7 @@ def load_all_rules() -> list[dict[str, Any]]:
     if python_path:
         logger.info("Loading Python rules from %s", python_path)
         try:
-            with open(python_path) as f:
+            with open(python_path, encoding="utf-8") as f:
                 for r in yaml.safe_load(f) or []:
                     if isinstance(r, dict):
                         r["_source"] = "python"
@@ -384,18 +384,18 @@ def _cli():
     # Load atomic results if provided
     atomic_results = None
     if args.atomic_results:
-        with open(args.atomic_results) as f:
+        with open(args.atomic_results, encoding="utf-8") as f:
             atomic_results = json.load(f)
 
     if args.output:
         layer = generate_navigator_layer(coverage, atomic_results)
-        with open(args.output, "w") as f:
+        with open(args.output, "w", encoding="utf-8") as f:
             json.dump(layer, f, indent=2)
         print(f"Navigator layer written to {args.output}")
 
     if args.output_md:
         md = generate_coverage_markdown(coverage)
-        with open(args.output_md, "w") as f:
+        with open(args.output_md, "w", encoding="utf-8") as f:
             f.write(md)
         print(f"Detection coverage markdown written to {args.output_md}")
 

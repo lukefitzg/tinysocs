@@ -3,33 +3,25 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import tempfile
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
-import pytest
-
+from tinysocs.agent.enrich import (
+    _is_public_ip,
+    extract_domains,
+    extract_hashes,
+    extract_ips,
+    format_enrichment_for_llm,
+)
 from tinysocs.agent.threat_cache import ThreatCache
 from tinysocs.agent.threat_intel import (
     AbuseIPDBProvider,
-    AlienVaultOTXProvider,
-    CompositeEnrichment,
-    EnrichmentResult,
     GreyNoiseCommunityProvider,
     compute_threat_level,
     enrich_ioc,
 )
-from tinysocs.agent.enrich import (
-    extract_ips,
-    extract_domains,
-    extract_hashes,
-    enrich_alert,
-    format_enrichment_for_llm,
-    _is_public_ip,
-)
-
 
 # ---------------------------------------------------------------------------
 # Cache tests

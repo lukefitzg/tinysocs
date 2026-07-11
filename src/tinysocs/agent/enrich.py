@@ -12,7 +12,7 @@ import ipaddress
 import logging
 import re
 import socket
-from typing import Any, Dict, List, Optional, Set
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -59,9 +59,9 @@ def _is_public_ip(ip_str: str) -> bool:
         return False
 
 
-def extract_ips(doc: Dict[str, Any]) -> Set[str]:
+def extract_ips(doc: dict[str, Any]) -> set[str]:
     """Extract unique public IP addresses from alert fields."""
-    ips: Set[str] = set()
+    ips: set[str] = set()
     # Common field paths for IPs in alert documents
     for key in ("source_ip", "dest_ip", "src_ip", "dst_ip", "ip", "remote_ip",
                 "source.ip", "destination.ip"):
@@ -83,9 +83,9 @@ def extract_ips(doc: Dict[str, Any]) -> Set[str]:
     return ips
 
 
-def extract_domains(doc: Dict[str, Any]) -> Set[str]:
+def extract_domains(doc: dict[str, Any]) -> set[str]:
     """Extract unique domain names from alert fields."""
-    domains: Set[str] = set()
+    domains: set[str] = set()
     for key in ("domain", "hostname", "dest_domain", "dns.query"):
         val = _deep_get(doc, key)
         if val and isinstance(val, str) and "." in val:
@@ -103,9 +103,9 @@ def extract_domains(doc: Dict[str, Any]) -> Set[str]:
     return domains
 
 
-def extract_hashes(doc: Dict[str, Any]) -> Set[str]:
+def extract_hashes(doc: dict[str, Any]) -> set[str]:
     """Extract file hashes (MD5/SHA1/SHA256) from alert fields."""
-    hashes: Set[str] = set()
+    hashes: set[str] = set()
     for key in ("file_hash", "hash", "sha256", "sha1", "md5"):
         val = _deep_get(doc, key)
         if val and isinstance(val, str) and _HASH_RE.fullmatch(val):
@@ -123,7 +123,7 @@ def extract_hashes(doc: Dict[str, Any]) -> Set[str]:
     return hashes
 
 
-def _deep_get(d: Dict[str, Any], dotted_key: str) -> Any:
+def _deep_get(d: dict[str, Any], dotted_key: str) -> Any:
     """Resolve dotted key paths like 'source.ip' in nested dicts."""
     parts = dotted_key.split(".")
     current = d
@@ -141,10 +141,10 @@ def _deep_get(d: Dict[str, Any], dotted_key: str) -> Any:
 
 
 async def enrich_alert(
-    alert_doc: Dict[str, Any],
+    alert_doc: dict[str, Any],
     cache: Any = None,
-    providers: Optional[list] = None,
-) -> Dict[str, Any]:
+    providers: list | None = None,
+) -> dict[str, Any]:
     """
     Enrich an alert document with threat intelligence data.
 
@@ -162,7 +162,7 @@ async def enrich_alert(
     if not providers:
         return {}
 
-    enrichment: Dict[str, Any] = {}
+    enrichment: dict[str, Any] = {}
     tasks = []
 
     # Extract IOCs
@@ -190,7 +190,7 @@ async def enrich_alert(
     threat_order = {"none": 0, "low": 1, "medium": 2, "high": 3}
 
     for (ioc_type, ioc_value, _), result in zip(tasks, results):
-        if isinstance(result, Exception):
+        if isinstance(result, BaseException):
             logger.warning("Enrichment failed for %s %s: %s", ioc_type, ioc_value, result)
             continue
         if result and result.results:
@@ -205,7 +205,7 @@ async def enrich_alert(
     return enrichment
 
 
-def format_enrichment_for_llm(enrichment: Dict[str, Any]) -> str:
+def format_enrichment_for_llm(enrichment: dict[str, Any]) -> str:
     """
     Format enrichment data as a human-readable string for LLM context.
 
@@ -217,7 +217,7 @@ def format_enrichment_for_llm(enrichment: Dict[str, Any]) -> str:
     if not enrichment:
         return ""
 
-    parts: List[str] = []
+    parts: list[str] = []
     threat_level = enrichment.get("threat_level", "none")
 
     for key, value in enrichment.items():
@@ -226,8 +226,7 @@ def format_enrichment_for_llm(enrichment: Dict[str, Any]) -> str:
         if not isinstance(value, dict):
             continue
 
-        ioc_threat = value.get("threat_level", "")
-        provider_parts: List[str] = []
+        provider_parts: list[str] = []
 
         for provider, data in value.items():
             if provider == "threat_level" or not isinstance(data, dict):

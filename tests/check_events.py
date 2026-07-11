@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Quick diagnostic: check actual event structure in OpenSearch."""
-import json, ssl, urllib.request, base64
+import base64
+import json
+import ssl
+import urllib.request
 
 ctx = ssl._create_unverified_context()
 base_url = "https://localhost:9201"
@@ -35,7 +38,7 @@ try:
     if hits:
         src = hits[0].get("_source", {})
         print(f"\nFull event source (keys): {sorted(src.keys())}")
-        print(f"\nFull event JSON:")
+        print("\nFull event JSON:")
         print(json.dumps(src, indent=2, default=str)[:3000])
     else:
         print("No events found!")

@@ -27,11 +27,47 @@ os.environ["TINYSOCS_FEED_STORE"] = str(_REPO_ROOT / "data" / "feed" / "_pytest_
 
 sys.path.insert(0, str(_REPO_ROOT / "scripts"))
 import licence as lic  # noqa: E402
-
 from fastapi.testclient import TestClient  # noqa: E402
+
 from tinysocs.api import feed  # noqa: E402
 
 _KEY_DIR = _REPO_ROOT / "keys"
+
+
+def _ensure_test_signing_key() -> None:
+    """Generate the licensing-2026 ed25519 keypair if it isn't already present.
+
+    keys/ is gitignored (private keys never live in the repo — see CLAUDE.md),
+    so a clean checkout (CI, a fresh clone) has no key on disk. On a dev
+    machine that already generated one via `pack_sign.py gen-key`, this is a
+    no-op and the existing key is reused.
+    """
+    import base64
+
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    priv_path = _KEY_DIR / "licensing-2026.key"
+    pub_path = _KEY_DIR / "licensing-2026.pub"
+    if priv_path.exists() and pub_path.exists():
+        return
+
+    _KEY_DIR.mkdir(parents=True, exist_ok=True)
+    priv = Ed25519PrivateKey.generate()
+    priv_raw = priv.private_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PrivateFormat.Raw,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    pub_raw = priv.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw
+    )
+    priv_path.write_text(base64.b64encode(priv_raw).decode(), encoding="utf-8")
+    priv_path.chmod(0o600)
+    pub_path.write_text(base64.b64encode(pub_raw).decode(), encoding="utf-8")
+
+
+_ensure_test_signing_key()
 
 
 @pytest.fixture(autouse=True)

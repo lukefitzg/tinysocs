@@ -1,7 +1,7 @@
 ﻿# agent/llm_ollama.py
 import json
 import os
-from typing import Any, Dict, List
+from typing import Any
 
 import httpx
 
@@ -16,7 +16,7 @@ SYS = (
   + ". No markdown, no explanations, no surrounding text. If a field is unknown, omit it."
 )
 
-def _fallback(findings: List[Dict[str,Any]], reason: str) -> Dict[str,Any]:
+def _fallback(findings: list[dict[str,Any]], reason: str) -> dict[str,Any]:
     return {
         "tldr": f"Local LLM unavailable: {reason}. Rendering raw findings.",
         "severity": "Low",
@@ -37,7 +37,7 @@ def _extract_json(text: str) -> str | None:
         return s[m1:m2+1]
     return None
 
-def _normalize(incident: Dict[str,Any], findings: List[Dict[str,Any]]) -> Dict[str,Any]:
+def _normalize(incident: dict[str,Any], findings: list[dict[str,Any]]) -> dict[str,Any]:
     """Backfill missing fields so the report is always useful."""
     if not incident.get("tldr"):
         total = sum(f.get("evidence", {}).get("count", 1) for f in findings)
@@ -64,7 +64,7 @@ def _normalize(incident: Dict[str,Any], findings: List[Dict[str,Any]]) -> Dict[s
     incident.setdefault("generator", "ollama")
     return incident
 
-def summarize_findings(findings: List[Dict[str,Any]]) -> Dict[str,Any]:
+def summarize_findings(findings: list[dict[str,Any]]) -> dict[str,Any]:
     findings_trimmed = findings[:20]
     prompt = (
       f"{SYS}\n\nFill the schema using ONLY the provided findings. Keep it concise.\nFindings:\n"

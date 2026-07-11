@@ -7,8 +7,6 @@ environment variables and pass them to uvicorn.
 
 import os
 import sys
-import tempfile
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -40,9 +38,10 @@ class TestNodeTlsConfig:
 
         mock_run = MagicMock()
         with patch("uvicorn.run", mock_run):
-            import tinysocs.api.node as node_mod
             # Reimport to pick up env changes
             import importlib
+
+            import tinysocs.api.node as node_mod
             importlib.reload(node_mod)
             node_mod.cli()
 
@@ -64,8 +63,9 @@ class TestNodeTlsConfig:
 
         mock_run = MagicMock()
         with patch("uvicorn.run", mock_run):
-            import tinysocs.api.node as node_mod
             import importlib
+
+            import tinysocs.api.node as node_mod
             importlib.reload(node_mod)
             node_mod.cli()
 
@@ -79,8 +79,9 @@ class TestNodeTlsConfig:
         monkeypatch.setenv("TINYSOCS_TLS_CERT", "/nonexistent/cert.pem")
         monkeypatch.setenv("TINYSOCS_TLS_KEY", "/nonexistent/key.pem")
 
-        import tinysocs.api.node as node_mod
         import importlib
+
+        import tinysocs.api.node as node_mod
         importlib.reload(node_mod)
 
         with pytest.raises(SystemExit, match="TINYSOCS_TLS_CERT not found"):
@@ -110,8 +111,9 @@ class TestBotTlsConfig:
 
         mock_run = MagicMock()
         with patch("uvicorn.run", mock_run):
-            import tinysocs.api.bot as bot_mod
             import importlib
+
+            import tinysocs.api.bot as bot_mod
             importlib.reload(bot_mod)
             bot_mod.cli()
 
@@ -138,8 +140,9 @@ class TestBotTlsConfig:
 
         mock_run = MagicMock()
         with patch("uvicorn.run", mock_run):
-            import tinysocs.api.bot as bot_mod
             import importlib
+
+            import tinysocs.api.bot as bot_mod
             importlib.reload(bot_mod)
             bot_mod.cli()
 
@@ -159,8 +162,9 @@ class TestDefaultUrls:
         """Default TINYSOCS_NODES should use https:// prefix."""
         monkeypatch.delenv("TINYSOCS_NODES", raising=False)
 
-        import tinysocs.api.bot as bot_mod
         import importlib
+
+        import tinysocs.api.bot as bot_mod
         importlib.reload(bot_mod)
 
         assert bot_mod.NODES[0].startswith("https://"), \
@@ -170,8 +174,9 @@ class TestDefaultUrls:
         """Default NODE_URL should use https:// prefix."""
         monkeypatch.delenv("TINYSOCS_NODES", raising=False)
 
-        import tinysocs.api.bot as bot_mod
         import importlib
+
+        import tinysocs.api.bot as bot_mod
         importlib.reload(bot_mod)
 
         assert bot_mod.NODE_URL.startswith("https://"), \

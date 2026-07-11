@@ -1,6 +1,8 @@
 # packaging/_tinysocs_pathhook.py
 # Ensure the bundled 'tinysocs' source tree (added as data) is importable at runtime.
-import os, sys
+import os
+import sys
+
 try:
     meipass = getattr(sys, "_MEIPASS", None)  # PyInstaller temp dir
     if meipass:

@@ -6,12 +6,13 @@ import os
 import sys
 from datetime import datetime, timezone
 from fnmatch import fnmatch
-from typing import Any, Dict, List
+from typing import Any
 
 import httpx
 
 from tinysocs.agent.adapters.opensearch_client import OpenSearchClient as OSClient
 from tinysocs.agent.llm_schema import SCHEMA
+
 try:
     from tinysocs.agent.redact import scrub
 except Exception:
@@ -159,7 +160,7 @@ def _index_allowed(idx: str) -> bool:
     return any(fnmatch(idx or "", pat) for pat in ALLOW_INDICES)
 
 
-def _sanitize_tool_args(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+def _sanitize_tool_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
     # enforce allowed indices for search/aggregate
     if name in ("search_kql", "aggregate"):
         idx = args.get("index") or DEFAULT_INDEX
@@ -173,7 +174,7 @@ def _sanitize_tool_args(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     return args
 
 
-def _call_local_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+def _call_local_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
     args = _sanitize_tool_args(name, dict(args or {}))
     try:
         if name == "search_kql":
@@ -190,10 +191,10 @@ def _call_local_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         return {"error": str(e), "tool": name, "args": args}
 
 
-def _compact_findings(findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    compact: List[Dict[str, Any]] = []
+def _compact_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    compact: list[dict[str, Any]] = []
     for f in (findings or [])[:MAX_FINDINGS_FOR_CLOUD]:
-        row: Dict[str, Any] = {}
+        row: dict[str, Any] = {}
         if f.get("rule"):
             row["rule"] = f["rule"]
         if f.get("summary"):
@@ -220,7 +221,7 @@ def _compact_findings(findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def _coerce_incident(obj, findings):
-    out = {
+    out: dict[str, Any] = {
         "tldr": (obj or {}).get("tldr") or "LLM summary unavailable; using raw findings.",
         "severity": ((obj or {}).get("severity") or "Low").title(),
         "evidence": [],
@@ -307,7 +308,7 @@ def _coerce_incident(obj, findings):
     return out
 
 
-def _enforce_consistency(incident: Dict[str, Any], findings: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _enforce_consistency(incident: dict[str, Any], findings: list[dict[str, Any]]) -> dict[str, Any]:
     """
     Final guardrails:
       - If TL;DR says "no events" but our findings show counts, override TL;DR.
@@ -317,7 +318,7 @@ def _enforce_consistency(incident: Dict[str, Any], findings: List[Dict[str, Any]
     # Derive totals/rules from both incident.evidence and raw findings
     ev = incident.get("evidence") or []
     total_from_ev = 0
-    rules_from_ev: List[str] = []
+    rules_from_ev: list[str] = []
     for e in ev:
         if isinstance(e, dict):
             try:
@@ -329,7 +330,7 @@ def _enforce_consistency(incident: Dict[str, Any], findings: List[Dict[str, Any]
                 rules_from_ev.append(r)
 
     total_from_findings = 0
-    rules_from_findings: List[str] = []
+    rules_from_findings: list[str] = []
     for f in findings or []:
         try:
             total_from_findings += int((f or {}).get("count") or 0)
@@ -363,7 +364,7 @@ def _enforce_consistency(incident: Dict[str, Any], findings: List[Dict[str, Any]
     return incident
 
 
-def summarize_findings(findings: List[Dict[str, Any]]) -> Dict[str, Any]:
+def summarize_findings(findings: list[dict[str, Any]]) -> dict[str, Any]:
     """Let the model request local queries, then return one JSON incident."""
     if not findings:
         return {

@@ -30,11 +30,11 @@ from __future__ import annotations
 import os
 import ssl
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any
 
-_ca_pem_cache: Optional[Union[str, bool]] = None
-_ssl_ctx_cache: Optional[ssl.SSLContext] = None
-_session_cache: Optional[Any] = None
+_ca_pem_cache: str | bool | None = None
+_ssl_ctx_cache: ssl.SSLContext | None = None
+_session_cache: Any | None = None
 
 
 def _ensure_pem(cert_path: Path) -> str:
@@ -138,8 +138,8 @@ def resolve_ca_cert() -> Any:
     # The system bundle will verify against OS-trusted CAs, which is the
     # correct secure fallback for production installs.
     print(
-        f"[tls] CA cert: no TinyBox CA cert found; using system certificate "
-        f"bundle for verification (set SIEM_SSL_VERIFY=false to disable)"
+        "[tls] CA cert: no TinyBox CA cert found; using system certificate "
+        "bundle for verification (set SIEM_SSL_VERIFY=false to disable)"
     )
     _ca_pem_cache = True
     return True
@@ -196,6 +196,7 @@ def get_opensearch_session():
     tls_result = resolve_ca_cert()
 
     # Determine the correct verify value from our TLS config
+    _verify: bool | str
     if tls_result is False:
         _verify = False
     elif isinstance(tls_result, str):

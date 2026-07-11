@@ -6,6 +6,7 @@ powershell-yaml module is unavailable.
 """
 import json
 import sys
+
 import yaml
 
 if len(sys.argv) < 2:

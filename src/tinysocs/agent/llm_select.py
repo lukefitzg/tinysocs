@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Robust imports so this works in both layouts:
@@ -16,12 +16,12 @@ try:
     from tinysocs.agent import netutil as _netutil  # packaged
 except Exception:
     try:
-        import tinysocs.netutil as _netutil  # shimmed alias to agent.netutil
+        import tinysocs.netutil as _netutil  # type: ignore[no-redef] # shimmed alias to agent.netutil
     except Exception:
         try:
-            from agent import netutil as _netutil  # flat
+            from agent import netutil as _netutil  # type: ignore[no-redef] # flat
         except Exception:
-            _netutil = None  # not strictly required here
+            _netutil = None  # type: ignore[assignment] # not strictly required here
 
 def _import_summarizers():
     openai_fn = None
@@ -67,7 +67,7 @@ MODE = os.getenv("LLM_MODE", "openai").strip().lower()
 # ---------------------------------------------------------------------------
 # Minimal local summary (engine fallback)
 # ---------------------------------------------------------------------------
-def _minimal_local_summary(payload: Dict[str, Any]) -> Dict[str, Any]:
+def _minimal_local_summary(payload: dict[str, Any]) -> dict[str, Any]:
     mode = payload.get("mode", "raw")
     window = payload.get("window") or "(window n/a)"
 
@@ -112,7 +112,7 @@ def _minimal_local_summary(payload: Dict[str, Any]) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Input normalization helpers
 # ---------------------------------------------------------------------------
-def _normalize_input(arg=None, *, findings=None, data=None, **kwargs) -> Dict[str, Any]:
+def _normalize_input(arg=None, *, findings=None, data=None, **kwargs) -> dict[str, Any]:
     """
     Accept legacy list (raw) or new dict (abstract). Return a dict with 'mode'.
     """
@@ -143,14 +143,14 @@ def _normalize_input(arg=None, *, findings=None, data=None, **kwargs) -> Dict[st
     }
 
 
-def _abstract_to_findings(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _abstract_to_findings(payload: dict[str, Any]) -> list[dict[str, Any]]:
     """
     Convert the privacy 'abstract' dict to a low-PII findings list that your
     existing summarize_findings() functions already accept.
     """
     minimal = payload.get("minimal") or []
     window  = payload.get("window") or ""
-    findings: List[Dict[str, Any]] = []
+    findings: list[dict[str, Any]] = []
 
     # Optional per-rule host rollup for context
     hosts_per_rule = ((payload.get("aggregate") or {}).get("hosts_per_rule") or {})
@@ -171,7 +171,7 @@ def _abstract_to_findings(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
             evidence["hosts"] = hosts_per_rule.get(rule) or []
 
         # keep exemplar hashes if present (still privacy-safe)
-        f: Dict[str, Any] = {
+        f: dict[str, Any] = {
             "rule": rule,
             "summary": s,
             "evidence": evidence,
@@ -187,10 +187,10 @@ def _abstract_to_findings(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 # Public entrypoint
 # ---------------------------------------------------------------------------
-def summarize(arg: Union[None, Dict[str, Any], List[Dict[str, Any]]] = None, *,
-              findings: Optional[List[Dict[str, Any]]] = None,
-              data: Optional[Dict[str, Any]] = None,
-              **kwargs) -> Dict[str, Any]:
+def summarize(arg: None | dict[str, Any] | list[dict[str, Any]] = None, *,
+              findings: list[dict[str, Any]] | None = None,
+              data: dict[str, Any] | None = None,
+              **kwargs) -> dict[str, Any]:
     """
     Universal entry:
       - summarize(findings=[...])                 # legacy RAW

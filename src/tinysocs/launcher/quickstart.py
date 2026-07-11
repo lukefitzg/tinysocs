@@ -7,7 +7,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 # --------------------------------------------------------------------------- #
 # PyInstaller SSL fix: the bundled certifi CA bundle may be missing or
@@ -32,7 +32,8 @@ if getattr(sys, "frozen", False):
 try:
     from dotenv import load_dotenv
 except Exception:  # pragma: no cover
-    def load_dotenv(*_a, **_k): return False
+    def load_dotenv(*_a, **_k):  # type: ignore[misc]
+        return False
 
 import uvicorn
 
@@ -94,7 +95,7 @@ def _extend_sys_path_for_frozen() -> None:
 # --------------------------------------------------------------------------- #
 # Import helpers
 # --------------------------------------------------------------------------- #
-def _import_app_obj(module_attr: str) -> Optional[Any]:
+def _import_app_obj(module_attr: str) -> Any | None:
     """Try to import 'package.module:attr' and return the attribute (ASGI app)."""
     try:
         mod, _, attr = module_attr.partition(":")
@@ -105,7 +106,7 @@ def _import_app_obj(module_attr: str) -> Optional[Any]:
     except Exception:
         return None
 
-def _import_func(module_name: str, attr: str) -> Optional[Any]:
+def _import_func(module_name: str, attr: str) -> Any | None:
     """Import a function attr from module_name; return None if not found."""
     try:
         m = importlib.import_module(module_name)

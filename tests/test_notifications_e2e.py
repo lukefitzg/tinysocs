@@ -10,12 +10,10 @@ import os
 import socket
 import threading
 import time
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from email.parser import BytesParser
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
 
 import pytest
-
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -102,6 +100,7 @@ def dashboard_client():
     os.environ["SIEM_PASS"] = "test-password-e2e"
     # Avoid importing before env is set
     from starlette.testclient import TestClient
+
     from tinysocs.api.dashboard import dashboard_app
     with TestClient(dashboard_app) as client:
         yield client

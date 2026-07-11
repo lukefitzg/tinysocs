@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -29,10 +29,10 @@ verify_hmac = make_verify_hmac(_bot_secret)
 
 def write_action(
     action: str,
-    params: Dict[str, Any],
+    params: dict[str, Any],
     actor: str = "system",
     dry_run: bool = True,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Write an action to both the legacy JSONL queue and the new executor."""
     import time
     import uuid
@@ -66,10 +66,10 @@ def write_action(
 # --- Models ---
 class ExecBody(BaseModel):
     action: Literal["ack_incident","open_ticket","disable_user","isolate_host","block_ip"]
-    params: Dict[str, Any] = Field(default_factory=dict)
+    params: dict[str, Any] = Field(default_factory=dict)
     # optional human context
-    tldr: Optional[str] = None
-    incident_id: Optional[str] = None
+    tldr: str | None = None
+    incident_id: str | None = None
     dry_run: bool = True
 
 @router.post("/exec")
@@ -85,8 +85,10 @@ async def bot_exec(body: ExecBody, _: None = Depends(verify_hmac)):
 
     # enrich minimal context into params for the operator runner
     params = dict(body.params or {})
-    if body.tldr:        params["tldr"] = body.tldr
-    if body.incident_id: params["incident_id"] = body.incident_id
+    if body.tldr:
+        params["tldr"] = body.tldr
+    if body.incident_id:
+        params["incident_id"] = body.incident_id
 
     entry = write_action(action=body.action, params=params, actor="chat-bot", dry_run=body.dry_run)
     return {"queued": True, "action_id": entry["action_id"], "dry_run": entry["dry_run"]}

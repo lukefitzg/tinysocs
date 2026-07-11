@@ -10,10 +10,10 @@ import tempfile
 import pytest
 
 from tinysocs.reporting.version_check import (
-    compare_versions,
-    check_fleet_versions,
-    load_version_manifest,
     _parse_semver,
+    check_fleet_versions,
+    compare_versions,
+    load_version_manifest,
 )
 
 # ── Manifest path ────────────────────────────────────────────────────────

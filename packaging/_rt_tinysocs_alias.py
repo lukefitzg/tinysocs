@@ -5,12 +5,13 @@
 # synthesize a safe fallback for `agent.adapters.select.make_client()` that
 # uses the bundled OpenSearch client if the selector module isn't present.
 
-import sys
-import types
 import importlib
-import importlib.util
 import importlib.abc
 import importlib.machinery
+import importlib.util
+import sys
+import types
+
 
 # ---------- helpers ----------
 def _ensure_pkg(name: str) -> types.ModuleType:

@@ -18,7 +18,7 @@ import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Audit log path
@@ -32,14 +32,14 @@ AUDIT_LOG_PATH = _AUDIT_DIR / "actions_audit.jsonl"
 # ---------------------------------------------------------------------------
 # In-memory action store
 # ---------------------------------------------------------------------------
-_actions: Dict[str, Dict[str, Any]] = {}
+_actions: dict[str, dict[str, Any]] = {}
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _write_audit(entry: Dict[str, Any]) -> None:
+def _write_audit(entry: dict[str, Any]) -> None:
     """Append an audit record to the JSONL audit log."""
     AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(AUDIT_LOG_PATH, "a", encoding="utf-8") as f:
@@ -49,7 +49,7 @@ def _write_audit(entry: Dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 # Runbook templates — step-by-step guidance for each recommendation type
 # ---------------------------------------------------------------------------
-_RUNBOOKS: Dict[str, List[str]] = {
+_RUNBOOKS: dict[str, list[str]] = {
     "block_ip": [
         "Verify the IP {ip} is genuinely malicious (check threat intel, VirusTotal, AbuseIPDB)",
         "Open Windows Firewall (wf.msc) or your network firewall admin console",
@@ -93,7 +93,7 @@ _DEFAULT_RUNBOOK = [
 ]
 
 
-def _build_runbook(action: str, params: Dict[str, Any]) -> List[str]:
+def _build_runbook(action: str, params: dict[str, Any]) -> list[str]:
     """Generate runbook steps for a given action type, interpolating parameters."""
     template = _RUNBOOKS.get(action, _DEFAULT_RUNBOOK)
     steps = []
@@ -110,10 +110,10 @@ def _build_runbook(action: str, params: Dict[str, Any]) -> List[str]:
 # ---------------------------------------------------------------------------
 def stage_action(
     action: str,
-    params: Dict[str, Any],
-    who: Optional[str] = None,
+    params: dict[str, Any],
+    who: str | None = None,
     dry_run: bool = True,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Stage a guided response recommendation for operator review.
 
     Returns the full record including its generated action_id and runbook steps.
@@ -147,7 +147,7 @@ def stage_action(
     return record
 
 
-def approve_action(action_id: str, approved_by: str = "operator") -> Dict[str, Any]:
+def approve_action(action_id: str, approved_by: str = "operator") -> dict[str, Any]:
     """Acknowledge a staged recommendation — operator will handle it manually.
 
     This does NOT execute anything. It records the operator's acknowledgement
@@ -175,7 +175,7 @@ def approve_action(action_id: str, approved_by: str = "operator") -> Dict[str, A
     return record
 
 
-def reject_action(action_id: str, rejected_by: str = "operator", reason: str = "") -> Dict[str, Any]:
+def reject_action(action_id: str, rejected_by: str = "operator", reason: str = "") -> dict[str, Any]:
     """Dismiss a staged recommendation — false positive or not applicable.
 
     Returns the updated record.
@@ -203,16 +203,16 @@ def reject_action(action_id: str, rejected_by: str = "operator", reason: str = "
     return record
 
 
-def get_action(action_id: str) -> Optional[Dict[str, Any]]:
+def get_action(action_id: str) -> dict[str, Any] | None:
     """Retrieve a single recommendation by ID."""
     return _actions.get(action_id)
 
 
 def list_actions(
-    status: Optional[str] = None,
-    action: Optional[str] = None,
+    status: str | None = None,
+    action: str | None = None,
     limit: int = 50,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """List recommendations, optionally filtered by status or type. Newest first."""
     items = list(_actions.values())
 

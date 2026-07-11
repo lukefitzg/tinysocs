@@ -1,7 +1,7 @@
 # TinySocs Demo Script (v0.9.0)
 
 ## Prerequisites
-- Python 3.9+
+- Python 3.10+
 - TinySocs repo cloned
 - (Optional) LLM API key for AI assistant demo (ANTHROPIC_API_KEY, OPENAI_API_KEY, or local Ollama)
 

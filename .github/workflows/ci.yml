@@ -35,7 +35,7 @@ jobs:
         run: ruff check .
 
       - name: Mypy (type check)
-        run: mypy tinysocs
+        run: mypy -p tinysocs
 
       - name: Unit tests
         run: pytest --cov=tinysocs --cov-report=term-missing

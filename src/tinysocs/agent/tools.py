@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict
+from typing import Any
 
 from tinysocs.agent.adapters.select import make_client
 from tinysocs.netutil import is_loopback
@@ -43,7 +43,7 @@ def search_kql(
     # tolerate extra kwargs some callers pass; adapters may ignore
     track_total_hits: bool | int | None = None,
     source: bool | None = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Run a simple KQL-like query. Never raises â€” returns a structured error on failure.
     Accepts optional pass-through args (track_total_hits/source) for adapter parity.
@@ -97,7 +97,7 @@ def search_kql(
         }
 
 
-def aggregate(index: str, dsl: Dict[str, Any]) -> Dict[str, Any]:
+def aggregate(index: str, dsl: dict[str, Any]) -> dict[str, Any]:
     """
     Run a raw DSL aggregation. Never raises â€” returns structured error on failure.
     """
@@ -139,7 +139,7 @@ def aggregate(index: str, dsl: Dict[str, Any]) -> Dict[str, Any]:
         }
 
 
-def propose_rule(rule_id: str, query: str, schedule: str = "15m") -> Dict[str, Any]:
+def propose_rule(rule_id: str, query: str, schedule: str = "15m") -> dict[str, Any]:
     return {
         "ok": True,
         "proposal": {
@@ -151,7 +151,7 @@ def propose_rule(rule_id: str, query: str, schedule: str = "15m") -> Dict[str, A
     }
 
 
-def stage_action(action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+def stage_action(action: str, params: dict[str, Any]) -> dict[str, Any]:
     # Guard rails: never block loopback
     if action == "block_ip":
         ip = (params or {}).get("ip")

@@ -2,19 +2,18 @@
 """Unit tests for the guided response engine."""
 
 import json
-import os
 
 import pytest
 
 from tinysocs.actions import executor
 from tinysocs.actions.executor import (
-    stage_action,
-    approve_action,
-    reject_action,
-    get_action,
-    list_actions,
     _actions,
     _build_runbook,
+    approve_action,
+    get_action,
+    list_actions,
+    reject_action,
+    stage_action,
 )
 
 
@@ -206,7 +205,7 @@ class TestAuditTrail:
         approve_action(rec["action_id"], approved_by="admin")
 
         lines = executor.AUDIT_LOG_PATH.read_text().strip().split("\n")
-        events = [json.loads(l)["event"] for l in lines]
+        events = [json.loads(line)["event"] for line in lines]
         assert events == [
             "response_staged",
             "response_acknowledged",
@@ -217,7 +216,7 @@ class TestAuditTrail:
         reject_action(rec["action_id"], rejected_by="analyst", reason="FP")
 
         lines = executor.AUDIT_LOG_PATH.read_text().strip().split("\n")
-        events = [json.loads(l)["event"] for l in lines]
+        events = [json.loads(line)["event"] for line in lines]
         assert events == [
             "response_staged",
             "response_dismissed",

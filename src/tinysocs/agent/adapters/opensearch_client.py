@@ -4,17 +4,15 @@ from __future__ import annotations
 import os
 import ssl
 import time
-import typing as t
 from urllib.parse import urlparse
 
 from opensearchpy import OpenSearch
-from opensearchpy.connection import RequestsHttpConnection, Urllib3HttpConnection
+from opensearchpy.connection import Urllib3HttpConnection
 from opensearchpy.exceptions import ConnectionError as OSConnError
 from opensearchpy.exceptions import ConnectionTimeout as OSTimeout
 from requests.exceptions import ConnectionError as ReqConnError
 from requests.exceptions import ReadTimeout as ReqReadTimeout
 from urllib3.exceptions import ProtocolError
-
 
 from tinysocs.tls import resolve_ca_cert
 
@@ -24,7 +22,7 @@ def _truthy(v: str | None) -> bool:
 
 
 # Minimal fields we actually need for detections/summaries
-DEFAULT_SOURCE_FIELDS: t.List[str] = [
+DEFAULT_SOURCE_FIELDS: list[str] = [
     "@timestamp",
     "event.code", "event.action", "log.level",
     "host.name", "host.hostname",
@@ -165,7 +163,7 @@ class OpenSearchClient:
         *,
         track_total_hits: bool | int = False,
         source: bool = True,
-    ) -> t.Union[t.List[dict], dict, int]:
+    ) -> list[dict] | dict | int:
         """
         Route KQL-ish text via query_string.
 

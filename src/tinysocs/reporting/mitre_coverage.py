@@ -18,7 +18,7 @@ import os
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any
 
 import yaml
 
@@ -30,7 +30,7 @@ _CSHARP_RULES = _PROJECT_ROOT / "packaging" / "detection" / "rules.yml"
 _PYTHON_RULES = _PROJECT_ROOT / "src" / "tinysocs" / "agent" / "detections" / "rules.yaml"
 
 
-def _find_csharp_rules() -> Optional[Path]:
+def _find_csharp_rules() -> Path | None:
     """Locate C# rules file across dev and installed layouts."""
     candidates = [
         _CSHARP_RULES,
@@ -39,14 +39,14 @@ def _find_csharp_rules() -> Optional[Path]:
     ]
     # PyInstaller frozen bundle
     if getattr(sys, "_MEIPASS", None):
-        candidates.append(Path(sys._MEIPASS) / "tinysocs" / "detection" / "rules.yml")
+        candidates.append(Path(sys._MEIPASS) / "tinysocs" / "detection" / "rules.yml")  # type: ignore[attr-defined]
     for c in candidates:
         if c.exists():
             return c
     return None
 
 
-def _find_python_rules() -> Optional[Path]:
+def _find_python_rules() -> Path | None:
     """Locate Python rules file across dev and installed layouts."""
     candidates = [
         _PYTHON_RULES,
@@ -55,7 +55,7 @@ def _find_python_rules() -> Optional[Path]:
     ]
     # PyInstaller frozen bundle
     if getattr(sys, "_MEIPASS", None):
-        candidates.append(Path(sys._MEIPASS) / "tinysocs" / "agent" / "detections" / "rules.yaml")
+        candidates.append(Path(sys._MEIPASS) / "tinysocs" / "agent" / "detections" / "rules.yaml")  # type: ignore[attr-defined]
     for c in candidates:
         if c.exists():
             return c
@@ -101,14 +101,14 @@ TACTIC_LABELS = {
 # Rule loading
 # ---------------------------------------------------------------------------
 
-def load_all_rules() -> List[Dict[str, Any]]:
+def load_all_rules() -> list[dict[str, Any]]:
     """Load all rules from both C# and Python rule files."""
     rules = []
     csharp_path = _find_csharp_rules()
     if csharp_path:
         logger.info("Loading C# rules from %s", csharp_path)
         try:
-            with open(csharp_path) as f:
+            with open(csharp_path, encoding="utf-8") as f:
                 data = yaml.safe_load(f)
                 for r in (data.get("rules", []) if isinstance(data, dict) else data or []):
                     if isinstance(r, dict):
@@ -123,7 +123,7 @@ def load_all_rules() -> List[Dict[str, Any]]:
     if python_path:
         logger.info("Loading Python rules from %s", python_path)
         try:
-            with open(python_path) as f:
+            with open(python_path, encoding="utf-8") as f:
                 for r in yaml.safe_load(f) or []:
                     if isinstance(r, dict):
                         r["_source"] = "python"
@@ -136,7 +136,7 @@ def load_all_rules() -> List[Dict[str, Any]]:
     return rules
 
 
-def extract_mitre_annotations(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def extract_mitre_annotations(rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Extract MITRE annotations from rules, returning annotated entries."""
     annotations = []
     for rule in rules:
@@ -159,11 +159,11 @@ def extract_mitre_annotations(rules: List[Dict[str, Any]]) -> List[Dict[str, Any
 # Coverage calculation
 # ---------------------------------------------------------------------------
 
-def calculate_coverage(annotations: List[Dict[str, Any]]) -> Dict[str, Any]:
+def calculate_coverage(annotations: list[dict[str, Any]]) -> dict[str, Any]:
     """Calculate MITRE ATT&CK coverage metrics."""
-    techniques: Dict[str, Dict[str, Any]] = {}
-    tactics: Dict[str, Set[str]] = defaultdict(set)
-    rules_without_mitre: List[str] = []
+    techniques: dict[str, dict[str, Any]] = {}
+    tactics: dict[str, set[str]] = defaultdict(set)
+    rules_without_mitre: list[str] = []
 
     for ann in annotations:
         tid = ann["technique_id"]
@@ -205,11 +205,11 @@ def calculate_coverage(annotations: List[Dict[str, Any]]) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def generate_navigator_layer(
-    coverage: Dict[str, Any],
-    atomic_results: Optional[Dict[str, Any]] = None,
+    coverage: dict[str, Any],
+    atomic_results: dict[str, Any] | None = None,
     layer_name: str = "TinySocs Detection Coverage",
     layer_description: str = "Auto-generated from TinySocs detection rule MITRE annotations",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Generate ATT&CK Navigator v4.x JSON layer.
 
@@ -219,7 +219,7 @@ def generate_navigator_layer(
       - Grey (#bdc3c7): no coverage
     """
     techniques_layer = []
-    tested_techniques: Set[str] = set()
+    tested_techniques: set[str] = set()
 
     if atomic_results:
         for result in atomic_results.get("results", []):
@@ -234,7 +234,7 @@ def generate_navigator_layer(
             comment += " [TESTED]"
 
         # ATT&CK Navigator technique entry
-        entry: Dict[str, Any] = {
+        entry: dict[str, Any] = {
             "techniqueID": tid,
             "color": color,
             "comment": comment,
@@ -300,7 +300,7 @@ def generate_navigator_layer(
 # Markdown report generation
 # ---------------------------------------------------------------------------
 
-def generate_coverage_markdown(coverage: Dict[str, Any]) -> str:
+def generate_coverage_markdown(coverage: dict[str, Any]) -> str:
     """Generate detection-coverage.md content from coverage data."""
     lines = [
         "# TinySocs Detection Coverage — MITRE ATT&CK Mapping",
@@ -362,7 +362,7 @@ def _cli():
 
     if not args.json and not args.output and not args.output_md:
         # Print summary to stdout
-        print(f"TinySocs MITRE ATT&CK Coverage")
+        print("TinySocs MITRE ATT&CK Coverage")
         print(f"{'=' * 40}")
         print(f"Total rules: {len(rules)}")
         print(f"Rules with MITRE annotations: {len(annotations)}")
@@ -384,18 +384,18 @@ def _cli():
     # Load atomic results if provided
     atomic_results = None
     if args.atomic_results:
-        with open(args.atomic_results) as f:
+        with open(args.atomic_results, encoding="utf-8") as f:
             atomic_results = json.load(f)
 
     if args.output:
         layer = generate_navigator_layer(coverage, atomic_results)
-        with open(args.output, "w") as f:
+        with open(args.output, "w", encoding="utf-8") as f:
             json.dump(layer, f, indent=2)
         print(f"Navigator layer written to {args.output}")
 
     if args.output_md:
         md = generate_coverage_markdown(coverage)
-        with open(args.output_md, "w") as f:
+        with open(args.output_md, "w", encoding="utf-8") as f:
             f.write(md)
         print(f"Detection coverage markdown written to {args.output_md}")
 

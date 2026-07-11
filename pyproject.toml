@@ -7,7 +7,7 @@ name = "tinysocs"
 version = "0.10.0"
 description = "TinySocs — a lightweight, privacy-first, federated SIEM/analyst assistant."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 authors = [{ name = "TinySocs", email = "support@tinysocs.local" }]
 license = { text = "BSL-1.1" }
 keywords = ["siem", "security", "opensearch", "detections", "llm"]
@@ -21,6 +21,7 @@ dependencies = [
   "anthropic>=0.39,<1",
   "pydantic>=2.9,<3",
   "python-dotenv>=1.0.1,<2",
+  "cryptography>=42,<46",
 ]
 
 [project.optional-dependencies]
@@ -57,12 +58,18 @@ include = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py39"
+target-version = "py310"
+
+[tool.ruff.lint]
 select = ["E","F","W","I","N","UP"]
-ignore = ["E501"]
+# E501: line length isn't a correctness signal here.
+# E402: dashboard.py/node.py/bot.py deliberately scope imports next to the
+# section that uses them across large files — not import-order carelessness.
+ignore = ["E501", "E402"]
 
 [tool.mypy]
 python_version = "3.10"
+mypy_path = "src"
 warn_unused_configs = true
 ignore_missing_imports = true
 strict_optional = false

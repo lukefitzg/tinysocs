@@ -1,19 +1,15 @@
 # tests/test_compliance_reports.py
 """Unit tests for compliance report generator (Phase 14 / M4)."""
 
-import os
-from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
-import yaml
 
 from tinysocs.reporting.compliance_report import (
-    load_framework,
-    list_frameworks,
     generate_compliance_report,
+    list_frameworks,
+    load_framework,
     render_html,
-    FRAMEWORKS_DIR,
 )
 
 

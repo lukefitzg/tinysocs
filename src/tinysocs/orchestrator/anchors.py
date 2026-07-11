@@ -37,14 +37,14 @@ import json
 import os
 import re
 import sys
-from typing import Any, Dict, List, Tuple
-from urllib.parse import urljoin, urlparse
-
 from pathlib import Path
-from tinysocs.env import load_dotenv_if_present
+from typing import Any
+from urllib.parse import urljoin, urlparse
 
 import requests
 from requests.auth import HTTPBasicAuth
+
+from tinysocs.env import load_dotenv_if_present
 
 load_dotenv_if_present(Path(__file__).resolve().parents[1])
 
@@ -54,6 +54,7 @@ SIEM_URL    = os.getenv("SIEM_URL", "http://127.0.0.1:9200")
 SIEM_USER   = os.getenv("SIEM_USER", "admin")
 SIEM_PASS   = os.getenv("SIEM_PASS", "")
 from tinysocs.tls import resolve_ca_cert
+
 
 def _is_local_siem(url: str) -> bool:
     """
@@ -94,7 +95,7 @@ except Exception:
 def _auth() -> HTTPBasicAuth:
     return HTTPBasicAuth(SIEM_USER, SIEM_PASS)
 
-MAPPING: Dict[str, Any] = {
+MAPPING: dict[str, Any] = {
     "settings": {
         "number_of_replicas": ANCHORS_REPLICAS,
     },
@@ -126,7 +127,7 @@ INDEX_RE = re.compile(rf"^{re.escape(ALIAS)}-(\d{{4}}\.\d{{2}}\.\d{{2}})$")
 def today_index() -> str:
     return f"{ALIAS}-{dt.datetime.utcnow().strftime(DATE_FMT)}"
 
-def _get_alias_indices() -> List[str]:
+def _get_alias_indices() -> list[str]:
     """Return indices currently holding the alias (empty if alias doesn't exist)."""
     url = urljoin(SIEM_URL.rstrip("/") + "/", f"_alias/{ALIAS}")
     try:
@@ -167,9 +168,9 @@ def _ensure_replicas(name: str) -> None:
     except Exception as e:
         print(f"[anchors] WARN: set replicas failed for {name}: {e}", file=sys.stderr)
 
-def _update_alias_exclusive(target_index: str, current_indices: List[str]) -> None:
+def _update_alias_exclusive(target_index: str, current_indices: list[str]) -> None:
     """Atomically move alias to only point to target_index."""
-    actions: List[Dict[str, Any]] = []
+    actions: list[dict[str, Any]] = []
     for idx in current_indices:
         if idx != target_index:
             actions.append({"remove": {"index": idx, "alias": ALIAS, "must_exist": False}})
@@ -179,12 +180,12 @@ def _update_alias_exclusive(target_index: str, current_indices: List[str]) -> No
     if not (200 <= r.status_code < 300):
         raise RuntimeError(f"_aliases update failed: HTTP {r.status_code}: {r.text}")
 
-def _list_daily_indices() -> List[Tuple[str, dt.date]]:
+def _list_daily_indices() -> list[tuple[str, dt.date]]:
     """Return list of (index_name, date) for indices matching ALIAS-YYYY.MM.DD."""
     url = urljoin(SIEM_URL.rstrip("/") + "/", f"_cat/indices/{ALIAS}-*?h=index&s=index&format=json")
     r = requests.get(url, auth=_auth(), verify=resolve_ca_cert(), timeout=20)
     r.raise_for_status()
-    out: List[Tuple[str, dt.date]] = []
+    out: list[tuple[str, dt.date]] = []
     for row in r.json():
         name = str(row.get("index", ""))
         m = INDEX_RE.match(name)
@@ -197,7 +198,7 @@ def _list_daily_indices() -> List[Tuple[str, dt.date]]:
             continue
     return out
 
-def ensure_alias_today() -> Dict[str, Any]:
+def ensure_alias_today() -> dict[str, Any]:
     idx = today_index()
     existed = _index_exists(idx)
     if not existed:
@@ -210,13 +211,13 @@ def ensure_alias_today() -> Dict[str, Any]:
     _update_alias_exclusive(idx, current)
     return {"alias": ALIAS, "index": idx, "created": (not existed), "switched_from": [x for x in current if x != idx], "replicas": ANCHORS_REPLICAS}
 
-def prune_old_indices(retention_days: int, dry: bool) -> Dict[str, Any]:
+def prune_old_indices(retention_days: int, dry: bool) -> dict[str, Any]:
     """Delete whole daily indices older than retention_days."""
     cutoff = (dt.datetime.utcnow().date() - dt.timedelta(days=retention_days))
     pairs = _list_daily_indices()
     victims = [name for (name, d) in pairs if d < cutoff]
-    deleted: List[str] = []
-    errors: List[Dict[str, Any]] = []
+    deleted: list[str] = []
+    errors: list[dict[str, Any]] = []
     if not dry:
         for name in victims:
             url = urljoin(SIEM_URL.rstrip("/") + "/", name)
@@ -234,7 +235,7 @@ def prune_old_indices(retention_days: int, dry: bool) -> Dict[str, Any]:
     }
 
 # ---- Compatibility shims for master & callers --------------------------------
-def ensure_alias_and_mapping() -> Dict[str, Any]:
+def ensure_alias_and_mapping() -> dict[str, Any]:
     """Back-compat: same as ensure_alias_today()."""
     return ensure_alias_today()
 
@@ -252,7 +253,7 @@ def main() -> None:
     args = ap.parse_args()
 
     try:
-        results: Dict[str, Any] = {}
+        results: dict[str, Any] = {}
         # Default behavior: if neither flag provided, just --ensure
         do_ensure = args.ensure or (not args.prune)
         if do_ensure:

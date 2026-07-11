@@ -9,8 +9,8 @@ import pytest
 import yaml
 
 from tinysocs.reporting.mitre_coverage import (
-    TACTIC_ORDER,
     TACTIC_LABELS,
+    TACTIC_ORDER,
     _find_csharp_rules,
     _find_python_rules,
     calculate_coverage,
@@ -37,7 +37,7 @@ class TestRuleLoading:
         csharp_path = _PROJECT_ROOT / "packaging" / "detection" / "rules.yml"
         if not csharp_path.exists():
             pytest.skip("C# rules file not found")
-        with open(csharp_path) as f:
+        with open(csharp_path, encoding="utf-8") as f:
             data = yaml.safe_load(f)
         prod_rules = [r for r in data.get("rules", []) if r.get("id", "").startswith("TS-")]
         missing = [r["id"] for r in prod_rules if not r.get("mitre")]
@@ -48,7 +48,7 @@ class TestRuleLoading:
         python_path = _PROJECT_ROOT / "src" / "tinysocs" / "agent" / "detections" / "rules.yaml"
         if not python_path.exists():
             pytest.skip("Python rules file not found")
-        with open(python_path) as f:
+        with open(python_path, encoding="utf-8") as f:
             rules = yaml.safe_load(f) or []
         missing = [r.get("id", "?") for r in rules if not r.get("mitre")]
         assert not missing, f"Python rules missing mitre annotations: {missing}"

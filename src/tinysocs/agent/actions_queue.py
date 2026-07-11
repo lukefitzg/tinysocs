@@ -11,7 +11,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 # Use unified config so defaults are cross-platform and directory is auto-created.
 from tinysocs.agent.config import load as load_config
@@ -26,7 +26,7 @@ def _ensure_file() -> None:
         QUEUE_PATH.write_text("", encoding="utf-8")
 
 
-def stage_actions(actions: List[Dict[str, Any]]) -> None:
+def stage_actions(actions: list[dict[str, Any]]) -> None:
     """
     Append staged actions to local queue (JSON Lines format).
     Each entry gets a timestamp and context.
@@ -48,14 +48,14 @@ def stage_actions(actions: List[Dict[str, Any]]) -> None:
             f.write(json.dumps(entry) + "\n")
 
 
-def load_queue(limit: int = 50) -> List[Dict[str, Any]]:
+def load_queue(limit: int = 50) -> list[dict[str, Any]]:
     """
     Read back most recent staged actions for debugging or inspection.
     """
     _ensure_file()
     with QUEUE_PATH.open("r", encoding="utf-8") as f:
         lines = f.readlines()[-limit:]
-    return [json.loads(l) for l in lines if l.strip()]
+    return [json.loads(line) for line in lines if line.strip()]
 
 
 def clear_queue() -> None:

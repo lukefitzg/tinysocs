@@ -16,16 +16,15 @@ Or programmatically:
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import smtplib
 import ssl
-import sys
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
+
 
 # ---------------------------------------------------------------------------
 # Env bootstrap: load assistant.env if SIEM creds missing
@@ -64,7 +63,7 @@ from tinysocs.tls import resolve_ca_cert as _resolve_ca_cert
 # ---------------------------------------------------------------------------
 # OpenSearch client (reuse existing adapter if available, else direct HTTP)
 # ---------------------------------------------------------------------------
-def _os_query(index: str, body: Dict[str, Any], size: int = 0) -> Dict[str, Any]:
+def _os_query(index: str, body: dict[str, Any], size: int = 0) -> dict[str, Any]:
     """Execute an OpenSearch query via requests (direct HTTP)."""
     import requests
 
@@ -89,7 +88,7 @@ def _os_query(index: str, body: Dict[str, Any], size: int = 0) -> Dict[str, Any]
 # ---------------------------------------------------------------------------
 # Data queries
 # ---------------------------------------------------------------------------
-def _alerts_by_severity(hours: int = 24) -> Dict[str, int]:
+def _alerts_by_severity(hours: int = 24) -> dict[str, int]:
     """Count alerts by severity for the last N hours."""
     body = {
         "query": {"range": {"@timestamp": {"gte": f"now-{hours}h", "lte": "now"}}},
@@ -107,7 +106,7 @@ def _alerts_by_severity(hours: int = 24) -> Dict[str, int]:
         return {}
 
 
-def _top_rules(hours: int = 24, top_n: int = 5) -> List[Tuple[str, int]]:
+def _top_rules(hours: int = 24, top_n: int = 5) -> list[tuple[str, int]]:
     """Top N rules that fired in the last N hours."""
     body = {
         "query": {"range": {"@timestamp": {"gte": f"now-{hours}h", "lte": "now"}}},
@@ -125,7 +124,7 @@ def _top_rules(hours: int = 24, top_n: int = 5) -> List[Tuple[str, int]]:
         return []
 
 
-def _top_hosts(hours: int = 24, top_n: int = 5) -> List[Tuple[str, int]]:
+def _top_hosts(hours: int = 24, top_n: int = 5) -> list[tuple[str, int]]:
     """Top N hosts with alerts in the last N hours."""
     body = {
         "query": {"range": {"@timestamp": {"gte": f"now-{hours}h", "lte": "now"}}},
@@ -158,7 +157,7 @@ def _total_alerts(hours: int = 24) -> int:
         return 0
 
 
-def _alert_trend() -> Tuple[int, int, str]:
+def _alert_trend() -> tuple[int, int, str]:
     """Compare today's alerts vs yesterday. Returns (today, yesterday, arrow)."""
     today = _total_alerts(24)
     yesterday = _total_alerts(48) - today  # 48h total minus today's
@@ -173,7 +172,7 @@ def _alert_trend() -> Tuple[int, int, str]:
     return today, yesterday, arrow
 
 
-def _new_hosts_seen(hours: int = 24) -> List[str]:
+def _new_hosts_seen(hours: int = 24) -> list[str]:
     """Hosts that appeared for the first time in the last N hours."""
     # First: get all hosts seen in the window
     body_recent = {
@@ -274,7 +273,7 @@ def generate_summary(hours: int = 24) -> str:
     new_hosts = _new_hosts_seen(hours)
     host_total = _host_count()
 
-    parts: List[str] = []
+    parts: list[str] = []
 
     # Summary header
     if total == 0:
@@ -333,10 +332,10 @@ def generate_summary(hours: int = 24) -> str:
 def send_email(
     html: str,
     to: str,
-    subject: Optional[str] = None,
-    smtp_host: Optional[str] = None,
-    smtp_port: Optional[int] = None,
-    from_addr: Optional[str] = None,
+    subject: str | None = None,
+    smtp_host: str | None = None,
+    smtp_port: int | None = None,
+    from_addr: str | None = None,
 ) -> bool:
     """Send the summary email via SMTP."""
     smtp_host = smtp_host or os.getenv("TINYSOCS_SMTP_HOST", "")

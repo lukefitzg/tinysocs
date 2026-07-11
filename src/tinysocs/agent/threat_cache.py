@@ -14,6 +14,7 @@ import os
 import sqlite3
 import threading
 import time
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -42,7 +43,7 @@ class ThreatCache:
         """Create the cache table if it doesn't exist."""
         try:
             self._db_path.parent.mkdir(parents=True, exist_ok=True)
-            with self._connect() as conn:
+            with closing(self._connect()) as conn, conn:
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS threat_cache (
                         ioc_type    TEXT NOT NULL,
@@ -67,7 +68,7 @@ class ThreatCache:
     def get(self, ioc_type: str, ioc_value: str, provider: str) -> dict[str, Any] | None:
         """Return cached result if still valid (within TTL), else None."""
         try:
-            with self._lock, self._connect() as conn:
+            with self._lock, closing(self._connect()) as conn, conn:
                 row = conn.execute(
                     "SELECT result_json, cached_at, ttl_seconds FROM threat_cache "
                     "WHERE ioc_type = ? AND ioc_value = ? AND provider = ?",
@@ -93,7 +94,7 @@ class ThreatCache:
         """Store a result in the cache with the given TTL."""
         try:
             result_json = json.dumps(result, default=str)
-            with self._lock, self._connect() as conn:
+            with self._lock, closing(self._connect()) as conn, conn:
                 conn.execute(
                     "INSERT OR REPLACE INTO threat_cache "
                     "(ioc_type, ioc_value, provider, result_json, cached_at, ttl_seconds) "
@@ -118,7 +119,7 @@ class ThreatCache:
     def cleanup_expired(self) -> int:
         """Remove all expired entries. Returns count removed."""
         try:
-            with self._lock, self._connect() as conn:
+            with self._lock, closing(self._connect()) as conn, conn:
                 now = time.time()
                 cursor = conn.execute(
                     "DELETE FROM threat_cache WHERE (cached_at + ttl_seconds) < ?",
@@ -132,7 +133,7 @@ class ThreatCache:
     def stats(self) -> dict[str, Any]:
         """Return cache statistics."""
         try:
-            with self._lock, self._connect() as conn:
+            with self._lock, closing(self._connect()) as conn, conn:
                 total = conn.execute("SELECT COUNT(*) FROM threat_cache").fetchone()[0]
                 now = time.time()
                 valid = conn.execute(
@@ -161,7 +162,7 @@ class ThreatCache:
     def clear(self) -> None:
         """Remove all entries."""
         try:
-            with self._lock, self._connect() as conn:
+            with self._lock, closing(self._connect()) as conn, conn:
                 conn.execute("DELETE FROM threat_cache")
         except Exception as e:
             logger.warning("Cache clear error: %s", e)

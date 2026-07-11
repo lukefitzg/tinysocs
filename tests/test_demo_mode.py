@@ -265,7 +265,9 @@ class TestDemoComplianceReport:
         for ctrl in controls:
             assert "id" in ctrl
             assert "status" in ctrl
-            assert ctrl["status"] in ("pass", "partial", "fail")
+            # Demo data uses the SAME status vocabulary as the real generator
+            # (active/deployed/not_mapped) so it exercises the real render path.
+            assert ctrl["status"] in ("active", "deployed", "not_mapped")
 
 
 class TestDemoThreatIntelStatus:

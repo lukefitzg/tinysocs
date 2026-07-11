@@ -162,7 +162,13 @@ def render_html(report: dict[str, Any]) -> str:
     else:
         template = _FALLBACK_TEMPLATE
 
-    # Build controls table rows
+    # Build controls table rows.
+    # Status labels use buyer vocabulary, not engine vocabulary: the reader of
+    # this document is a customer's customer, an insurer, or an auditor.
+    #   active     -> monitoring in place, and it has produced detections
+    #   deployed   -> monitoring in place, nothing detected in the period (good)
+    #   not_mapped -> a policy/process/physical control no monitoring tool can
+    #                 satisfy on its own; listed for completeness, not a defect
     rows = []
     for c in report["controls"]:
         status_class = {
@@ -172,9 +178,9 @@ def render_html(report: dict[str, Any]) -> str:
         }.get(c["status"], "status-na")
 
         status_label = {
-            "active": "Active",
-            "deployed": "Deployed",
-            "not_mapped": "Not Mapped",
+            "active": "Monitored and working",
+            "deployed": "Monitored — nothing detected yet",
+            "not_mapped": "Outside a monitoring tool's scope",
         }.get(c["status"], c["status"])
 
         rules_str = ", ".join(c["mapped_rules"]) if c["mapped_rules"] else "&mdash;"
@@ -185,6 +191,8 @@ def render_html(report: dict[str, Any]) -> str:
         )
 
     s = report["summary"]
+    active = sum(1 for c in report["controls"] if c["status"] == "active")
+    quiet = sum(1 for c in report["controls"] if c["status"] == "deployed")
     html = template
     html = html.replace("{{framework_name}}", report["framework"]["name"])
     html = html.replace("{{framework_version}}", report["framework"].get("version", ""))
@@ -192,6 +200,9 @@ def render_html(report: dict[str, Any]) -> str:
     html = html.replace("{{period_hours}}", str(report["period_hours"]))
     html = html.replace("{{total}}", str(s["total_controls"]))
     html = html.replace("{{covered}}", str(s["covered"]))
+    html = html.replace("{{monitored_of_total}}", f'{s["covered"]} of {s["total_controls"]}')
+    html = html.replace("{{active}}", str(active))
+    html = html.replace("{{quiet}}", str(quiet))
     html = html.replace("{{not_mapped}}", str(s["not_mapped"]))
     html = html.replace("{{coverage_pct}}", str(s["coverage_pct"]))
     html = html.replace("{{controls_rows}}", "\n".join(rows))
@@ -209,7 +220,7 @@ th,td{padding:10px 12px;border-bottom:1px solid #eee;text-align:left}
 th{background:#f8f9fa;font-weight:600;color:#636e72;font-size:11px;text-transform:uppercase;letter-spacing:.5px}
 tr:hover{background:#f8f9fa}
 .status-pass{color:#00b894;font-weight:600}
-.status-warn{color:#fdcb6e;font-weight:600}
+.status-warn{color:#0984e3;font-weight:600}
 .status-na{color:#b2bec3}
 .summary{display:flex;gap:16px;margin:20px 0}
 .summary div{background:#f8f9fa;padding:16px 20px;border-radius:8px;flex:1;text-align:center}
@@ -220,11 +231,17 @@ tr:hover{background:#f8f9fa}
 <div class="container">
 <h1>{{framework_name}} Compliance Report</h1>
 <div class="subtitle">Version {{framework_version}} &middot; Generated {{generated_at}} UTC &middot; Period: last {{period_hours}} hours</div>
+<p style="font-size:14px;line-height:1.6;background:#f8f9fa;border-left:4px solid #00b894;padding:12px 16px;border-radius:4px">
+<strong>What this document proves:</strong> this environment runs continuous, always-on security monitoring.
+The table below maps the monitoring in place to the {{framework_name}} controls it addresses, based on the
+detections active during the reporting period. Controls marked &ldquo;Outside a monitoring tool's scope&rdquo;
+are policies, processes, or physical safeguards that no monitoring product can satisfy on its own &mdash;
+they are listed for completeness, not as gaps in monitoring.</p>
 <div class="summary">
-<div><div class="value">{{coverage_pct}}%</div><div class="label">Coverage</div></div>
-<div><div class="value">{{covered}}</div><div class="label">Covered</div></div>
-<div><div class="value">{{not_mapped}}</div><div class="label">Not Mapped</div></div>
-<div><div class="value">{{total}}</div><div class="label">Total Controls</div></div>
+<div><div class="value">{{monitored_of_total}}</div><div class="label">Controls Monitored</div></div>
+<div><div class="value">{{active}}</div><div class="label">Monitored &amp; Working</div></div>
+<div><div class="value">{{quiet}}</div><div class="label">Nothing Detected Yet</div></div>
+<div><div class="value">{{not_mapped}}</div><div class="label">Outside Monitoring Scope</div></div>
 </div>
 <table><tr><th>Control ID</th><th>Control Name</th><th>Status</th><th>Detection Rules</th><th>Events</th></tr>
 {{controls_rows}}

@@ -185,7 +185,11 @@ class TestRenderHtml:
 
         assert "<!DOCTYPE html>" in html
         assert "NIST Cybersecurity Framework 2.0" in html
-        assert "Coverage" in html
+        # Buyer vocabulary (icp-platform-gaps S1): count-based headline tile and
+        # plain-English statuses, with a "what this document proves" intro.
+        assert "Controls Monitored" in html
+        assert "What this document proves" in html
+        assert "Outside a monitoring tool" in html
         assert "</table>" in html
 
     @patch("tinysocs.reporting.compliance_report._rule_fire_counts")

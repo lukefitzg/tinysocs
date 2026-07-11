@@ -253,6 +253,149 @@ def _save_alert_states() -> None:
         pass  # Non-fatal — state is still in memory
 
 
+# ---------------------------------------------------------------------------
+# Customer-local allowlist ("this is normal for us") — the v2 allowlist file.
+#
+# Shape follows docs/design/rule-format-v2.md exactly (schema_version: 1,
+# allowlists: [{rule_id, scope, value, note, added_by, added_at}]). The file is
+# customer-local, unsigned, never sent to the vendor. The C# engine does not
+# read it yet (no allowlist runtime as of 2026-07); until it does, the dashboard
+# applies these entries itself by marking matching alerts as "expected" in the
+# fired-alerts view. When the engine runtime lands, the same file drives
+# suppression at detection time — do NOT invent a second suppression store.
+# ---------------------------------------------------------------------------
+_ALLOWLIST_FILE: Path | None = None
+
+
+def _allowlist_path() -> Path:
+    global _ALLOWLIST_FILE
+    if _ALLOWLIST_FILE is not None:
+        return _ALLOWLIST_FILE
+    candidates = [
+        Path(os.getenv("ProgramData", "C:\\ProgramData")) / "TinySocs" / "Collector" / "allowlists.yml",
+        Path("/var/lib/tinysocs/allowlists.yml"),
+        Path.cwd() / "allowlists.yml",
+    ]
+    for p in candidates:
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            _ALLOWLIST_FILE = p
+            return p
+        except Exception:
+            continue
+    _ALLOWLIST_FILE = candidates[-1]
+    return _ALLOWLIST_FILE
+
+
+def _load_allowlists() -> list[dict[str, Any]]:
+    """Read allowlist entries; malformed or missing file is non-fatal (empty list)."""
+    import yaml
+    try:
+        p = _allowlist_path()
+        if not p.is_file():
+            return []
+        raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        entries = raw.get("allowlists", []) or []
+        return [e for e in entries if isinstance(e, dict) and e.get("rule_id") and e.get("scope")]
+    except Exception:
+        return []
+
+
+def _save_allowlists(entries: list[dict[str, Any]]) -> None:
+    import yaml
+    p = _allowlist_path()
+    doc = {"schema_version": 1, "allowlists": entries}
+    p.write_text(yaml.safe_dump(doc, default_flow_style=False, sort_keys=False, allow_unicode=True), encoding="utf-8")
+
+
+def _record_fp_feedback(record: dict[str, Any]) -> None:
+    """Append a structured false-positive record locally (JSONL).
+
+    Local only: this is the prerequisite for the (deferred, opt-in) FP telemetry
+    channel. Nothing here transmits anything anywhere.
+    """
+    candidates = [
+        Path(os.getenv("ProgramData", "C:\\ProgramData")) / "TinySocs" / "Assistant" / "fp_feedback.jsonl",
+        Path("/var/lib/tinysocs/fp_feedback.jsonl"),
+        Path.cwd() / "fp_feedback.jsonl",
+    ]
+    line = json.dumps(record, default=str)
+    for p in candidates:
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with p.open("a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+            return
+        except Exception:
+            continue
+
+
+def _annotate_expected(detections: list[dict[str, Any]]) -> None:
+    """Mark fired alerts that match a local allowlist entry as expected.
+
+    Dashboard-side application of allowlists.yml (host / host_pattern scopes —
+    the only scopes an alert document reliably carries a value for today).
+    """
+    entries = _load_allowlists()
+    if not entries:
+        return
+    import fnmatch
+    by_rule: dict[str, list[dict[str, Any]]] = {}
+    for e in entries:
+        by_rule.setdefault(str(e["rule_id"]), []).append(e)
+    for det in detections:
+        rules = by_rule.get(str(det.get("rule_id", "")))
+        if not rules:
+            continue
+        host = str(det.get("host", "")).lower()
+        for e in rules:
+            scope = str(e.get("scope", ""))
+            value = str(e.get("value", "")).lower()
+            if (scope == "host" and host and host == value) or (
+                scope == "host_pattern" and host and fnmatch.fnmatch(host, value)
+            ):
+                det["expected"] = True
+                break
+
+
+# ---------------------------------------------------------------------------
+# Agent rule-set metadata: a checkable fact for the status headline.
+# Reads the same rules.yml the C# agent loads (only the C# engine fires alerts);
+# the repo copy is the dev fallback. Never counts the Python KQL catalogue.
+# ---------------------------------------------------------------------------
+_rules_meta_cache: dict[str, Any] = {"ts": 0.0, "data": None}
+
+
+def _agent_rules_meta() -> dict[str, Any]:
+    now = _time.time()
+    if _rules_meta_cache["data"] is not None and now - _rules_meta_cache["ts"] < 60:
+        return _rules_meta_cache["data"]
+    import yaml
+    candidates = [
+        Path(os.getenv("ProgramData", "C:\\ProgramData")) / "TinySocs" / "Collector" / "rules" / "rules.yml",
+        Path(__file__).resolve().parents[3] / "packaging" / "detection" / "rules.yml",
+    ]
+    meta: dict[str, Any] = {"ok": False, "enabled": 0, "total": 0}
+    for p in candidates:
+        try:
+            if p.is_file():
+                raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+                rules = raw.get("rules", raw) if isinstance(raw, dict) else raw
+                if isinstance(rules, list):
+                    dicts = [r for r in rules if isinstance(r, dict)]
+                    meta = {
+                        "ok": True,
+                        "enabled": sum(1 for r in dicts if r.get("enabled")),
+                        "total": len(dicts),
+                    }
+                break
+        except Exception:
+            continue
+    _rules_meta_cache["ts"] = now
+    _rules_meta_cache["data"] = meta
+    return meta
+
+
 def _init_chat_session_file() -> Path:
     """Determine and load the chat session persistence file."""
     global _chat_sessions, _CHAT_SESSION_FILE
@@ -424,15 +567,15 @@ def _format_query_error(index: str, exc: Exception) -> dict[str, Any]:
     for line in tb.strip().splitlines()[-5:]:
         print(f"[dashboard]   {line}")
     if "SSL" in err_type or "SSL" in err_str:
-        friendly = f"SIEM SSL error: {err_str[:120]}"
+        friendly = f"Secure connection to the data store failed: {err_str[:120]}"
     elif "Connection" in err_type or "ConnectionError" in err_str:
-        friendly = "SIEM not connected — check that OpenSearch is running"
+        friendly = "Can't reach the data store — the TinySocs data service may be starting up. Try Refresh in a minute."
     elif "401" in err_str or "403" in err_str:
-        friendly = "SIEM authentication failed"
+        friendly = "Data store sign-in failed — check the connection settings under Settings, Advanced."
     elif "Timeout" in err_type:
-        friendly = "SIEM request timed out"
+        friendly = "The data store took too long to respond — try Refresh."
     else:
-        friendly = f"SIEM query failed ({err_type}): {err_str[:120]}"
+        friendly = f"Data query failed ({err_type}): {err_str[:120]}"
     return {"error": friendly, "hits": {"total": {"value": 0}, "hits": []}, "aggregations": {}}
 
 
@@ -457,40 +600,57 @@ _DEMO_HOSTS = [
     {"hostname": "DC-01", "role": "domaincontroller"},
 ]
 
-# Demo alerts (offsets in hours from now)
+# Demo alerts (offsets in hours from now).
+# Rule IDs are drawn from the enabled pilot base pack only (dual-engine honesty:
+# the demo must not show a disabled or catalogue-only rule firing), and each has
+# a rule_docs.yml entry so the human-titled alert UX renders in demo mode.
 _DEMO_ALERTS_TEMPLATE: list[dict[str, Any]] = [
     {"offset": -14, "rule_id": "TS-001", "rule_name": "brute_force_logon",
      "severity": "critical", "host": "RECEPTION-PC", "source_ip": "203.0.113.47",
      "description": "8 failed logon attempts from 203.0.113.47 for user jdoe in 5 minutes",
      "event_count": 8, "matched_events": 8},
-    {"offset": -12, "rule_id": "TS-030", "rule_name": "ps_encoded_command",
+    {"offset": -12, "rule_id": "TS-131", "rule_name": "network_enum_commands",
      "severity": "high", "host": "DC-01",
-     "description": "PowerShell encoded command execution detected",
+     "description": "Network enumeration commands (nltest/net view) executed",
      "event_count": 3, "matched_events": 3},
     {"offset": -10, "rule_id": "TS-010", "rule_name": "local_account_created",
      "severity": "medium", "host": "FILESERVER-01",
      "description": "New local account created: svc_backup",
      "event_count": 1, "matched_events": 1},
-    {"offset": -8, "rule_id": "FIM-001", "rule_name": "fim_file_modified",
+    {"offset": -8, "rule_id": "TS-110", "rule_name": "critical_file_modified",
      "severity": "medium", "host": "FILESERVER-01",
-     "description": "File modified: C:\\ClientFiles\\Mergers\\draft.docx",
+     "description": "Monitored system file modified: C:\\Windows\\System32\\drivers\\etc\\hosts",
      "event_count": 1, "matched_events": 1},
     {"offset": -4, "rule_id": "TS-071", "rule_name": "rdp_brute_force",
      "severity": "high", "host": "FILESERVER-01", "source_ip": "198.51.100.22",
      "description": "Off-hours RDP connection attempt from 198.51.100.22",
      "event_count": 4, "matched_events": 4},
-    {"offset": -2, "rule_id": "TS-132", "rule_name": "scheduled_task_created",
+    {"offset": -2, "rule_id": "TS-020", "rule_name": "scheduled_task_created",
      "severity": "medium", "host": "DC-01",
      "description": "Scheduled task created: WindowsUpdate_Check",
      "event_count": 1, "matched_events": 1},
-    {"offset": -0.75, "rule_id": "TS-080", "rule_name": "defender_realtime_disabled",
+    {"offset": -0.75, "rule_id": "TS-081", "rule_name": "defender_realtime_disabled",
      "severity": "high", "host": "RECEPTION-PC", "source_ip": "192.0.2.15",
      "description": "Windows Defender real-time protection disabled after connection from 192.0.2.15",
      "event_count": 1, "matched_events": 1},
 ]
 
 
+def _demo_status_state() -> str:
+    """Which synthetic posture the demo shows: attention (default), clear, degraded.
+
+    Driven by TINYSOCS_DEMO_STATUS so a demo/sales session can show the honest
+    all-clear and degraded states, not just an eventful environment. Read per
+    request so it stays a pure function of configuration (rule-based, no LLM).
+    """
+    v = os.getenv("TINYSOCS_DEMO_STATUS", "attention").strip().lower()
+    return v if v in ("attention", "clear", "degraded") else "attention"
+
+
 def _demo_alerts_summary(hours: int = 24) -> dict:
+    if _demo_status_state() != "attention":
+        # Quiet posture: no alerts in the window.
+        return {"hours": hours, "total": 0, "severity": {}, "top_rules": [], "top_hosts": [], "error": None}
     severity = {"critical": 3, "high": 8, "medium": 17, "low": 14}
     total = sum(severity.values())
     return {
@@ -515,6 +675,14 @@ def _demo_alerts_summary(hours: int = 24) -> dict:
 
 def _demo_alerts_timeline(hours: int = 24) -> dict:
     now = _demo_now()
+    quiet = _demo_status_state() != "attention"
+    if quiet:
+        buckets = [
+            {"time": (now + __import__("datetime").timedelta(hours=-(hours - 1 - i))).strftime("%Y-%m-%dT%H:00:00.000Z"),
+             "count": 0, "severity": {}}
+            for i in range(hours)
+        ]
+        return {"hours": hours, "buckets": buckets, "error": None}
     buckets = []
     for i in range(hours):
         t = now + __import__("datetime").timedelta(hours=-(hours - 1 - i))
@@ -546,6 +714,8 @@ def _demo_alerts_timeline(hours: int = 24) -> dict:
 
 
 def _demo_detections_fired(hours: int = 24, limit: int = 30) -> dict:
+    if _demo_status_state() != "attention":
+        return {"detections": [], "total": 0, "error": None}
     detections = []
     for idx, a in enumerate(_DEMO_ALERTS_TEMPLATE):
         det_id = f"demo-alert-{idx:04d}"
@@ -574,6 +744,7 @@ def _demo_detections_fired(hours: int = 24, limit: int = 30) -> dict:
 
 
 def _demo_fleet_health() -> dict:
+    demo_state = _demo_status_state()
     hosts = [
         {
             "hostname": "RECEPTION-PC",
@@ -657,6 +828,17 @@ def _demo_fleet_health() -> dict:
             "heartbeat_ts": _demo_iso(-0.005),
         },
     ]
+    if demo_state != "attention":
+        # Quiet posture: no alerts on any machine
+        for h in hosts:
+            h["alert_count"] = 0
+            h["alert_severities"] = {}
+            h["active_detections"] = []
+    if demo_state == "degraded":
+        # FILESERVER-01 has gone silent — mirrors the degraded Home headline
+        hosts[1]["last_seen"] = _demo_iso(-3.5)
+        hosts[1]["last_ship_time"] = _demo_iso(-3.5)
+        hosts[1]["heartbeat_ts"] = _demo_iso(-3.5)
     return {"hosts": hosts, "error": None}
 
 
@@ -750,54 +932,78 @@ def _demo_version_status() -> dict:
 
 
 def _demo_compliance_report(framework: str = "nist_csf", hours: int = 720) -> dict:
+    """Synthetic compliance report in the SAME shape as the real generator
+    (status: active/deployed/not_mapped) so demo mode exercises the identical
+    rendering path, including the "outside a monitoring tool's scope" controls."""
     frameworks: dict[str, dict[str, Any]] = {
         "nist_csf": {
-            "name": "NIST CSF 2.0",
+            "name": "NIST CSF 2.0", "version": "2.0",
             "controls": [
-                {"id": "DE.CM-1", "name": "Networks are monitored", "status": "pass", "rules_mapped": 8, "rules_fired": 5},
-                {"id": "DE.CM-3", "name": "Personnel activity is monitored", "status": "pass", "rules_mapped": 6, "rules_fired": 3},
-                {"id": "DE.AE-2", "name": "Events are analysed to detect attacks", "status": "pass", "rules_mapped": 12, "rules_fired": 7},
-                {"id": "DE.AE-3", "name": "Event data are aggregated", "status": "pass", "rules_mapped": 4, "rules_fired": 2},
-                {"id": "PR.AC-1", "name": "Identities and credentials managed", "status": "pass", "rules_mapped": 5, "rules_fired": 4},
-                {"id": "PR.AC-7", "name": "Users authenticated", "status": "pass", "rules_mapped": 3, "rules_fired": 2},
-                {"id": "PR.DS-1", "name": "Data-at-rest is protected", "status": "partial", "rules_mapped": 2, "rules_fired": 1},
-                {"id": "PR.DS-5", "name": "Data leakage protections", "status": "partial", "rules_mapped": 1, "rules_fired": 0},
-                {"id": "RS.AN-1", "name": "Notifications from detection systems investigated", "status": "pass", "rules_mapped": 7, "rules_fired": 4},
-                {"id": "RS.RP-1", "name": "Response plan is executed", "status": "partial", "rules_mapped": 2, "rules_fired": 1},
+                {"id": "DE.CM-01", "name": "Networks and network services are monitored", "rules": ["TS-001", "TS-002", "TS-071"], "fired": True},
+                {"id": "DE.CM-03", "name": "Personnel activity and technology usage are monitored", "rules": ["TS-010", "TS-130", "TS-131"], "fired": True},
+                {"id": "DE.CM-09", "name": "Computing hardware and software are monitored", "rules": ["TS-081", "TS-082", "TS-090"], "fired": True},
+                {"id": "DE.AE-02", "name": "Potentially adverse events are analysed", "rules": ["TS-020", "TS-061", "TS-062"], "fired": False},
+                {"id": "PR.DS-01", "name": "Data-at-rest is protected", "rules": ["TS-110", "TS-113", "TS-114"], "fired": True},
+                {"id": "PR.AA-03", "name": "Users and services are authenticated", "rules": ["TS-001", "TS-071"], "fired": True},
+                {"id": "GV.PO-01", "name": "Cybersecurity policy is established", "rules": [], "fired": False},
+                {"id": "PR.AT-01", "name": "Personnel are given security awareness training", "rules": [], "fired": False},
+                {"id": "RC.RP-01", "name": "Recovery plan is executed", "rules": [], "fired": False},
             ],
         },
         "hipaa": {
-            "name": "HIPAA Security Rule",
+            "name": "HIPAA Security Rule", "version": "45 CFR 164",
             "controls": [
-                {"id": "164.312(b)", "name": "Audit controls", "status": "pass", "rules_mapped": 10, "rules_fired": 6},
-                {"id": "164.312(a)(1)", "name": "Access control", "status": "pass", "rules_mapped": 5, "rules_fired": 3},
-                {"id": "164.312(d)", "name": "Person authentication", "status": "pass", "rules_mapped": 4, "rules_fired": 2},
-                {"id": "164.308(a)(5)", "name": "Security awareness training", "status": "partial", "rules_mapped": 2, "rules_fired": 1},
-                {"id": "164.312(c)(1)", "name": "Integrity controls", "status": "pass", "rules_mapped": 3, "rules_fired": 2},
+                {"id": "164.312(b)", "name": "Audit controls", "rules": ["TS-001", "TS-080", "TS-080-sys"], "fired": True},
+                {"id": "164.312(a)(1)", "name": "Access control", "rules": ["TS-010", "TS-071"], "fired": True},
+                {"id": "164.312(d)", "name": "Person or entity authentication", "rules": ["TS-001", "TS-002"], "fired": True},
+                {"id": "164.312(c)(1)", "name": "Integrity controls", "rules": ["TS-110", "TS-114"], "fired": False},
+                {"id": "164.308(a)(5)", "name": "Security awareness and training", "rules": [], "fired": False},
             ],
         },
         "pci_dss": {
-            "name": "PCI DSS v4.0",
+            "name": "PCI DSS v4.0", "version": "4.0",
             "controls": [
-                {"id": "10.2", "name": "Audit logs capture relevant activity", "status": "pass", "rules_mapped": 12, "rules_fired": 8},
-                {"id": "10.4", "name": "Audit logs are reviewed", "status": "pass", "rules_mapped": 6, "rules_fired": 4},
-                {"id": "8.3", "name": "Strong authentication for users", "status": "pass", "rules_mapped": 4, "rules_fired": 3},
-                {"id": "11.5", "name": "File integrity monitoring", "status": "pass", "rules_mapped": 2, "rules_fired": 1},
-                {"id": "6.4", "name": "Public-facing web apps protected", "status": "partial", "rules_mapped": 1, "rules_fired": 0},
+                {"id": "10.2", "name": "Audit logs capture relevant activity", "rules": ["TS-001", "TS-080", "TS-090"], "fired": True},
+                {"id": "10.4", "name": "Audit logs are reviewed", "rules": ["TS-080", "TS-080-sys"], "fired": True},
+                {"id": "8.3", "name": "Strong authentication for users", "rules": ["TS-001", "TS-002"], "fired": True},
+                {"id": "11.5", "name": "File integrity monitoring", "rules": ["TS-110", "TS-113"], "fired": False},
+                {"id": "12.6", "name": "Security awareness education", "rules": [], "fired": False},
             ],
         },
     }
     fw = frameworks.get(framework, frameworks["nist_csf"])
-    total = len(fw["controls"])
-    passed = sum(1 for c in fw["controls"] if c["status"] == "pass")
-    partial = sum(1 for c in fw["controls"] if c["status"] == "partial")
-    failed = total - passed - partial
+    quiet = _demo_status_state() != "attention"
+    controls = []
+    covered = 0
+    not_mapped = 0
+    for c in fw["controls"]:
+        mapped = c["rules"]
+        if not mapped:
+            status = "not_mapped"
+            not_mapped += 1
+        else:
+            status = "active" if (c["fired"] and not quiet) else "deployed"
+            covered += 1
+        controls.append({
+            "id": c["id"], "name": c["name"], "description": "",
+            "status": status, "mapped_rules": mapped,
+            "fired_rules": mapped if status == "active" else [],
+            "fire_count": (len(mapped) * 3) if status == "active" else 0,
+            "required": True,
+        })
+    total = len(controls)
     return {
         "ok": True,
-        "framework": {"id": framework, "name": fw["name"]},
-        "hours": hours,
-        "controls": fw["controls"],
-        "summary": {"total": total, "pass": passed, "partial": partial, "fail": failed},
+        "framework": {"name": fw["name"], "version": fw["version"], "description": ""},
+        "period_hours": hours,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "controls": controls,
+        "summary": {
+            "total_controls": total,
+            "covered": covered,
+            "not_mapped": not_mapped,
+            "coverage_pct": round(covered / max(total, 1) * 100, 1),
+        },
     }
 
 
@@ -1283,7 +1489,13 @@ def _demo_site_host_timeline(site_id: str, hostname: str = "", hours: int = 24) 
 
 
 def _demo_nodes() -> dict:
-    """Synthetic multi-site data for the Sites tab (Phase 18: enriched with operational data)."""
+    """Synthetic multi-site data for the Sites tab (Phase 18: enriched with operational data).
+
+    Set TINYSOCS_DEMO_SITES=0 to simulate a single-node install (no federation),
+    which is what most ICP customers run — the Sites surface should disappear.
+    """
+    if os.getenv("TINYSOCS_DEMO_SITES", "").strip() == "0":
+        return {"nodes": [], "aggregate": None}
     nodes: list[dict[str, Any]] = [
         {
             "url": "https://acme-node:8081",
@@ -1526,7 +1738,16 @@ async def api_detections_fired(
 ):
     """Fetch individual fired detections with full details."""
     if _DEMO_MODE:
-        return _demo_detections_fired(hours, limit)
+        demo = _demo_detections_fired(hours, limit)
+        # Demo alerts go through the same state + allowlist path as real ones so
+        # acknowledge/dismiss/"this is normal" behave identically in a demo.
+        _init_alert_state_file()
+        for det in demo.get("detections", []):
+            state = _alert_states.get(det["id"], {})
+            det["status"] = state.get("status", det.get("status", "new"))
+            det["tags"] = state.get("tags", det.get("tags", []))
+        _annotate_expected(demo.get("detections", []))
+        return demo
     host_filter = _alert_host_filter(hostname)
     time_filter: dict[str, Any] = {"range": {"timestamp": {"gte": f"now-{hours}h", "lte": "now"}}}
     body = {
@@ -1586,6 +1807,9 @@ async def api_detections_fired(
         detections.sort(key=lambda d: d.get("timestamp", ""), reverse=True)
         detections = detections[:limit]
 
+    # Apply the customer-local allowlist: matching alerts are marked expected
+    _annotate_expected(detections)
+
     return {"detections": detections, "total": total, "error": resp.get("error")}
 
 
@@ -1619,6 +1843,101 @@ def api_detection_tags(alert_id: str, body: dict[str, Any] = Body(...)):
     _alert_states[alert_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
     _save_alert_states()
     return {"ok": True, "alert_id": alert_id, "tags": _alert_states[alert_id]["tags"]}
+
+
+@dashboard_app.post("/api/detections/{alert_id}/normal")
+def api_detection_normal(alert_id: str, body: dict[str, Any] = Body(...)):
+    """One-click "this is normal for us": record expected activity.
+
+    Does three things, all local:
+      1. Appends an entry to allowlists.yml in the v2 allowlist shape
+         (docs/design/rule-format-v2.md) so future alerts for this rule+machine
+         are marked as expected — and so the detection engine can enforce it
+         directly once the allowlist runtime ships.
+      2. Appends a structured false-positive record to fp_feedback.jsonl
+         (local only — nothing is transmitted).
+      3. Marks this alert dismissed with an "expected" tag.
+
+    Body: {"rule_id": "TS-001", "host": "RECEPTION-PC", "note": "optional"}
+    """
+    rule_id = str(body.get("rule_id", "")).strip()
+    host = str(body.get("host", "")).strip()
+    note = str(body.get("note", "")).strip()
+    if not rule_id or not host:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "rule_id and host are required"})
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    entries = _load_allowlists()
+    exists = any(
+        e.get("rule_id") == rule_id and e.get("scope") == "host"
+        and str(e.get("value", "")).lower() == host.lower()
+        for e in entries
+    )
+    if not exists:
+        entries.append({
+            "rule_id": rule_id,
+            "scope": "host",
+            "value": host,
+            "note": note or "Marked as normal from the dashboard",
+            "added_by": "dashboard",
+            "added_at": now_iso,
+        })
+        try:
+            _save_allowlists(entries)
+        except Exception as exc:
+            return JSONResponse(status_code=500, content={"ok": False, "error": f"Could not save: {exc}"})
+
+    _record_fp_feedback({
+        "ts": now_iso,
+        "alert_id": alert_id,
+        "rule_id": rule_id,
+        "host": host,
+        "scope": "host",
+        "value": host,
+        "note": note,
+        "source": "dashboard",
+    })
+
+    _init_alert_state_file()
+    state = _alert_states.setdefault(alert_id, {"tags": [], "notes": ""})
+    state["status"] = "dismissed"
+    tags = state.get("tags", [])
+    if "expected" not in tags:
+        tags.append("expected")
+    state["tags"] = tags
+    state["updated_at"] = now_iso
+    _save_alert_states()
+
+    return {"ok": True, "alert_id": alert_id, "rule_id": rule_id, "host": host, "already_listed": exists}
+
+
+@dashboard_app.get("/api/allowlist")
+def api_allowlist_list():
+    """List customer-local allowlist entries (expected-activity list)."""
+    return {"ok": True, "entries": _load_allowlists()}
+
+
+@dashboard_app.post("/api/allowlist/remove")
+def api_allowlist_remove(body: dict[str, Any] = Body(...)):
+    """Remove an allowlist entry. Body: {"rule_id", "scope", "value"}."""
+    rule_id = str(body.get("rule_id", "")).strip()
+    scope = str(body.get("scope", "")).strip()
+    value = str(body.get("value", "")).strip()
+    if not rule_id or not scope:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "rule_id and scope are required"})
+    entries = _load_allowlists()
+    kept = [
+        e for e in entries
+        if not (e.get("rule_id") == rule_id and e.get("scope") == scope
+                and str(e.get("value", "")) == value)
+    ]
+    if len(kept) == len(entries):
+        return JSONResponse(status_code=404, content={"ok": False, "error": "Entry not found"})
+    try:
+        _save_allowlists(kept)
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"ok": False, "error": f"Could not save: {exc}"})
+    return {"ok": True, "removed": len(entries) - len(kept)}
 
 
 # ---------------------------------------------------------------------------
@@ -1671,14 +1990,32 @@ _SILENT_HOST_HOURS = 2  # a host with no events for this long counts as not repo
 @dashboard_app.get("/api/status/headline")
 async def api_status_headline(hours: int = Query(24, ge=1, le=720)):
     if _DEMO_MODE:
+        demo_state = _demo_status_state()
+        if demo_state == "clear":
+            return {
+                "state": "clear",
+                "headline": "All clear — no unresolved high-severity alerts in the last 24 hours across 3 machines.",
+                "detail": "All machines reporting. Detections active.",
+                "hosts_total": 3, "hosts_reporting": 3, "hosts_silent": [],
+                "unresolved": {}, "rules": {"ok": True, "enabled": 19},
+                "window_hours": hours,
+            }
+        if demo_state == "degraded":
+            return {
+                "state": "degraded",
+                "headline": "Monitoring degraded — 1 of 3 machines not reporting.",
+                "detail": ("No unresolved high-severity alerts, but a machine that isn't reporting isn't protected. "
+                           "Not reporting: FILESERVER-01"),
+                "hosts_total": 3, "hosts_reporting": 2, "hosts_silent": ["FILESERVER-01"],
+                "unresolved": {}, "rules": {"ok": True, "enabled": 19},
+                "window_hours": hours,
+            }
         return {
             "state": "attention",
-            "headline": "Needs attention — 3 unresolved critical alerts in the last 24 hours.",
-            "detail": "Open the alerts below, starting with the critical ones. 5 machines monitored, all reporting.",
-            "hosts_total": 5,
-            "hosts_reporting": 5,
-            "hosts_silent": [],
-            "unresolved": {"critical": 3, "high": 8},
+            "headline": "Needs attention — 1 critical and 3 high unresolved alerts in the last 24 hours.",
+            "detail": "Open the alerts below, starting with the most severe. 3 machines monitored, all reporting.",
+            "hosts_total": 3, "hosts_reporting": 3, "hosts_silent": [],
+            "unresolved": {"critical": 1, "high": 3}, "rules": {"ok": True, "enabled": 19},
             "window_hours": hours,
         }
 
@@ -1740,6 +2077,12 @@ async def api_status_headline(hours: int = Query(24, ge=1, le=720)):
             hosts_silent.append(b["key"])
     hosts_reporting = hosts_total - len(hosts_silent)
 
+    # Third checkable fact: is the detection rule set actually loaded?
+    # (RuleLoader silently zeroes out detection on a broken rules.yml — a quiet
+    # dashboard with zero rules must not look green.)
+    rules_meta = _agent_rules_meta()
+    rules_broken = not rules_meta["ok"] or rules_meta["enabled"] == 0
+
     machines = f"{hosts_total} machine{'s' if hosts_total != 1 else ''}"
     window = f"the last {hours} hours" if hours != 24 else "the last 24 hours"
 
@@ -1754,11 +2097,18 @@ async def api_status_headline(hours: int = Query(24, ge=1, le=720)):
         detail = "Open the alerts below, starting with the most severe."
         if hosts_silent:
             detail += f" Also: {len(hosts_silent)} of {hosts_total} machines not reporting."
+        if rules_broken:
+            detail += " Also: the detection rule set could not be read on this server."
     elif hosts_silent:
         state = "degraded"
         headline = f"Monitoring degraded — {len(hosts_silent)} of {machines} not reporting."
         detail = ("No unresolved high-severity alerts, but a machine that isn't reporting isn't protected. "
                   "Not reporting: " + ", ".join(hosts_silent[:5]) + ("…" if len(hosts_silent) > 5 else ""))
+    elif rules_broken:
+        state = "degraded"
+        headline = "Monitoring degraded — no detection rules are loaded on this server."
+        detail = ("Machines are reporting, but the detection rule set could not be read, so nothing is being "
+                  "checked against it. Restart the TinySocs services or contact support.")
     else:
         state = "clear"
         headline = f"All clear — no unresolved high-severity alerts in {window} across {machines}."
@@ -1772,6 +2122,7 @@ async def api_status_headline(hours: int = Query(24, ge=1, le=720)):
         "hosts_reporting": hosts_reporting,
         "hosts_silent": hosts_silent[:20],
         "unresolved": unresolved,
+        "rules": {"ok": rules_meta["ok"], "enabled": rules_meta["enabled"]},
         "window_hours": hours,
     }
 
@@ -5742,39 +6093,14 @@ async def api_compliance_report_html(
 ):
     """Generate and download compliance report as HTML."""
     if _DEMO_MODE:
+        # Demo data is already in the real report shape — reuse the one true renderer.
+        from tinysocs.reporting.compliance_report import render_html
         report = _demo_compliance_report(framework, hours)
-        fw_label = {"nist_csf": "NIST_CSF_2.0", "hipaa": "HIPAA", "pci_dss": "PCI_DSS"}.get(framework, framework)
-        controls = report.get("controls", [])
-        rows = "".join(
-            f'<tr><td>{c["id"]}</td><td>{c["name"]}</td><td>{c["status"]}</td>'
-            f'<td>{c.get("mapped_rules", 0)}</td><td>{c.get("event_count", 0)}</td></tr>'
-            for c in controls
-        )
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-        html = (
-            f'<!DOCTYPE html><html><head><meta charset="utf-8">'
-            f'<title>TinySocs Compliance Report — {fw_label}</title>'
-            f'<style>body{{font-family:system-ui,sans-serif;margin:40px;color:#1a1a2e;background:#f8f9fa}}'
-            f'h1{{color:#2c3e50}}table{{border-collapse:collapse;width:100%;margin-top:20px}}'
-            f'th,td{{border:1px solid #dee2e6;padding:8px 12px;text-align:left}}'
-            f'th{{background:#2c3e50;color:#fff}}tr:nth-child(even){{background:#f1f3f5}}'
-            f'.pass{{color:#27ae60;font-weight:600}}.partial{{color:#e67e22;font-weight:600}}'
-            f'.fail{{color:#e74c3c;font-weight:600}}'
-            f'</style></head><body>'
-            f'<h1>TinySocs Compliance Report</h1>'
-            f'<p><strong>Framework:</strong> {fw_label} &nbsp; <strong>Period:</strong> {hours}h &nbsp; '
-            f'<strong>Generated:</strong> {ts} &nbsp; <em>(Demo Mode)</em></p>'
-            f'<p><strong>Coverage:</strong> {report["summary"]["pass"]} pass, '
-            f'{report["summary"]["partial"]} partial, {report["summary"]["fail"]} fail '
-            f'out of {report["summary"]["total"]} controls</p>'
-            f'<table><thead><tr><th>Control</th><th>Name</th><th>Status</th>'
-            f'<th>Rules</th><th>Events</th></tr></thead><tbody>{rows}</tbody></table>'
-            f'<p style="margin-top:30px;color:#7f8c8d;font-size:12px">'
-            f'Generated by TinySocs (demo mode)</p></body></html>'
-        )
+        html = render_html(report)
+        fw_name = report["framework"]["name"].replace(" ", "_")
         return Response(
             content=html, media_type="text/html",
-            headers={"Content-Disposition": f'attachment; filename="compliance_{fw_label}.html"'},
+            headers={"Content-Disposition": f'attachment; filename="compliance_{fw_name}.html"'},
         )
     try:
         from tinysocs.reporting.compliance_report import generate_compliance_report, render_html
@@ -6182,11 +6508,11 @@ tr:hover { background: rgba(74, 144, 217, 0.05); }
 #hostTimelineChart { flex: 1; min-height: 0; }
 #hostTimelineChart svg, #hostTimelineChart canvas { width: 100% !important; height: 100% !important; }
 #hostTimelineLegend { flex-shrink: 0; }
-#tab-detections > .card:first-child { box-sizing: border-box;
+#tab-detections > .rules-card { box-sizing: border-box;
   display: flex; flex-direction: column; }
-#tab-detections > .card:first-child .card-header-sticky { flex-shrink: 0; }
-#tab-detections > .card:first-child > div:not(.card-header-sticky):not(.pager) { flex: 1; min-height: 0; }
-#tab-detections > .card:first-child .pager { flex-shrink: 0; margin-top: auto; }
+#tab-detections > .rules-card .card-header-sticky { flex-shrink: 0; }
+#tab-detections > .rules-card > div:not(.card-header-sticky):not(.pager) { flex: 1; min-height: 0; }
+#tab-detections > .rules-card .pager { flex-shrink: 0; margin-top: auto; }
 
 /* Shared pager */
 .pager { display: flex; align-items: center; justify-content: center; gap: 8px;
@@ -6389,8 +6715,9 @@ select { cursor: pointer; }
       <div style="display:flex;gap:0;margin-bottom:16px;border-bottom:2px solid var(--border)">
         <button class="settings-tab active" data-stab="general" onclick="switchSettingsTab('general')" style="padding:6px 16px;font-size:13px;font-weight:600;background:none;border:none;border-bottom:2px solid var(--accent);margin-bottom:-2px;color:var(--accent);cursor:pointer">General</button>
         <button class="settings-tab" data-stab="storage" onclick="switchSettingsTab('storage')" style="padding:6px 16px;font-size:13px;font-weight:600;background:none;border:none;border-bottom:2px solid transparent;margin-bottom:-2px;color:var(--muted);cursor:pointer">Storage</button>
-        <button class="settings-tab" data-stab="security" onclick="switchSettingsTab('security')" style="padding:6px 16px;font-size:13px;font-weight:600;background:none;border:none;border-bottom:2px solid transparent;margin-bottom:-2px;color:var(--muted);cursor:pointer">Security</button>
+        <button class="settings-tab" data-stab="security" onclick="switchSettingsTab('security')" style="padding:6px 16px;font-size:13px;font-weight:600;background:none;border:none;border-bottom:2px solid transparent;margin-bottom:-2px;color:var(--muted);cursor:pointer">Password</button>
         <button class="settings-tab" data-stab="diagnostics" onclick="switchSettingsTab('diagnostics')" style="padding:6px 16px;font-size:13px;font-weight:600;background:none;border:none;border-bottom:2px solid transparent;margin-bottom:-2px;color:var(--muted);cursor:pointer">Diagnostics</button>
+        <button class="settings-tab" data-stab="advanced" onclick="switchSettingsTab('advanced')" style="padding:6px 16px;font-size:13px;font-weight:600;background:none;border:none;border-bottom:2px solid transparent;margin-bottom:-2px;color:var(--muted);cursor:pointer">Advanced</button>
       </div>
 
       <!-- GENERAL TAB -->
@@ -6518,42 +6845,12 @@ select { cursor: pointer; }
         <span id="retentionStatus" style="font-size:12px"></span>
       </div>
 
-      <div class="section-title">HEC Tokens</div>
-      <div style="font-size:11px;color:var(--muted);margin-bottom:6px">
-        Bearer tokens for the HTTP Event Collector endpoint.
-        External tools (firewalls, syslog, etc.) use these to authenticate when sending logs.
-      </div>
-      <div style="font-size:12px;margin-bottom:8px;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px">
-        <span style="color:var(--muted)">Endpoint URL:</span>
-        <code id="hecEndpointUrl" style="color:var(--accent);margin-left:4px;user-select:all"></code>
-      </div>
-      <div id="hecTokensList" style="margin-bottom:8px;font-size:12px">Loading...</div>
-      <div style="display:flex;gap:8px;align-items:center">
-        <input type="text" id="hecTokenName" placeholder="Token name (e.g. pfsense)" style="width:200px;font-size:12px">
-        <button class="btn-save" onclick="createHecToken()" style="font-size:12px;padding:4px 12px">Create Token</button>
-      </div>
-      <div id="hecTokenResult" style="margin-top:6px;font-size:12px"></div>
-
       </div><!-- end STORAGE TAB -->
 
       <!-- SECURITY TAB -->
       <div id="stab-security" class="settings-tab-content" style="display:none">
 
-      <div class="section-title">SIEM Connection</div>
-      <div class="field">
-        <label>SIEM URL</label>
-        <input type="text" id="s_SIEM_URL" placeholder="https://localhost:9201">
-      </div>
-      <div class="field">
-        <label>SIEM User</label>
-        <input type="text" id="s_SIEM_USER" placeholder="admin">
-      </div>
-      <div class="field">
-        <label>SIEM Password</label>
-        <input type="password" id="s_SIEM_PASS" placeholder="(leave blank to keep current)">
-      </div>
-
-      <div class="section-title" style="margin-top:24px">Change Dashboard Password</div>
+      <div class="section-title">Change Dashboard Password</div>
       <p style="color:var(--muted);font-size:12px;margin-bottom:8px">This password protects both the dashboard and the SIEM datastore.</p>
       <div class="field">
         <label>Current Password</label>
@@ -6588,6 +6885,46 @@ select { cursor: pointer; }
 
       </div><!-- end DIAGNOSTICS TAB -->
 
+      <!-- ADVANCED TAB (operator-grade settings; the installer sets these) -->
+      <div id="stab-advanced" class="settings-tab-content" style="display:none">
+
+      <p style="color:var(--muted);font-size:12px;margin-bottom:12px">
+        Operator settings. The installer configures these automatically &mdash; you normally never need to change them.
+      </p>
+
+      <div class="section-title">Data Store Connection</div>
+      <p style="color:var(--muted);font-size:11px;margin-bottom:8px">How the dashboard connects to the local data store (OpenSearch) where events and alerts are kept.</p>
+      <div class="field">
+        <label>Data store URL</label>
+        <input type="text" id="s_SIEM_URL" placeholder="https://localhost:9201">
+      </div>
+      <div class="field">
+        <label>Data store user</label>
+        <input type="text" id="s_SIEM_USER" placeholder="admin">
+      </div>
+      <div class="field">
+        <label>Data store password</label>
+        <input type="password" id="s_SIEM_PASS" placeholder="(leave blank to keep current)">
+      </div>
+
+      <div class="section-title" style="margin-top:24px">Log Collection Tokens (HTTP Event Collector)</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px">
+        For sending logs from other systems (firewalls, syslog forwarders) into TinySocs.
+        Each external sender authenticates with its own token.
+      </div>
+      <div style="font-size:12px;margin-bottom:8px;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px">
+        <span style="color:var(--muted)">Endpoint URL:</span>
+        <code id="hecEndpointUrl" style="color:var(--accent);margin-left:4px;user-select:all"></code>
+      </div>
+      <div id="hecTokensList" style="margin-bottom:8px;font-size:12px">Loading...</div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input type="text" id="hecTokenName" placeholder="Token name (e.g. pfsense)" style="width:200px;font-size:12px">
+        <button class="btn-save" onclick="createHecToken()" style="font-size:12px;padding:4px 12px">Create Token</button>
+      </div>
+      <div id="hecTokenResult" style="margin-top:6px;font-size:12px"></div>
+
+      </div><!-- end ADVANCED TAB -->
+
       <div class="btn-row" style="margin-top:24px;border-top:1px solid var(--border);padding-top:16px">
         <button class="btn-cancel" onclick="closeSettings()">Cancel</button>
         <button class="btn-save" onclick="saveSettings()">Save &amp; Apply</button>
@@ -6597,12 +6934,16 @@ select { cursor: pointer; }
 </div>
 
 <div class="tab-bar" id="tabBar">
-  <button class="active" data-tab="overview" onclick="switchTab('overview')">Overview</button>
-  <button data-tab="sites" onclick="switchTab('sites')" id="sitesTabBtn">Sites</button>
-  <button data-tab="fleet" onclick="switchTab('fleet')">Fleet</button>
-  <button data-tab="data" onclick="switchTab('data')">Data</button>
-  <button data-tab="detections" onclick="switchTab('detections')">Detections</button>
+  <button class="active" data-tab="overview" onclick="switchTab('overview')">Home</button>
+  <button data-tab="alerts" onclick="switchTab('alerts')">Alerts</button>
+  <button data-tab="fleet" onclick="switchTab('fleet')">Machines</button>
   <button data-tab="compliance" onclick="switchTab('compliance')">Compliance</button>
+  <!-- Operator surfaces: hidden until Advanced is switched on. Raw events, the
+       rule catalogue, and multi-site management are not part of the default view. -->
+  <button data-tab="data" onclick="switchTab('data')" class="adv-tab" style="display:none">Events</button>
+  <button data-tab="detections" onclick="switchTab('detections')" class="adv-tab" style="display:none">Rules</button>
+  <button data-tab="sites" onclick="switchTab('sites')" id="sitesTabBtn" class="adv-tab" style="display:none">Sites</button>
+  <button id="advToggleBtn" onclick="toggleAdvanced()" style="margin-left:auto;font-size:12px" title="Show or hide operator tools: raw event search, the rule catalogue, and multi-site management">Advanced &#9662;</button>
 </div>
 
 """ + ("""
@@ -6656,12 +6997,24 @@ select { cursor: pointer; }
       <div class="sites-grid" id="sitesGrid"></div>
     </div>
 
-    <!-- ==================== OVERVIEW TAB ==================== -->
+    <!-- ==================== HOME TAB ==================== -->
     <div class="tab-pane active" id="tab-overview">
       <!-- Status headline: the one-line answer to "are we ok right now?" -->
       <div class="card full" id="status-headline-card" style="border-left:4px solid var(--border)">
         <div class="card-body" id="status-headline" style="padding:14px 16px">
           <div class="loading">Checking status...</div>
+        </div>
+        <div id="home-digest" style="display:none;padding:8px 16px 12px 16px;border-top:1px solid var(--border);font-size:13px;color:var(--muted)"></div>
+      </div>
+
+      <!-- Recent alerts, human-titled (full width) -->
+      <div class="card full">
+        <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
+          <h2 style="margin:0;flex:1">Recent Alerts</h2>
+          <a onclick="switchTab('alerts')" style="font-size:12px;cursor:pointer;white-space:nowrap">View all alerts &rarr;</a>
+        </div>
+        <div class="card-body">
+          <div id="home-recent-content"><div class="loading">Loading...</div></div>
         </div>
       </div>
 
@@ -6686,33 +7039,26 @@ select { cursor: pointer; }
           <div id="timeline-content"><div class="loading">Loading...</div></div>
         </div>
       </div>
+    </div>
 
-      <!-- Fired Detections (full width) -->
+    <!-- ==================== ALERTS TAB ==================== -->
+    <div class="tab-pane" id="tab-alerts">
       <div class="card full detections-card">
-        <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
-          <h2 style="margin:0;white-space:nowrap">Fired Detections</h2>
+        <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
+          <h2 style="margin:0;white-space:nowrap">Alerts</h2>
           <select id="detStatusFilter" style="font-size:12px;padding:4px 8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;max-width:200px;margin-left:8px" onchange="_detectionsPage=0;_openDetectionIdx=-1;renderDetections()">
-            <option value="active" selected>Active (new + ack)</option>
+            <option value="active" selected>Needs review</option>
             <option value="all">All</option>
             <option value="new">New only</option>
-            <option value="acknowledged">Acknowledged</option>
+            <option value="acknowledged">Being handled</option>
             <option value="dismissed">Dismissed</option>
+            <option value="expected">Marked as normal</option>
           </select>
+          <span style="font-size:11px;color:var(--muted);margin-left:8px;white-space:nowrap">Critical / High: act today &middot; Medium: review this week &middot; Low: awareness</span>
           <button onclick="askAIAboutWidget('detections')" style="margin-left:auto;font-size:11px;padding:3px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;white-space:nowrap" title="Ask the AI assistant about this widget">Ask AI</button>
         </div>
         <div class="card-body" id="body-detections">
           <div id="detections-content"><div class="loading">Loading...</div></div>
-        </div>
-      </div>
-
-      <!-- Storage (full width, below detections) -->
-      <div class="card full">
-        <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
-          <h2 style="margin:0;flex:1">Storage</h2>
-          <button onclick="askAIAboutWidget('storage')" style="margin-left:auto;font-size:11px;padding:3px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;white-space:nowrap" title="Ask the AI assistant about this widget">Ask AI</button>
-        </div>
-        <div class="card-body" id="body-storage">
-          <div id="storage-content"><div class="loading">Loading...</div></div>
         </div>
       </div>
     </div>
@@ -6722,7 +7068,7 @@ select { cursor: pointer; }
       <!-- Fleet Health (full width) -->
       <div class="card full">
         <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
-          <h2 style="margin:0;flex:1">Fleet Health</h2>
+          <h2 style="margin:0;flex:1">Machines</h2>
           <button onclick="askAIAboutWidget('fleet')" style="margin-left:auto;font-size:11px;padding:3px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;white-space:nowrap" title="Ask the AI assistant about this widget">Ask AI</button>
         </div>
         <div class="card-body" id="body-fleet">
@@ -6787,14 +7133,40 @@ select { cursor: pointer; }
           <div id="events-content" class="explorer-table-wrap"><div class="loading">Loading...</div></div>
         </div>
       </div>
+
+      <!-- Storage (operator surface — disk usage is not a Home concern) -->
+      <div class="card full">
+        <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
+          <h2 style="margin:0;flex:1">Storage</h2>
+          <button onclick="askAIAboutWidget('storage')" style="margin-left:auto;font-size:11px;padding:3px 10px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;white-space:nowrap" title="Ask the AI assistant about this widget">Ask AI</button>
+        </div>
+        <div class="card-body" id="body-storage">
+          <div id="storage-content"><div class="loading">Loading...</div></div>
+        </div>
+      </div>
     </div>
 
-    <!-- ==================== DETECTIONS TAB ==================== -->
+    <!-- ==================== RULES TAB (Advanced / operator) ==================== -->
     <div class="tab-pane" id="tab-detections">
-      <!-- Alert Rules -->
+      <!-- Expected activity (customer-local allowlist) -->
+      <div class="card full">
+        <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
+          <h2 style="margin:0;flex:1">Expected Activity</h2>
+        </div>
+        <div class="card-body">
+          <p style="font-size:12px;color:var(--muted);margin:0 0 8px 0">
+            Alerts you marked as &ldquo;normal for us&rdquo;. Matching alerts are filed as expected instead of
+            appearing as new. This list is stored only on this server and is never sent anywhere.
+            Remove an entry to start alerting again.
+          </p>
+          <div id="allowlist-content"><div class="loading">Loading...</div></div>
+        </div>
+      </div>
+
+      <!-- Alert Rules (rule catalogue) -->
       <div class="card full rules-card" id="rules-card">
         <div class="card-header-sticky" style="display:flex;align-items:center;gap:4px">
-          <h2 style="margin:0;white-space:nowrap">Alert Rules</h2>
+          <h2 style="margin:0;white-space:nowrap">Rule Catalogue</h2>
           <select id="rulesFilter" onchange="filterRules()" style="flex:1;margin-bottom:0;height:32px;margin-left:8px">
             <option value="all">All Rules</option>
             <option value="builtin">Built-in</option>
@@ -6809,6 +7181,14 @@ select { cursor: pointer; }
           </div>
         </div>
         <div class="card-body" id="body-rules">
+
+        <!-- Dual-engine honesty: this catalogue is NOT the live detection set. -->
+        <div style="font-size:12px;color:var(--muted);margin-bottom:10px;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-left:3px solid var(--orange);border-radius:4px">
+          Advanced. This is TinySocs's research rule catalogue plus any custom rules on this server.
+          In a standard installation these do <strong>not</strong> run as live detections &mdash; live alerts
+          come from the curated detection rule set on each agent, which TinySocs maintains and updates for you.
+          You never need to create or edit a rule here.
+        </div>
 
         <!-- Quick Rule Builder (hidden by default) -->
         <div id="ruleBuilder" style="display:none;margin-bottom:12px;padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px">
@@ -6890,6 +7270,37 @@ select { cursor: pointer; }
         </div>
       </div>
 
+      <!-- MITRE ATT&CK Coverage (analyst artifact — moved out of the buyer-facing
+           Compliance tab; its counts include catalogue rules that are not live) -->
+      <div class="card full" id="mitre-card">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+          <h2 style="margin:0">MITRE ATT&CK Coverage</h2>
+          <button onclick="askAIAboutWidget('mitre')" style="margin-left:auto;font-size:11px;padding:0 10px;height:26px;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;white-space:nowrap" title="Ask the AI assistant about this widget">Ask AI</button>
+          <a id="mitreDownload" href="#" style="padding:0 8px;height:26px;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;background:var(--accent);color:#fff;text-decoration:none;border-radius:4px;cursor:pointer" title="Download Navigator layer JSON" onclick="downloadNavigatorLayer(event)"><span style="font-size:13px;line-height:0;position:relative;top:1px">&#x21E9;</span></a>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:8px">
+          Counts cover the full rule catalogue, including roadmap rules that are not enabled as live
+          detections in a standard installation. Not a claim about live coverage.
+        </div>
+        <div class="card-body" id="body-mitre">
+        <div id="mitre-summary" style="display:flex;gap:12px;margin:0;overflow:hidden;max-height:0;transition:max-height 0.3s ease,margin 0.3s ease">
+          <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
+            <div id="mitre-techniques" style="font-size:24px;font-weight:700;color:#27ae60">&mdash;</div>
+            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Techniques</div>
+          </div>
+          <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
+            <div id="mitre-tactics" style="font-size:24px;font-weight:700;color:#3498db">&mdash;</div>
+            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Tactics</div>
+          </div>
+          <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
+            <div id="mitre-rules" style="font-size:24px;font-weight:700;color:var(--text)">&mdash;</div>
+            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Annotated Rules</div>
+          </div>
+        </div>
+        <div id="mitre-heatmap" style="margin-top:12px"></div>
+        </div>
+      </div>
+
       <!-- Guided Response Actions (hidden until feature is fully implemented) -->
       <div class="card full" id="actions-card" style="display:none">
         <div class="card-header-sticky" style="display:flex;align-items:center;gap:8px">
@@ -6917,60 +7328,41 @@ select { cursor: pointer; }
             <option value="2160">90 days</option>
           </select>
           <select id="complianceStatus" onchange="_filterCompliancePage()" style="font-size:12px;padding:4px 8px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px">
-            <option value="">All Statuses</option>
-            <option value="active">Active</option>
-            <option value="deployed">Deployed</option>
-            <option value="not_mapped">Not Mapped</option>
+            <option value="">All statuses</option>
+            <option value="active">Monitored and working</option>
+            <option value="deployed">Monitored &mdash; nothing detected yet</option>
+            <option value="not_mapped">Outside monitoring scope</option>
           </select>
           <button onclick="askAIAboutWidget('compliance')" style="margin-left:auto;font-size:11px;padding:0 10px;height:26px;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;white-space:nowrap" title="Ask the AI assistant about this widget">Ask AI</button>
-          <a id="complianceDownload" href="#" style="display:none;padding:0 8px;height:26px;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;background:var(--accent);color:#fff;text-decoration:none;border-radius:4px;cursor:pointer" title="Download compliance report" download><span style="font-size:13px;line-height:0;position:relative;top:1px">&#x21E9;</span></a>
+          <a id="complianceDownload" href="#" style="display:none;padding:0 8px;height:26px;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;background:var(--accent);color:#fff;text-decoration:none;border-radius:4px;cursor:pointer" title="Download this report as a document you can attach to a questionnaire or send to an insurer" download><span style="font-size:13px;line-height:0;position:relative;top:1px">&#x21E9;</span></a>
         </div>
         <div class="card-body" id="body-compliance">
+        <p style="font-size:12px;color:var(--muted);margin:0 0 4px 0;line-height:1.5">
+          <strong style="color:var(--text)">What this report proves:</strong> your machines are under continuous,
+          always-on security monitoring, mapped to the controls of the framework above. Controls marked
+          &ldquo;Outside a monitoring tool's scope&rdquo; are policies, processes, or physical safeguards that no
+          monitoring product can satisfy on its own &mdash; they are listed for completeness, not as gaps.
+          Use the download button to attach this report to a questionnaire, audit, or insurance renewal.
+        </p>
         <div id="compliance-summary" style="display:flex;gap:12px;margin:0;overflow:hidden;max-height:0;transition:max-height 0.3s ease,margin 0.3s ease">
           <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
-            <div id="comp-coverage" style="font-size:24px;font-weight:700;color:var(--text)">—</div>
-            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Coverage</div>
+            <div id="comp-monitored" style="font-size:24px;font-weight:700;color:var(--text)">&mdash;</div>
+            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Controls Monitored</div>
           </div>
           <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
-            <div id="comp-covered" style="font-size:24px;font-weight:700;color:#00b894">—</div>
-            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Covered</div>
+            <div id="comp-active" style="font-size:24px;font-weight:700;color:#00b894">&mdash;</div>
+            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Monitored &amp; Working</div>
           </div>
           <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
-            <div id="comp-notmapped" style="font-size:24px;font-weight:700;color:#b2bec3">—</div>
-            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Not Mapped</div>
+            <div id="comp-quiet" style="font-size:24px;font-weight:700;color:#4a90d9">&mdash;</div>
+            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Nothing Detected Yet</div>
           </div>
           <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
-            <div id="comp-total" style="font-size:24px;font-weight:700;color:var(--text)">—</div>
-            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Total Controls</div>
+            <div id="comp-outside" style="font-size:24px;font-weight:700;color:#b2bec3">&mdash;</div>
+            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Outside Monitoring Scope</div>
           </div>
         </div>
         <div id="compliance-content"><div class="loading">Loading...</div></div>
-        </div>
-      </div>
-
-      <!-- MITRE ATT&CK Coverage (Phase 15 M3) -->
-      <div class="card full" id="mitre-card">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-          <h2 style="margin:0">MITRE ATT&CK Coverage</h2>
-          <button onclick="askAIAboutWidget('mitre')" style="margin-left:auto;font-size:11px;padding:0 10px;height:26px;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;white-space:nowrap" title="Ask the AI assistant about this widget">Ask AI</button>
-          <a id="mitreDownload" href="#" style="padding:0 8px;height:26px;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;background:var(--accent);color:#fff;text-decoration:none;border-radius:4px;cursor:pointer" title="Download Navigator layer JSON" onclick="downloadNavigatorLayer(event)"><span style="font-size:13px;line-height:0;position:relative;top:1px">&#x21E9;</span></a>
-        </div>
-        <div class="card-body" id="body-mitre">
-        <div id="mitre-summary" style="display:flex;gap:12px;margin:0;overflow:hidden;max-height:0;transition:max-height 0.3s ease,margin 0.3s ease">
-          <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
-            <div id="mitre-techniques" style="font-size:24px;font-weight:700;color:#27ae60">—</div>
-            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Techniques</div>
-          </div>
-          <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
-            <div id="mitre-tactics" style="font-size:24px;font-weight:700;color:#3498db">—</div>
-            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Tactics</div>
-          </div>
-          <div style="background:var(--bg);padding:12px 16px;border-radius:6px;flex:1;text-align:center">
-            <div id="mitre-rules" style="font-size:24px;font-weight:700;color:var(--text)">—</div>
-            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px">Annotated Rules</div>
-          </div>
-        </div>
-        <div id="mitre-heatmap" style="margin-top:12px"></div>
         </div>
       </div>
     </div>
@@ -7023,13 +7415,48 @@ let hours = 24;
 const BASE = window.location.pathname.replace(/\\/$/, '');
 
 // ── Tab navigation ──
-const _validTabs = ['overview','sites','fleet','data','detections','compliance'];
+// Default (buyer) tabs answer "are we ok / are we compliant / can I explain it".
+// Operator tabs (raw events, rule catalogue, multi-site) hide behind Advanced.
+const _validTabs = ['overview','alerts','sites','fleet','data','detections','compliance'];
+const _advancedTabs = ['data','detections','sites'];
 let _activeTab = 'overview';
 let _initialHashTab = '';  // captures original URL hash; checked by initSitesTab
 let _tabLoaded = {};
+let _advancedOn = false;
+
+function _applyAdvancedVisibility() {
+  document.querySelectorAll('.tab-bar button.adv-tab').forEach(b => {
+    b.style.display = _advancedOn ? '' : 'none';
+  });
+  const t = document.getElementById('advToggleBtn');
+  if (t) {
+    t.innerHTML = _advancedOn ? 'Advanced &#9652;' : 'Advanced &#9662;';
+    t.style.color = _advancedOn ? 'var(--accent)' : 'var(--muted)';
+  }
+}
+
+function toggleAdvanced() {
+  _advancedOn = !_advancedOn;
+  try { localStorage.setItem('tinysocs_advanced', _advancedOn ? '1' : ''); } catch(e) {}
+  _applyAdvancedVisibility();
+  // Leaving advanced mode while on an operator tab: return to Home
+  if (!_advancedOn && _advancedTabs.includes(_activeTab)) switchTab('overview');
+}
+
+function restoreAdvancedState() {
+  try { _advancedOn = localStorage.getItem('tinysocs_advanced') === '1'; } catch(e) {}
+  _applyAdvancedVisibility();
+}
 
 function switchTab(tabId) {
   if (!_validTabs.includes(tabId)) tabId = 'overview';
+  // Navigating to an operator tab (e.g. an alert's "show raw events" link)
+  // reveals the Advanced group so the user can see where they are.
+  if (_advancedTabs.includes(tabId) && !_advancedOn) {
+    _advancedOn = true;
+    try { localStorage.setItem('tinysocs_advanced', '1'); } catch(e) {}
+    _applyAdvancedVisibility();
+  }
   document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.tab-bar button').forEach(b => b.classList.remove('active'));
   const pane = document.getElementById('tab-' + tabId);
@@ -7050,11 +7477,12 @@ function loadTabData(tabId) {
   _tabLoaded[tabId] = true;
   switch(tabId) {
     case 'sites': loadSites(); break;
-    case 'overview': loadStatusHeadline(); loadSummary(); loadTimeline(); loadDetections(); loadStorage(); loadOverviewAggregate(); break;
+    case 'overview': loadStatusHeadline(); loadSummary(); loadTimeline(); loadDetections(); loadOverviewAggregate(); break;
+    case 'alerts': loadDetections(); break;
     case 'fleet': loadFleet(); break;
-    case 'data': loadEvents(); break;
-    case 'detections': loadRules(); loadActions(); break;
-    case 'compliance': loadComplianceFrameworks(); loadMitreCoverage(); break;
+    case 'data': loadEvents(); loadStorage(); break;
+    case 'detections': loadRules(); loadActions(); loadAllowlist(); loadMitreCoverage(); break;
+    case 'compliance': loadComplianceFrameworks(); break;
   }
 }
 
@@ -7071,9 +7499,16 @@ function setHours(h) {
   refreshAll();
 }
 
+// Severity maps to an action expectation in all buyer-facing copy (S7):
+// critical/high = act today, medium = review this week, low = awareness.
+const SEV_ACTION = {critical: 'act today', high: 'act today', medium: 'review this week', low: 'awareness'};
+
 function severityBadge(s) {
-  const cls = {'critical':'critical','high':'high','medium':'medium','low':'low','info':'info'}[s?.toLowerCase()] || 'info';
-  return `<span class="badge badge-${cls}">${s||'unknown'}</span>`;
+  const sev = s?.toLowerCase();
+  const cls = {'critical':'critical','high':'high','medium':'medium','low':'low','info':'info'}[sev] || 'info';
+  const action = SEV_ACTION[sev];
+  const title = action ? ` title="${sev}: ${action}"` : '';
+  return `<span class="badge badge-${cls}"${title}>${s||'unknown'}</span>`;
 }
 
 function statusBadge(s) {
@@ -7567,8 +8002,45 @@ async function loadStatusHeadline() {
   html += `<span style="font-size:20px;font-weight:700;color:${style.color};flex-shrink:0">${style.icon}</span>`;
   html += `<div><div style="font-size:16px;font-weight:600">${escapeHtml(d.headline || '')}</div>`;
   if (d.detail) html += `<div style="font-size:13px;color:var(--muted);margin-top:3px">${escapeHtml(d.detail)}</div>`;
+  // Coverage line — checkable facts only: how many machines, how many detections
+  const cov = [];
+  if (d.hosts_total > 0) {
+    cov.push(`${d.hosts_total} machine${d.hosts_total !== 1 ? 's' : ''} monitored` +
+             (d.hosts_silent && d.hosts_silent.length ? ` (${d.hosts_reporting} reporting)` : ''));
+  }
+  if (d.rules && d.rules.ok && d.rules.enabled > 0) cov.push(`${d.rules.enabled} detections active`);
+  if (cov.length) html += `<div style="font-size:12px;color:var(--muted);margin-top:6px">${escapeHtml(cov.join(' · '))}</div>`;
   html += `</div></div>`;
   el.innerHTML = html;
+}
+
+// "What changed today" — composed client-side from the fetched alert list.
+// Rule-based facts only; no generated text.
+function updateHomeDigest() {
+  const el = document.getElementById('home-digest');
+  if (!el) return;
+  const dets = (_detectionCache || []).filter(d => (d.severity || '').toLowerCase() !== 'info');
+  if (!dets.length) {
+    el.style.display = '';
+    el.textContent = `What changed: no new alerts in the last ${hours === 168 ? '7 days' : hours + ' hours'}.`;
+    return;
+  }
+  const bySev = {};
+  let unreviewed = 0, expected = 0;
+  for (const d of dets) {
+    const s = (d.severity || 'unknown').toLowerCase();
+    bySev[s] = (bySev[s] || 0) + 1;
+    if (d.expected) expected++;
+    else if ((d.status || 'new') === 'new') unreviewed++;
+  }
+  const sevStr = ['critical','high','medium','low'].filter(s => bySev[s]).map(s => `${bySev[s]} ${s}`).join(', ');
+  const windowStr = hours === 168 ? '7 days' : hours + ' hours';
+  let txt = `What changed: ${dets.length} alert${dets.length !== 1 ? 's' : ''} in the last ${windowStr}`;
+  if (sevStr) txt += ` (${sevStr})`;
+  txt += ` · ${unreviewed} not yet reviewed`;
+  if (expected) txt += ` · ${expected} marked as normal`;
+  el.style.display = '';
+  el.textContent = txt;
 }
 
 async function loadSummary() {
@@ -7581,7 +8053,8 @@ async function loadSummary() {
 
   const total = d.total || 0;
   const sev = d.severity || {};
-  const sevOrder = ['critical','high','medium','low','info'];
+  // 'info' severity is operator noise, not a buyer signal — kept out of Home (S7)
+  const sevOrder = ['critical','high','medium','low'];
 
   let html = '<div class="stat-row"><div class="stat" style="flex:unset;width:100%"><div class="value">' + total + '</div><div class="label">Total Alerts</div></div></div>';
   html += '<div class="stat-row">';
@@ -7889,25 +8362,88 @@ function ruleDocFor(det) {
   return (_ruleDocs || {})[det.rule_id] || null;
 }
 
+let _detectionsInflight = false;
+
 async function loadDetections() {
-  const el = document.getElementById('detections-content');
-  await ensureRuleDocs();
-  let dUrl = `${apiBase()}/detections/fired?hours=${hours}&limit=50`;
-  const fhD = focusedHostname();
-  if (fhD) dUrl += `&hostname=${encodeURIComponent(fhD)}`;
-  const d = await fetchJSON(dUrl);
-  if (d.error && !d.detections?.length) { el.innerHTML = `<div class="empty">${d.error}</div>`; return; }
-  _detectionCache = d.detections || [];
+  if (_detectionsInflight) return;  // Home and Alerts share this loader
+  _detectionsInflight = true;
+  try {
+    const el = document.getElementById('detections-content');
+    await ensureRuleDocs();
+    let dUrl = `${apiBase()}/detections/fired?hours=${hours}&limit=50`;
+    const fhD = focusedHostname();
+    if (fhD) dUrl += `&hostname=${encodeURIComponent(fhD)}`;
+    const d = await fetchJSON(dUrl);
+    if (d.error && !d.detections?.length) {
+      el.innerHTML = `<div class="empty">${d.error}</div>`;
+      const rec = document.getElementById('home-recent-content');
+      if (rec) rec.innerHTML = `<div class="empty">${d.error}</div>`;
+      return;
+    }
+    _detectionCache = d.detections || [];
+    renderDetections();
+    renderHomeRecent();
+    updateHomeDigest();
+  } finally {
+    _detectionsInflight = false;
+  }
+}
+
+// Compact human-titled list for Home: the 5 most recent buyer-relevant alerts.
+function renderHomeRecent() {
+  const el = document.getElementById('home-recent-content');
+  if (!el) return;
+  const dets = (_detectionCache || []).filter(d =>
+    (d.severity || '').toLowerCase() !== 'info' && !d.expected);
+  if (!dets.length) {
+    el.innerHTML = '<div class="empty">No alerts in the last ' + hours + ' hours &mdash; monitoring is active. '
+      + 'New alerts appear here and you are notified by email/webhook if configured.</div>';
+    return;
+  }
+  let html = '';
+  for (const det of dets.slice(0, 5)) {
+    const i = _detectionCache.indexOf(det);
+    const doc = ruleDocFor(det);
+    const title = (doc && doc.title) || det.rule_name || det.rule_id || 'Unknown alert';
+    const ts = det.timestamp ? timeAgo(det.timestamp) : '';
+    html += `<div class="detection-row" onclick="openAlertFromHome(${i})">`;
+    html += '<div class="detection-row-header">';
+    html += severityBadge(det.severity);
+    html += `<span class="rule-name">${escapeHtml(title)}</span>`;
+    html += `<span class="det-meta">${escapeHtml(det.host || '')}</span>`;
+    html += `<span class="det-meta">${ts}</span>`;
+    html += '</div></div>';
+  }
+  if (dets.length > 5) {
+    html += `<div style="font-size:12px;color:var(--muted);padding:8px 0 0 0;text-align:center">`
+      + `<a onclick="switchTab('alerts')" style="cursor:pointer">+ ${dets.length - 5} more &mdash; view all alerts</a></div>`;
+  }
+  el.innerHTML = html;
+}
+
+function openAlertFromHome(idx) {
+  switchTab('alerts');
+  _openDetectionIdx = idx;
   renderDetections();
+  const detail = document.getElementById('det-detail-' + idx);
+  if (detail) detail.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+}
+
+function isExpectedDet(d) {
+  return !!d.expected || (d.tags || []).includes('expected');
 }
 
 function renderDetections() {
   const el = document.getElementById('detections-content');
   const filter = (document.getElementById('detStatusFilter') || {}).value || 'active';
-  let detections = _detectionCache;
+  // 'info' severity stays out of the buyer-facing alert list (S7); raw data
+  // remains available in Advanced > Events.
+  let detections = _detectionCache.filter(d => (d.severity || '').toLowerCase() !== 'info');
   let filtered = detections;
   if (filter === 'active') {
-    filtered = detections.filter(d => d.status !== 'dismissed');
+    filtered = detections.filter(d => d.status !== 'dismissed' && !isExpectedDet(d));
+  } else if (filter === 'expected') {
+    filtered = detections.filter(d => isExpectedDet(d));
   } else if (filter !== 'all') {
     filtered = detections.filter(d => d.status === filter);
   }
@@ -7916,8 +8452,10 @@ function renderDetections() {
       + 'New alerts appear here, and you will be notified via webhook/email if configured.</div>';
     return;
   }
-  if (!filtered.length) { el.innerHTML = '<div class="empty">No detections match this filter</div>'; return; }
-  const filteredMap = filtered.map(det => detections.indexOf(det));
+  if (!filtered.length) { el.innerHTML = '<div class="empty">No alerts match this filter</div>'; return; }
+  // Indices must point into _detectionCache (the unfiltered store) because all
+  // row actions (acknowledge, tags, normal) resolve through _detectionCache[i].
+  const filteredMap = filtered.map(det => _detectionCache.indexOf(det));
 
   // Pagination
   const totalItems = filtered.length;
@@ -7931,24 +8469,28 @@ function renderDetections() {
   let html = '';
   for (let pi = 0; pi < pageFiltered.length; pi++) {
     const i = pageMap[pi];  // index into _detectionCache
-    const det = detections[i];
+    const det = _detectionCache[i];
     const ts = det.timestamp ? timeAgo(det.timestamp) : '';
     const evtCount = det.event_count || det.matched_events || 0;
     const isOpen = (i === _openDetectionIdx);
 
     const detStatus = det.status || 'new';
     const detTags = det.tags || [];
+    const isExpected = isExpectedDet(det);
     const statusColors = {new:'#e67e22', acknowledged:'#27ae60', dismissed:'#7f8c8d'};
-    const statusColor = statusColors[detStatus] || '#e67e22';
+    const statusLabels = {new:'New', acknowledged:'Being handled', dismissed:'Dismissed'};
+    const statusColor = isExpected ? '#7f8c8d' : (statusColors[detStatus] || '#e67e22');
+    const statusLabel = isExpected ? 'Normal for us' : (statusLabels[detStatus] || detStatus);
 
     const doc = ruleDocFor(det);
     html += `<div class="detection-row" onclick="toggleDetection(${i})">`;
     html += '<div class="detection-row-header">';
-    html += `<span style="font-size:10px;padding:2px 7px;border-radius:3px;background:${statusColor};color:#fff;text-transform:uppercase;flex-shrink:0;font-weight:600">${detStatus}</span>`;
+    html += `<span style="font-size:10px;padding:2px 7px;border-radius:3px;background:${statusColor};color:#fff;text-transform:uppercase;flex-shrink:0;font-weight:600">${escapeHtml(statusLabel)}</span>`;
     html += severityBadge(det.severity);
     html += `<span class="rule-name">${escapeHtml((doc && doc.title) || det.rule_name || det.rule_id || 'Unknown Rule')}</span>`;
     if (detTags.length) {
       for (const tag of detTags) {
+        if (tag === 'expected') continue;  // already shown as the status chip
         html += `<span style="font-size:10px;padding:1px 5px;border-radius:3px;background:var(--accent);color:#fff;flex-shrink:0">${escapeHtml(tag)}</span>`;
       }
     }
@@ -7961,13 +8503,14 @@ function renderDetections() {
     html += `<div class="detection-detail${isOpen ? ' open' : ''}" id="det-detail-${i}">`;
 
     // Plain-English explanation (TinyDocs) — what happened, what to do, false-alarm hint
+    // What this means / do this first / likely false alarm — the buyer-facing face
     if (doc) {
       html += '<div style="padding:10px 12px;margin-bottom:8px;border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:6px;background:var(--surface,rgba(255,255,255,0.03))">';
       if (doc.what_happened) {
         html += `<div style="font-size:13px;line-height:1.5">${escapeHtml(doc.what_happened)}</div>`;
       }
       if (doc.do_first && doc.do_first.length) {
-        html += '<div style="font-size:12px;font-weight:600;margin-top:8px">What to do first</div><ol style="margin:4px 0 0 18px;padding:0;font-size:13px;line-height:1.5">';
+        html += '<div style="font-size:12px;font-weight:600;margin-top:8px">Do this first</div><ol style="margin:4px 0 0 18px;padding:0;font-size:13px;line-height:1.5">';
         for (const step of doc.do_first) html += `<li>${escapeHtml(step)}</li>`;
         html += '</ol>';
       }
@@ -7977,11 +8520,19 @@ function renderDetections() {
       html += '</div>';
     }
 
-    html += '<table>';
+    // Severity in action terms (S7)
+    const sevKey = (det.severity || '').toLowerCase();
+    if (SEV_ACTION[sevKey]) {
+      html += `<div style="font-size:12px;margin-bottom:8px">${severityBadge(det.severity)} <span style="color:var(--muted)">&mdash; ${SEV_ACTION[sevKey]}</span>`;
+      html += ` <span style="color:var(--muted)">&middot; on <strong style="color:var(--text)">${escapeHtml(det.host || 'unknown machine')}</strong>, ${det.timestamp ? escapeHtml(timeAgo(det.timestamp)) : ''}</span></div>`;
+    }
+
+    // Technical detail — rule IDs, event-ID descriptions, timestamps — folded
+    // away so they never sit on the face of the card (S5).
+    html += `<details style="margin-bottom:8px" onclick="event.stopPropagation()"><summary style="font-size:12px;color:var(--muted);cursor:pointer">Technical detail</summary>`;
+    html += '<table style="margin-top:6px">';
     html += `<tr><td>Rule ID</td><td><code>${escapeHtml(det.rule_id || '')}</code></td></tr>`;
     html += `<tr><td>Rule Name</td><td>${escapeHtml(det.rule_name || '')}</td></tr>`;
-    html += `<tr><td>Severity</td><td>${severityBadge(det.severity)}</td></tr>`;
-    html += `<tr><td>Host</td><td>${escapeHtml(det.host || 'N/A')}</td></tr>`;
     html += `<tr><td>Description</td><td>${escapeHtml(det.description || 'No description')}</td></tr>`;
     html += `<tr><td>Event Count</td><td>${det.event_count || 0}</td></tr>`;
     html += `<tr><td>Matched</td><td>${det.matched_events || 0}</td></tr>`;
@@ -8006,17 +8557,21 @@ function renderDetections() {
       }
     }
     html += '</table>';
+    html += `<div style="margin-top:6px"><button class="btn-summarize" style="background:#8e44ad" onclick="event.stopPropagation(); showInLogs(${i})">Show raw events</button></div>`;
+    html += '</details>';
 
-    // Action buttons row 1: investigate
+    // Action buttons row 1: understand + triage
     const prevSum = _detectionSummaries[i];
     html += '<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">';
-    html += `<button class="btn-summarize" style="background:#8e44ad" onclick="event.stopPropagation(); showInLogs(${i})">Show in Logs</button>`;
+    if (!isExpected) {
+      html += `<button class="btn-summarize" style="background:var(--bg);color:var(--text);border:1px solid var(--border)" onclick="event.stopPropagation(); markDetectionNormal(${i})" title="Record this as expected activity for this machine">This is normal for us</button>`;
+    }
     if (_llmConfigured) {
       const btnLabel = prevSum ? 'Refresh Summary' : 'AI Summary';
       html += `<button class="btn-summarize" id="btn-sum-${i}" onclick="event.stopPropagation(); summarizeDetection(${i})">${btnLabel}</button>`;
       html += `<button class="btn-summarize" style="background:var(--green)" onclick="event.stopPropagation(); askAboutAlert(${i})">Discuss with Assistant</button>`;
     } else {
-      html += `<button class="btn-summarize" disabled title="Configure an LLM provider in Settings to enable AI summaries" style="opacity:0.4;cursor:default">AI Summary (not configured)</button>`;
+      html += `<button class="btn-summarize" disabled title="Configure an AI provider in Settings to enable AI summaries" style="opacity:0.4;cursor:default">AI Summary (not configured)</button>`;
     }
     html += '</div>';
 
@@ -8033,7 +8588,7 @@ function renderDetections() {
     }
     html += '<span style="flex:1"></span>';
     if (detStatus === 'new') {
-      html += `<button style="font-size:11px;padding:3px 12px;border-radius:4px;cursor:pointer;border:none;background:#2980b9;color:#fff" onclick="event.stopPropagation(); setDetectionStatus(${i},'acknowledged')">Acknowledge</button>`;
+      html += `<button style="font-size:11px;padding:3px 12px;border-radius:4px;cursor:pointer;border:none;background:#2980b9;color:#fff" onclick="event.stopPropagation(); setDetectionStatus(${i},'acknowledged')">I'm on it</button>`;
       html += `<button style="font-size:11px;padding:3px 12px;border-radius:4px;cursor:pointer;border:none;background:#95a5a6;color:#fff" onclick="event.stopPropagation(); setDetectionStatus(${i},'dismissed')">Dismiss</button>`;
     } else if (detStatus === 'acknowledged') {
       html += `<button style="font-size:11px;padding:3px 12px;border-radius:4px;cursor:pointer;border:none;background:#95a5a6;color:#fff" onclick="event.stopPropagation(); setDetectionStatus(${i},'dismissed')">Dismiss</button>`;
@@ -8110,6 +8665,80 @@ async function setDetectionStatus(idx, status) {
     } else {
       alert('Failed: ' + (d.error || 'unknown'));
     }
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+async function markDetectionNormal(idx) {
+  const det = _detectionCache[idx];
+  if (!det) return;
+  const doc = ruleDocFor(det);
+  const title = (doc && doc.title) || det.rule_name || det.rule_id || 'this alert';
+  const host = det.host || '';
+  if (!host) { alert('This alert has no machine name recorded, so it cannot be marked as normal.'); return; }
+  const msg = 'Mark "' + title + '" as normal on ' + host + '?\\n\\n'
+    + 'Future alerts from this detection on ' + host + ' will be filed as "normal for us" in this '
+    + 'dashboard instead of appearing as new alerts, and a note is kept locally to help tune your '
+    + 'detections. Nothing is sent anywhere.\\n\\n'
+    + 'You can undo this under Advanced > Rules > Expected Activity.';
+  if (!confirm(msg)) return;
+  try {
+    const r = await fetch(BASE + '/api/detections/' + encodeURIComponent(det.id) + '/normal', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({rule_id: det.rule_id || det.rule_name || '', host: host}),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      det.status = 'dismissed';
+      det.expected = true;
+      det.tags = (det.tags || []).includes('expected') ? det.tags : [...(det.tags || []), 'expected'];
+      loadDetections();
+      loadAllowlist();
+    } else {
+      alert('Failed: ' + (d.error || 'unknown'));
+    }
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+// ---- Expected activity (customer-local allowlist, Advanced > Rules) ----
+async function loadAllowlist() {
+  const el = document.getElementById('allowlist-content');
+  if (!el) return;
+  const d = await fetchJSON('/api/allowlist');
+  const entries = (d && d.entries) || [];
+  if (!entries.length) {
+    el.innerHTML = '<div style="font-size:12px;color:var(--muted)">Nothing here yet. Use '
+      + '"This is normal for us" on an alert to add expected activity.</div>';
+    return;
+  }
+  let html = '<table style="width:100%;font-size:12px"><tr><th>Detection</th><th>Applies to</th><th>Note</th><th>Added</th><th></th></tr>';
+  for (const e of entries) {
+    const docs = _ruleDocs || {};
+    const title = (docs[e.rule_id] && docs[e.rule_id].title) || e.rule_id;
+    const added = e.added_at ? new Date(e.added_at).toLocaleDateString() : '';
+    html += '<tr>';
+    html += `<td title="${escapeHtml(e.rule_id)}">${escapeHtml(title)}</td>`;
+    html += `<td>${escapeHtml(e.scope)}: ${escapeHtml(String(e.value || ''))}</td>`;
+    html += `<td style="color:var(--muted)">${escapeHtml(e.note || '')}</td>`;
+    html += `<td style="color:var(--muted);white-space:nowrap">${escapeHtml(added)}</td>`;
+    html += `<td style="text-align:right"><button onclick="removeAllowlistEntry('${escapeHtml(e.rule_id)}','${escapeHtml(e.scope)}','${escapeHtml(String(e.value || ''))}')" style="font-size:11px;padding:2px 10px;background:var(--bg);color:var(--muted);border:1px solid var(--border);border-radius:3px;cursor:pointer">Remove</button></td>`;
+    html += '</tr>';
+  }
+  html += '</table>';
+  el.innerHTML = html;
+}
+
+async function removeAllowlistEntry(ruleId, scope, value) {
+  if (!confirm('Remove this expected-activity entry? Matching alerts will appear as new alerts again.')) return;
+  try {
+    const r = await fetch(BASE + '/api/allowlist/remove', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({rule_id: ruleId, scope: scope, value: value}),
+    });
+    const d = await r.json();
+    if (d.ok) { loadAllowlist(); loadDetections(); }
+    else alert('Failed: ' + (d.error || 'unknown'));
   } catch(e) { alert('Error: ' + e.message); }
 }
 
@@ -8263,7 +8892,7 @@ function askAIAboutWidget(widgetId) {
     rules: () => {
       const el = document.getElementById('rules-content');
       const text = el ? el.innerText.substring(0, 500) : '';
-      return `I'm looking at the Alert Rules in TinySocs. Here's what I see:\n${text}\n\nCan you explain:\n1. What are detection rules and how do they work in TinySocs?\n2. How do I create a new rule using the rule builder?\n3. How do I upload a rule pack (YAML/JSON)?\n4. How do I tune rules — adjust thresholds, group-by fields, or set cooldown periods?\n5. How do I suppress false positives or disable noisy rules?`;
+      return `I'm looking at the rule catalogue in TinySocs. Here's what I see:\n${text}\n\nCan you explain:\n1. What are detection rules and how does TinySocs keep them up to date for me?\n2. Which detections are actually running live on my machines?\n3. If an alert keeps firing for something that's normal in our office, how do I use "This is normal for us" to stop it?\n4. When would I ever need this Advanced rules view at all?`;
     },
     storage: () => {
       const el = document.getElementById('storage-content');
@@ -8384,11 +9013,17 @@ function renderFleet() {
   const pageStart = _fleetPage * _FLEET_PER_PAGE;
   const pageHosts = hosts.slice(pageStart, pageStart + _FLEET_PER_PAGE);
 
-  let html = '<table><tr><th>Host</th><th>Events (24h)</th><th>Alerts</th><th>Version</th><th>Last Seen</th></tr>';
+  let html = '<table><tr><th>Machine</th><th>Status</th><th>Events (24h)</th><th>Alerts</th><th>Version</th><th>Last Seen</th></tr>';
   for (let pi = 0; pi < pageHosts.length; pi++) {
     const i = pageStart + pi;  // index into _fleetCache
     const h = pageHosts[pi];
     const ago = h.last_seen ? timeAgo(h.last_seen) : 'unknown';
+    // Reporting status: mirrors the Home headline's rule (silent = no events for 2h+)
+    let reporting = true;
+    try { reporting = h.last_seen ? (Date.now() - new Date(h.last_seen).getTime()) < 2 * 3600 * 1000 : false; } catch(e) {}
+    const statusCell = reporting
+      ? '<span style="color:var(--green);font-weight:600">Reporting</span>'
+      : '<span style="color:var(--red);font-weight:600">Not reporting</span>';
     const alertBadge = h.alert_count > 0
       ? `<span style="background:var(--red);color:#fff;padding:1px 6px;border-radius:4px;font-size:11px">${h.alert_count}</span>`
       : `<span style="color:var(--muted)">0</span>`;
@@ -8398,6 +9033,7 @@ function renderFleet() {
     const versionBadge = `<span style="background:${verColor};color:#fff;padding:1px 6px;border-radius:4px;font-size:11px">${escapeHtml(verLabel)}</span>`;
     html += `<tr style="cursor:pointer" onclick="toggleFleetDetail(${i})">`;
     html += `<td style="font-weight:600;color:var(--accent)">${escapeHtml(h.hostname)}</td>`;
+    html += `<td>${statusCell}</td>`;
     html += `<td>${h.event_count}</td>`;
     html += `<td>${alertBadge}</td>`;
     html += `<td>${versionBadge}</td>`;
@@ -8407,7 +9043,7 @@ function renderFleet() {
     // Expandable detail row
     const isOpen = (_openFleetIdx === i);
     html += `<tr id="fleet-detail-${i}" style="display:${isOpen ? 'table-row' : 'none'}">`;
-    html += `<td colspan="5" style="padding:10px 16px;background:var(--bg);border-bottom:1px solid var(--border)">`;
+    html += `<td colspan="6" style="padding:10px 16px;background:var(--bg);border-bottom:1px solid var(--border)">`;
 
     const firstAgo = h.first_seen ? timeAgo(h.first_seen) : 'N/A';
     const hbAgo = h.heartbeat_ts ? timeAgo(h.heartbeat_ts) : 'No heartbeat';
@@ -8658,8 +9294,8 @@ function toggleEventMsg(rowIdx) {
 }
 
 function ensureCardVisible(id) {
-  const cardTabMap = {summary:'overview',timeline:'overview',detections:'overview',
-    fleet:'fleet',explorer:'data',rules:'detections',compliance:'compliance',mitre:'compliance'};
+  const cardTabMap = {summary:'overview',timeline:'overview',detections:'alerts',
+    fleet:'fleet',explorer:'data',storage:'data',rules:'detections',compliance:'compliance',mitre:'detections'};
   const targetTab = cardTabMap[id];
   if (targetTab && targetTab !== _activeTab) switchTab(targetTab);
 }
@@ -9320,20 +9956,24 @@ function refreshAll() {
         tasks.push(loadSites());
         break;
       case 'overview':
-        tasks.push(loadStatusHeadline(), loadSummary(), loadTimeline(), loadDetections(), loadStorage());
+        tasks.push(loadStatusHeadline(), loadSummary(), loadTimeline(), loadDetections());
         if (_sitesVisible) { _sitesCache = null; tasks.push(loadOverviewAggregate()); }
+        break;
+      case 'alerts':
+        tasks.push(loadDetections());
         break;
       case 'fleet':
         tasks.push(loadFleet());
         break;
       case 'data':
+        tasks.push(loadStorage());
         if (_eventsLive) tasks.push(loadEvents(true));
         break;
       case 'detections':
-        tasks.push(loadRules());
+        tasks.push(loadRules(), loadAllowlist());
         break;
       case 'compliance':
-        tasks.push(loadComplianceReport(), loadMitreCoverage());
+        tasks.push(loadComplianceReport());
         break;
     }
     _tabLoaded[_activeTab] = true;
@@ -9580,7 +10220,7 @@ function switchSettingsTab(tabId) {
     activeBtn.classList.add('active');
   }
   // Auto-load tab-specific data
-  if (tabId === 'storage') { loadHecTokens(); }
+  if (tabId === 'advanced') { loadHecTokens(); }
   if (tabId === 'diagnostics') { /* diagnostics loaded on button click */ }
 }
 
@@ -10281,6 +10921,7 @@ function alignAssistantPanel() {
 
 // Start up — dashboard is behind login gate; don't load data until authed
 restoreAssistantState();
+restoreAdvancedState();
 alignAssistantPanel();
 window.addEventListener('resize', alignAssistantPanel);
 window.addEventListener('scroll', alignAssistantPanel);
@@ -10344,6 +10985,12 @@ function unlockDashboard() {
 
   // Eager-load all tabs in background so switching is instant
   _validTabs.forEach(function(t) { loadTabData(t); });
+  // Stamp the header once the initial load is underway — "Loading..." must not
+  // linger on a healthy dashboard (empty states are never dead ends).
+  setTimeout(function() {
+    var u = document.getElementById('lastUpdate');
+    if (u && u.textContent === 'Loading...') u.textContent = 'Updated ' + new Date().toLocaleTimeString();
+  }, 1500);
 
   // Phase 18 M3: restore focused site from sessionStorage
   try {
@@ -10465,15 +11112,19 @@ function _filterCompliancePage() {
   const status = document.getElementById('complianceStatus').value;
   _complianceControls = status ? _complianceAllControls.filter(c => c.status === status) : [..._complianceAllControls];
   _compliancePage = 0;
-  // Recalculate summary stats for filtered view
-  const total = _complianceControls.length;
-  const notMapped = _complianceControls.filter(c => c.status === 'not_mapped').length;
-  const covered = total - notMapped;
-  const pct = total > 0 ? Math.round((covered / total) * 100) : 0;
-  document.getElementById('comp-coverage').textContent = pct + '%';
-  document.getElementById('comp-covered').textContent = covered;
-  document.getElementById('comp-notmapped').textContent = notMapped;
-  document.getElementById('comp-total').textContent = total;
+  // Summary tiles always describe the FULL framework, not the filtered view —
+  // a filtered view must not change what the report claims. Counts, not a bare
+  // percentage: "N of M controls monitored" cannot be misread as a fail grade.
+  const all = _complianceAllControls;
+  const total = all.length;
+  const outside = all.filter(c => c.status === 'not_mapped').length;
+  const active = all.filter(c => c.status === 'active').length;
+  const quiet = all.filter(c => c.status === 'deployed').length;
+  const monitored = active + quiet;
+  document.getElementById('comp-monitored').textContent = total ? (monitored + ' of ' + total) : '—';
+  document.getElementById('comp-active').textContent = active;
+  document.getElementById('comp-quiet').textContent = quiet;
+  document.getElementById('comp-outside').textContent = outside;
   _renderCompliancePage();
 }
 
@@ -10484,8 +11135,10 @@ function _renderCompliancePage() {
   if (_compliancePage >= pages) _compliancePage = Math.max(0, pages - 1);
   const start = _compliancePage * _compliancePageSize;
   const slice = _complianceControls.slice(start, start + _compliancePageSize);
-  const statusColors = {active:'#00b894',deployed:'#fdcb6e',not_mapped:'#b2bec3'};
-  const statusLabels = {active:'Active',deployed:'Deployed',not_mapped:'Not Mapped'};
+  // Buyer vocabulary (S1): a control with a rule that hasn't fired is GOOD news,
+  // not a warning — render it calm blue, never amber.
+  const statusColors = {active:'#00b894',deployed:'#4a90d9',not_mapped:'#b2bec3'};
+  const statusLabels = {active:'Monitored and working',deployed:'Monitored — nothing detected yet',not_mapped:"Outside a monitoring tool's scope"};
   let html = '<table style="width:100%;border-collapse:collapse;font-size:12px">';
   html += '<tr style="border-bottom:1px solid var(--border)"><th style="text-align:left;padding:6px 8px;color:var(--muted);font-size:10px;text-transform:uppercase">Control</th><th style="text-align:left;padding:6px 8px;color:var(--muted);font-size:10px;text-transform:uppercase">Name</th><th style="text-align:left;padding:6px 8px;color:var(--muted);font-size:10px;text-transform:uppercase">Status</th><th style="text-align:left;padding:6px 8px;color:var(--muted);font-size:10px;text-transform:uppercase">Rules</th><th style="text-align:right;padding:6px 8px;color:var(--muted);font-size:10px;text-transform:uppercase">Events</th></tr>';
   slice.forEach(c => {

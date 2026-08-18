@@ -40,6 +40,8 @@
 AppName=TinySocs
 AppVersion=0.10.0
 AppPublisher=TinySocs
+AppSupportURL=https://github.com/lukefitzg/tinysocs/blob/main/SUPPORT.md
+AppUpdatesURL=https://github.com/lukefitzg/tinysocs/releases
 AppId={{F2DCCF8F-6F5F-4D8B-9EAF-6E2C2C6B1234}}
 DefaultDirName={commonpf}\TinySocs
 DefaultGroupName=TinySocs

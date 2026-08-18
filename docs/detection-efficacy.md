@@ -1,6 +1,6 @@
 # Detection Efficacy Report — Pilot Base Pack 2026.27
 
-**Status**: current. Supersedes the 2026-03-01 report (obsolete) and the interim 2026-07-06 run.
+**Status**: current, **internal**. Supersedes the 2026-03-01 report (obsolete) and the interim 2026-07-06 run. The 88.9% headline is an internal figure over the 9 *executable* enabled-rule techniques — not 19/19 — and is not used in any public-facing copy. The public framing is the one in README/faq: every enabled rule has tests; 8 of 19 are proven end-to-end against live attacks as of 2026-07-08; the rest are synthetic-proven or environment-blocked.
 **Run**: `Test-AtomicDetection.ps1 -SkipInstall`, Windows 11 VM, agent build 2026-07-04, **re-run 2026-07-08** (deferred→SKIP accounting + T1105 twice-each fixes applied).
 **Raw data**: `tests/atomic-results.json`. **Companion**: `docs/pilot-ruleset.md`.
 
@@ -77,7 +77,7 @@ Also not individually exercised: **TS-002** (brute by IP), **TS-071** (RDP Logon
 | Env-limited SKIP | 4 |
 | Errors | 0 |
 
-## Open items before the number goes on the one-pager
+## Open items before the number could ever be quoted externally (moot while it stays internal)
 
 1. **One more clean run** with the TS-130 timeout bump to land a single-run 9/9 (optional — coverage is already proven across the two runs, but a clean single-run artifact reads better in GTM material).
 2. **The four env-limited rules**: run targeted validations (RTP-off host, tamper-off host, a lab DC, a FIM-enabled install) or state plainly they are covered-by-design but not yet attack-validated.

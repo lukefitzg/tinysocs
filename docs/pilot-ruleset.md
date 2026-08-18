@@ -3,7 +3,7 @@
 **Status**: implemented (2026-07-04). The shortlist is now the shipped pilot base pack (`packs/base/2026.27/`).
 **Author**: Luke FitzGerald + Claude session, 2026-07-04.
 **Scope**: the 39 C# agent rules in `packaging/detection/rules.yml` (the only engine that fires alerts in production). The 50-rule Python catalogue is out of scope — it doesn't run.
-**Companions**: `docs/icp.md` (who the pilot is for), `docs/design/rule-format-v2.md` (allowlists/tuning land there), `tests/atomic-tests.yaml` + `tests/atomic-results.json` (validation harness).
+**Companions**: `docs/design/rule-format-v2.md` (schema), `tests/atomic-tests.yaml` + `tests/atomic-results.json` (validation harness). (The original `docs/icp.md` companion was deleted with the commercial strategy, 2026-08-18 — the audience assumption it encoded is restated below.)
 
 ## Implementation status (2026-07-04)
 
@@ -33,13 +33,13 @@ Also fixed: the **installer** (`Install-TinySocsAgentService`) now enables the W
 
 ## Who this list is for
 
-Per `docs/icp.md`: a 20–150-person Windows/M365 shop with **zero security staff** — one IT generalist or an outsourced MSP — pushed into monitoring by an insurer, an audit, or a big customer's questionnaire. Every alert that fires in week one is read by a person who has never triaged a security alert. The bar is therefore:
+The default-enabled cut was designed for a quiet small Windows network with **no security staff** — a homelab, a small office, one IT generalist. Every alert that fires in week one is read by a person who has never triaged a security alert. The bar is therefore:
 
 1. **Low FP in a normal SMB estate** — standard business software, auto-updaters, maybe an RMM agent. No red team, no dev tooling assumptions.
 2. **High signal when it fires** — the alert should be worth a phone call.
 3. **Explainable in one sentence** to a non-technical person.
 
-A first pilot that cries wolf on day one kills the "someone competent is watching" promise the subscription is built on. When in doubt, a rule stays off.
+A default ruleset that cries wolf on day one teaches the user to ignore alerts, which defeats the whole tool. When in doubt, a rule stays off — enabling more is one YAML edit away.
 
 ## Validation status: read this first
 

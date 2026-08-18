@@ -5,7 +5,37 @@ All notable changes to TinySocs are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Strategy: TinySocs is now a free, zero-support, source-available release** — no
+  paid tiers, no subscription feed, no sales motion. The commercial machinery built
+  for the abandoned content-as-a-service plan (feed server, licence gate, Stripe
+  webhook, pack signing) is parked in the tree, dormant, with tests passing. See
+  `docs/design/strategy-zero-support.md`.
+- Truth pass over all public claims: removed GTM/sales collateral (one-pager,
+  outreach templates, ICP, competitive positioning), archived pilot/MSSP guides,
+  regenerated `docs/detection-coverage.md` from the ruleset that actually runs
+  (19 enabled rules → 16 ATT&CK techniques / 8 tactics; 39 defined → 27 / 10),
+  rewrote README/FAQ for the homelab audience, and replaced the waitlist landing
+  page with an honest download page.
+- Took down the stale public validation dashboard (last real run 2026-06-05); the
+  validation ground truth lives in `tests/atomic-results.json` and
+  `docs/pilot-ruleset.md`.
+
+### Added
+
+- `SUPPORT.md` (as-is, best-effort), `SECURITY.md`, `CONTRIBUTING.md`,
+  `KNOWN-LIMITATIONS.md`, and GitHub issue templates that ask for diagnostic output.
+
 ## [0.10.0] — 2026-06-06
+
+> **Addendum (2026-08-18):** the commercial machinery described below was parked
+> before ever being activated in a shipping install. TinySOCs is now a free,
+> zero-support, source-available release — see `docs/design/strategy-zero-support.md`.
+> The code remains in the tree, dormant, with its tests passing. The history below
+> is accurate as history.
 
 Detection-content-as-a-service foundations: the signed-feed trust core, agent-side
 enforcement, the licence gate, the vendor feed server, and the Stripe billing webhook.
@@ -64,4 +94,4 @@ Phase 17: "First Light" — Demo-ready federation and pilot launch infrastructur
 
 ## [0.7.0] — 2026-02-15
 
-Phases 1–16: Full SIEM platform with 89 detection rules (33 MITRE ATT&CK techniques, 11 tactics), AI assistant, compliance reporting (NIST CSF 2.0, HIPAA, PCI DSS v4.0), threat intel enrichment (AbuseIPDB, AlienVault OTX, GreyNoise), file integrity monitoring, version drift detection, federated master/node architecture, and HTTPS dashboard with session-based auth.
+Phases 1–16: Full SIEM platform with 89 defined detection rules across both rule files (the honest split — how many run vs. how many are defined — was established later; see the 0.10.0 addendum and `docs/detection-coverage.md`), AI assistant, compliance reporting (NIST CSF 2.0, HIPAA, PCI DSS v4.0), threat intel enrichment (AbuseIPDB, AlienVault OTX, GreyNoise), file integrity monitoring, version drift detection, federated master/node architecture, and HTTPS dashboard with session-based auth.

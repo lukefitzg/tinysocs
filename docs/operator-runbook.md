@@ -11,7 +11,7 @@ Import-Module "$env:ProgramFiles\TinySocs\modules\TinySocs.Installer.psm1"
 Test-TinySocsHealth
 ```
 
-Expected: **16/16 PASS**. Any FAIL or WARN items need investigation.
+Expected: no FAILs. INFO/WARN results are structural on a minimal install (webhook/SMTP unconfigured, Sysmon declined, TLS in localhost mode) — see the note in the getting-started guide.
 
 > Checks 13-14 (webhook, SMTP) are only exercised if notifications are configured. Check 15 (Sysmon) reports INFO if Sysmon is not installed. Check 16 (Dashboard TLS) validates cert files when network mode is enabled.
 

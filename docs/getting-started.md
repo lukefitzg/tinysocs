@@ -15,7 +15,7 @@ This guide walks you through installing TinySocs and verifying a working system 
 
 1. Download `TinySocs-Setup.exe` from the releases page
 2. Right-click and **Run as Administrator**
-3. Select the **TinyBox** role (all-in-one: agent + SIEM + dashboards)
+3. Select the **Hub** role — the default; all-in-one: agent + SIEM + dashboards. (The **Site** role is only for multi-node federation, which is experimental — skip it on a first install.)
 4. Enter a shared secret (or let the installer generate one)
 5. Set the **SIEM + Dashboard password** (or leave blank to auto-generate). This single password protects both the OpenSearch datastore and the TinySocs dashboard.
 6. Configure notifications (optional):
@@ -34,7 +34,7 @@ Import-Module "$env:ProgramFiles\TinySocs\modules\TinySocs.Installer.psm1"
 Test-TinySocsHealth
 ```
 
-You should see **16/16 PASS**. If any checks fail, see the [Troubleshooting Guide](troubleshooting.md).
+Every check should report PASS, INFO, or WARN — **FAIL means something is actually broken** (see the [Troubleshooting Guide](troubleshooting.md)). On a minimal install some INFO/WARN results are structural and expected: the webhook and SMTP checks are skipped unless notifications are configured, the Sysmon check reports INFO if you declined Sysmon, and the TLS check only validates certificates in network mode. A localhost-only install with no notifications will not show a perfect scoreboard, and that's fine.
 
 > **New in Phase 14**: Health checks now include Sysmon service status (#15) and Dashboard TLS configuration (#16).
 
@@ -118,6 +118,9 @@ curl http://localhost:8090/bot/actions
 
 ## Step 7: Generate a Daily Summary (Optional)
 
+This step needs a Python dev environment (`pip install -e .` from a repo checkout) —
+the Windows installer does not create one. Skip it unless you're running from source.
+
 ```powershell
 python -m tinysocs.reporting.daily_summary --to admin@localhost --stdout
 ```
@@ -127,8 +130,7 @@ python -m tinysocs.reporting.daily_summary --to admin@localhost --stdout
 - Read the [Operator Runbook](operator-runbook.md) for day-to-day operations
 - Check [Troubleshooting](troubleshooting.md) if anything went wrong
 - Review the [Detection Coverage Matrix](detection-coverage.md) for rule details and MITRE ATT&CK mapping
-- Generate a [Compliance Report](pilot-guide.md#compliance-reporting) for NIST CSF, HIPAA, or PCI DSS
-- Review and customize detection rules in `C:\ProgramData\TinySocs\Collector\rules\rules.yml`
+- Generate a Compliance Report (NIST CSF, HIPAA, or PCI DSS) from the dashboard's Compliance tab
+- Review and customize detection rules in `C:\ProgramData\TinySocs\Collector\rules\rules.yml` — they're yours to edit
 - Review the JSON schemas in the `schema/` directory for event and alert document formats
-- See the [Pilot Guide](pilot-guide.md) for a week-1 evaluation checklist
-- See the [FAQ](faq.md) for common questions
+- See the [FAQ](faq.md) for common questions and [KNOWN-LIMITATIONS.md](../KNOWN-LIMITATIONS.md) for the honest rough-edges list

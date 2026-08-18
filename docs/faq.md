@@ -4,68 +4,134 @@
 
 ### Who is TinySocs for?
 
-Companies of roughly 10–200 staff that need security monitoring but don't have a security team — usually because a customer's security questionnaire, a cyber-insurance renewal, or an audit now requires it. If your IT is handled by one generalist, an office manager who wears the IT hat, or an outsourced IT provider, TinySocs is built for you. You get an answer to "are we being attacked?", alerts in plain English, and one-click reports you can hand to a customer, insurer, or auditor.
+Homelabbers, tinkerers, students, and small IT shops who want to see what's actually
+happening on a handful of Windows machines — logons, process creation, persistence
+attempts, ransomware-shaped file activity — without spending a week standing up an
+enterprise SIEM. If you run a Windows homelab or look after a small office network and
+you're curious what your event logs would tell you if anything ever read them, this is
+for you.
 
-### How is TinySocs different from Splunk / Elastic / Sentinel?
+### Is it really free? What's the catch?
 
-Those are enterprise tools that assume dedicated security engineers, weeks of setup, and custom dashboards. TinySocs installs in 15 minutes, keeps its detections current for you, includes an AI assistant that explains alerts in plain English, and generates compliance reports with one click. You operate it with the IT staff you already have.
+Free to use, no account, no tiers, no trial clock. The licence is BSL-1.1
+(source-available, not OSI open source): you can run it in production, read and modify
+everything, and each version converts to Apache 2.0 after four years. The one
+restriction: you can't offer TinySocs itself to third parties as a competing hosted or
+embedded service. The other catch is stated plainly in [SUPPORT.md](../SUPPORT.md):
+this is a solo side project provided as-is, with no support obligation.
+
+### How is TinySocs different from Wazuh / Security Onion / Elastic?
+
+Those are more capable and better staffed — if you have the time and hardware, use
+them. TinySocs trades breadth for time-to-first-signal: one Windows installer stands
+up collection, detection, storage, and a dashboard in one shot, and the whole thing is
+small enough to read the source of. It's Windows-only and caps out around ~100
+endpoints per node.
 
 ### What events does TinySocs collect?
 
-The agent collects Windows Security events (logon, process creation, privilege use, account management), Sysmon events (detailed process creation with command lines, network connections, file system changes, registry modifications), and Windows Defender events. All events are stored locally in OpenSearch.
+The agent collects Windows Security events (logon, process creation, privilege use,
+account management), Sysmon events (detailed process creation with command lines,
+network connections, file system changes, registry modifications), and Windows
+Defender events. All events are stored locally in OpenSearch.
 
 ### Does any data leave my network?
 
-Event data stays 100% on-premises in the local OpenSearch instance. The only external communication is:
-- **LLM API calls**: Alert summaries and queries are sent to your chosen LLM provider (Anthropic, OpenAI, or local Ollama). Use Ollama for fully air-gapped operation.
-- **Webhook notifications**: If configured, alert summaries are sent to your Slack/Teams/email endpoints.
+Event data stays on-premises in the local OpenSearch instance. The only external
+communication is:
+- **LLM API calls**: Alert summaries and queries are sent to your chosen LLM provider
+  (Anthropic, OpenAI, or local Ollama). Use Ollama for fully air-gapped operation.
+- **Webhook notifications**: If configured, alert summaries go to your
+  Slack/Teams/email endpoints.
 - **No telemetry**: TinySocs does not phone home or send usage data.
 
 ### Which LLM providers are supported?
 
-- **Anthropic Claude** (recommended) — Best analysis quality
-- **OpenAI GPT-4o** — Good alternative
-- **Ollama** (local) — Fully offline, no data leaves the machine. Quality depends on the model.
+- **Anthropic Claude** — best analysis quality
+- **OpenAI GPT-4o** — good alternative
+- **Ollama** (local) — fully offline, no data leaves the machine; quality depends on the model
 
 ### What are the system requirements?
 
-Minimum: Windows 10/Server 2019, 8 GB RAM, 20 GB disk, 2 CPU cores. Recommended: 16 GB RAM, 50 GB disk, 4 cores. For monitoring more than 50 endpoints, increase RAM to 32 GB.
+Minimum: Windows 10/Server 2019, 8 GB RAM, 20 GB disk, 2 CPU cores. Recommended:
+16 GB RAM, 50 GB disk, 4 cores. For monitoring more than 50 endpoints, increase RAM
+to 32 GB.
 
 ## Detection
 
 ### How many detection rules are included?
 
-The free base pack ships **19 high-fidelity rules** enabled — the highest-signal, lowest-false-positive subset for a business with no security team — spanning authentication, credential access, lateral movement, persistence, defence evasion, discovery, and ransomware/impact. The engine defines 39 rules in total (the rest are held back for per-environment tuning), and a further 50-rule catalogue is roadmapped for the backend engine. Every shipped rule is mapped to MITRE ATT&CK and validated against real (Atomic Red Team) attacks before release.
+Honest answer, three numbers: **19 rules ship enabled** (the high-signal,
+low-false-positive cut — covering 16 MITRE ATT&CK techniques across 8 tactics);
+**39 are defined** in the C# engine (the other 20 are off by default because they're
+noisy or environment-specific — enable the ones that fit your network); and there's a
+**50-rule KQL catalogue** in the Python tree that does **not** run in a default
+install — it's a library, not live detection. Counts as of pack 2026.27
+(2026-08-18). Rule-by-rule evidence of what actually fires:
+[pilot-ruleset.md](pilot-ruleset.md).
 
-### Do I have to write or tune detection rules?
+### Are the rules actually tested?
 
-No — that's the point. TinySocs ships validated detections and keeps them current; you never edit a rule file. When an alert doesn't apply to your environment (for example, your IT tool legitimately does something an attacker also does), you dismiss it or tag it as a false positive from the dashboard, and the AI assistant helps you judge which is which. Advanced users *can* create custom rules via the Rule Builder, but no customer needs to.
+Every enabled rule has an Atomic Red Team test defined and an xUnit test pair proving
+it fires on synthetic events. As of the last live harness run (2026-07-08), 8 of the
+19 enabled rules were proven end-to-end — real attack technique on a real Windows VM
+through to a dashboard alert. The rest are synthetic-proven or blocked on environment
+prerequisites (e.g. needing a domain controller or Defender tamper settings).
+Misses and skips are documented, not hidden — see
+[pilot-ruleset.md](pilot-ruleset.md).
+
+### Can I edit the detection rules?
+
+Yes — please do. Rules are plain YAML at
+`C:\ProgramData\TinySocs\Collector\rules\rules.yml`, hot-reloaded on change. Raise a
+threshold that's noisy on your network, enable one of the 20 held-back rules, or write
+your own. There's also a Rule Builder in the dashboard for custom KQL rules. Tuning
+to your own environment is the intended way to run this.
 
 ### What is Sysmon and do I need it?
 
-Sysmon is a free Microsoft tool that provides detailed endpoint telemetry (process creation with command lines, network connections, file changes, registry modifications). TinySocs works without Sysmon but has significantly better detection coverage with it installed. The installer can deploy Sysmon automatically.
+Sysmon is a free Microsoft tool that provides detailed endpoint telemetry (process
+creation with command lines, network connections, file changes, registry
+modifications). TinySocs works without Sysmon but has significantly better detection
+coverage with it installed. The installer can deploy Sysmon automatically.
 
-### How do I validate detection coverage?
+### How do I validate detection coverage myself?
 
-Use the Atomic Red Team test runner (`tests/Test-AtomicDetection.ps1`) to simulate attack techniques and verify that TinySocs detects them. See [Detection Efficacy](detection-efficacy.md) for details.
+Use the Atomic Red Team test runner (`tests/Test-AtomicDetection.ps1`) to simulate
+attack techniques on a **test machine** and verify TinySocs detects them. Don't run
+attack simulations on machines you care about.
 
 ## Operations
 
 ### How do I update TinySocs?
 
-Run the new installer over the existing installation. The installer detects existing installs and preserves your data, configuration, and credentials during upgrade.
+Run the new installer over the existing installation. The installer detects existing
+installs and preserves your data, configuration, and credentials during upgrade.
+Updates ship when they ship — there is no promised cadence.
 
 ### How do I add monitoring to a new endpoint?
 
-Install the TinySocs Agent on the new machine and configure it to point to the TinyBox instance's OpenSearch URL. The agent will start sending events immediately.
+Install the TinySocs Agent on the new machine and configure it to point at the Hub's
+OpenSearch URL. The agent starts sending events immediately.
 
 ### How do I back up my data?
 
-Back up the `C:\ProgramData\TinySocs` directory. This contains the OpenSearch data, agent configuration, detection rules, and assistant settings. For OpenSearch-level backups, use the snapshot API.
+Back up the `C:\ProgramData\TinySocs` directory. This contains the OpenSearch data,
+agent configuration, detection rules, and assistant settings. For OpenSearch-level
+backups, use the snapshot API.
 
 ### How do I change the dashboard password?
 
-Open the dashboard, click the gear icon, enter the current admin password, then use "Change Password" in the settings panel.
+Open the dashboard, click the gear icon, enter the current admin password, then use
+"Change Password" in the settings panel.
+
+### How do I uninstall completely?
+
+Add/Remove Programs → TinySocs → Uninstall removes services and binaries but **keeps
+your data** in `C:\ProgramData\TinySocs` by default. To remove data too, create the
+file `C:\ProgramData\TinySocs\remove_on_uninstall.flag` before uninstalling. Known
+issue: some scheduled tasks can survive uninstall — see
+[KNOWN-LIMITATIONS.md](../KNOWN-LIMITATIONS.md).
 
 ## Compliance
 
@@ -75,24 +141,34 @@ Open the dashboard, click the gear icon, enter the current admin password, then 
 - **HIPAA Security Rule** — 11 controls (technical safeguards)
 - **PCI DSS v4.0** — 12 requirements mapped
 
-### How do compliance reports work?
-
-Each framework defines controls that map to TinySocs detection rules. The report shows which controls have active detections (rules that fired), deployed detections (rules exist but haven't fired), and unmapped controls (no rule coverage). Reports can be generated from the dashboard or CLI.
+These are coverage-mapping reports, not audit attestations.
 
 ### Can I add custom framework mappings?
 
-Yes. Create a YAML file in `src/tinysocs/reporting/frameworks/` following the existing format (see `nist_csf.yaml` as an example). The framework will automatically appear in the dashboard dropdown.
+Yes. Create a YAML file in `src/tinysocs/reporting/frameworks/` following the existing
+format (see `nist_csf.yaml` as an example). The framework will automatically appear in
+the dashboard dropdown.
 
 ## Troubleshooting
 
 ### The dashboard shows "SIEM not connected"
 
-Check that OpenSearch is running: `Get-Service TinySocsOpenSearch`. If stopped, start it and wait 30 seconds for initialization. See [Troubleshooting](troubleshooting.md) for more details.
+Check that OpenSearch is running: `Get-Service TinySocsOpenSearch`. If stopped, start
+it and wait 30 seconds for initialization. See [Troubleshooting](troubleshooting.md).
 
 ### No events are appearing
 
-Verify the agent is running: `Get-Service TinySocsAgent`. Check the agent log at `C:\ProgramData\TinySocs\Collector\logs\`. Ensure the agent configuration points to the correct OpenSearch URL.
+Verify the agent is running: `Get-Service TinySocsAgent`. Check the agent log at
+`C:\ProgramData\TinySocs\Collector\logs\`. Ensure the agent configuration points to
+the correct OpenSearch URL.
 
 ### The AI assistant is not responding
 
-Check that a valid LLM API key is configured in `assistant.env`. Verify network connectivity to the LLM provider. For Ollama, ensure the Ollama service is running locally.
+Check that a valid LLM API key is configured in `assistant.env`. Verify network
+connectivity to the LLM provider. For Ollama, ensure the Ollama service is running
+locally.
+
+### Something else is broken
+
+Run the diagnostics before filing an issue — [SUPPORT.md](../SUPPORT.md) lists the
+three commands that produce everything a bug report needs.

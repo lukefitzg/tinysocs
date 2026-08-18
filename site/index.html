@@ -1,327 +1,95 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>TinySocs — Security monitoring for small businesses without a security team</title>
-<meta name="description" content="Your insurer, your biggest customers, and the regulators all want to know you're watching for cyber attacks. TinySocs does it for you — no security expert needed.">
-
-<!-- Open Graph -->
-<meta property="og:title" content="TinySocs — Security monitoring for small businesses">
-<meta property="og:description" content="Always-on cyber monitoring for companies without a security team. No expert needed.">
-<meta property="og:type" content="website">
-<meta property="og:url" content="https://tinysocs.com">
-
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TinySocs — a tiny self-hosted SIEM for small Windows networks</title>
+<meta name="description" content="Free, self-hosted security monitoring for homelabs and small Windows networks. One installer: event collection, detection rules, OpenSearch, dashboard. Source-available (BSL-1.1), no account, no support tiers.">
 <style>
-:root {
-  --bg: #0f1117;
-  --surface: #1a1d2e;
-  --border: #2a2d3a;
-  --text: #e2e8f0;
-  --muted: #94a3b8;
-  --accent: #6366f1;
-  --accent-glow: rgba(99,102,241,0.15);
-  --green: #22c55e;
-}
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  background: var(--bg);
-  color: var(--text);
-  line-height: 1.6;
-  overflow-x: hidden;
-}
-a { color: var(--accent); text-decoration: none; }
-a:hover { text-decoration: underline; }
-
-.container { max-width: 880px; margin: 0 auto; padding: 0 24px; }
-section { padding: 64px 0; }
-
-/* Hero */
-.hero {
-  text-align: center;
-  padding: 110px 0 72px;
-  background: linear-gradient(180deg, var(--accent-glow) 0%, transparent 60%);
-}
-.hero h1 {
-  font-size: clamp(2rem, 5vw, 3rem);
-  font-weight: 800;
-  line-height: 1.15;
-  margin-bottom: 22px;
-  letter-spacing: -0.02em;
-}
-.hero .subtitle {
-  font-size: clamp(1.05rem, 2.5vw, 1.25rem);
-  color: var(--muted);
-  max-width: 620px;
-  margin: 0 auto 40px;
-}
-
-/* Email capture form */
-.signup {
-  display: flex;
-  gap: 10px;
-  max-width: 440px;
-  margin: 0 auto;
-  flex-wrap: wrap;
-  justify-content: center;
-}
-.signup input[type="email"] {
-  flex: 1 1 240px;
-  padding: 14px 16px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text);
-  font-size: 16px;
-}
-.signup input[type="email"]:focus { outline: none; border-color: var(--accent); }
-.signup button {
-  padding: 14px 28px;
-  border-radius: 8px;
-  border: none;
-  background: var(--accent);
-  color: #fff;
-  font-size: 16px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: transform 0.15s, box-shadow 0.15s;
-}
-.signup button:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(99,102,241,0.3); }
-.signup button:disabled { opacity: 0.6; cursor: default; transform: none; box-shadow: none; }
-.form-msg { min-height: 22px; margin-top: 14px; font-size: 14px; color: var(--green); }
-.form-note { margin-top: 10px; font-size: 13px; color: var(--muted); }
-
-/* Section titles */
-.section-title {
-  font-size: clamp(1.4rem, 3vw, 1.9rem);
-  font-weight: 700;
-  text-align: center;
-  margin-bottom: 14px;
-}
-.section-sub {
-  text-align: center;
-  color: var(--muted);
-  max-width: 600px;
-  margin: 0 auto 44px;
-  font-size: 16px;
-}
-
-/* Three plain points */
-.points {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 28px;
-}
-.point .icon { font-size: 30px; margin-bottom: 12px; }
-.point h3 { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
-.point p { font-size: 15px; color: var(--muted); }
-
-/* Steps */
-.steps {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 28px;
-  text-align: center;
-}
-.step-num {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 42px; height: 42px; border-radius: 50%;
-  background: var(--accent); color: #fff; font-size: 18px; font-weight: 700;
-  margin-bottom: 14px;
-}
-.step h3 { font-size: 17px; margin-bottom: 8px; }
-.step p { font-size: 14px; color: var(--muted); }
-
-/* Trust band */
-.trust { background: var(--surface); text-align: center; }
-.trust .container { max-width: 680px; }
-.trust h2 { font-size: clamp(1.3rem, 3vw, 1.7rem); margin-bottom: 16px; }
-.trust p { color: var(--muted); font-size: 16px; margin-bottom: 8px; }
-
-/* Final CTA */
-.cta-section { text-align: center; }
-.cta-section h2 { font-size: clamp(1.4rem, 3vw, 1.9rem); margin-bottom: 14px; }
-.cta-section p { color: var(--muted); margin: 0 auto 32px; max-width: 480px; }
-
-/* Footer */
-footer {
-  text-align: center; padding: 36px 0;
-  border-top: 1px solid var(--border);
-  font-size: 13px; color: var(--muted);
-}
-footer a { color: var(--muted); }
-footer a:hover { color: var(--accent); }
-
-@media (max-width: 640px) {
-  section { padding: 48px 0; }
-  .hero { padding: 80px 0 48px; }
-}
+  :root {
+    --bg: #0f1419; --fg: #e6e1cf; --dim: #8a919c; --accent: #59c2ff;
+    --card: #161b22; --border: #2d333b; --good: #7fd962;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #fbfbf9; --fg: #1c1f24; --dim: #5c6570; --accent: #0b6bcb;
+            --card: #f0f0ea; --border: #d8d8d0; --good: #2e7d32; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 17px/1.6 ui-sans-serif, system-ui, -apple-system, sans-serif; }
+  main { max-width: 46rem; margin: 0 auto; padding: 4rem 1.25rem 5rem; }
+  h1 { font-size: 2.1rem; line-height: 1.2; margin: 0 0 .75rem; }
+  h2 { font-size: 1.25rem; margin: 2.5rem 0 .5rem; }
+  p  { margin: .75rem 0; }
+  a  { color: var(--accent); }
+  .dim { color: var(--dim); }
+  .cta { display: inline-block; margin: 1.25rem 1rem 0 0; padding: .65rem 1.2rem;
+         border-radius: 8px; text-decoration: none; font-weight: 600; }
+  .cta.primary { background: var(--accent); color: var(--bg); }
+  .cta.secondary { border: 1px solid var(--border); color: var(--fg); }
+  ul { padding-left: 1.2rem; }
+  li { margin: .35rem 0; }
+  .card { background: var(--card); border: 1px solid var(--border);
+          border-radius: 10px; padding: 1rem 1.25rem; margin: 1.5rem 0; }
+  code { background: var(--card); border: 1px solid var(--border);
+         border-radius: 4px; padding: .1em .35em; font-size: .9em; }
+  footer { margin-top: 4rem; padding-top: 1.5rem; border-top: 1px solid var(--border);
+           font-size: .9rem; color: var(--dim); }
 </style>
 </head>
 <body>
+<main>
+  <h1>TinySocs</h1>
+  <p><strong>A tiny, self-hosted SIEM for small Windows networks.</strong> One installer
+  stands up event collection, a detection engine, a bundled OpenSearch backend, and a
+  web dashboard — on your own hardware. Your data stays on-prem.</p>
 
-<!-- Hero -->
-<section class="hero">
-  <div class="container">
-    <h1>Cyber monitoring for businesses without a security team.</h1>
-    <p class="subtitle">
-      Your insurer, your biggest customers, and the regulators all want proof
-      you're watching for cyber attacks. TinySocs does the watching for you &mdash;
-      no security expert needed.
-    </p>
+  <p class="dim">Built for homelabs, tinkerers, students, and small IT shops. Free to
+  use. No account, no waitlist, no tiers.</p>
 
-    <form class="signup" id="signup-form" novalidate>
-      <input type="email" name="email" id="email" placeholder="you@yourcompany.com" autocomplete="email" required>
-      <button type="submit" id="signup-btn">Get early access</button>
-    </form>
-    <p class="form-msg" id="form-msg" role="status" aria-live="polite"></p>
-    <p class="form-note">Early access. No spam, no sales calls &mdash; just a heads-up when it's ready for you.</p>
+  <a class="cta primary" href="https://github.com/lukefitzg/tinysocs/releases">Download the installer</a>
+  <a class="cta secondary" href="https://github.com/lukefitzg/tinysocs">Source on GitHub</a>
+
+  <h2>What you get</h2>
+  <ul>
+    <li>Windows agent (C#) collecting Security, Sysmon, and Defender events</li>
+    <li><strong>19 detection rules enabled out of the box</strong> (39 defined —
+        the rest are off by default and yours to enable), covering 16 MITRE ATT&amp;CK
+        techniques across 8 tactics</li>
+    <li>Rules are plain YAML, hot-reloaded — edit them, tune them, write your own</li>
+    <li>Dashboard with alerts, fleet health, event explorer, and an optional AI
+        assistant (Claude, OpenAI, or fully-local Ollama)</li>
+    <li>File integrity monitoring, threat-intel enrichment, Slack/Teams/email alerts</li>
+    <li>NIST CSF / HIPAA / PCI DSS coverage-mapping reports</li>
+  </ul>
+
+  <div class="card">
+    <strong>The honest fine print.</strong> This is a solo side project, provided
+    as-is with <strong>no support</strong> — there's a
+    <a href="https://github.com/lukefitzg/tinysocs/blob/main/SUPPORT.md">support policy</a>,
+    a <a href="https://github.com/lukefitzg/tinysocs/blob/main/KNOWN-LIMITATIONS.md">known-limitations doc</a>,
+    and good self-diagnostics, but no SLA and no promised release cadence.
+    Detection validation evidence — including the misses — lives
+    <a href="https://github.com/lukefitzg/tinysocs/blob/main/docs/pilot-ruleset.md">in the repo</a>,
+    not in marketing claims. Windows-only; ~100 endpoints per node.
   </div>
-</section>
 
-<!-- Three plain points -->
-<section>
-  <div class="container">
-    <h2 class="section-title">What it does</h2>
-    <p class="section-sub">The kind of protection that used to need a full security team &mdash; running quietly in the background of your business.</p>
-    <div class="points">
-      <div class="point">
-        <div class="icon">&#x1F441;</div>
-        <h3>Watches everything, day and night</h3>
-        <p>It keeps an eye on every computer in your business and flags anything that looks like an attack &mdash; logins, suspicious programs, files being tampered with.</p>
-      </div>
-      <div class="point">
-        <div class="icon">&#x1F4AC;</div>
-        <h3>No security knowledge needed</h3>
-        <p>You don't have to understand any of it. TinySocs explains what happened, and what to do about it, in plain English.</p>
-      </div>
-      <div class="point">
-        <div class="icon">&#x1F504;</div>
-        <h3>Stays up to date by itself</h3>
-        <p>New threats appear every week. TinySocs updates its own detections automatically, so your protection never goes stale. You never touch a thing.</p>
-      </div>
-    </div>
-  </div>
-</section>
+  <h2>Quick start</h2>
+  <p>Download <code>TinySocs-Setup.exe</code>, run as Administrator, pick the
+  <strong>Hub</strong> role, follow the wizard. Verify with
+  <code>Test-TinySocsHealth</code>. The
+  <a href="https://github.com/lukefitzg/tinysocs/blob/main/docs/getting-started.md">getting-started guide</a>
+  covers it end to end.</p>
 
-<!-- Trust band: the feed + validation -->
-<section class="trust">
-  <div class="container">
-    <h2>Protection you can actually trust</h2>
-    <p>
-      Every detection is tested against real-world attacks before it reaches you,
-      and signed so you know it's genuine. We publish the results every week.
-    </p>
-    <p><a href="/validation/">See this week's test results &rarr;</a></p>
-  </div>
-</section>
+  <h2>Licence</h2>
+  <p>Business Source License 1.1 — source-available, not OSI open source. Free for
+  production use; you just can't resell TinySocs itself as a hosted or embedded
+  service. Each released version converts to Apache 2.0 after four years.</p>
 
-<!-- How it works -->
-<section>
-  <div class="container">
-    <h2 class="section-title">Up and running in an afternoon</h2>
-    <p class="section-sub">One install on one Windows machine. No cloud accounts, no consultants.</p>
-    <div class="steps">
-      <div class="step">
-        <div class="step-num">1</div>
-        <h3>Install</h3>
-        <p>Run one setup wizard. Everything you need is bundled inside.</p>
-      </div>
-      <div class="step">
-        <div class="step-num">2</div>
-        <h3>It starts watching</h3>
-        <p>Your computers connect automatically and TinySocs gets to work.</p>
-      </div>
-      <div class="step">
-        <div class="step-num">3</div>
-        <h3>You stay informed</h3>
-        <p>Get clear alerts when something matters. Ignore it the rest of the time.</p>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- Final CTA -->
-<section class="cta-section">
-  <div class="container">
-    <h2>Want to be one of the first?</h2>
-    <p>TinySocs is in early access and I'm onboarding a small group of businesses now. Leave your email and I'll be in touch personally.</p>
-    <form class="signup" id="signup-form-2" novalidate>
-      <input type="email" name="email" id="email-2" placeholder="you@yourcompany.com" autocomplete="email" required>
-      <button type="submit" id="signup-btn-2">Get early access</button>
-    </form>
-    <p class="form-msg" id="form-msg-2" role="status" aria-live="polite"></p>
-  </div>
-</section>
-
-<!-- Footer -->
-<footer>
-  <div class="container">
-    <p>
-      &copy; 2026 TinySocs &middot;
-      <a href="mailto:luke@tinysocs.com">luke@tinysocs.com</a>
-    </p>
-  </div>
-</footer>
-
-<script>
-// Loops.so newsletter form.
-// 1. Create a form at app.loops.so -> Forms (choose "no-code", embed type).
-// 2. Copy the form ID from its endpoint and paste it below.
-var LOOPS_FORM_ID = "cmqcshcko02180jyiob630lax";
-
-function wireForm(formId, emailId, btnId, msgId) {
-  var form = document.getElementById(formId);
-  if (!form) return;
-  form.addEventListener("submit", function (e) {
-    e.preventDefault();
-    var email = document.getElementById(emailId).value.trim();
-    var btn = document.getElementById(btnId);
-    var msg = document.getElementById(msgId);
-    msg.style.color = "var(--green)";
-
-    if (!email || email.indexOf("@") === -1) {
-      msg.style.color = "#f87171";
-      msg.textContent = "Please enter a valid email address.";
-      return;
-    }
-    if (LOOPS_FORM_ID.indexOf("REPLACE") === 0) {
-      msg.style.color = "#f87171";
-      msg.textContent = "Signup isn't connected yet. Email luke@tinysocs.com for now.";
-      return;
-    }
-
-    btn.disabled = true;
-    btn.textContent = "Sending...";
-    fetch("https://app.loops.so/api/newsletter-form/" + LOOPS_FORM_ID, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ email: email }).toString()
-    })
-      .then(function (res) {
-        if (res.ok) {
-          form.reset();
-          msg.textContent = "Thanks — you're on the list. I'll be in touch.";
-        } else {
-          msg.style.color = "#f87171";
-          msg.textContent = "Something went wrong. Email luke@tinysocs.com instead.";
-        }
-      })
-      .catch(function () {
-        msg.style.color = "#f87171";
-        msg.textContent = "Something went wrong. Email luke@tinysocs.com instead.";
-      })
-      .finally(function () {
-        btn.disabled = false;
-        btn.textContent = "Get early access";
-      });
-  });
-}
-
-wireForm("signup-form", "email", "signup-btn", "form-msg");
-wireForm("signup-form-2", "email-2", "signup-btn-2", "form-msg-2");
-</script>
-
+  <footer>
+    TinySocs · <a href="https://github.com/lukefitzg/tinysocs">github.com/lukefitzg/tinysocs</a>
+    · BSL-1.1 · Issues and PRs welcome, replies best-effort.
+  </footer>
+</main>
 </body>
 </html>

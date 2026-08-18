@@ -38,7 +38,7 @@
 
 [Setup]
 AppName=TinySocs
-AppVersion=0.10.0
+AppVersion=0.11.0
 AppPublisher=TinySocs
 AppSupportURL=https://github.com/lukefitzg/tinysocs/blob/main/SUPPORT.md
 AppUpdatesURL=https://github.com/lukefitzg/tinysocs/releases

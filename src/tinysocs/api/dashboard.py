@@ -2558,6 +2558,7 @@ def _verify_dashboard_session(request: Request) -> None:
 # dashboard_app runs standalone or mounted under the bot app.
 _PUBLIC_DASHBOARD_ROUTES: set[tuple[str, str]] = {
     ("GET", "/"),                               # SPA shell; login overlay lives inside it
+    ("GET", "/favicon.ico"),                    # browser auto-probe; 404s, keeps logs clean
     ("POST", "/api/auth/login"),
     ("GET", "/api/auth/check"),                 # self-reports 401 for invalid tokens
     ("GET", "/api/settings/password-status"),   # pre-login: setup vs login overlay

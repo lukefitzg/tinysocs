@@ -48,10 +48,11 @@ an issue about something below — it's known. Last reviewed 2026-08-18.
 - **Uninstall keeps your data by default** (`C:\ProgramData\TinySocs` survives). To
   remove data too, create `C:\ProgramData\TinySocs\remove_on_uninstall.flag` before
   uninstalling. There is no wizard checkbox for this yet.
-- **Uninstall can leave scheduled tasks behind** if you used the experimental
-  operator tasks — `TinySocs-MasterHeartbeat` in particular survives uninstall and
-  keeps firing every 15 minutes against a removed install. Remove manually:
-  `Unregister-ScheduledTask -TaskName TinySocs-MasterHeartbeat,TinySocs-RotateQueues,TinySocs-NightlyVerifyLedger`.
+- **Uninstall and scheduled tasks**: fixed as of 2026-08-18 — uninstall now removes
+  the experimental operator tasks (`TinySocs-RotateQueues`,
+  `TinySocs-NightlyVerifyLedger`, `TinySocs-MasterHeartbeat`) along with everything
+  else. If you uninstalled an *older* build after using the operator tasks, check for
+  leftovers: `Get-ScheduledTask -TaskName TinySocs-* | Unregister-ScheduledTask -Confirm:$false`.
 - **An empty dashboard looks like a broken one.** Before events arrive, widgets show
   "Loading..." — a not-reporting agent and a still-fetching dashboard look identical.
   Run `Invoke-TinySocsSmokeTest` to tell them apart.

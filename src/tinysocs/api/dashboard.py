@@ -2550,6 +2550,39 @@ def _verify_dashboard_session(request: Request) -> None:
     raise HTTPException(status_code=401, detail="Not authenticated")
 
 
+# ---------------------------------------------------------------------------
+# Global session enforcement — deny-by-default middleware
+# ---------------------------------------------------------------------------
+# Every route requires a valid Bearer session EXCEPT this explicit allowlist.
+# Paths are mount-relative (scope["path"]), so the same values work whether
+# dashboard_app runs standalone or mounted under the bot app.
+_PUBLIC_DASHBOARD_ROUTES: set[tuple[str, str]] = {
+    ("GET", "/"),                               # SPA shell; login overlay lives inside it
+    ("POST", "/api/auth/login"),
+    ("GET", "/api/auth/check"),                 # self-reports 401 for invalid tokens
+    ("GET", "/api/settings/password-status"),   # pre-login: setup vs login overlay
+    ("POST", "/api/settings/setup-password"),   # gated separately by the first-boot setup token
+    ("POST", "/api/nodes/register"),            # Site-node enrolment; has its own HMAC auth
+}
+
+
+@dashboard_app.middleware("http")
+async def _enforce_dashboard_session(request: Request, call_next):
+    if _DEMO_MODE:
+        return await call_next(request)
+    method = request.method.upper()
+    if method == "OPTIONS":
+        return await call_next(request)
+    path = request.scope.get("path") or "/"
+    lookup = ("GET" if method == "HEAD" else method, path)
+    if lookup in _PUBLIC_DASHBOARD_ROUTES:
+        return await call_next(request)
+    auth = request.headers.get("authorization", "")
+    if auth.startswith("Bearer ") and _validate_session(auth.split(" ", 1)[1].strip()):
+        return await call_next(request)
+    return JSONResponse(status_code=401, content={"error": "Not authenticated"})
+
+
 def _parse_os_size(s: str) -> int:
     """Parse OpenSearch size string like '500mb', '1.2gb' to bytes."""
     if not s:
@@ -5939,19 +5972,53 @@ def api_settings_post(request: Request, body: dict[str, Any] = Body(...)):
     }
 
 
+_setup_token: str | None = None
+
+
+def _get_or_mint_setup_token() -> str:
+    """One-time first-boot setup token, printed to the console/service log only.
+
+    Closes the first-boot race: without this, anyone who reached the dashboard
+    before the operator could claim the admin password. The token never leaves
+    the server process's stdout/log, so only someone with host/log access can
+    complete setup.
+    """
+    global _setup_token
+    if _setup_token is None:
+        _setup_token = secrets.token_urlsafe(24)
+        print(
+            f"[tinysocs-dashboard] First-boot setup token: {_setup_token}\n"
+            "[tinysocs-dashboard] Enter it in the password-setup form "
+            "(it is shown only in this console/service log).",
+            flush=True,
+        )
+    return _setup_token
+
+
 @dashboard_app.get("/api/settings/password-status")
 def api_password_status():
     """Check whether a dashboard password has been configured."""
     pw = _get_admin_password()
-    return {"configured": bool(pw)}
+    if not pw:
+        # Mint (and print) the setup token as soon as the setup overlay is shown.
+        _get_or_mint_setup_token()
+        return {"configured": False, "setup_token_required": True}
+    return {"configured": True}
 
 
 @dashboard_app.post("/api/settings/setup-password")
 def api_setup_password(body: dict[str, Any] = Body(...)):
-    """First-time password setup. Only works when SIEM_PASS is empty/unset."""
+    """First-time password setup. Only works when SIEM_PASS is empty/unset,
+    and requires the setup token printed to the server console/log."""
     current_pw = _get_admin_password()
     if current_pw:
         return JSONResponse(status_code=400, content={"error": "Password already configured. Use Change Password instead."})
+
+    provided_token = str(body.get("setup_token", "")).strip()
+    if not provided_token or not hmac.compare_digest(provided_token, _get_or_mint_setup_token()):
+        return JSONResponse(status_code=403, content={
+            "error": "Invalid or missing setup token. Check the dashboard service console/log for the first-boot setup token."
+        })
 
     new_password = body.get("new_password", "").strip()
     if len(new_password) < 8:
@@ -6699,8 +6766,11 @@ select { cursor: pointer; }
       <div class="login-box">
         <p style="color:var(--muted);font-size:13px;margin-bottom:12px">
           No password has been configured yet. Set one now to protect your dashboard and SIEM access.
+          Paste the <strong>setup token</strong> from the dashboard service console/log
+          (it proves you're the operator, not just someone who reached this page first).
         </p>
-        <input type="password" id="setupPassword" placeholder="New password (min 8 characters)" onkeydown="if(event.key==='Enter')document.getElementById('setupPasswordConfirm').focus()">
+        <input type="text" id="setupToken" placeholder="Setup token (from the service console/log)" autocomplete="off" onkeydown="if(event.key==='Enter')document.getElementById('setupPassword').focus()">
+        <input type="password" id="setupPassword" style="margin-top:4px" placeholder="New password (min 8 characters)" onkeydown="if(event.key==='Enter')document.getElementById('setupPasswordConfirm').focus()">
         <input type="password" id="setupPasswordConfirm" placeholder="Confirm password" style="margin-top:4px" onkeydown="if(event.key==='Enter')submitSetupPassword()">
         <button class="btn-save" onclick="submitSetupPassword()">Set Password</button>
         <div id="setupError"></div>
@@ -7720,7 +7790,7 @@ async function addSite() {
   try {
     const resp = await fetch('/api/nodes/add', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: authHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify({url: url, token: _authToken || ''})
     });
     const data = await resp.json();
@@ -7744,7 +7814,7 @@ async function removeSite(siteUrl, siteName) {
   try {
     const resp = await fetch('/api/nodes/remove', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: authHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify({url: siteUrl, token: _authToken || ''})
     });
     const data = await resp.json();
@@ -7833,7 +7903,7 @@ async function approveSite(nodeId) {
   try {
     const resp = await fetch(BASE + '/api/nodes/approve', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: authHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify({node_id: nodeId, token: _authToken || ''})
     });
     const data = await resp.json();
@@ -7857,7 +7927,7 @@ async function rejectSite(nodeId) {
   try {
     const resp = await fetch(BASE + '/api/nodes/reject', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: authHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify({node_id: nodeId, token: _authToken || ''})
     });
     const data = await resp.json();
@@ -7873,7 +7943,7 @@ async function dismissFailedSite(nodeId) {
   try {
     const resp = await fetch(BASE + '/api/nodes/reject', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: authHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify({node_id: nodeId, token: _authToken || ''})
     });
     if (resp.ok) await loadPendingSites();
@@ -8655,7 +8725,7 @@ async function setDetectionStatus(idx, status) {
   try {
     const r = await fetch(BASE + '/api/detections/' + encodeURIComponent(det.id) + '/status', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: authHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify({status}),
     });
     const d = await r.json();
@@ -8684,7 +8754,7 @@ async function markDetectionNormal(idx) {
   try {
     const r = await fetch(BASE + '/api/detections/' + encodeURIComponent(det.id) + '/normal', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: authHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify({rule_id: det.rule_id || det.rule_name || '', host: host}),
     });
     const d = await r.json();
@@ -8733,7 +8803,7 @@ async function removeAllowlistEntry(ruleId, scope, value) {
   try {
     const r = await fetch(BASE + '/api/allowlist/remove', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: authHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify({rule_id: ruleId, scope: scope, value: value}),
     });
     const d = await r.json();
@@ -8754,7 +8824,7 @@ async function toggleDetectionTag(idx, tag) {
   try {
     const r = await fetch(BASE + '/api/detections/' + encodeURIComponent(det.id) + '/tags', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: authHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify({tags}),
     });
     const d = await r.json();
@@ -8783,7 +8853,7 @@ async function summarizeDetection(idx) {
   try {
     const r = await fetch(BASE + '/api/detections/summarize', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: authHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify({alert: alertData}),
     });
     const d = await r.json();
@@ -9227,7 +9297,7 @@ function toggleRunbook(actionId) {
 async function acknowledgeAction(actionId) {
   if (!confirm('Acknowledge this recommendation? You will handle remediation manually using the runbook steps.')) return;
   try {
-    const r = await fetch(BASE + '/api/actions/' + actionId + '/approve', {method: 'POST'});
+    const r = await fetch(BASE + '/api/actions/' + actionId + '/approve', {method: 'POST', headers: authHeaders()});
     const d = await r.json();
     if (!d.ok) alert('Failed: ' + (d.error || 'unknown'));
   } catch(e) { alert('Error: ' + e.message); }
@@ -9237,7 +9307,7 @@ async function acknowledgeAction(actionId) {
 async function dismissAction(actionId) {
   if (!confirm('Dismiss this recommendation? (false positive / not applicable)')) return;
   try {
-    const r = await fetch(BASE + '/api/actions/' + actionId + '/reject', {method: 'POST'});
+    const r = await fetch(BASE + '/api/actions/' + actionId + '/reject', {method: 'POST', headers: authHeaders()});
     const d = await r.json();
     if (!d.ok) alert('Failed: ' + (d.error || 'unknown'));
   } catch(e) { alert('Error: ' + e.message); }
@@ -9246,7 +9316,7 @@ async function dismissAction(actionId) {
 
 async function stageTestAction() {
   try {
-    const r = await fetch(BASE + '/api/actions/test', {method: 'POST'});
+    const r = await fetch(BASE + '/api/actions/test', {method: 'POST', headers: authHeaders()});
     const d = await r.json();
     if (!d.ok) { alert('Failed: ' + (d.error || 'unknown')); return; }
     loadActions();
@@ -9853,7 +9923,7 @@ async function createRule() {
 
   const r = await fetch(BASE + '/api/rules', {
     method: 'POST',
-    headers: {'Content-Type': 'application/json'},
+    headers: authHeaders({'Content-Type': 'application/json'}),
     body: JSON.stringify({rule: {id, description: desc, kql, severity: sev, index: idx, threshold: thresh, category: cat, group_by: gb}})
   });
   const d = await r.json();
@@ -9894,7 +9964,7 @@ async function uploadRulePack() {
 
   const r = await fetch(BASE + '/api/rules/upload', {
     method: 'POST',
-    headers: {'Content-Type': 'application/json'},
+    headers: authHeaders({'Content-Type': 'application/json'}),
     body: JSON.stringify({content: text, format: isYaml ? 'yaml' : 'json', pack_name: packName})
   });
   const d = await r.json();
@@ -9915,13 +9985,13 @@ async function uploadRulePack() {
 }
 
 async function toggleCustomRule(ruleId) {
-  await fetch(BASE + `/api/rules/${encodeURIComponent(ruleId)}/toggle`, {method: 'POST'});
+  await fetch(BASE + `/api/rules/${encodeURIComponent(ruleId)}/toggle`, {method: 'POST', headers: authHeaders()});
   loadRules();
 }
 
 async function deleteCustomRule(ruleId) {
   if (!confirm(`Delete custom rule "${ruleId}"? This cannot be undone.`)) return;
-  await fetch(BASE + `/api/rules/${encodeURIComponent(ruleId)}`, {method: 'DELETE'});
+  await fetch(BASE + `/api/rules/${encodeURIComponent(ruleId)}`, {method: 'DELETE', headers: authHeaders()});
   loadRules();
 }
 
@@ -10074,7 +10144,7 @@ let _llmIsCloud = false;
 
 async function initLlmMode() {
   try {
-    const r = await fetch(BASE + '/api/settings/llm-mode');
+    const r = await fetch(BASE + '/api/settings/llm-mode', { headers: authHeaders() });
     const d = await r.json();
     _llmMode = d.mode;
     _llmIsCloud = d.is_cloud;
@@ -10147,7 +10217,7 @@ async function sendChat() {
 
     const r = await fetch(BASE + '/api/chat', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: authHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify(body),
     });
     const d = await r.json();
@@ -10245,6 +10315,7 @@ async function openSettings() {
     if (!d.configured) {
       // No password set — show first-time setup
       document.getElementById('settingsSetup').style.display = 'block';
+      document.getElementById('setupToken').value = '';
       document.getElementById('setupPassword').value = '';
       document.getElementById('setupPasswordConfirm').value = '';
       document.getElementById('setupError').innerHTML = '';
@@ -10279,10 +10350,15 @@ function closeSettings() {
 }
 
 async function submitSetupPassword() {
+  const setupToken = (document.getElementById('setupToken').value || '').trim();
   const pw = document.getElementById('setupPassword').value;
   const confirm = document.getElementById('setupPasswordConfirm').value;
   const errEl = document.getElementById('setupError');
 
+  if (!setupToken) {
+    errEl.innerHTML = '<div class="status-msg err" style="margin-top:8px">Enter the setup token from the dashboard service console/log.</div>';
+    return;
+  }
   if (!pw || pw.length < 8) {
     errEl.innerHTML = '<div class="status-msg err" style="margin-top:8px">Password must be at least 8 characters.</div>';
     return;
@@ -10296,7 +10372,7 @@ async function submitSetupPassword() {
     const r = await fetch(BASE + '/api/settings/setup-password', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({new_password: pw}),
+      body: JSON.stringify({new_password: pw, setup_token: setupToken}),
     });
     const d = await r.json();
     if (d.error) {
@@ -10836,7 +10912,7 @@ async function testThreatIntel() {
   const statusEl = document.getElementById('threatIntelTestStatus');
   statusEl.innerHTML = '<span style="color:var(--muted)">Testing providers...</span>';
   try {
-    const r = await fetch(BASE + '/api/threat-intel/test', {method: 'POST'});
+    const r = await fetch(BASE + '/api/threat-intel/test', {method: 'POST', headers: authHeaders()});
     const d = await r.json();
     if (d.ok) {
       const parts = [];

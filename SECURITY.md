@@ -17,9 +17,9 @@ who installed it. Several things you might find are **known, documented limitati
 rather than undisclosed vulnerabilities — check
 [KNOWN-LIMITATIONS.md](KNOWN-LIMITATIONS.md) first. In particular:
 
-- Many dashboard API routes do not require authentication; the mitigation is the
-  localhost-only default bind. Exposing the dashboard beyond a trusted network is
-  explicitly unsupported.
+- Dashboard API routes require a Bearer session (deny-by-default middleware as of
+  2026-08-18), but the recommended posture is still the localhost-only default bind;
+  exposing the dashboard beyond a trusted network is explicitly unsupported.
 - TLS verification is disabled by default in several internal hops (self-signed-cert
   topology).
 - Federation is experimental and assumes all nodes are operated by the same person.

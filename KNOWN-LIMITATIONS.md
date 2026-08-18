@@ -5,16 +5,14 @@ an issue about something below — it's known. Last reviewed 2026-08-18.
 
 ## Security posture
 
-- **The dashboard's API is largely unauthenticated.** The login screen protects the
-  UI, but most API routes (including rule create/edit/toggle, alert purge, storage
-  purge, action approval, and the LLM chat endpoint) don't verify a session. The
-  mitigation is the **localhost-only default bind** — the launcher refuses non-loopback
-  binds without TLS and falls back to localhost. If you choose "Network accessible"
-  mode, every one of those routes is reachable by anything on your LAN behind a
-  self-signed cert. Treat network mode as "trusted lab network only".
-- **First-boot password race**: until the admin password is set, the setup-password
-  endpoint is claimable by whoever reaches the dashboard first. On localhost that's
-  you; in network mode, set the password immediately.
+- **Dashboard API auth**: fixed as of 2026-08-18 — a deny-by-default middleware now
+  requires a valid session on every route except a small public allowlist (login,
+  auth-check, password-status, the SPA shell, and the HMAC-authenticated node
+  enrolment endpoint). First-boot password setup additionally requires a one-time
+  **setup token printed to the dashboard service console/log**, closing the race
+  where whoever reached the dashboard first could claim the admin password. The
+  localhost-only default bind remains the recommended posture; network mode still
+  means a self-signed cert and "trusted lab network only".
 - **TLS verification is off by default on internal hops.** The agent→OpenSearch
   shipper, several dashboard→service calls, and federation fetches accept any
   certificate (self-signed topology). `TINYSOCS_INSECURE_SKIP_VERIFY` defaults vary

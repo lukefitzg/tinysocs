@@ -42,26 +42,38 @@ jobs:
         uses: actions/cache@v4
         with:
           path: vendor/opensearch-3.3.2-windows-x64
-          key: opensearch-3.3.2-windows-x64
+          # -v2 suffix: old cache entries under the un-suffixed key may hold a
+          # mismatched 2.18.0 payload from the pre-fix workflow; never reuse them.
+          key: opensearch-3.3.2-windows-x64-v2
 
       - name: Download OpenSearch vendor payload
         if: steps.cache-opensearch.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          $url = "https://artifacts.opensearch.org/releases/bundle/opensearch/2.18.0/opensearch-2.18.0-windows-x64.zip"
-          $expectedHash = "e2db6ee1fb22e917a2f1e6c2bf2e40e2c41a3a5e5a7c8fe4f4dcf8b1bda5d7a3"  # TODO: update with actual SHA256
+          $url = "https://artifacts.opensearch.org/releases/bundle/opensearch/3.3.2/opensearch-3.3.2-windows-x64.zip"
+          # Official published SHA512, from ${url}.sha512
+          $expectedHash = "e8a1d81bec03fc37ffffcf786696061a0f2a8aa62780a964a688b9dd0ec09bdbbf7b67419b28cab9384ca54e3d247e66d84468d933cc8909cca918cf99039921"
           $zip = "opensearch.zip"
-          Write-Host "Downloading OpenSearch..."
+          Write-Host "Downloading OpenSearch 3.3.2..."
           Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
-          $actualHash = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLower()
-          Write-Host "Downloaded hash: $actualHash"
-          # Uncomment to enforce hash verification once the correct hash is recorded:
-          # if ($actualHash -ne $expectedHash) {
-          #   throw "SHA256 mismatch for OpenSearch download! Expected=$expectedHash Got=$actualHash"
-          # }
+          $actualHash = (Get-FileHash -Path $zip -Algorithm SHA512).Hash.ToLower()
+          Write-Host "Downloaded SHA512: $actualHash"
+          if ($actualHash -ne $expectedHash) {
+            throw "SHA512 mismatch for OpenSearch download! Expected=$expectedHash Got=$actualHash"
+          }
           New-Item -ItemType Directory -Path "vendor/opensearch-3.3.2-windows-x64" -Force | Out-Null
           Expand-Archive -Path $zip -DestinationPath "vendor/opensearch-3.3.2-windows-x64" -Force
           Remove-Item $zip
+
+      - name: Verify vendor payload layout
+        shell: pwsh
+        run: |
+          $bat = "vendor/opensearch-3.3.2-windows-x64/opensearch-3.3.2/bin/opensearch.bat"
+          if (-not (Test-Path $bat)) {
+            Get-ChildItem "vendor/opensearch-3.3.2-windows-x64" -Depth 1 | Format-Table -AutoSize | Out-String | Write-Host
+            throw "Vendor payload layout wrong: $bat not found (Quickstart.iss will refuse to compile)."
+          }
+          Write-Host "Vendor payload OK: $bat"
 
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress

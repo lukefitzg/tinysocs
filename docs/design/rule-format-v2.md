@@ -1,6 +1,6 @@
 # Rule Format v2 — Design
 
-**Status**: Approved, schema locked, **implemented**. Migration script (`scripts/migrate_rules_to_v2.py`) and C# engine changes both done — `PackLoader`/`Ed25519Verifier`/`LicenceReader` are wired through `OpenSearchBulkShipper` and enforce signed-pack loading (2026-06-06; see `signed-feed.md`).
+**Status**: Approved, schema locked, **implemented**. Migration script (`scripts/migrate_rules_to_v2.py`) and C# engine changes both done — `PackLoader`/`Ed25519Verifier`/`LicenceReader` are wired through `OpenSearchBulkShipper` and enforce signed-pack loading (2026-06-06; see `signed-feed.md`). **2026-08-18**: the feed/tier machinery that consumed this schema is parked dormant (`docs/design/strategy-zero-support.md`); the schema itself remains the live pack format. `metadata.tier` is retained as an inert field.
 **Author**: Luke FitzGerald + Claude session, 2026-05-26 (schema); 2026-06-06 (`field_match` carried into schema, signing/feed dependency).
 **Supersedes**: implicit v1 across `packaging/detection/rules.yml` (C# agent) and `src/tinysocs/agent/detections/rules.yaml` (Python catalogue).
 
@@ -28,7 +28,7 @@ Before designing, an audit of the current state turned up the following (worth r
 4. **~12 rules exist only in Python and cannot run agent-side** (M365 cloud-identity, cross-source geo-anomaly, network/firewall, regex/cmdline-based process rules). These are the natural home for the future backend engine and the obvious shape of "premium packs."
 5. **6 lab/demo rules pollute both files.** They should be in a separate `demo` pack and never ship to a real customer's running rule set.
 6. **No allowlist primitives exist in either engine.** The Python file has primitive threshold-override via `tuning_envvars`. There is no "exclude this user/host/process from this rule" mechanism anywhere.
-7. **License inconsistency**: README footer says "MIT" but `LICENSE` file is BSL-1.1. Unrelated to v2 but worth fixing in the same window.
+7. **License inconsistency** (historical, fixed 2026-05-26): the README footer used to contradict the BSL-1.1 `LICENSE` file. Noted here only because it was found during this design pass.
 
 ## Strategy decision: v2.0 ships C#-only
 

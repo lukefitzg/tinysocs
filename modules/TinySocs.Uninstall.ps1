@@ -163,6 +163,25 @@ foreach ($taskName in @("TinySocs\DailySummary")) {
   }
 }
 
+# Remove the experimental operator tasks (registered at the scheduler root by
+# scripts/Install-OperatorTasks.ps1; MasterHeartbeat in particular would otherwise
+# keep firing every 15 minutes against a removed install)
+foreach ($taskName in @("TinySocs-RotateQueues", "TinySocs-NightlyVerifyLedger", "TinySocs-MasterHeartbeat")) {
+  try {
+    $t = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    if ($t) {
+      Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction Stop
+      _Log "Removed scheduled task: $taskName"
+    } else {
+      _Log "Scheduled task not found (already removed): $taskName"
+    }
+  } catch {
+    _Log "Failed to remove scheduled task $taskName : $($_.Exception.Message)"
+    # Also try schtasks.exe as fallback (covers tasks created via the schtasks fallback path)
+    try { schtasks /Delete /TN $taskName /F 2>&1 | Out-Null } catch { }
+  }
+}
+
 # Optionally remove Windows Credential Manager entry
 if (-not $effectiveKeep) {
   _Log "Removing CredMan entries"

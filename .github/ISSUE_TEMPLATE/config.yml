@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Before filing anything
+    url: https://github.com/lukefitzg/tinysocs/blob/main/SUPPORT.md
+    about: The support policy and the three self-diagnosis commands.
+  - name: Known limitations
+    url: https://github.com/lukefitzg/tinysocs/blob/main/KNOWN-LIMITATIONS.md
+    about: The honest list — your finding may already be documented here.
+  - name: Security vulnerabilities
+    url: https://github.com/lukefitzg/tinysocs/security/advisories/new
+    about: Report privately via GitHub — not in the public issue tracker.

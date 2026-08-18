@@ -1,6 +1,6 @@
 # TinySOCs Roadmap — Pivot to Detection-Content-as-a-Service
 
-**Status**: draft
+**Status**: superseded — see `docs/design/strategy-zero-support.md` (2026-08-18). The content-as-a-service pivot was abandoned without outreach ever being sent; TinySOCs is now a free, zero-support, source-available release. This doc is retained as the historical record of the plan and its sequencing.
 **Author**: Luke FitzGerald + Claude session, 2026-06-05.
 **Purpose**: Single canvas for the work between now and first paying customer. This is the *forward* plan; `CLAUDE.md` holds the condensed version as agent instructions, and the per-gap design docs hold the detail. This doc cross-references both rather than restating them.
 

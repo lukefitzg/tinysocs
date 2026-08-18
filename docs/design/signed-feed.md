@@ -1,6 +1,6 @@
 # Signed Rules Feed + Licence Gate — Design
 
-**Status**: implemented (protocol + trust core + agent enforcement + feed server + Stripe webhook). Remaining work is operational, not protocol — see "Build sequencing".
+**Status**: implemented, **parked dormant 2026-08-18** — see `docs/design/strategy-zero-support.md`. The commercial feed was never activated in a shipping install and the paid-content strategy was abandoned; this code path (`feed.py`, `licence.py`, `PackLoader.cs`) is retained as-is, tests passing, as the reopening option if inbound demand ever appears. Don't extend, don't delete.
 **Author**: Luke FitzGerald + Claude session, 2026-06-06.
 **Depends on**: `docs/design/rule-format-v2.md` (pack envelope, `metadata.signature`, `metadata.tier`, `pack_id`+`pack_version`). This doc does **not** restate the pack schema; it specifies how packs are signed, distributed, verified, and paywalled.
 **Covers strategic gaps**: #3 (signed rules feed) and #4 (Stripe + licence-key gate). They are one revenue mechanic and are designed together.

@@ -11,7 +11,7 @@ Import-Module "$env:ProgramFiles\TinySocs\modules\TinySocs.Installer.psm1"
 Test-TinySocsHealth
 ```
 
-Expected: **16/16 PASS**. Any FAIL or WARN items need investigation.
+Expected: no FAILs. INFO/WARN results are structural on a minimal install (webhook/SMTP unconfigured, Sysmon declined, TLS in localhost mode) — see the note in the getting-started guide.
 
 > Checks 13-14 (webhook, SMTP) are only exercised if notifications are configured. Check 15 (Sysmon) reports INFO if Sysmon is not installed. Check 16 (Dashboard TLS) validates cert files when network mode is enabled.
 
@@ -537,3 +537,45 @@ Default ISM policies:
 - **alerts-retention**: 90 days
 
 To adjust, modify the ISM policies in OpenSearch Dashboards under **Index Management > Policies**.
+
+## Federation Evidence Ledger (experimental)
+
+Only relevant if you run the opt-in federation/orchestrator path
+(`scripts/Install-OperatorTasks.ps1`). A default single-node install has none of this.
+
+### Scheduled tasks
+
+Registered by `Install-OperatorTasks.ps1` (removed again by uninstall or
+`scripts/Uninstall-OperatorTasks.ps1`):
+
+- `TinySocs-MasterHeartbeat` — every 15 minutes (default): orchestrator fan-out to
+  node `/agg` endpoints + evidence anchoring.
+- `TinySocs-NightlyVerifyLedger` — 02:15: ledger verification.
+- `TinySocs-RotateQueues` — hourly (default): queue rotation.
+
+```powershell
+Get-ScheduledTask -TaskName "TinySocs-*"
+```
+
+### Verifying the ledger
+
+```bash
+python -m tinysocs.orchestrator.check_ledger --verify
+```
+
+Expect `ok:true` and the newest anchor sorting correctly by `anchored_at`.
+
+### Repairing a corrupted node ledger
+
+1. Stop writes to the node (pause the master heartbeat task).
+2. Inspect `ledger\node-*.jsonl` and the matching `.head` file.
+3. If a mid-file line was edited or removed: restore from backup if available,
+   otherwise truncate to the last known-good line. Recompute the head by appending
+   a new entry normally via `/evidence/append` or on the next master run.
+4. Run the master once to re-anchor (5-minute window), then re-verify as above.
+
+### Tamper drill (forensics self-test)
+
+- Flip a hex character in the last entry's `head_prev` or `payload_sha256` — verify
+  should flag `prev_link_mismatch` or `head_mismatch`.
+- Restore the file from `.bak` — verify returns green.

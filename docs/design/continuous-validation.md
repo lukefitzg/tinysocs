@@ -1,6 +1,6 @@
 # Continuous Validation Pipeline — Design
 
-**Status**: Approved design, not yet implemented.
+**Status**: Approved design, partially implemented, **publication half parked 2026-08-18** — the harness (`Test-AtomicDetection.ps1`, `tests/atomic-tests.yaml`) is real and stays; the weekly public-dashboard cadence was abandoned with the commercial strategy (`docs/design/strategy-zero-support.md`). Validation evidence now lives in-repo (`tests/atomic-results.json`, `docs/pilot-ruleset.md`) with no cadence promised.
 **Author**: Luke FitzGerald + Claude session, 2026-05-26 (decisions locked), design written 2026-05-31.
 **Related**: `docs/design/rule-format-v2.md` (v2 schema). This design is deliberately schema-invariant against v2 so they can ship in parallel.
 

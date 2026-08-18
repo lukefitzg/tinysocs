@@ -2,20 +2,16 @@
 
 ## What this repo is
 
-TinySOCs — a self-hosted SIEM for SMBs and small MSPs. Windows agent (C# .NET 8) ships events to a bundled OpenSearch backend, FastAPI services for dashboard/AI assistant/federation, Inno Setup installer for one-shot Windows deployment. ~28k LOC, ~330 commits, v0.10.0, BSL-1.1 licence (converts to Apache 2029).
+TinySOCs — a self-hosted SIEM for small Windows networks: homelabs, tinkerers, students, small IT shops. Windows agent (C# .NET 8) ships events to a bundled OpenSearch backend, FastAPI services for dashboard/AI assistant/federation, Inno Setup installer for one-shot Windows deployment. ~28k LOC, v0.10.0, BSL-1.1 licence (source-available; each version converts to Apache 2.0 after 4 years).
 
-## Strategic phase (mid-2026)
+## Strategic phase (2026-08-18: free zero-support release)
 
-The product as currently shipped is implicitly a DIY platform: customer installs, customer tunes detection rules, customer maintains. SMB IT generalists cannot do this and will churn. The repo is pivoting to **detection-content-as-a-service**:
+Canonical decision record: `docs/design/strategy-zero-support.md`. The short version:
 
-- Platform stays free or near-free, including a stale weekly snapshot of base rules.
-- Recurring revenue is a paid subscription to a continuously-validated detection content feed: signed, version-pinned, delivered automatically.
-- Tiers: free / pro / msp. Prices unset until first cohort of customer conversations; tier architecture is locked.
-- Customer never edits a rule file. Tuning happens via allowlists, AI-assisted triage, and FP feedback that flows back to vendor.
-
-**Hard timeline**: first paying customer in 8–12 weeks (mid-Aug 2026). Part-time founder budget (evenings/weekends).
-
-Zero paying customers today. Zero pilots. GTM materials exist under `docs/` (one-pager, outreach templates, pilot guide, MSSP guide, competitive doc) but no outreach has happened.
+- TinySOCs is a **free, zero-support, source-available** tool. No paid tiers, no subscription feed, no founder-led sales, no support relationship. Distribution is broadcast (blog post, Show HN, r/selfhosted, r/homelab) — write once, no follow-up obligation.
+- The previous detection-content-as-a-service pivot (`docs/roadmap.md`, now superseded) was abandoned 2026-08-18: its mid-Aug first-customer deadline passed with zero outreach ever sent. The commercial machinery it produced (feed server, licence gate, pack signing, Stripe scaffolding) is **parked in place, dormant** — the reopening option if inbound demand ever appears. Inbound only; no outbound motion gets planned again.
+- Rule editing flipped from liability to feature: the audience is tinkerers, so the Rule Builder and direct `rules.yml` editing are documented, not hidden. The old "customer never edits a rule file" constraint is dead.
+- Support posture: `SUPPORT.md` (as-is, best-effort), issue templates that require `Test-TinySocsHealth` output. Nothing is owed to anyone.
 
 ## Repo realities you must know before changing anything
 
@@ -24,34 +20,23 @@ Zero paying customers today. Zero pilots. GTM materials exist under `docs/` (one
 There are two YAML rule files but only **one running detection engine**:
 
 1. **C# agent engine** (`src/TinySocs.Agent/Detection/`, rules in `packaging/detection/rules.yml`, shipped via the signed `base` pack under `packs/`) — a single rule type (`threshold_by_key`) against raw Windows events in-process. 39 rules are defined; **19 are enabled in the pilot base pack (2026.27)**, the rest disabled for per-environment tuning. **This is the only engine that actually fires alerts in production.**
-2. **Python rule "catalogue"** (`src/tinysocs/agent/detections/rules.yaml`) — 50 KQL-based rules, but **no scheduled runner consumes them**. The file is read only by `reporting/mitre_coverage.py` (MITRE heatmap) and by the AI assistant as a `search_kql` corpus. Treat it as a documented roadmap library, not a running detection set.
+2. **Python rule "catalogue"** (`src/tinysocs/agent/detections/rules.yaml`) — 50 KQL-based rules with **no scheduled runner in a default install**. Read by `reporting/mitre_coverage.py` (MITRE heatmap) and the AI assistant's `search_kql` corpus. One exception: the opt-in federation path (`scripts/Install-OperatorTasks.ps1` → `TinySocs-MasterHeartbeat` task → orchestrator → node `/agg`) does execute a small subset (`ps_script_block`, `auth_failed_burst` by default) on a schedule — but `Quickstart.iss` never wires that up, so a stock install runs none of it. Treat the catalogue as a documented rule library, not a running detection set.
 
 When someone asks "how many rules does TinySOCs have," the honest answer is "19 enabled in the pilot base pack (2026.27), 39 defined in the C# engine, 89 including the roadmap catalogue." Don't conflate. (As of 2026-07-04 the pilot cut disabled 17 noisy/dead/duplicate rules and gave 4 mislabeled rules real `field_match` filters — see `docs/pilot-ruleset.md`. A 2026-07-08 validation pass then found two more dead rules: TS-113 grouped by a field FIM events never carried — fixed in `FileIntegrityInput` — and TS-120 was unwired with no event source, so it was deferred too. That makes 18 non-lab rules held back as `enabled: false` for v2, 19 enabled. All 19 are proven to fire by `DetectionEngineTests.cs`.)
 
-The Python KQL engine activation is queued as v2.1 work (post-first-customer). For v2.0, only the C# engine runs.
+There is no plan to activate the Python KQL engine. It stays a library unless someone wires it up for fun.
 
-### Other things that look like they might exist but don't
+### Dormant subsystems (exist, built, deliberately not live)
 
-- **No allowlist primitives** in either engine today. Not even a `not_if` clause.
-- **No rule signing, no rule feed, no licence checking, no Stripe integration.** All greenfield.
+- **Signed-pack trust path**: `PackLoader.cs`, `Ed25519Verifier.cs`, `LicenceReader.cs` exist and work, but `ContentPackConfig.Enabled` defaults `false` and the installer ships the legacy unsigned `rules.yml` via `RuleLoader.cs`. Parked per the strategy doc.
+- **Feed server + licensing**: `src/tinysocs/api/feed.py`, `feed_store.py`, `scripts/{pack_sign,licence,stripe_pricing}.py`. Built during the abandoned pivot; dormant; tests still run. Don't extend, don't delete.
+- **No allowlist primitives** in either engine. Not even a `not_if` clause. (Schema fields exist in the v2 design; no runtime.)
 - **FIM is its own subsystem** (`FimConfig.cs`) that emits synthetic events into the C# engine. Don't treat FIM rules as "regular" rules — their event source is internal.
 - The README footer used to claim "MIT" — fixed 2026-05-26 to BSL-1.1. If you see another stale "MIT" claim surface anywhere (CHANGELOG, package metadata, marketing site), fix it on sight.
 
-### The 8 strategic gaps (from the strategic brief)
+### The work between now and public launch
 
-These define the work between now and first paying customer. Sequencing locked:
-
-1. **Rule format v2** (in progress — see `docs/design/rule-format-v2.md`). Keystone for everything else.
-2. **Continuous validation pipeline** (public weekly Atomic Red Team results) — runs in parallel with v2, biggest credibility lever.
-3. **Signed rules feed** — depends on v2 schema being stable.
-4. **Stripe + licence key gate** — pairs with the feed.
-5. **TinyDocs** (per-rule knowledge base) for the top ~20 most-visible rules.
-6. **Documented content cadence** (1 new rule + 1 tuning patch per week) — process doc, not code.
-
-Deferred to post-first-customer:
-- FP telemetry channel (needs the FP UI button to land first; consent ask is easier with paying customers).
-- Backend Python KQL engine activation (v2.1).
-- Premium pack tiering enforcement.
+See `docs/design/strategy-zero-support.md` §Launch plan. In one line: truth-pass on every public claim, zero-support scaffolding (SUPPORT.md, issue templates, health-check surfacing), bulletproof install/uninstall, then broadcast launch. No feature work is on the critical path.
 
 ### Files you'll reach for often
 
@@ -64,7 +49,8 @@ Deferred to post-first-customer:
 | `src/tinysocs/api/{bot,node,dashboard}.py` | FastAPI services |
 | `src/tinysocs/reporting/frameworks/*.yaml` | Compliance mappings (NIST CSF, HIPAA, PCI DSS) |
 | `tests/atomic-tests.yaml` + `tests/atomic-results.json` | Atomic Red Team validation harness |
-| `docs/design/rule-format-v2.md` | Active design (this session) |
+| `docs/design/strategy-zero-support.md` | Current strategy (canonical decision record) |
+| `docs/design/rule-format-v2.md` | v2 pack schema (implemented; feed usage dormant) |
 | `ledger/`, `src/tinysocs/orchestrator/`, `src/tinysocs/federation_certs.py` | Federation + HMAC evidence ledger |
 
 ## How I work
@@ -81,18 +67,19 @@ Carried mostly from `~/life-os/CLAUDE.md`:
 
 TinySOCs-specific working preferences:
 
-- **Design first, code second** for anything touching the rule engine, the feed protocol, or the licensing layer. These are the load-bearing decisions of the next 12 weeks — get them right on paper before writing C# or schema migrations.
-- **Don't add features to the platform that don't move the content-as-a-service pivot forward.** If a task doesn't serve v2 schema, allowlists, validation pipeline, feed, Stripe, TinyDocs, or content cadence — it's probably a distraction.
-- **Strong preference for shipping increments customers can see.** A pack with one new signed rule a week shipping to a feed is more valuable than three months of refactoring with nothing to show.
-- **Treat the existing 39 rules + 50-rule catalogue as assets, not legacy.** Migration to v2 is mechanical, not interpretive. Don't rewrite detections during migration.
+- **Design first, code second** for anything touching the rule engine or the installer's trust path. Get load-bearing decisions right on paper before writing C# or schema migrations.
+- **Don't add work that doesn't serve the free launch.** If a task doesn't serve the truth pass, zero-support scaffolding, install/uninstall reliability, or launch materials — it's probably a distraction. Feature work resumes only if the project turns out to be fun post-launch.
+- **Minimise standing obligations.** Anything that implies a promise to strangers (a weekly cadence, a support channel, a live dashboard) either gets automated to zero-touch or doesn't ship.
+- **Treat the existing 39 rules + 50-rule catalogue as assets, not legacy.** Don't rewrite detections during mechanical migrations.
 - **Maintain the dual-engine schema honesty.** Every v2 rule has a `runs_on` field. Don't quietly let backend rules ship as if they run.
 
 ## Don't do for me
 
 - Don't suggest leveraging my Nielsen colleagues or management for TinySOCs outreach. Work network stays out. This is a hard rule, not a preference.
 - Don't read or reason about `~/life-os/work/validatr/`. Validatr is a separate product on employer infrastructure; the IP question is unresolved and I'm keeping the two repos hermetically separated in conversation.
-- Don't push prices into the schema or the marketing docs yet. Tier architecture is locked (free/pro/msp); prices land after first customer conversations.
-- Don't recreate `docs/phase-N-summary.md` style retrospectives unless asked. The next 12 weeks are about shipping the pivot, not documenting phases.
+- Don't add pricing, tier, or subscription language anywhere — code, docs, or site. The commercial path is parked (see `docs/design/strategy-zero-support.md`); the old free/pro/msp tier design survives only inside the dormant code and its design docs.
+- Don't recreate `docs/phase-N-summary.md` style retrospectives unless asked.
+- Don't propose outbound GTM work (outreach, pilots, sales collateral). That chapter is closed; the strategy doc's reopening condition is inbound demand only.
 
 ## Working preferences for this repo specifically
 

@@ -168,7 +168,7 @@ The storage widget on the Overview tab shows disk usage, index sizes, and cluste
 
 **Retention** is configurable per index type (7-365 days) in Settings > Storage tab or during install.
 
-**System Diagnostics**: In Settings > Diagnostics tab, click "Run Health Check" to see OpenSearch cluster health (status, nodes, shards, heap usage, index count, store size), disk usage, and federation node reachability with response times. Use "Copy to Clipboard" to export diagnostics for support.
+**System Diagnostics**: In Settings > Diagnostics tab, click "Run Health Check" to see OpenSearch cluster health (status, nodes, shards, heap usage, index count, store size), disk usage, and federation node reachability with response times. Use "Copy to Clipboard" to export diagnostics for a bug report.
 
 **Settings layout**: The Settings panel has 4 tabs: General (LLM, notifications, threat intel), Storage (retention, purge, HEC tokens), Security (SIEM connection, change password), and Diagnostics (health check).
 

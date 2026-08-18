@@ -29,6 +29,15 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `SUPPORT.md` (as-is, best-effort), `SECURITY.md`, `CONTRIBUTING.md`,
   `KNOWN-LIMITATIONS.md`, and GitHub issue templates that ask for diagnostic output.
 
+### Security
+
+- Dashboard API now enforces session auth globally (deny-by-default middleware
+  with a small public allowlist) — previously 60 of 75 routes skipped session
+  verification. First-boot password setup requires a one-time setup token
+  printed to the service console/log, closing a first-claim race.
+- Uninstall now removes the experimental operator scheduled tasks
+  (`TinySocs-MasterHeartbeat` previously survived and kept firing forever).
+
 ## [0.10.0] — 2026-06-06
 
 > **Addendum (2026-08-18):** the commercial machinery described below was parked

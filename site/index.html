@@ -3,92 +3,99 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TinySocs — a tiny self-hosted SIEM for small Windows networks</title>
-<meta name="description" content="Free, self-hosted security monitoring for homelabs and small Windows networks. One installer: event collection, detection rules, OpenSearch, dashboard. Source-available (BSL-1.1), no account, no support tiers.">
+<title>TinySocs</title>
+<meta name="description" content="A self-hosted SIEM for small Windows networks. Event collection, detection rules, bundled OpenSearch, and a web dashboard from a single installer. Free, source-available (BSL 1.1).">
 <style>
   :root {
     --bg: #0f1419; --fg: #e6e1cf; --dim: #8a919c; --accent: #59c2ff;
-    --card: #161b22; --border: #2d333b; --good: #7fd962;
+    --border: #2d333b;
   }
   @media (prefers-color-scheme: light) {
-    :root { --bg: #fbfbf9; --fg: #1c1f24; --dim: #5c6570; --accent: #0b6bcb;
-            --card: #f0f0ea; --border: #d8d8d0; --good: #2e7d32; }
+    :root { --bg: #ffffff; --fg: #1c1f24; --dim: #5c6570; --accent: #0b6bcb;
+            --border: #d8d8d0; }
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--fg);
-         font: 17px/1.6 ui-sans-serif, system-ui, -apple-system, sans-serif; }
-  main { max-width: 46rem; margin: 0 auto; padding: 4rem 1.25rem 5rem; }
-  h1 { font-size: 2.1rem; line-height: 1.2; margin: 0 0 .75rem; }
-  h2 { font-size: 1.25rem; margin: 2.5rem 0 .5rem; }
-  p  { margin: .75rem 0; }
-  a  { color: var(--accent); }
-  .dim { color: var(--dim); }
-  .cta { display: inline-block; margin: 1.25rem 1rem 0 0; padding: .65rem 1.2rem;
-         border-radius: 8px; text-decoration: none; font-weight: 600; }
+         font: 16px/1.65 ui-sans-serif, system-ui, -apple-system, sans-serif; }
+  main { max-width: 42rem; margin: 0 auto; padding: 5rem 1.25rem; }
+  h1 { font-size: 1.9rem; margin: 0 0 .25rem; }
+  h2 { font-size: 1.05rem; margin: 2.75rem 0 .75rem; text-transform: uppercase;
+       letter-spacing: .06em; color: var(--dim); font-weight: 600; }
+  p { margin: .75rem 0; }
+  a { color: var(--accent); }
+  .sub { color: var(--dim); margin: 0 0 2rem; }
+  .cta { display: inline-block; margin: 0 .75rem .75rem 0; padding: .6rem 1.15rem;
+         border-radius: 6px; text-decoration: none; font-weight: 600; }
   .cta.primary { background: var(--accent); color: var(--bg); }
   .cta.secondary { border: 1px solid var(--border); color: var(--fg); }
-  ul { padding-left: 1.2rem; }
-  li { margin: .35rem 0; }
-  .card { background: var(--card); border: 1px solid var(--border);
-          border-radius: 10px; padding: 1rem 1.25rem; margin: 1.5rem 0; }
-  code { background: var(--card); border: 1px solid var(--border);
-         border-radius: 4px; padding: .1em .35em; font-size: .9em; }
-  footer { margin-top: 4rem; padding-top: 1.5rem; border-top: 1px solid var(--border);
-           font-size: .9rem; color: var(--dim); }
+  ul { padding-left: 1.2rem; margin: .75rem 0; }
+  li { margin: .3rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: .95rem; }
+  td { padding: .35rem .75rem .35rem 0; vertical-align: top; }
+  td:first-child { color: var(--dim); white-space: nowrap; }
+  footer { margin-top: 4rem; padding-top: 1.25rem; border-top: 1px solid var(--border);
+           font-size: .875rem; color: var(--dim); }
 </style>
 </head>
 <body>
 <main>
   <h1>TinySocs</h1>
-  <p><strong>A tiny, self-hosted SIEM for small Windows networks.</strong> One installer
-  stands up event collection, a detection engine, a bundled OpenSearch backend, and a
-  web dashboard — on your own hardware. Your data stays on-prem.</p>
+  <p class="sub">A self-hosted SIEM for small Windows networks.</p>
 
-  <p class="dim">Built for homelabs, tinkerers, students, and small IT shops. Free to
-  use. No account, no waitlist, no tiers.</p>
+  <p>TinySocs collects Windows Security, Sysmon, and Defender events from the
+  machines on your network, runs detection rules against them, and shows the results
+  in a web dashboard. A single installer sets up the agent, the detection engine, a
+  bundled OpenSearch instance, and the dashboard on one Windows host. All data is
+  stored locally.</p>
 
-  <a class="cta primary" href="https://github.com/lukefitzg/tinysocs/releases">Download the installer</a>
-  <a class="cta secondary" href="https://github.com/lukefitzg/tinysocs">Source on GitHub</a>
+  <p>
+    <a class="cta primary" href="https://github.com/lukefitzg/tinysocs/releases/latest">Download</a>
+    <a class="cta secondary" href="https://github.com/lukefitzg/tinysocs">Source</a>
+    <a class="cta secondary" href="https://github.com/lukefitzg/tinysocs/blob/main/docs/getting-started.md">Documentation</a>
+  </p>
 
-  <h2>What you get</h2>
+  <h2>Features</h2>
   <ul>
-    <li>Windows agent (C#) collecting Security, Sysmon, and Defender events</li>
-    <li><strong>19 detection rules enabled out of the box</strong> (39 defined —
-        the rest are off by default and yours to enable), covering 16 MITRE ATT&amp;CK
-        techniques across 8 tactics</li>
-    <li>Rules are plain YAML, hot-reloaded — edit them, tune them, write your own</li>
-    <li>Dashboard with alerts, fleet health, event explorer, and an optional AI
-        assistant (Claude, OpenAI, or fully-local Ollama)</li>
-    <li>File integrity monitoring, threat-intel enrichment, Slack/Teams/email alerts</li>
-    <li>NIST CSF / HIPAA / PCI DSS coverage-mapping reports</li>
+    <li>19 detection rules enabled by default, 39 included, mapped to MITRE ATT&amp;CK.
+        Rules are YAML files, reloaded on change; a rule builder in the dashboard
+        supports custom KQL rules.</li>
+    <li>Automatic Sysmon deployment with a tuned configuration.</li>
+    <li>File integrity monitoring for critical system paths.</li>
+    <li>Alert notifications via Slack, Microsoft Teams, or email.</li>
+    <li>Threat intelligence enrichment (AbuseIPDB, AlienVault OTX, GreyNoise).</li>
+    <li>Coverage-mapping reports for NIST CSF, HIPAA, and PCI DSS.</li>
+    <li>Optional assistant for querying and summarising alerts, using Claude, OpenAI,
+        or a local Ollama model.</li>
   </ul>
 
-  <div class="card">
-    <strong>The honest fine print.</strong> This is a solo side project, provided
-    as-is with <strong>no support</strong> — there's a
-    <a href="https://github.com/lukefitzg/tinysocs/blob/main/SUPPORT.md">support policy</a>,
-    a <a href="https://github.com/lukefitzg/tinysocs/blob/main/KNOWN-LIMITATIONS.md">known-limitations doc</a>,
-    and good self-diagnostics, but no SLA and no promised release cadence.
-    Detection validation evidence — including the misses — lives
-    <a href="https://github.com/lukefitzg/tinysocs/blob/main/docs/pilot-ruleset.md">in the repo</a>,
-    not in marketing claims. Windows-only; ~100 endpoints per node.
-  </div>
+  <h2>Requirements</h2>
+  <table>
+    <tr><td>Server</td><td>Windows 10 / Server 2019 or later, 64-bit, 8&nbsp;GB RAM minimum</td></tr>
+    <tr><td>Endpoints</td><td>Windows only; approximately 100 per node</td></tr>
+    <tr><td>Network</td><td>None required after install; the assistant can run fully offline with Ollama</td></tr>
+  </table>
 
-  <h2>Quick start</h2>
-  <p>Download <code>TinySocs-Setup.exe</code>, run as Administrator, pick the
-  <strong>Hub</strong> role, follow the wizard. Verify with
-  <code>Test-TinySocsHealth</code>. The
-  <a href="https://github.com/lukefitzg/tinysocs/blob/main/docs/getting-started.md">getting-started guide</a>
-  covers it end to end.</p>
+  <h2>Validation</h2>
+  <p>Each enabled rule has an Atomic Red Team test case and unit-test coverage.
+  Results of live attack validation, including rules that could not be exercised,
+  are published in the repository:
+  <a href="https://github.com/lukefitzg/tinysocs/blob/main/docs/pilot-ruleset.md">docs/pilot-ruleset.md</a>.</p>
 
-  <h2>Licence</h2>
-  <p>Business Source License 1.1 — source-available, not OSI open source. Free for
-  production use; you just can't resell TinySocs itself as a hosted or embedded
-  service. Each released version converts to Apache 2.0 after four years.</p>
+  <h2>Support and licensing</h2>
+  <p>TinySocs is a single-developer project provided as-is, without support or a
+  release schedule. Read
+  <a href="https://github.com/lukefitzg/tinysocs/blob/main/SUPPORT.md">SUPPORT.md</a> and
+  <a href="https://github.com/lukefitzg/tinysocs/blob/main/KNOWN-LIMITATIONS.md">KNOWN-LIMITATIONS.md</a>
+  before deploying it anywhere that matters.</p>
+
+  <p>Licensed under the <a href="https://github.com/lukefitzg/tinysocs/blob/main/LICENSE">Business
+  Source License 1.1</a>. Production use is free. Offering TinySocs itself to third
+  parties as a commercial product or service is not permitted. Each released version
+  converts to Apache 2.0 four years after its release. BSL is source-available, not
+  an OSI-approved open source license.</p>
 
   <footer>
-    TinySocs · <a href="https://github.com/lukefitzg/tinysocs">github.com/lukefitzg/tinysocs</a>
-    · BSL-1.1 · Issues and PRs welcome, replies best-effort.
+    <a href="https://github.com/lukefitzg/tinysocs">github.com/lukefitzg/tinysocs</a>
   </footer>
 </main>
 </body>

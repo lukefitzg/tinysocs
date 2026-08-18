@@ -1,6 +1,6 @@
 # Content Cadence — Design
 
-**Status**: draft
+**Status**: superseded (2026-08-18) — the weekly-cadence promise belonged to the abandoned paid-feed strategy; see `docs/design/strategy-zero-support.md`. No cadence is promised in the free release. Retained as process documentation in case rule-shipping resumes for fun or on inbound demand.
 **Author**: Luke FitzGerald + Claude session, 2026-06-13.
 **Covers strategic gap**: #6 (documented content cadence — 1 new rule + 1 tuning patch per week).
 **Depends on**: `rule-format-v2.md` (pack schema, `pack_version`), `signed-feed.md` (sign + publish + channels), `continuous-validation.md` (the weekly Atomic Red Team run). This doc is **process, not code** — it stitches the already-built pieces into a repeatable weekly ritual and states honestly what is and isn't sustainable part-time.

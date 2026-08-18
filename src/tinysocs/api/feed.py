@@ -1,5 +1,10 @@
 """Content-feed HTTP server: entitlement gate + Stripe licence issuance.
 
+DORMANT (2026-08-18): the paid-feed strategy was abandoned before this server was
+ever deployed; see docs/design/strategy-zero-support.md. Retained with passing
+tests as the reopening option on inbound demand. Not installed as a console
+script; not part of the free release. Don't extend, don't delete.
+
 Implements docs/design/signed-feed.md -> Part 4.5 (feed server auth layer) and
 Part 6 (Stripe -> licence issuance) as one small always-on FastAPI app. Two
 routers, one process -- a part-time founder runs one thing:

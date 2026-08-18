@@ -148,7 +148,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: TinySocs v${{ github.ref_name }}
+          name: TinySocs ${{ github.ref_name }}
           body_path: release-notes.md
           files: |
             release-assets/TinySocs-Setup.exe

@@ -37,6 +37,18 @@ jobs:
           path: src/TinySocs.Agent/bin/Release/net8.0/win-x64/publish/TinySocs.Agent.exe
           if-no-files-found: error
 
+      - name: Build Python service EXEs (PyInstaller)
+        shell: pwsh
+        run: |
+          pip install pyinstaller
+          pyinstaller --noconfirm TinySocsNode.spec
+          pyinstaller --noconfirm TinySocsMaster.spec
+          pyinstaller --noconfirm TinySocsAnchors.spec
+          foreach ($exe in @("dist/TinySocsNode.exe", "dist/TinySocsMaster.exe", "dist/TinySocsAnchors.exe")) {
+            if (-not (Test-Path $exe)) { throw "PyInstaller output missing: $exe" }
+          }
+          Write-Host "All service EXEs built."
+
       - name: Cache OpenSearch vendor payload
         id: cache-opensearch
         uses: actions/cache@v4

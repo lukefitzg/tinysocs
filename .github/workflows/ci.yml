@@ -75,6 +75,9 @@ jobs:
       - name: Build C# agent
         run: dotnet publish src/TinySocs.Agent/TinySocs.Agent.csproj -c Release -r win-x64 --self-contained
 
+      - name: C# unit tests (detection engine)
+        run: dotnet test tests/TinySocs.Agent.Tests/TinySocs.Agent.Tests.csproj --nologo
+
       - name: Pester tests (PowerShell module)
         shell: pwsh
         run: |

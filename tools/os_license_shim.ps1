@@ -1,4 +1,4 @@
-# os_license_shim.ps1 — listens HTTP on 127.0.0.1:9202
+# os_license_shim.ps1 - listens HTTP on 127.0.0.1:9202
 # If request is GET /_license -> returns harmless ES-style JSON
 # Otherwise proxies to https://127.0.0.1:9201 (OpenSearch), skipping TLS verify
 

@@ -1,5 +1,5 @@
 # scripts/Doctor.ps1
-# TinySocs Doctor — quick green/red diagnostics for a Windows host
+# TinySocs Doctor - quick green/red diagnostics for a Windows host
 # - Loads .env
 # - Checks Python/venv + key deps
 # - Pings Node (/evidence/head) with HMAC (ts-only first, then env style)

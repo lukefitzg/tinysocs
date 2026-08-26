@@ -354,14 +354,14 @@ function Start-TinySocs-Ready {
   if (-not $env:MASTER_SHARED_SECRET) {
     # Generate a random secret for quickstart sessions
     $randomSecret = -join ((65..90) + (97..122) + (48..57) | Get-Random -Count 32 | ForEach-Object { [char]$_ })
-    Write-Warning "MASTER_SHARED_SECRET not set — generating random secret for this session."
+    Write-Warning "MASTER_SHARED_SECRET not set - generating random secret for this session."
     Set-Item Env:MASTER_SHARED_SECRET $randomSecret
   }
   if (-not $env:NODE_SECRET)            { Set-Item Env:NODE_SECRET $env:MASTER_SHARED_SECRET }
   if (-not $env:BOT_SHARED_SECRET) {
     # Generate a random secret for quickstart sessions
     $randomBotSecret = -join ((65..90) + (97..122) + (48..57) | Get-Random -Count 32 | ForEach-Object { [char]$_ })
-    Write-Warning "BOT_SHARED_SECRET not set — generating random secret for this session."
+    Write-Warning "BOT_SHARED_SECRET not set - generating random secret for this session."
     Set-Item Env:BOT_SHARED_SECRET $randomBotSecret
   }
   if (-not $env:ENSURE_ANCHORS)         { Set-Item Env:ENSURE_ANCHORS "1" }
@@ -496,7 +496,7 @@ try {
   exit 2
 }
 
-# Core checks: if any are false → non-zero exit so CI/scripts can catch it
+# Core checks: if any are false -> non-zero exit so CI/scripts can catch it
 $critical = @('PythonReady','NodeReady','BotReady','BotAckQueued','SIEMReachable','AnchorsAliasOK','SecretsPresent')
 $bad = @()
 foreach ($k in $critical) {

@@ -1,4 +1,4 @@
-# TinySocs — prune old anchor docs via unified anchors.py
+# TinySocs - prune old anchor docs via unified anchors.py
 param(
   [switch]$DryRun
 )

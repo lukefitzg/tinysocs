@@ -84,5 +84,5 @@ try {
     Remove-Item $tmpCount,$tmpDelete -ErrorAction SilentlyContinue
   }
 } catch {
-  # If mapping/alias/auth isn’t ready yet, skip quietly so the task never fails hard
+  # If mapping/alias/auth isn't ready yet, skip quietly so the task never fails hard
 }

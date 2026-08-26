@@ -1,4 +1,4 @@
-# TinySocs-Ensure.ps1 — bootstrap venv + entry points, no PATH assumptions
+# TinySocs-Ensure.ps1 - bootstrap venv + entry points, no PATH assumptions
 param(
   [Parameter(Mandatory=$true)][ValidateSet('master','node','agent')]
   [string]$Component
@@ -6,7 +6,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# Resolve repo root from this script’s location
+# Resolve repo root from this script's location
 $ScriptDir = Split-Path -Parent $PSCommandPath
 $RepoRoot  = Split-Path -Parent $ScriptDir          # ..\tinysocs
 if (-not (Test-Path (Join-Path $RepoRoot "pyproject.toml"))) {

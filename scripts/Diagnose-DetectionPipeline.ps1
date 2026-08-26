@@ -32,7 +32,7 @@ function Write-Warn($msg) { Write-Host "  [WARN] $msg" -ForegroundColor Yellow }
 function Write-Fail($msg) { Write-Host "  [FAIL] $msg" -ForegroundColor Red }
 function Write-Info($msg)  { Write-Host "  [INFO] $msg" -ForegroundColor White }
 
-# ─── 1. AGENT PROCESS STATE ─────────────────────────────────────────────────
+# --- 1. AGENT PROCESS STATE -------------------------------------------------
 
 Write-Section "1. Agent Process State"
 
@@ -47,12 +47,12 @@ if ($agentProc) {
     }
 }
 
-# ─── 2. WINDOWS AUDIT POLICIES ──────────────────────────────────────────────
+# --- 2. WINDOWS AUDIT POLICIES ----------------------------------------------
 
 Write-Section "2. Windows Audit Policies"
 
 $requiredPolicies = @{
-    # subcategory → required setting
+    # subcategory -> required setting
     'Logon'                       = 'Failure'   # Event 4625 (failed logon)
     'Process Creation'            = 'Success'   # Event 4688
     'Other Object Access Events'  = 'Success'   # Event 4698 (scheduled task)
@@ -96,7 +96,7 @@ if ($policyIssues.Count -gt 0 -and -not $EnableAuditPolicies) {
     Write-Warn "Re-run with -EnableAuditPolicies to fix these issues automatically."
 }
 
-# ─── 3. EVENT LOG CHANNEL HEALTH ────────────────────────────────────────────
+# --- 3. EVENT LOG CHANNEL HEALTH --------------------------------------------
 
 Write-Section "3. Event Log Channel Health"
 
@@ -132,7 +132,7 @@ foreach ($ch in $channels) {
     }
 }
 
-# ─── 4. EVENT DATA FIELD EXTRACTION TEST ────────────────────────────────────
+# --- 4. EVENT DATA FIELD EXTRACTION TEST ------------------------------------
 
 Write-Section "4. Event Data Field Extraction"
 Write-Info "Testing that group_by fields resolve in actual events..."
@@ -167,7 +167,7 @@ foreach ($test in $fieldTests) {
     }
 }
 
-# ─── 5. AGENT LOG ANALYSIS ──────────────────────────────────────────────────
+# --- 5. AGENT LOG ANALYSIS --------------------------------------------------
 
 Write-Section "5. Agent Log Analysis"
 
@@ -259,7 +259,7 @@ foreach ($logPath in $logPaths) {
     }
 }
 
-# ─── 6. RULES FILE CHECK ────────────────────────────────────────────────────
+# --- 6. RULES FILE CHECK ----------------------------------------------------
 
 Write-Section "6. Detection Rules File"
 
@@ -290,7 +290,7 @@ if (Test-Path $rulesPath) {
     Write-Fail "Rules file not found at $rulesPath"
 }
 
-# ─── 7. OPENSEARCH CONNECTIVITY ─────────────────────────────────────────────
+# --- 7. OPENSEARCH CONNECTIVITY ---------------------------------------------
 
 Write-Section "7. OpenSearch Connectivity"
 
@@ -359,7 +359,7 @@ try {
     Write-Warn "Could not query recent alerts: $($_.Exception.Message)"
 }
 
-# ─── 8. LIVE PIPELINE TEST ──────────────────────────────────────────────────
+# --- 8. LIVE PIPELINE TEST --------------------------------------------------
 
 if ($LiveTest) {
     Write-Section "8. Live Pipeline Test"
@@ -373,7 +373,7 @@ if ($LiveTest) {
         $beforeCount = $beforeResult.count
     } catch {}
 
-    # Test 1: Generate failed logon events (4625) — should trigger TS-001 (threshold 5)
+    # Test 1: Generate failed logon events (4625) - should trigger TS-001 (threshold 5)
     Write-Info "Generating 6 failed logon events (Event 4625)..."
     1..6 | ForEach-Object {
         net use \\127.0.0.1\IPC$ /user:diagtest "WrongPass$_" 2>$null
@@ -458,7 +458,7 @@ if ($LiveTest) {
     Write-Info "Skipped. Re-run with -LiveTest to generate test events and verify pipeline."
 }
 
-# ─── 9. ENABLE AUDIT POLICIES (if requested) ────────────────────────────────
+# --- 9. ENABLE AUDIT POLICIES (if requested) --------------------------------
 
 if ($EnableAuditPolicies) {
     Write-Section "9. Enabling Required Audit Policies"
@@ -480,7 +480,7 @@ if ($EnableAuditPolicies) {
         if ($LASTEXITCODE -eq 0) {
             Write-Ok "Enabled: $($p.Subcategory) $($p.Type)"
         } else {
-            Write-Fail "Failed to enable: $($p.Subcategory) — $result"
+            Write-Fail "Failed to enable: $($p.Subcategory) - $result"
         }
     }
 
@@ -499,7 +499,7 @@ if ($EnableAuditPolicies) {
     Write-Info "  Restart-Service TinySocsAgent"
 }
 
-# ─── SUMMARY ────────────────────────────────────────────────────────────────
+# --- SUMMARY ----------------------------------------------------------------
 
 Write-Section "DIAGNOSIS SUMMARY"
 

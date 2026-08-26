@@ -330,7 +330,7 @@ pip install pyinstaller --quiet 2>&1 | Out-Null
 # Force PyInstaller to use the build dir's source, not any editable install.
 # An editable pip install (pip install -e .) causes collect_submodules() to
 # resolve the original repo rather than the build copy.  PYTHONPATH alone is
-# not enough — editable installs use .pth files in site-packages that load
+# not enough - editable installs use .pth files in site-packages that load
 # before PYTHONPATH.  We must uninstall the editable first, then reinstall
 # after the build completes.
 $buildSrcDir = Join-Path $RepoRoot 'src'

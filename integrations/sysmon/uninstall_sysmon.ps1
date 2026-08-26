@@ -1,4 +1,4 @@
-﻿$here = Split-Path -Parent $PSCommandPath
+$here = Split-Path -Parent $PSCommandPath
 $repo = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
 
 $binDir    = Join-Path $repo "sysmon-bin"

@@ -7,8 +7,8 @@
   that alerts fire (or don't fire) at the correct thresholds.
 
   Test cases:
-    1. 3 failed logons → TS-001 should NOT fire
-    2. 5 failed logons → TS-001 DOES fire
+    1. 3 failed logons -> TS-001 should NOT fire
+    2. 5 failed logons -> TS-001 DOES fire
     3. Alert deduplication (same window = same alert ID)
     4. Window reset after fire (cleared so next batch starts fresh)
 
@@ -116,7 +116,7 @@ $tests = @()
 # Record the baseline alert count BEFORE tests
 $baselineAlerts = Get-AlertCount -RuleId "TS-001" -SinceMinutes 2
 
-# ---- TEST 1: 3 failed logons → TS-001 should NOT fire ----
+# ---- TEST 1: 3 failed logons -> TS-001 should NOT fire ----
 Write-Host "[TEST 1] 3 failed logons - TS-001 should NOT fire" -ForegroundColor Yellow
 $beforeCount = Get-AlertCount -RuleId "TS-001" -SinceMinutes 2
 Generate-FailedLogons -Count 3
@@ -134,7 +134,7 @@ if ($afterCount -le $beforeCount) {
   $tests += @{ Test = "3 logons no alert"; Status = "FAIL" }
 }
 
-# ---- TEST 2: 5 (more) failed logons → TS-001 DOES fire ----
+# ---- TEST 2: 5 (more) failed logons -> TS-001 DOES fire ----
 # Note: the 3 from above may still be in the window, so 2 more could push past threshold.
 # We generate 5 fresh ones to ensure threshold is met from scratch.
 Write-Host "`n[TEST 2] 5 failed logons - TS-001 DOES fire" -ForegroundColor Yellow
@@ -154,7 +154,7 @@ if ($afterCount2 -gt $beforeCount2) {
   $tests += @{ Test = "5 logons alert fires"; Status = "FAIL" }
 }
 
-# ---- TEST 3: Alert deduplication — same window produces same deterministic ID ----
+# ---- TEST 3: Alert deduplication - same window produces same deterministic ID ----
 Write-Host "`n[TEST 3] Alert deduplication (deterministic IDs)" -ForegroundColor Yellow
 try {
   $body = @{
@@ -210,7 +210,7 @@ if ($afterCount4 -le $beforeCount4) {
   $passed++
   $tests += @{ Test = "Window reset"; Status = "PASS" }
 } else {
-  Write-Host "  [INFO] New alert fired (before=$beforeCount4, after=$afterCount4) — may be cumulative from prior events" -ForegroundColor Yellow
+  Write-Host "  [INFO] New alert fired (before=$beforeCount4, after=$afterCount4) - may be cumulative from prior events" -ForegroundColor Yellow
   $tests += @{ Test = "Window reset"; Status = "INFO" }
 }
 

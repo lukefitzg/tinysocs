@@ -12,7 +12,7 @@
          via scripts/normalize_validation_run.py (the normaliser decides the
          filename from the run timestamp, so the week is computed in exactly
          one place),
-      4. commits and pushes results/ — which triggers the Pages workflow to
+      4. commits and pushes results/ - which triggers the Pages workflow to
          rebuild the public dashboard.
 
     Everything is logged to logs/validation-<timestamp>.log. A failure at any

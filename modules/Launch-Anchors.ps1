@@ -36,7 +36,7 @@ try {
   $code = 0
   if ($LASTEXITCODE -ne $null) { $code = [int]$LASTEXITCODE }
 
-  # Normalize “benign/no-op” anchor return codes
+  # Normalize "benign/no-op" anchor return codes
   if ($code -in @(0,2)) { $code = 0 }
 
   Write-TS "ExitCode=$code (raw=$LASTEXITCODE)"

@@ -89,7 +89,7 @@ if ($quickstart) {
 # -- Step 2: Stop the agent --
 # The agent runs as an NSSM-wrapped Windows service (TinySocsAgent). NSSM
 # RESPAWNS TinySocs.Agent.exe the instant it exits, so killing the process just
-# re-locks the binary. Stop the SERVICE first — that holds it down — then clear
+# re-locks the binary. Stop the SERVICE first - that holds it down - then clear
 # any lingering process before the swap.
 Write-Host ""
 Write-Host "[2/9] Stopping TinySocs.Agent (service TinySocsAgent)..."

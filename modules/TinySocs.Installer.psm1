@@ -1,4 +1,4 @@
-﻿# modules\TinySocs.Installer.psm1
+# modules\TinySocs.Installer.psm1
 # Windows-first installer helpers for TinySocs
 
 # Module version stamp (helps confirm which copy you imported)
@@ -74,7 +74,7 @@ function _EnsureAdminKeystoreP12 {
 
     $m = $all | Where-Object { $_.Name -match 'admin' } | Select-Object -First 1
     if (-not $m) { $m = $all | Where-Object { $_.Name -match 'kirk' } | Select-Object -First 1 }
-    # DO NOT fall back to first .p12 — that copies server/transport certs (CN=TinySocs-OpenSearch)
+    # DO NOT fall back to first .p12 - that copies server/transport certs (CN=TinySocs-OpenSearch)
     # which won't match the admin_dn (CN=TinySocs-OpenSearch-Admin) and securityadmin will fail.
 
     if ($m) {
@@ -254,7 +254,7 @@ function Get-TSSiemCredsCanonical {
   } catch { }
 
   # -------- Defaults (ONLY used if no other sources provide values) ----------
-  # IMPORTANT: do NOT default pass="secret" — that creates fake "canonical" state.
+  # IMPORTANT: do NOT default pass="secret" - that creates fake "canonical" state.
   $defaults = @{
     url            = ("https://localhost:{0}" -f $OpenSearchPort)
     user           = "admin"
@@ -611,7 +611,7 @@ function Ensure-TSSiemCredsSystemCanonical {
     $shouldWriteCredMan = $false
   }
 
-  # Backfill safe Machine env vars always (url + verify + optional CA path) — non-secret
+  # Backfill safe Machine env vars always (url + verify + optional CA path) - non-secret
   try {
     if (Get-Command Set-MachineEnv -ErrorAction SilentlyContinue) {
       $verifyString = "false"
@@ -642,7 +642,7 @@ function Ensure-TSSiemCredsSystemCanonical {
       $u = "tinysocs"
       if (-not [string]::IsNullOrWhiteSpace([string]$siem.user)) { $u = [string]$siem.user }
 
-      # IMPORTANT: Set-TSCredential returns true/false; don’t pretend it always worked.
+      # IMPORTANT: Set-TSCredential returns true/false; don't pretend it always worked.
       $ok = $true
       try { $ok = Set-TSCredential -Name 'TinySocs/SIEM/Creds' -User $u -Secret $payload } catch { $ok = $false; throw }
 
@@ -1067,7 +1067,7 @@ function _OsInvoke {
       if (-not $verify) { $apiParams["SkipTlsVerify"] = $true }
 
       # If Invoke-TinySocsOpenSearchApi has a param for client cert, pass it.
-      # (Weâ€™ll patch the helper next if it doesnâ€™t.)
+      # (We'll patch the helper next if it doesn't.)
       if (-not [string]::IsNullOrWhiteSpace($tp)) {
         if ($curlCmd.Parameters.ContainsKey("ClientCertThumbprint")) {
           $apiParams["ClientCertThumbprint"] = $tp
@@ -1076,7 +1076,7 @@ function _OsInvoke {
           $apiParams["ClientCert"] = $tp
         } else {
           # No param available: best-effort rely on helper reading SIEM_CLIENTCERT_THUMBPRINT env var.
-          # (If it doesnâ€™t yet, curl will still fail until we patch Invoke-TinySocsOpenSearchApi.)
+          # (If it doesn't yet, curl will still fail until we patch Invoke-TinySocsOpenSearchApi.)
         }
       }
 
@@ -2089,7 +2089,7 @@ function Ensure-TinySocsAclForOpenSearchSecurityConfig {
     throw "Missing security config dir: $SecurityConfigDir"
   }
 
-  # Detect service identity (if itâ€™s a virtual account, grant it RX explicitly)
+  # Detect service identity (if it's a virtual account, grant it RX explicitly)
   $svcStartName = $null
   try {
     $svcStartName = (Get-CimInstance Win32_Service -Filter "Name='$ServiceName'").StartName
@@ -2102,7 +2102,7 @@ function Ensure-TinySocsAclForOpenSearchSecurityConfig {
   # Admins + SYSTEM full control recursively
   & icacls $SecurityConfigDir /grant:r "BUILTIN\Administrators:(OI)(CI)F" "NT AUTHORITY\SYSTEM:(OI)(CI)F" /T /C | Out-Null
 
-  # Give Users read/execute (optional but removes â€œAccess deniedâ€ surprises if the service identity is odd)
+  # Give Users read/execute (optional but removes "Access denied" surprises if the service identity is odd)
   & icacls $SecurityConfigDir /grant "BUILTIN\Users:(OI)(CI)(RX)" /T /C | Out-Null
 
   # If service uses a virtual account like "NT SERVICE\TinySocsOpenSearch", grant it RX explicitly
@@ -2801,7 +2801,7 @@ function _Invoke-OpenSearchKeystoreBat {
   $psi.RedirectStandardError  = $true
   $psi.RedirectStandardInput  = $true
 
-  # Set OPENSEARCH_PATH_CONF for this process only (donâ€™t rely on inherited state)
+  # Set OPENSEARCH_PATH_CONF for this process only (don't rely on inherited state)
   try { $null = $psi.EnvironmentVariables.Remove("OPENSEARCH_PATH_CONF") } catch { }
   $psi.EnvironmentVariables["OPENSEARCH_PATH_CONF"] = $ConfDir
 
@@ -2924,7 +2924,7 @@ function Remove-OpenSearchInsecureSslPasswordSettingsFromYaml {
     $raw = [regex]::Replace($raw, $pat, '')
   }
 
-  # Keep file tidy: collapse huge runs of blank lines a bit (but donÃ¢â‚¬â„¢t overthink it)
+  # Keep file tidy: collapse huge runs of blank lines a bit (but don't overthink it)
   $raw = [regex]::Replace($raw, "(?m)(\r?\n){3,}", "`r`n`r`n")
 
   if ($raw -notmatch "(\r?\n)$") { $raw += "`r`n" }
@@ -3321,7 +3321,7 @@ function Invoke-TinySocsOpenSearchInstallerPersistFix {
     throw "OpenSearch did not become ready: $($_.Exception.Message)"
   }
 
-  # Optional: if your module has a security readiness helper, use it (donâ€™t fail install on this)
+  # Optional: if your module has a security readiness helper, use it (don't fail install on this)
   if (Get-Command Wait-TinySocsOpenSearchSecurityReady -ErrorAction SilentlyContinue) {
     try {
       $base = [Environment]::GetEnvironmentVariable("SIEM_URL","Machine")
@@ -4181,7 +4181,7 @@ function New-ProgramDataLayout {
       "${sidAdmins}:(OI)(CI)(F)" `
       /t /c /q | Out-Null
 
-    # Allow interactive users to modify the ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“operationalÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â dirs (logs/queue).
+    # Allow interactive users to modify the "operational-'-"- dirs (logs/queue).
     foreach ($rw in @("$root\logs", "$root\queue", "$root\OpenSearch\logs", "$root\Collector\logs")) {
       if (Test-Path -LiteralPath $rw) {
         & icacls $rw /inheritance:e /grant:r `
@@ -4283,7 +4283,7 @@ function _Wait-TinySocsOpenSearchReady {
 function Ensure-TinySocsOpenSearchSecurityBootstrap {
   [CmdletBinding()]
   param(
-    # If not provided, weâ€™ll pull from CredMan: TinySocs/SIEM/Creds and TinySocs/OpenSearch/tinysocs
+    # If not provided, we'll pull from CredMan: TinySocs/SIEM/Creds and TinySocs/OpenSearch/tinysocs
     [string]$BaseUrl,
     [string]$AdminUser,
     [string]$AdminPass,
@@ -5752,7 +5752,7 @@ function Initialize-TinySocsOpenSearchSecurity {
       throw "Initialize-TinySocsOpenSearchSecurity: OpenSearch did not become ready at $base within ${ReadyTimeoutSeconds}s. Last=`n$lastReady"
     }
 
-    # PATCH: use Invoke-TinySocsOpenSearchApi here so we don’t get “curl returned 401” weirdness without a body,
+    # PATCH: use Invoke-TinySocsOpenSearchApi here so we don't get "curl returned 401" weirdness without a body,
     # and so callers can force consistent TLS behaviour.
     $null = Invoke-TinySocsOpenSearchApi `
       -Method GET `
@@ -6765,7 +6765,7 @@ function Assert-TinySocsOpenSearchSecurityConfigPresent {
     throw "OpenSearch security config directory missing: $secDir"
   }
 
-  # Repair ACLs before read-checking (prevents the ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“Access deniedÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â you hit)
+  # Repair ACLs before read-checking (prevents the "Access denied-'-"- you hit)
   try { Repair-TinySocsOpenSearchSecurityConfigAcls -SecurityDir $secDir } catch { }
 
   $requiredFiles = @(
@@ -6853,7 +6853,7 @@ function Repair-TinySocsProgramDataAcls {
     } catch { }
   }
 
-  # logs dir: allow Users modify so normal reads/writes donÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢t explode
+  # logs dir: allow Users modify so normal reads/writes don't explode
   $logs = Join-TsPath $root @('logs')
   if (Test-Path -LiteralPath $logs) {
     try { & icacls $logs /grant:r "BUILTIN\Users:(OI)(CI)M" /T /C /Q | Out-Null } catch { }
@@ -6987,16 +6987,16 @@ function Repair-TinySocsOpenSearchSecurityConfigAcls {
   }
 
   try {
-    # 0) Ensure not EFS-encrypted (can create ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“works for me / fails for serviceÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â weirdness)
+    # 0) Ensure not EFS-encrypted (can create "works for me / fails for service-'-"- weirdness)
     try { Invoke-TinySocsCmd ('cipher /d /s:"{0}" >nul 2>&1' -f $SecurityDir) } catch { }
 
     # 1) Clear attributes that can block reads/propagation
     try { & attrib.exe -R -S -H "$SecurityDir" /S /D 2>$null | Out-Null } catch { }
 
-    # 2) Take ownership as Administrators (important if the tree gets ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“stuckÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â)
+    # 2) Take ownership as Administrators (important if the tree gets "stuck-'-"-)
     try { Invoke-TinySocsCmd ('takeown /F "{0}" /A /R /D Y >nul 2>&1' -f $SecurityDir) } catch { }
 
-    # 3) HARD reset ACLs recursively (this fixes ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“protected DACL on fileÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â cases)
+    # 3) HARD reset ACLs recursively (this fixes "protected DACL on file-'-"- cases)
     try { Invoke-TinySocsCmd ('icacls "{0}" /reset /T /C >nul 2>&1' -f $SecurityDir) } catch { }
 
     # 4) Enable inheritance, then apply explicit grants we actually want
@@ -7634,7 +7634,7 @@ function Set-TinySocsOpenSearchAcls {
       if ($curUser) { Invoke-TinySocsCmd ('icacls "{0}" /remove:d "{1}" /C >nul 2>&1' -f $RunnerPath, $curUser) }
       if ($curSid)  { Invoke-TinySocsCmd ('icacls "{0}" /remove:d "*{1}" /C >nul 2>&1' -f $RunnerPath, $curSid) }
 
-      # IMPORTANT: keep SIDs in icacls SID form (*S-1-...) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â don't TrimStart('*')
+      # IMPORTANT: keep SIDs in icacls SID form (*S-1-...) -'-"- don't TrimStart('*')
       $runnerGrant = @(
         '"SYSTEM:F"',
         '"BUILTIN\Administrators:F"',
@@ -10116,7 +10116,7 @@ function Install-TinySocsLocalSiem {
   }
 
   # PATCH: helper to build auth parameters for Invoke-TinySocsOpenSearchApi consistently.
-  # This is specifically to prevent the “authinfo=200 but template calls 401” situation,
+  # This is specifically to prevent the "authinfo=200 but template calls 401" situation,
   # which happens when downstream calls forget to pass -User/-Pass.
   function _GetApiAuthParams {
     param(
@@ -10663,7 +10663,7 @@ function Install-TinySocsLocalSiem {
           try {
             $auth = _GetApiAuthParams -User $SiemUser -Pass $SiemPass
 
-            # PATCH(2026-01-18): prefer auto_expand_replicas for “single-node now, 2-node later”.
+            # PATCH(2026-01-18): prefer auto_expand_replicas for "single-node now, 2-node later".
             # This avoids yellow health on single-node (replicas=0) while still allowing a second node to host a replica.
             $tmplBody = @'
 {
@@ -11261,7 +11261,7 @@ function Remove-YamlKeyAndBareValueLine {
     $line = $Lines[$i]
 
     if ($line -match $KeyRegex) {
-      # Also skip ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“bare value on next lineÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â (your file format does this sometimes)
+      # Also skip "bare value on next line-'-"- (your file format does this sometimes)
       if ($i + 1 -lt $Lines.Count) {
         $n = $Lines[$i + 1]
         $looksLikeYamlKey = ($n -match '^\s*[\w\.\-]+\s*:')
@@ -12337,7 +12337,7 @@ function Ensure-TinySocsOpenSearchService {
     sc.exe failureflag $ServiceName 1 | Out-Null
   } catch { }
 
-  # Merge OPENSEARCH_PATH_CONF into existing AppEnvironmentExtra (donÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢t clobber)
+  # Merge OPENSEARCH_PATH_CONF into existing AppEnvironmentExtra (don't clobber)
   # IMPORTANT: NSSM AppEnvironmentExtra must be a multi-string of KEY=VALUE lines.
   # We therefore run everything through Format-TinySocsNssmEnvExtra which:
   #   - drops junk
@@ -12485,7 +12485,7 @@ function Ensure-TinySocsOpenSearchDeterministicBootstrap {
     Write-TinySocsLog "Deterministic OpenSearch bootstrap enforced (http.port=$HttpPort, allow_default_init_securityindex=$allowVal, yaml dedup + dpapi storepass validation)."
   }
   catch {
-    # Fail hard: determinism is not â€œbest effortâ€
+    # Fail hard: determinism is not "best effort"
     throw
   }
 }
@@ -12903,7 +12903,7 @@ function Ensure-TinySocsOpenSearchSecurityConfigTree {
         $grant += ('"{0}:(OI)(CI)RX"' -f $sidSvc)
       }
 
-      # IMPORTANT: pass array args to icacls (donÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢t -join into one giant string)
+      # IMPORTANT: pass array args to icacls (don't -join into one giant string)
       & icacls $Path /inheritance:r /grant:r $grant /T /C 2>$null | Out-Null
     } catch {
       Write-TinySocsLog -Level "WARN" -Message "Failed to harden OpenSearch security config ACLs at '$Path': $($_.Exception.Message)"
@@ -13286,7 +13286,7 @@ function Register-TinySocsServices {
   $ssl  = [Environment]::GetEnvironmentVariable("SIEM_SSL_VERIFY","Machine"); if (-not $ssl) { $ssl = "true" }
   $priv = [Environment]::GetEnvironmentVariable("PRIVACY_MODE","Machine"); if (-not $priv) { $priv = "abstract" }
 
-  # SIEM credentials — needed by node.py to query alerts/fleet from OpenSearch.
+  # SIEM credentials - needed by node.py to query alerts/fleet from OpenSearch.
   # Read from Machine env, or fall back to assistant.env.
   $siemUser = [Environment]::GetEnvironmentVariable("SIEM_USER","Machine")
   $siemPass = [Environment]::GetEnvironmentVariable("SIEM_PASS","Machine")
@@ -14395,7 +14395,7 @@ function Invoke-TinySocsOpenSearchSecurityAdminSync {
   }
   if ([string]::IsNullOrWhiteSpace($pw)) { throw "Invoke-TinySocsOpenSearchSecurityAdminSync: StorePassword was empty." }
 
-  # If caller didnÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢t supply kibana password, fall back safely (kibana -> admin if set).
+  # If caller didn't supply kibana password, fall back safely (kibana -> admin if set).
   if ([string]::IsNullOrWhiteSpace($KibanaUserPassword) -and -not [string]::IsNullOrWhiteSpace($AdminUserPassword)) {
     $KibanaUserPassword = $AdminUserPassword
   }
@@ -14833,7 +14833,7 @@ function Test-TinySocsHealth {
   $allPassed = $true
 
   # PS 5.1 compatibility: bypass self-signed cert validation (no -SkipCertificateCheck)
-  # NOTE: We intentionally do NOT restore the callback — PS 5.1 fails the first HTTPS
+  # NOTE: We intentionally do NOT restore the callback - PS 5.1 fails the first HTTPS
   # request after setting a new callback, so restoring it each call causes perpetual failures.
   # The cert bypass is harmless for the session lifetime (self-signed local OpenSearch).
   if (-not [System.Net.ServicePointManager]::ServerCertificateValidationCallback) {
@@ -14962,7 +14962,7 @@ function Test-TinySocsHealth {
       -Headers $auth -TimeoutSec 10 -ErrorAction Stop
     $timestampType = $null
     if ($fieldMapRaw -is [string]) {
-      # PS 5.1 sometimes returns string — regex extract
+      # PS 5.1 sometimes returns string - regex extract
       if ($fieldMapRaw -match '"type"\s*:\s*"([^"]+)"') { $timestampType = $Matches[1] }
     } else {
       # PSCustomObject: navigate {index}.mappings.@timestamp.mapping.@timestamp.type
@@ -15129,7 +15129,7 @@ function Test-TinySocsHealth {
 
   # --- Phase 13: Notification delivery checks ---
 
-  # Check 13: Webhook Delivery — POST test to configured URL, verify 2xx
+  # Check 13: Webhook Delivery - POST test to configured URL, verify 2xx
   try {
     $agentConfigPath2 = "C:\ProgramData\TinySocs\Collector\agent-config.yml"
     $webhookUrl2 = $null
@@ -15143,7 +15143,7 @@ function Test-TinySocsHealth {
     }
     if (-not [string]::IsNullOrWhiteSpace($webhookUrl2)) {
       try {
-        $whBody = '{"text":"[TinySocs] Health check — webhook delivery test"}'
+        $whBody = '{"text":"[TinySocs] Health check - webhook delivery test"}'
         $whResp = Invoke-WebRequest -Uri $webhookUrl2 -Method POST -Body $whBody `
           -ContentType "application/json" -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop
         if ($whResp.StatusCode -ge 200 -and $whResp.StatusCode -lt 300) {
@@ -15161,7 +15161,7 @@ function Test-TinySocsHealth {
     $results += @{ Check = "Webhook Delivery"; Status = "INFO"; Detail = $_.Exception.Message }
   }
 
-  # Check 14: Email SMTP — EHLO handshake to configured SMTP host
+  # Check 14: Email SMTP - EHLO handshake to configured SMTP host
   try {
     $smtpHost2 = $null
     $smtpPort2 = 587
@@ -15206,7 +15206,7 @@ function Test-TinySocsHealth {
 
   # --- Phase 14: Sysmon and Dashboard TLS checks ---
 
-  # Check 15: Sysmon Service — optional component, INFO if not installed
+  # Check 15: Sysmon Service - optional component, INFO if not installed
   # ARM64 installs register as "Sysmon64a"; x64 as "Sysmon64".
   # Check both and prefer whichever is Running (handles stale orphan entries).
   try {
@@ -15229,7 +15229,7 @@ function Test-TinySocsHealth {
     $results += @{ Check = "Sysmon Service"; Status = "INFO"; Detail = $_.Exception.Message }
   }
 
-  # Check 16: Dashboard TLS — validates cert present when network mode configured
+  # Check 16: Dashboard TLS - validates cert present when network mode configured
   try {
     $envPath = Join-Path $env:ProgramData "TinySocs\Assistant\assistant.env"
     $dashBind = "127.0.0.1"
@@ -15367,7 +15367,7 @@ function Invoke-TinySocsSmokeTest {
   }
 
   # Trigger: simulate failed logons for a nonexistent user (fires TS-001 brute_force_logon,
-  # threshold 15 per user in 5 min — the pilot base pack's enabled rule; validated in the
+  # threshold 15 per user in 5 min - the pilot base pack's enabled rule; validated in the
   # Atomic harness at 18 attempts). Lab rules are disabled on customer installs, so the
   # trigger must use an enabled pilot rule.
   Write-Host "Generating 20 failed logon events (Event ID 4625, user 'tinysocs_smoketest')..." -ForegroundColor Gray
@@ -15403,7 +15403,7 @@ function Invoke-TinySocsSmokeTest {
       $newAlerts = $alertCountAfter - $alertCountBefore
       $smokeResults += @{ Check = "Alert Ingested"; Status = "PASS"; Detail = "$newAlerts new alert(s) in index" }
     } else {
-      $smokeResults += @{ Check = "Alert Ingested"; Status = "WARN"; Detail = "No new alerts — check agent service is running and Security-log failure auditing is enabled (TS-001 needs 4625 events)" }
+      $smokeResults += @{ Check = "Alert Ingested"; Status = "WARN"; Detail = "No new alerts - check agent service is running and Security-log failure auditing is enabled (TS-001 needs 4625 events)" }
     }
   } catch {
     $smokeResults += @{ Check = "Alert Ingested"; Status = "WARN"; Detail = $_.Exception.Message }
@@ -15881,7 +15881,7 @@ function Install-TinySocsSysmon {
     [bool]$DownloadIfMissing = $true
   )
 
-  # Resolve default paths — use Sysmon64a.exe on ARM64 hosts (x64 driver won't load on ARM64 kernel)
+  # Resolve default paths - use Sysmon64a.exe on ARM64 hosts (x64 driver won't load on ARM64 kernel)
   $appDir = Join-Path $env:ProgramFiles "TinySocs"
   if (-not $SysmonExePath) {
     # ARM64 detection: env vars are unreliable when PowerShell runs under x64
@@ -15890,7 +15890,7 @@ function Install-TinySocsSysmon {
     # Use WMI/CIM as the authoritative source, with env vars as fallback.
     $isArm64 = $false
 
-    # Method 1 (most reliable): Check registry — Windows always writes the true
+    # Method 1 (most reliable): Check registry - Windows always writes the true
     # native architecture here, even when running under x64 emulation on ARM64.
     try {
       $regId = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -Name PROCESSOR_IDENTIFIER -ErrorAction Stop).PROCESSOR_IDENTIFIER
@@ -15940,7 +15940,7 @@ function Install-TinySocsSysmon {
     }
 
     # Method 6: If Sysmon64a.exe exists and Sysmon64.exe won't load, prefer ARM64.
-    # This is a last-resort heuristic — if we're on a system that has both binaries
+    # This is a last-resort heuristic - if we're on a system that has both binaries
     # but all detection above says x64, try Sysmon64a anyway if Sysmon64 previously
     # failed (service exists but is Stopped).
     if (-not $isArm64) {
@@ -15948,7 +15948,7 @@ function Install-TinySocsSysmon {
       $x64SvcCheck = Get-Service -Name "Sysmon64" -ErrorAction SilentlyContinue
       if ((Test-Path $arm64ExeCheck) -and $x64SvcCheck -and $x64SvcCheck.Status -ne 'Running') {
         $isArm64 = $true
-        Write-TinySocsLog "Sysmon64 service exists but not running — assuming ARM64 host, switching to Sysmon64a.exe"
+        Write-TinySocsLog "Sysmon64 service exists but not running - assuming ARM64 host, switching to Sysmon64a.exe"
       }
     }
 
@@ -16008,7 +16008,7 @@ function Install-TinySocsSysmon {
   # Sysmon -u sometimes leaves orphaned SCM entries when the driver binary was
   # deleted before uninstall, preventing fresh installs (exit code 13).
   function _PurgeStaleSysmonServices {
-    # Sysmon protects its own services — sc.exe delete alone returns "Access is denied".
+    # Sysmon protects its own services - sc.exe delete alone returns "Access is denied".
     # We must use the Sysmon binary's own -u flag to uninstall properly first.
     # Try both arch variants from C:\Windows\ (where Sysmon copies itself) and our bin dir.
     $purgeOrder = if ($isArm64) { @('Sysmon64a.exe','Sysmon64.exe') } else { @('Sysmon64.exe','Sysmon64a.exe') }
@@ -16057,7 +16057,7 @@ function Install-TinySocsSysmon {
         Remove-Item $drvPath -Force -ErrorAction SilentlyContinue
       }
     }
-    # Remove stale Sysmon executables from Windows root — Sysmon copies itself
+    # Remove stale Sysmon executables from Windows root - Sysmon copies itself
     # here during install, and leftover copies block reinstall with a different arch.
     foreach ($exeFile in @('Sysmon64.exe','Sysmon64a.exe','Sysmon.exe')) {
       $exePath = Join-Path $env:SystemRoot $exeFile
@@ -16090,7 +16090,7 @@ function Install-TinySocsSysmon {
     _PurgeStaleSysmonServices
   }
 
-  # Install or update — ARM64 registers as "Sysmon64a", x64 as "Sysmon64"
+  # Install or update - ARM64 registers as "Sysmon64a", x64 as "Sysmon64"
   $svc = Get-Service -Name $expectedSvcName -ErrorAction SilentlyContinue
   if ($svc) {
     if ($svc.Status -eq 'Running') {
@@ -16134,7 +16134,7 @@ function Install-TinySocsSysmon {
     Write-TinySocsLog "Sysmon retry -i exit code: $sysmonInstallExitCode"
   }
 
-  # Verify service is running — check both possible names.  ARM64 installs
+  # Verify service is running - check both possible names.  ARM64 installs
   # create "Sysmon64a" while x64 installs create "Sysmon64".  A stale
   # registration for the wrong arch may still be present (sc.exe delete is
   # async), so prefer the Running service.

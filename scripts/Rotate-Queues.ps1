@@ -1,5 +1,5 @@
 # scripts/Rotate-Queues.ps1
-# TinySocs — Rotate the bot actions queue (JSONL)
+# TinySocs - Rotate the bot actions queue (JSONL)
 # - Prefers TINYSOCS_QUEUE_PATH, then ACTIONS_QUEUE_PATH, else ProgramData TinySocs data dir
 # - Rotates when size > MaxSizeMB or file age >= MaxAgeDays (and non-empty)
 # - Keeps up to MaxFiles rotated copies under a sibling "queue-rot" dir

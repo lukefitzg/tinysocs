@@ -424,7 +424,7 @@ function Query-TinySocsAlerts {
     # (15k+ docs spanning months), so a rule that fired yesterday must NOT register
     # as detected today. Strategies 2 and 3 query without a server-side time range
     # (for resilience to field-mapping quirks), which is exactly where stale alerts
-    # would leak in — so we enforce the floor client-side there. Strategy 1 enforces
+    # would leak in - so we enforce the floor client-side there. Strategy 1 enforces
     # it server-side. Without -Since we fall back to a lookback window.
     $sinceUtc = if ($Since) {
         $Since.ToUniversalTime()
@@ -437,7 +437,7 @@ function Query-TinySocsAlerts {
     # Scope the search to the UTC day-index(es) covering [test start, now] instead
     # of the tinysocs-alerts-* wildcard. The wildcard matches every daily index
     # (~40 indices / 80 shards) and, on a 1GB-heap single node under concurrent
-    # ingest, query latency climbs past the client timeout — so polls return
+    # ingest, query latency climbs past the client timeout - so polls return
     # nothing and the harness reports false-negative MISSES even though the alert
     # is in the index. Today's index is 1-2 shards; querying it is sub-second.
     # We include yesterday's index too so a run that crosses UTC midnight is safe,
@@ -458,11 +458,11 @@ function Query-TinySocsAlerts {
     # 30-45 min "hang" seen in prior runs). It also pushes the search past curl's
     # --max-time, so the request silently times out and the harness reports a
     # false-negative MISS even though the alert is in the index. We never need the
-    # raw events here — only rule_id + timestamp — so we strip _source to those two
+    # raw events here - only rule_id + timestamp - so we strip _source to those two
     # fields. This is the single most important correctness fix in the read path.
     $sourceFilter = '"_source": ["alert.rule_id", "timestamp"],'
 
-    # ── Strategy 1: server-side term filter + timestamp >= test start ──
+    # -- Strategy 1: server-side term filter + timestamp >= test start --
     # alert.rule_id is mapped as keyword (no .keyword sub-field needed). With
     # _source stripped this returns in well under a second even on the bloated docs.
     try {
@@ -492,7 +492,7 @@ function Query-TinySocsAlerts {
         else { Write-Host "    Strategy 1 (term+range) failed: $msg" -ForegroundColor DarkGray }
     }
 
-    # ── Strategy 2: rule filter, no server-side range, time floor in client ──
+    # -- Strategy 2: rule filter, no server-side range, time floor in client --
     # Defensive fallback if 'timestamp' is ever mapped as text (a range query
     # would fail). We still enforce the test-start floor client-side so stale
     # alerts from previous runs cannot register as a detection. _source is stripped
@@ -707,7 +707,7 @@ if (-not $DryRun) {
 # Result builder
 # ---------------------------------------------------------------------------
 # Single place that stamps each per-test result with timing. Category and the
-# v2 summary are NOT computed here — the Python normaliser
+# v2 summary are NOT computed here - the Python normaliser
 # (scripts/normalize_validation_run.py) derives those from status+reason so the
 # categorisation rules live in one language (see validation_lib.py).
 function New-TestResult {
@@ -763,7 +763,7 @@ foreach ($test in $tests) {
     # Skip techniques deliberately deferred from the pilot pack. Their only rule
     # is disabled (FP-vs-coverage trade, see docs/pilot-ruleset.md), so there is
     # nothing enabled to fire. Running them and scoring MISSED understates the
-    # pilot pack's real efficacy — report SKIP so they leave the denominator.
+    # pilot pack's real efficacy - report SKIP so they leave the denominator.
     if ($test.pilot_status -eq "deferred") {
         Write-Host "  SKIP: deferred from pilot pack (rule disabled for v2 redesign)" -ForegroundColor Yellow
         $results += New-TestResult -Technique $technique -Name $name -Status "SKIP" `
@@ -933,7 +933,7 @@ foreach ($test in $tests) {
             continue
         }
     }
-    } # end if (-not $artSucceeded) — prefer_fallback guard
+    } # end if (-not $artSucceeded) - prefer_fallback guard
 
     # Wait for detection pipeline to process
     $detected = @()
@@ -1065,7 +1065,7 @@ For any MISSED detections:
 1. Check that the relevant Windows event log channels are enabled
 2. Verify Sysmon is installed and configured (for Sysmon-dependent rules)
 3. Review rule thresholds in ``packaging/detection/rules.yml``
-4. Check the detection pipeline latency — increase ``timeout_seconds`` in ``atomic-tests.yaml``
+4. Check the detection pipeline latency - increase ``timeout_seconds`` in ``atomic-tests.yaml``
 "@
 
 try {
@@ -1083,7 +1083,7 @@ try {
 # ---------------------------------------------------------------------------
 # This is the *raw* harness output. It carries run metadata + per-test
 # status/reason/timing but deliberately does NOT compute `category` or the v2
-# `summary` block — scripts/normalize_validation_run.py derives those (so the
+# `summary` block - scripts/normalize_validation_run.py derives those (so the
 # categorisation rules live only in validation_lib.py) and writes the final
 # results/<iso-week>.json. See docs/design/continuous-validation.md.
 

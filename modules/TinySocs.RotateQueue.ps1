@@ -1,4 +1,4 @@
-﻿param([string]$QueuePath="$env:ProgramData\TinySocs\queue",[int]$MaxSizeMB=5,[int]$MaxFiles=7,[int]$MaxAgeDays=14)
+param([string]$QueuePath="$env:ProgramData\TinySocs\queue",[int]$MaxSizeMB=5,[int]$MaxFiles=7,[int]$MaxAgeDays=14)
 $ErrorActionPreference='SilentlyContinue'
 New-Item -ItemType Directory -Force $QueuePath | Out-Null
 $cut=(Get-Date).AddDays(-$MaxAgeDays)

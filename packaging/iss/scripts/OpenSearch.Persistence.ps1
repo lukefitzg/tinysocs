@@ -1,4 +1,4 @@
-﻿# OpenSearch.Persistence.ps1
+# OpenSearch.Persistence.ps1
 # Ensures TinySocs OpenSearch TLS + ports are deterministic across installs/upgrades.
 
 [CmdletBinding()]

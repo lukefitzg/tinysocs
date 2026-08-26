@@ -29,7 +29,7 @@ param(
 $ErrorActionPreference = "Continue"
 Set-StrictMode -Version Latest
 
-# ── TLS bypass for self-signed certs ──
+# -- TLS bypass for self-signed certs --
 Add-Type @"
 using System.Net;
 using System.Net.Security;
@@ -44,7 +44,7 @@ public class SSLBypass {
 [SSLBypass]::Ignore()
 [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
 
-# ── Resolve SIEM credentials ──
+# -- Resolve SIEM credentials --
 $SiemUser = "admin"
 $SiemPass = ""
 
@@ -140,7 +140,7 @@ if ($authOk) {
   }
 }
 
-# ── Helpers ──
+# -- Helpers --
 function Write-Step($msg) {
   Write-Host "`n$msg" -ForegroundColor Cyan
 }
@@ -194,12 +194,12 @@ function Get-AlertCount {
   return -1
 }
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 Write-Host "`n========================================" -ForegroundColor Yellow
 Write-Host " TinySocs Dashboard Smoke Test" -ForegroundColor Yellow
 Write-Host "========================================" -ForegroundColor Yellow
 
-# ── Phase 1: Diagnose connectivity ──
+# -- Phase 1: Diagnose connectivity --
 Write-Step "Phase 1: Connectivity diagnostics"
 
 # 1a. Check services
@@ -307,7 +307,7 @@ $existingEvents = Get-EventCount -MinutesAgo 60
 $existingAlerts = Get-AlertCount -MinutesAgo 60
 Write-Info "Existing data (last 60m): $existingEvents events, $existingAlerts alerts"
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 Write-Step "Phase 2: Generating test events"
 
 # Capture baseline
@@ -315,7 +315,7 @@ $baselineEvents = Get-EventCount -MinutesAgo 5
 $baselineAlerts = Get-AlertCount -MinutesAgo 10
 Write-Info "Baseline: $baselineEvents events, $baselineAlerts alerts"
 
-# ── 2a. Failed logons (triggers TS-001 brute_force_logon, threshold=5) ──
+# -- 2a. Failed logons (triggers TS-001 brute_force_logon, threshold=5) --
 Write-Step "  2a. Generating 7 failed logon attempts (triggers TS-001, TS-001-lab)"
 for ($i = 1; $i -le 7; $i++) {
   & net use "\\localhost\C$" /user:fakeuser_dashtest wrongpass 2>$null | Out-Null
@@ -324,10 +324,10 @@ for ($i = 1; $i -le 7; $i++) {
 }
 Write-OK "7 failed logon events generated (Event ID 4625)"
 
-# ── 2b. Account creation (triggers TS-010 local_account_created) ──
+# -- 2b. Account creation (triggers TS-010 local_account_created) --
 Write-Step "  2b. Creating and deleting test user account (triggers TS-010)"
 try {
-  # Create a temporary local user — generates Event ID 4720
+  # Create a temporary local user - generates Event ID 4720
   & net user tinysocs_test_user "T3st!Pass#99" /add 2>$null | Out-Null
   Write-OK "Test user 'tinysocs_test_user' created (Event ID 4720)"
   Start-Sleep -Seconds 1
@@ -339,7 +339,7 @@ try {
   Write-Info "This test requires an elevated (Administrator) PowerShell session"
 }
 
-# ── 2c. Scheduled task creation (triggers TS-020 scheduled_task_created) ──
+# -- 2c. Scheduled task creation (triggers TS-020 scheduled_task_created) --
 Write-Step "  2c. Creating and deleting test scheduled task (triggers TS-020)"
 try {
   $taskName = "TinySocs_SmokeTest_$(Get-Date -Format 'HHmmss')"
@@ -353,7 +353,7 @@ try {
   Write-Fail "Scheduled task creation failed: $($_.Exception.Message)"
 }
 
-# ── 2d. PowerShell ScriptBlock logging (triggers TS-030-lab) ──
+# -- 2d. PowerShell ScriptBlock logging (triggers TS-030-lab) --
 Write-Step "  2d. Generating PowerShell ScriptBlock events (triggers TS-030-lab)"
 # Running multiple script blocks produces Event ID 4104 in PowerShell/Operational
 for ($i = 1; $i -le 5; $i++) {
@@ -367,15 +367,15 @@ for ($i = 1; $i -le 5; $i++) {
 & powershell.exe -NoProfile -Command "Write-Output 'TinySocs-SmokeTest-PS3'" 2>$null | Out-Null
 Write-OK "PowerShell ScriptBlock events generated (Event ID 4104)"
 
-# ── 2e. General activity for fleet health ──
+# -- 2e. General activity for fleet health --
 Write-Step "  2e. Generating general Windows events for fleet health panel"
 # Application log event
 & eventcreate /ID 999 /L Application /T INFORMATION /SO TinySocsTest /D "Dashboard smoke test event" 2>$null | Out-Null
 Write-OK "Application log event created (Event ID 999)"
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 Write-Step "Phase 3: Waiting for agent pipeline (${WaitSeconds}s)"
-Write-Info "The agent collects events → queues → ships to OpenSearch → runs detections"
+Write-Info "The agent collects events -> queues -> ships to OpenSearch -> runs detections"
 Write-Info "This typically takes 15-45 seconds depending on flush intervals."
 
 $segments = [math]::Ceiling($WaitSeconds / 5)
@@ -387,7 +387,7 @@ for ($i = 1; $i -le $segments; $i++) {
 }
 Write-Host "`r  Done waiting!                                              " -ForegroundColor Gray
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 Write-Step "Phase 4: Verifying data in OpenSearch"
 
 # 4a. Check events were ingested
@@ -432,7 +432,7 @@ foreach ($rule in $ruleChecks) {
   }
 }
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 Write-Step "Phase 5: Verifying dashboard API responses"
 
 # 5a. Alert summary
@@ -504,7 +504,7 @@ try {
   Write-Fail "Dashboard API /alerts/timeline failed: $($_.Exception.Message)"
 }
 
-# ═══════════════════════════════════════════════════════════════
+# ===============================================================
 Write-Step "Phase 6: Summary"
 Write-Host ""
 Write-Host "  Events ingested:  $newEvents (was $baselineEvents)" -ForegroundColor White

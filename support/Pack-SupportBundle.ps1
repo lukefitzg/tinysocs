@@ -21,7 +21,7 @@ function Coarsen-IPv4 {
   })
 }
 
-# Mask emails: "u*@domain.tld" → "u***@domain.tld"
+# Mask emails: "u*@domain.tld" -> "u***@domain.tld"
 function Mask-Email {
   param([string]$Text)
   if (-not $Text) { return $Text }
@@ -145,7 +145,7 @@ if (Test-Path "ledger") {
   Copy-Item "tinysocs\ledger" (Join-Path $work "ledger") -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-# 6) Verify logs (if present) — lightly redacted
+# 6) Verify logs (if present) - lightly redacted
 $logsSrc = Join-Path $RepoRoot "logs"
 $logsDst = Join-Path $work "logs"
 if (Test-Path $logsSrc) {

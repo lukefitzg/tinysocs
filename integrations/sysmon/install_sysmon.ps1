@@ -1,4 +1,4 @@
-﻿# integrations/sysmon/install_sysmon.ps1
+# integrations/sysmon/install_sysmon.ps1
 param(
   [string]$ConfigPath
 )
@@ -60,7 +60,7 @@ if (-not (Test-Path $ConfigPath)) { throw "Config not found: $ConfigPath" }
 # If Sysmon service exists -> update config; else -> install fresh
 $svc = Get-Service -Name "Sysmon64" -ErrorAction SilentlyContinue
 if ($svc) {
-  Write-Host "Sysmon service found — updating configuration..."
+  Write-Host "Sysmon service found - updating configuration..."
   & $sysmonExe -c "`"$ConfigPath`"" | Write-Host
 } else {
   Write-Host "Installing Sysmon..."

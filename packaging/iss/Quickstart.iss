@@ -1,5 +1,5 @@
 ; ------------------------------------------------------------
-; Quickstart.iss — TinySocs
+; Quickstart.iss - TinySocs
 ; IMPORTANT:
 ;   ISPP (preprocessor) is strict:
 ;     - directives (#define/#if/#else/#endif/#error) MUST start at column 1
@@ -58,7 +58,7 @@ WizardStyle=modern
 ; Debugging=yes
 
 [Files]
-; Binaries (paths relative to this .iss → back out two levels)
+; Binaries (paths relative to this .iss -> back out two levels)
 Source: "..\..\dist\TinySocsNode.exe";      DestDir: "{app}\bin"; Flags: ignoreversion
 Source: "..\..\dist\TinySocsMaster.exe";   DestDir: "{app}\bin"; Flags: ignoreversion
 Source: "..\..\dist\TinySocsAnchors.exe";  DestDir: "{app}\bin"; Flags: ignoreversion
@@ -68,7 +68,7 @@ Source: "..\..\src\TinySocs.Agent\bin\Release\net8.0\win-x64\publish\TinySocs.Ag
     DestDir: "{app}\bin"; \
     Flags: ignoreversion
 
-; TinySocs collector agent config template → ProgramData
+; TinySocs collector agent config template -> ProgramData
 ; Primary location: Collector\agent-config.yml (matches NSSM TINYSOCS_AGENT_CONFIG)
 ; (Do not overwrite on upgrade; operator may have edited it)
 Source: "..\..\config\agent-config.yml"; \
@@ -81,31 +81,31 @@ Source: "..\..\config\agent-config.yml"; \
     DestName: "config.yml"; \
     Flags: ignoreversion onlyifdoesntexist
 
-; Detection rules → ProgramData\TinySocs\Collector\rules\rules.yml
+; Detection rules -> ProgramData\TinySocs\Collector\rules\rules.yml
 ; (matches DetectionConfig.RulesFile default; do not overwrite operator edits)
 Source: "..\..\packaging\detection\rules.yml"; \
     DestDir: "{commonappdata}\TinySocs\Collector\rules"; \
     Flags: ignoreversion onlyifdoesntexist
 
-; Rule docs (plain-English alert companion) → same directory as rules.yml.
+; Rule docs (plain-English alert companion) -> same directory as rules.yml.
 ; Vendor-authored content, not operator-edited: always overwrite on upgrade.
 Source: "..\..\packaging\detection\rule_docs.yml"; \
     DestDir: "{commonappdata}\TinySocs\Collector\rules"; \
     Flags: ignoreversion
 
-; NSSM is optional — include only if present at build time
+; NSSM is optional - include only if present at build time
 #if FileExists('..\..\thirdparty\nssm.exe')
 Source: "..\..\thirdparty\nssm.exe";       DestDir: "{app}\bin"; Flags: ignoreversion
 #endif
 
-; TinySocs LLM Assistant (PyInstaller bundle — optional at build time)
+; TinySocs LLM Assistant (PyInstaller bundle - optional at build time)
 #if FileExists('..\..\dist\TinySocs-Quickstart\TinySocs-Quickstart.exe')
 Source: "..\..\dist\TinySocs-Quickstart\*"; \
     DestDir: "{app}\Assistant"; \
     Flags: ignoreversion recursesubdirs createallsubdirs
 #endif
 
-; Assistant environment template → ProgramData (do not overwrite operator edits)
+; Assistant environment template -> ProgramData (do not overwrite operator edits)
 Source: "..\..\config\assistant.env"; \
     DestDir: "{commonappdata}\TinySocs\Assistant"; \
     Flags: ignoreversion onlyifdoesntexist
@@ -179,9 +179,9 @@ Source: "..\opensearch\dashboards\tinysocs-dashboards.ndjson"; \
 
 ; --- TinyBox runtime seed payload (OPTIONAL at build time) ---
 #if HasTinyBoxSeed
-; TinyBox ProgramData seed payload present — installer can embed + optionally seed ProgramData.
+; TinyBox ProgramData seed payload present - installer can embed + optionally seed ProgramData.
 #else
-; TinyBox ProgramData seed payload NOT present — build will still succeed.
+; TinyBox ProgramData seed payload NOT present - build will still succeed.
 ; In this case, TinySocs.Installer.psm1 MUST generate/repair ProgramData config at runtime.
 #endif
 
@@ -305,14 +305,14 @@ Name: "{app}\OpenSearch\config-template"; Flags: uninsneveruninstall
 [Run]
 ; Post-install configuration is handled in the [Code] ssPostInstall step.
 ; "Launch Dashboard" checkbox shown on the finish page (postinstall flag).
-; Use cmd /c start to open the URL — direct shellexec of https:// URLs
+; Use cmd /c start to open the URL - direct shellexec of https:// URLs
 ; can silently fail on some Windows configurations (SmartScreen, GPO, etc.).
 Filename: "cmd"; Parameters: "/c start """" ""{code:GetDashboardUrl}"""; Description: "{code:GetDashboardDescription}"; \
   Flags: postinstall nowait skipifsilent runhidden
 
 [UninstallRun]
 ; IMPORTANT:
-; Do NOT embed PowerShell scriptblocks ({ ... }) here — Inno treats {X} as constants and the compiler will explode.
+; Do NOT embed PowerShell scriptblocks ({ ... }) here - Inno treats {X} as constants and the compiler will explode.
 ; Use a dedicated uninstall script instead. It will:
 ;   - detect upgrade (/UPGRADE|/UPDATE) and keep ProgramData
 ;   - respect remove_on_uninstall.flag for full removal
@@ -320,7 +320,7 @@ Filename: "cmd"; Parameters: "/c start """" ""{code:GetDashboardUrl}"""; Descrip
 ;   - kill leftover opensearch/java processes
 ;
 ; PATCH: add -FromInnoUninstall so the script can refuse accidental execution during install/repair/etc.
-; PATCH: DO NOT use {sysnative} here — sysnative only exists from a 32-bit process; uninstall may run 64-bit.
+; PATCH: DO NOT use {sysnative} here - sysnative only exists from a 32-bit process; uninstall may run 64-bit.
 ;        {sys} resolves correctly in both 64-bit and 32-bit contexts (System32 vs SysWOW64) and avoids "path not found".
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ""{app}\modules\TinySocs.Uninstall.ps1"" -FromInnoUninstall"; \
@@ -521,7 +521,7 @@ end;
 
 { Scripted constant: returns the dashboard URL with the correct scheme.
   TinyBox installs always get HTTPS (certs generated); Node-only gets HTTP.
-  Always opens localhost — the local machine should never use the LAN/hostname
+  Always opens localhost - the local machine should never use the LAN/hostname
   URL because GetLocalIPv4 can fall back to COMPUTERNAME which may not resolve. }
 function GetDashboardUrl(Param: String): String;
 begin
@@ -628,7 +628,7 @@ end;
 
   Strategy (most to least reliable):
     1. UDP socket trick: open a UDP "connection" to 8.8.8.8:53 and read
-       the local endpoint — works even without actual internet because
+       the local endpoint - works even without actual internet because
        no data is sent; the OS just picks the right outbound interface.
     2. Get-NetIPAddress cmdlet: enumerates adapters directly (works on
        machines with no DNS registration for their hostname).
@@ -644,7 +644,7 @@ var
 begin
   Result := GetEnv('COMPUTERNAME');
   TmpFile := ExpandConstant('{tmp}\localip.txt');
-  { IMPORTANT: No # comments in this one-liner — everything is on a single
+  { IMPORTANT: No # comments in this one-liner - everything is on a single
     command line, so # would comment out the rest of the script. Use semicolons
     as statement separators. }
   PsCmd :=
@@ -1076,7 +1076,7 @@ begin
   SharedSecretHintLabel.Width := SecurityPage.SurfaceWidth;
   SharedSecretHintLabel.WordWrap := True;
   SharedSecretHintLabel.AutoSize := True;
-  SharedSecretHintLabel.Caption := 'For Hub installs, a strong secret is auto-generated — copy it for your remote Site installs.'
+  SharedSecretHintLabel.Caption := 'For Hub installs, a strong secret is auto-generated - copy it for your remote Site installs.'
     + ' For Site installs, enter the shared secret from your Hub installation.';
   SharedSecretHintLabel.Font.Color := $666666;
 
@@ -1384,7 +1384,7 @@ begin
   L.Left := 0;
   L.Top := OTXKeyEdit.Top + ScaleY(32);
   L.Width := ThreatIntelPage.SurfaceWidth;
-  L.Caption := 'GreyNoise Community API key (optional — works without, 10/day unauthenticated):';
+  L.Caption := 'GreyNoise Community API key (optional - works without, 10/day unauthenticated):';
 
   GreyNoiseKeyEdit := TNewEdit.Create(ThreatIntelPage.Surface);
   GreyNoiseKeyEdit.Parent := ThreatIntelPage.Surface;
@@ -1600,7 +1600,7 @@ begin
     Result := (SelectedRole <> ROLE_HUB);
 
   { SIEM password field is Hub-only; Site uses Security page for shared secret only }
-  { (We don't skip the SecurityPage itself — both roles use it for shared secret) }
+  { (We don't skip the SecurityPage itself - both roles use it for shared secret) }
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
@@ -1648,7 +1648,7 @@ begin
     else
     begin
       SecurityPage.Description := 'Set your shared secret and SIEM password.';
-      SharedSecretHintLabel.Caption := 'For Hub installs, a strong secret is auto-generated — copy it for your remote Site installs.'
+      SharedSecretHintLabel.Caption := 'For Hub installs, a strong secret is auto-generated - copy it for your remote Site installs.'
         + ' For Site installs, enter the shared secret from your Hub installation.';
     end;
   end
@@ -1825,7 +1825,7 @@ begin
     { ---- Phase 13 M5: Restore operator-edited configs if overwritten by upgrade ---- }
     { The [Files] section uses onlyifdoesntexist, so configs should survive, but }
     { this is a safety net: if the .bak is newer/different, the operator had edits. }
-    Log('CurStepChanged: Phase 13 M5 — verifying config backups');
+    Log('CurStepChanged: Phase 13 M5 - verifying config backups');
     Script :=
       '$ErrorActionPreference = ''SilentlyContinue''' + CRLF +
       '$dataRoot = Join-Path $env:ProgramData ''TinySocs''' + CRLF +
@@ -1855,7 +1855,7 @@ begin
       '  }' + CRLF +
       '}' + CRLF +
       '' + CRLF +
-      '# assistant.env: role-aware restore — skip if role changed (Hub<->Site)' + CRLF +
+      '# assistant.env: role-aware restore - skip if role changed (Hub<->Site)' + CRLF +
       '# TINYSOCS_HUB_URL present = was a Site; DASHBOARD_BIND present = was a Hub' + CRLF +
       '$aenvLive = Join-Path $dataRoot ''Assistant\assistant.env''' + CRLF +
       '$aenvBak  = Join-Path $dataRoot ''Assistant\assistant.env.pre-upgrade.bak''' + CRLF +
@@ -1870,7 +1870,7 @@ begin
       '    $roleChanged = $true  # Installing as Hub but backup was Site' + CRLF +
       '  }' + CRLF +
       '  if ($roleChanged) {' + CRLF +
-      '    Write-Host ''[TinySocs][Inno] Role change detected (backup role differs from selected role) — skipping assistant.env restore''' + CRLF +
+      '    Write-Host ''[TinySocs][Inno] Role change detected (backup role differs from selected role) - skipping assistant.env restore''' + CRLF +
       '    try { Remove-Item -LiteralPath $aenvBak -Force } catch { }' + CRLF +
       '  } else {' + CRLF +
       '    if (-not (Test-Path -LiteralPath $aenvLive -PathType Leaf)) {' + CRLF +
@@ -1889,7 +1889,7 @@ begin
       '}' + CRLF +
       'Write-Host ''[TinySocs][Inno] Phase 13 M5: Config backup verification complete.''' + CRLF;
     RunPowerShellScript(Script);
-    Log('CurStepChanged: Phase 13 M5 — config backup verification done');
+    Log('CurStepChanged: Phase 13 M5 - config backup verification done');
 
     AppDir := ExpandConstant('{app}');
     InstallerModule := AppDir + '\modules\TinySocs.Installer.psm1';
@@ -2100,7 +2100,7 @@ begin
         '  }' + #13#10 +
         '} catch { Write-Warning (''[TinySocs][Inno] TB-10: failed to update service Environment key (continuing): '' + $_.Exception.Message) }' + #13#10 +
         '' + #13#10 +
-        '# Also write to NSSM AppEnvironmentExtra (Parameters subkey) — this is what NSSM actually reads.' + #13#10 +
+        '# Also write to NSSM AppEnvironmentExtra (Parameters subkey) - this is what NSSM actually reads.' + #13#10 +
         'try {' + #13#10 +
         '  $nssmParamsKey = ''HKLM:\SYSTEM\CurrentControlSet\Services\TinySocsOpenSearch\Parameters''' + #13#10 +
         '  if (Test-Path $nssmParamsKey) {' + #13#10 +
@@ -2629,7 +2629,7 @@ begin
     begin
       Log('CurStepChanged: InstallTinyBox=False (Site role)');
 
-      { ---- Phase 19+20: Site role — OpenSearch bootstrap, TLS cert, config, node+agent services ---- }
+      { ---- Phase 19+20: Site role - OpenSearch bootstrap, TLS cert, config, node+agent services ---- }
 
       { Phase 20: Auto-generate SIEM password for Site's local OpenSearch }
       if (SiemPass = '') then
@@ -2877,7 +2877,7 @@ begin
         '  }' + CRLF +
         '} catch { Write-Warning (''[TinySocs][Inno] Security config ACLs failed: '' + $_.Exception.Message) }' + CRLF +
         '' + CRLF +
-        '# 20.6: Restart OpenSearch and run persistence — wrapped in try/catch' + CRLF +
+        '# 20.6: Restart OpenSearch and run persistence - wrapped in try/catch' + CRLF +
         '# The persistence script can throw terminating errors (e.g. missing storepass)' + CRLF +
         '# that would otherwise kill the entire post-install script.' + CRLF +
         'try {' + CRLF +
@@ -2933,7 +2933,7 @@ begin
     end;
 
     { ---- Phase 11: Register LLM Assistant service (Hub/TinyBox only) ---- }
-    Log('CurStepChanged: Phase 11 — checking for Assistant bundle');
+    Log('CurStepChanged: Phase 11 - checking for Assistant bundle');
     if InstallTinyBox and FileExists(ExpandConstant('{app}\Assistant\TinySocs-Quickstart.exe')) then
     begin
       Log('CurStepChanged: Assistant bundle found. Registering TinySocsAssistant service.');
@@ -3020,7 +3020,7 @@ begin
     { ---- Phase 12: Import OpenSearch Dashboards (if TinyBox was installed) ---- }
     if InstallTinyBox then
     begin
-      Log('CurStepChanged: Phase 12 — importing dashboards');
+      Log('CurStepChanged: Phase 12 - importing dashboards');
       Script :=
         '$ErrorActionPreference = ''Continue''' + CRLF +
         'Import-Module ''' + PsEscape(InstallerModule) + ''' -Force' + CRLF +
@@ -3045,7 +3045,7 @@ begin
     { ---- Phase 12: Write notification config to agent-config.yml ---- }
     if (WebhookUrl <> '') or ((EmailEnabled) and (SmtpHost <> '')) then
     begin
-      Log('CurStepChanged: Phase 12 — writing notification config');
+      Log('CurStepChanged: Phase 12 - writing notification config');
       Script :=
         '$ErrorActionPreference = ''Continue''' + CRLF +
         'Import-Module ''' + PsEscape(InstallerModule) + ''' -Force' + CRLF +
@@ -3088,7 +3088,7 @@ begin
     { ---- Phase 12: Register daily summary scheduled task ---- }
     if (EmailEnabled) and (EmailTo <> '') then
     begin
-      Log('CurStepChanged: Phase 12 — registering daily summary scheduled task');
+      Log('CurStepChanged: Phase 12 - registering daily summary scheduled task');
       Script :=
         '$ErrorActionPreference = ''Continue''' + CRLF +
         'Import-Module ''' + PsEscape(InstallerModule) + ''' -Force' + CRLF +
@@ -3101,7 +3101,7 @@ begin
     end;
 
     { ---- Phase 14 M0: Dashboard access mode ---- }
-    Log('CurStepChanged: Phase 14 — Dashboard access config');
+    Log('CurStepChanged: Phase 14 - Dashboard access config');
     if DashNetworkRadio.Checked then
     begin
       DashboardBind := '0.0.0.0';
@@ -3183,12 +3183,12 @@ begin
         Log('CurStepChanged: Dashboard TLS cert generated successfully.');
     end
     else
-      Log('CurStepChanged: Site role — skipping dashboard TLS cert.');
+      Log('CurStepChanged: Site role - skipping dashboard TLS cert.');
 
     { ---- Phase 14 M0b: Network-mode extras (firewall rule + CA cert export) ---- }
     if (InstallTinyBox) and (DashNetworkRadio.Checked) then
     begin
-      Log('CurStepChanged: Phase 14 — Network access: firewall rule + CA cert export');
+      Log('CurStepChanged: Phase 14 - Network access: firewall rule + CA cert export');
       Script :=
         '$ErrorActionPreference = "Continue"' + CRLF +
         'try {' + CRLF +
@@ -3225,7 +3225,7 @@ begin
     { ---- Phase 14 M2: Sysmon deployment ---- }
     if SysmonInstallCheck.Checked then
     begin
-      Log('CurStepChanged: Phase 14 — Installing Sysmon');
+      Log('CurStepChanged: Phase 14 - Installing Sysmon');
       Script :=
         '$ErrorActionPreference = "Continue"' + CRLF +
         'Import-Module "' + PsEscape(InstallerModule) + '" -Force' + CRLF +
@@ -3250,7 +3250,7 @@ begin
         'TinySocs Hub has been installed.' + CRLF + CRLF +
         'Dashboard: https://localhost:8090/dashboard/' + CRLF + CRLF +
         'Shared secret: ' + SharedSecret + CRLF +
-        '(Copy this secret — you will need it when installing each remote Site.)' + CRLF + CRLF +
+        '(Copy this secret - you will need it when installing each remote Site.)' + CRLF + CRLF +
         'To add a remote site: run the TinySocs installer on the remote machine, choose "Site," and enter this shared secret.';
     end
     else
@@ -3260,7 +3260,7 @@ begin
         'Site name: ' + SiteName + CRLF +
         'Node API: https://localhost:8081/meta' + CRLF + CRLF +
         'This machine collects and forwards security data to your Hub.' + CRLF +
-        'There is no dashboard on this machine — open the dashboard on your Hub:' + CRLF +
+        'There is no dashboard on this machine - open the dashboard on your Hub:' + CRLF +
         'https://' + HubAddress + ':8090/dashboard/' + CRLF + CRLF +
         'This site will appear in the Hub dashboard''s Sites tab.';
     end;
@@ -3300,7 +3300,7 @@ begin
   PrevUninstExe := ExpandConstant('{app}\unins000.exe');
   if FileExists(PrevUninstExe) then
   begin
-    Log('PrepareToInstall: UPGRADE detected — previous uninstaller found at: ' + PrevUninstExe);
+    Log('PrepareToInstall: UPGRADE detected - previous uninstaller found at: ' + PrevUninstExe);
 
     { Read previous version from registry if available }
     PrevVersion := '';
@@ -3324,7 +3324,7 @@ begin
     try
       FileCopy(AgentCfg, AgentCfg + '.pre-upgrade.bak', False);
     except
-      Log('PrepareToInstall: WARNING — failed to back up agent-config.yml');
+      Log('PrepareToInstall: WARNING - failed to back up agent-config.yml');
     end;
   end;
 
@@ -3334,7 +3334,7 @@ begin
     try
       FileCopy(AgentCfgLegacy, AgentCfgLegacy + '.pre-upgrade.bak', False);
     except
-      Log('PrepareToInstall: WARNING — failed to back up legacy config.yml');
+      Log('PrepareToInstall: WARNING - failed to back up legacy config.yml');
     end;
   end;
 
@@ -3344,7 +3344,7 @@ begin
     try
       FileCopy(AssistantEnv, AssistantEnv + '.pre-upgrade.bak', False);
     except
-      Log('PrepareToInstall: WARNING — failed to back up assistant.env');
+      Log('PrepareToInstall: WARNING - failed to back up assistant.env');
     end;
   end;
 
@@ -3354,7 +3354,7 @@ begin
     try
       FileCopy(RulesFile, RulesFile + '.pre-upgrade.bak', False);
     except
-      Log('PrepareToInstall: WARNING — failed to back up rules.yml');
+      Log('PrepareToInstall: WARNING - failed to back up rules.yml');
     end;
   end;
 
@@ -3368,11 +3368,11 @@ begin
         'foreach ($svc in @(''TinySocsAgent'',''TinySocsNode'',''TinySocsMaster'',''TinySocsAnchors'',''TinySocsAssistant'')) {' + CRLF +
         '  try { Stop-Service -Name $svc -Force -ErrorAction SilentlyContinue } catch { }' + CRLF +
         '}' + CRLF +
-        '# Do NOT stop TinySocsOpenSearch here — persistence script handles restart.' + CRLF +
+        '# Do NOT stop TinySocsOpenSearch here - persistence script handles restart.' + CRLF +
         'Write-Host ''[TinySocs][Inno] Pre-upgrade: services stopped.'''
       );
     except
-      Log('PrepareToInstall: WARNING — service stop failed (non-fatal).');
+      Log('PrepareToInstall: WARNING - service stop failed (non-fatal).');
     end;
   end;
 end;
